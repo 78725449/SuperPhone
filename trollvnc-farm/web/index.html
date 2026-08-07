@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>TrollVNC 群控台</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header>
+  <h1>TrollVNC 群控台</h1>
+  <div id="meta" class="meta"></div>
+  <div class="actions">
+    <label class="zoom" title="拖动统一缩放所有设备卡片">
+      墙屏缩放
+      <input type="range" id="zoomRange" min="50" max="220" value="100" />
+      <span id="zoomVal">100%</span>
+    </label>
+    <button id="btnRefresh" title="刷新设备状态">刷新</button>
+    <button id="btnAdd" class="primary" title="手动添加设备">+ 添加设备</button>
+  </div>
+</header>
+
+<main>
+  <div id="workspace">
+    <!-- 左：放大后的设备画面（点击卡片后出现，此区域才可操作） -->
+    <section id="focusPanel" class="focus-panel hidden">
+      <div class="focus-head">
+        <button id="btnBack">← 返回设备墙</button>
+        <span id="focusTitle"></span>
+        <span id="focusStatus" class="muted"></span>
+      </div>
+      <div id="focusScreen" class="screen"><div id="focusStage" class="focus-stage"></div></div>
+    </section>
+
+    <!-- 中：操作列，紧贴设备屏幕右侧 -->
+    <aside id="focusOps" class="focus-ops hidden">
+      <div id="focusOpsCap" class="focus-ops-cap"></div>
+      <hr />
+      <button data-op="fit" class="op" title="适配画面">⛶</button>
+      <button data-op="full" class="op" title="全屏">🖥️</button>
+      <button data-op="disc" class="op danger" title="断开">⏹</button>
+      <label class="chk" title="作为群控主屏，操作广播到其它设备"><input type="checkbox" id="chkFocusBroadcast" /> 群控主屏</label>
+    </aside>
+
+    <!-- 右：其它设备的屏幕墙 -->
+    <div id="wall" class="wall-grid"></div>
+  </div>
+
+  <div id="empty" class="empty hidden">
+    没有在线设备。内网 iOS 设备开启 TrollVNC 并配置网关后会自动出现。
+  </div>
+
+  <!-- 移动端：可拖动/缩放的悬浮菜单按钮 -->
+  <div id="fab" class="fab hidden">
+    <div class="fab-head" id="fabHead" title="拖动调整位置，双指捏合缩放">≡</div>
+    <button class="fab-main" id="fabMenuBtn" title="设备操作菜单">⚙</button>
+  </div>
+
+  <!-- 移动端操作菜单（悬浮按钮点击展开，含退出控制） -->
+  <div id="opsMenu" class="ops-menu hidden">
+    <div class="ops-menu-title">设备操作</div>
+    <div id="opsMenuCap" class="ops-menu-grid"></div>
+    <div class="ops-menu-grid" style="margin-top:6px">
+      <button data-op="fit" title="适配">⛶</button>
+      <button data-op="full" title="全屏">🖥️</button>
+      <button data-op="disc" title="断开">⏹</button>
+    </div>
+    <button id="opsExit" class="ops-exit danger">← 退出控制</button>
+  </div>
+</main>
+
+<!-- 设备详情（能力清单只读，宪法 4.2/7.3） -->
+<div id="detailModal" class="modal hidden">
+  <div class="modal-card">
+    <h3 id="detailTitle">设备详情</h3>
+    <div id="detailBody" class="detail-body"></div>
+    <div class="modal-btns"><button id="btnDetailClose">关闭</button></div>
+  </div>
+</div>
+
+<!-- 添加/编辑设备 -->
+<div id="addModal" class="modal hidden">
+  <div class="modal-card">
+    <h3 id="addTitle">添加设备</h3>
+    <label>名称 <input id="fName" placeholder="如：iPhone 15" /></label>
+    <label>IP / 主机 <input id="fHost" placeholder="192.168.1.23" /></label>
+    <label>端口 <input id="fPort" type="number" value="5901" /></label>
+    <label>分组（可选） <input id="fGroup" placeholder="如：demo" /></label>
+    <label>备注 <input id="fNote" placeholder="可选" /></label>
+    <div class="modal-btns">
+      <button id="btnSaveDevice" class="primary">保存</button>
+      <button id="btnCancelAdd">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 设备卡片小菜单 -->
+<div id="tileMenu" class="tile-menu hidden"></div>
+
+<script type="module" src="app.js?v=13"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+﻿# ============ frpc.toml：跑在软路由上 ============
+serverAddr = "你的VPS公网IP或域名"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "CHANGE_ME_STRONG_TOKEN"   # 与 frps 相同
+
+[[proxies]]
+name = "trollvnc-farm"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 8080
+remotePort = 8080

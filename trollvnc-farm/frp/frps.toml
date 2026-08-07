@@ -1,0 +1,20 @@
+﻿# ============ frps.toml：跑在公网 VPS 上 ============
+bindPort = 7000
+
+# 与 frpc 一致的令牌（务必改成强随机值）
+auth.method = "token"
+auth.token = "CHANGE_ME_STRONG_TOKEN"
+
+# 可选：frp 面板
+webServer.addr = "0.0.0.0"
+webServer.port = 7500
+webServer.user = "admin"
+webServer.password = "CHANGE_ME_PANEL_PASSWORD"
+
+# 把软路由上的群控台(8080)暴露为 VPS 的 8080 端口
+[[proxies]]
+name = "trollvnc-farm"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 8080
+remotePort = 8080

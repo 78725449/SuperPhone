@@ -1,0 +1,18 @@
+{
+  "name": "trollvnc-farm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TrollVNC 群控网关：软路由部署，网页管理内网 iOS 设备，支持批量操作与内网穿透",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js",
+    "test": "node test/smoke.js && node test/register-test.js && node test/dedupe-test.js && node test/caps-test.js"
+  },
+  "dependencies": {
+    "@novnc/novnc": "^1.5.0",
+    "bonjour-service": "^1.2.1",
+    "ws": "^8.18.0"
+  }
+}

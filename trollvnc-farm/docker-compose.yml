@@ -1,0 +1,15 @@
+﻿services:
+  trollvnc-farm:
+    build: .
+    image: trollvnc-farm:latest
+    container_name: trollvnc-farm
+    restart: unless-stopped
+    # host 网络：容器直接使用软路由的网络，才能 mDNS 发现局域网手机并直连各手机 VNC 端口
+    network_mode: host
+    environment:
+      FARM_PORT: "8080"
+      FARM_TOKEN: "change-me-please"   # 访问令牌，部署时务必修改
+      FARM_PROBE_INTERVAL: "15000"
+      FARM_REG_PORT: "18081"    # 手机注册 TCP 端口（mDNS 同步发布）
+    volumes:
+      - ./data:/app/data

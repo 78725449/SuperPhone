@@ -1,0 +1,555 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>TrollVNC · 完整原型</title>
+<style>
+  :root{--bg:#F3F5F9;--card:#fff;--line:#EEF1F6;--text:#0F172A;--sub:#64748B;--muted:#94A3B8;--accent:#3B82F6;--accent-soft:#EAF1FE;--ok:#22C55E;--ok-soft:#E8F9EF;--radius:18px;--shadow:0 1px 3px rgba(15,23,42,.06),0 8px 24px rgba(15,23,42,.06);}
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased;}
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--text);}
+  .app{max-width:390px;margin:0 auto;height:100dvh;position:relative;overflow:hidden;background:var(--bg);}
+  header{display:flex;align-items:center;justify-content:space-between;padding:18px 20px 8px;}
+  header h1{font-size:24px;font-weight:800;letter-spacing:-.3px;}
+  .hright{display:flex;align-items:center;gap:8px;}
+  .hstatus{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--ok);background:var(--ok-soft);padding:6px 12px;border-radius:20px;}
+  .hact{background:var(--accent-soft);color:var(--accent);font-size:12px;font-weight:700;padding:7px 14px;border-radius:20px;border:none;cursor:pointer;}
+  .hdot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px rgba(34,197,94,.18);}
+  main{padding:8px 16px 86px;overflow-y:auto;height:calc(100% - 62px);}
+  .page{display:none;flex-direction:column;gap:14px;}
+  .page.on{display:flex;}
+  .hero{background:linear-gradient(135deg,#2B5CFF,#3B82F6 55%,#5AA7FF);border-radius:24px;padding:20px;color:#fff;box-shadow:0 12px 30px rgba(59,130,246,.35);}
+  .hero .name{font-size:18px;font-weight:800;}
+  .hero .sub{display:flex;align-items:center;gap:7px;font-size:13px;opacity:.95;margin-top:9px;}
+  .gdot{width:7px;height:7px;border-radius:50%;background:#86EFAC;box-shadow:0 0 0 3px rgba(134,239,172,.25);}
+  .seg{display:flex;background:rgba(255,255,255,.22);border-radius:13px;padding:4px;gap:4px;margin-top:16px;}
+  .seg button{flex:1;border:none;background:transparent;padding:8px 0;border-radius:10px;font-size:14px;font-weight:600;color:rgba(255,255,255,.9);cursor:pointer;}
+  .seg button.active{background:#fff;color:#1D4ED8;box-shadow:0 1px 4px rgba(15,23,42,.15);}
+  .card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px;border:1px solid var(--line);}
+  .card .t{display:flex;align-items:center;gap:8px;margin-bottom:12px;}
+  .card .t .ic{width:30px;height:30px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:15px;}
+  .card .t .tt{font-size:15px;font-weight:700;}
+  .card .t .st{margin-left:auto;font-size:12px;font-weight:600;display:flex;align-items:center;gap:5px;}
+  .dot{width:8px;height:8px;border-radius:50%;}
+  .qrcode{display:flex;justify-content:center;padding:10px 0 2px;}
+  .qr{width:120px;height:120px;border:1px solid var(--line);border-radius:14px;padding:8px;}
+  .qr svg{width:100%;height:100%;display:block;}
+  .qr-addr{text-align:center;font-size:15px;font-weight:700;margin-top:12px;letter-spacing:.3px;}
+  .qr-hint{text-align:center;font-size:12px;color:var(--sub);margin-top:4px;}
+  .client{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line);}
+  .client:first-of-type{border-top:none;}
+  .client .av{width:34px;height:34px;border-radius:12px;background:var(--accent-soft);color:var(--accent);display:flex;align-items:center;justify-content:center;font-size:16px;}
+  .client .nm{font-size:14px;font-weight:600;}
+  .client .dt{font-size:12px;color:var(--sub);margin-top:1px;}
+  .client .tag{margin-left:auto;font-size:11px;font-weight:700;color:var(--ok);background:var(--ok-soft);padding:3px 8px;border-radius:20px;}
+  .client .kick{margin-left:8px;border:none;background:#FEE2E2;color:#DC2626;font-size:11px;font-weight:700;padding:5px 10px;border-radius:8px;cursor:pointer;}
+  .more{width:100%;border:none;background:transparent;color:var(--accent);font-size:13px;font-weight:700;padding:8px 0 2px;cursor:pointer;}
+  .seg2{display:flex;background:#EEF1F6;border-radius:11px;padding:3px;gap:3px;margin:2px 0 12px;}
+  .seg2 button{flex:1;border:none;background:transparent;padding:7px 0;border-radius:8px;font-size:13px;font-weight:600;color:var(--sub);cursor:pointer;}
+  .seg2 button.active{background:#fff;color:var(--text);box-shadow:0 1px 3px rgba(15,23,42,.12);}
+  .fld2{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line);}
+  .fld2:first-of-type{border-top:none;}
+  .fld2 .fl{font-size:13px;color:var(--sub);flex:0 0 auto;}
+  .fld2 input{flex:1;min-width:0;border:1px solid #DDE3EC;background:#F7F9FC;border-radius:10px;padding:8px 10px;font-size:14px;font-weight:600;text-align:right;outline:none;}
+  .fld2 input:focus{border-color:var(--accent);background:#fff;}
+  .fld2 select{flex:1;border:1px solid #DDE3EC;background:#F7F9FC;border-radius:10px;padding:8px;font-size:14px;font-weight:600;}
+  .fld2 .sw{margin-left:auto;width:46px;height:28px;border-radius:16px;background:#D9DFEA;position:relative;transition:.2s;flex:0 0 auto;}
+  .fld2 .sw::after{content:"";position:absolute;top:2px;left:2px;width:24px;height:24px;border-radius:50%;background:#fff;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.2);}
+  .fld2 .sw.on{background:var(--accent);}
+  .fld2 .sw.on::after{left:20px;}
+  .fld2.slider .fl{flex:0 0 auto;}
+  .fld2.slider .rng{flex:1;margin:0 10px;}
+  .fld2.slider .val{font-size:13px;font-weight:700;color:var(--accent);min-width:40px;text-align:right;}
+  .btnrow{display:flex;flex-direction:column;gap:8px;margin-top:4px;}
+  .btn{border:none;background:var(--accent-soft);color:var(--accent);font-size:14px;font-weight:700;padding:11px;border-radius:12px;cursor:pointer;}
+  .btn.danger{background:#FEE2E2;color:#DC2626;}
+  .btn:disabled{background:#E5E9F0;color:#9AA4B2;cursor:default;}
+  .glist{display:flex;flex-direction:column;}
+  .gitem{display:flex;align-items:center;gap:10px;padding:13px 4px;border-bottom:1px solid var(--line);cursor:pointer;}
+  .gitem:last-child{border-bottom:none;}
+  .gitem .gi{width:30px;height:30px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:var(--accent-soft);}
+  .gitem .gi svg,.card .ic svg{width:17px;height:17px;}
+  .client .av svg{width:18px;height:18px;}
+  .cthumb svg{width:34px;height:34px;color:#3a4452;}
+  .cmenu-grid button svg{width:18px;height:18px;}
+  #fab2 svg{width:24px;height:24px;}
+  .gitem .gt{font-size:15px;font-weight:600;}
+  .gitem .gdesc{font-size:12px;color:var(--sub);margin-top:2px;}
+  .gitem .chev{margin-left:auto;color:var(--muted);font-size:16px;}
+  .subhead{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+  .subhead button{border:none;background:var(--card);box-shadow:var(--shadow);width:32px;height:32px;border-radius:10px;font-size:15px;cursor:pointer;color:var(--sub);}
+  .subhead span{font-size:17px;font-weight:800;}
+  nav{position:absolute;left:0;right:0;bottom:0;background:rgba(255,255,255,.92);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-top:1px solid #E6EAF1;display:flex;padding:4px 0 calc(4px + env(safe-area-inset-bottom,0));}
+  nav button{flex:1;border:none;background:transparent;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0 4px;font-size:10px;font-weight:600;color:#9AA4B2;cursor:pointer;}
+  nav button svg{width:23px;height:23px;}
+  nav button.active{color:var(--accent);}
+  .note{background:#FFF8EB;border-color:#F5E3C2;color:#92610A;font-size:12px;line-height:1.6;}
+  .grp{font-size:13px;font-weight:700;color:var(--sub);padding:14px 4px 6px;}
+  .cfilter{display:flex;align-items:center;gap:10px;margin-bottom:12px;position:relative;}
+  .fchips{display:flex;gap:6px;flex:1;}
+  .cfilter{position:relative;}
+  .fchips{display:flex;gap:6px;flex:1;min-width:0;}
+  .fchip{height:36px;padding:0 16px;border-radius:20px;border:1px solid var(--line);background:#fff;color:var(--sub);font-size:13px;font-weight:600;cursor:pointer;box-shadow:var(--shadow);}
+  .fchip:active{background:#EEF1F6;}
+  .fchip.active{background:var(--accent);color:#fff;border-color:var(--accent);}
+  .layicon{width:36px;height:36px;border-radius:20px;border:1px solid var(--line);background:#fff;color:var(--sub);display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto;box-shadow:var(--shadow);}
+  .layicon svg{width:19px;height:19px;}
+  .layicon:active{background:#EEF1F6;}
+  .layout-menu{position:absolute;top:calc(100% + 6px);right:0;z-index:40;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 8px 30px rgba(15,23,42,.18);padding:6px;display:grid;grid-template-columns:1fr 1fr;gap:2px;width:190px;}
+  .layout-menu.hidden{display:none;}
+  .lopt{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border-radius:9px;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;}
+  .lopt:active{background:var(--accent-soft);}
+  .lopt .chk{color:var(--accent);font-weight:700;visibility:hidden;}
+  .lopt.sel{color:var(--accent);}
+  .lopt.sel .chk{visibility:visible;}
+  .ctrl-grid.landscape .cdev{aspect-ratio:16/9;}
+  .ctrl-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .cdev{border-radius:16px;overflow:hidden;border:1px solid var(--line);background:#000;cursor:pointer;aspect-ratio:9/16;display:flex;flex-direction:column;box-shadow:var(--shadow);}
+  .cthumb{flex:1;display:flex;align-items:center;justify-content:center;font-size:30px;color:#2a3342;min-height:0;}
+  .cbar{display:flex;align-items:center;gap:6px;padding:6px 8px;background:rgba(0,0,0,.62);color:#fff;}
+  .ctag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;}
+  .ctag.d{background:#EAF1FE;color:#3B82F6;}
+  .ctag.r{background:#F3E8FF;color:#8B5CF6;}
+  .cn{font-size:13px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#fff;}
+  .cok{color:var(--ok);font-size:11px;}
+  .cdev.hide{display:none;}
+  .in-cview header,.in-cview nav{display:none;}
+  .in-cview main{height:100%;padding-bottom:0;}
+  .cview-screen{height:100%;background:#000;display:flex;align-items:center;justify-content:center;color:#3a4452;font-size:14px;border-radius:0;}
+  #fab2{position:fixed;right:16px;bottom:28px;width:54px;height:54px;border-radius:50%;background:var(--accent);color:#fff;font-size:22px;border:none;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.45);z-index:70;touch-action:none;}
+  .cmenu{position:fixed;right:14px;bottom:96px;background:#fff;border-radius:16px;box-shadow:0 8px 28px rgba(0,0,0,.35);padding:12px;z-index:71;width:min(280px,88vw);}
+  .cmenu.hidden{display:none;}
+  .cmenu-title{font-size:13px;font-weight:700;color:var(--sub);margin-bottom:8px;}
+  .cmenu-grid{display:flex;flex-direction:column;gap:2px;}
+  .cmenu-grid button{display:flex;align-items:center;gap:10px;text-align:left;padding:10px 12px;font-size:14px;font-weight:600;border:none;border-radius:10px;background:#fff;cursor:pointer;}
+  .cmenu-grid button span{font-size:17px;}
+  .cmenu-grid button:active{background:var(--accent-soft);}
+  .cend{width:100%;margin-top:10px;padding:11px;border:none;border-radius:12px;background:#FEE2E2;color:#DC2626;font-weight:700;font-size:14px;cursor:pointer;}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>TrollVNC</h1>
+    <div class="hright" id="hright">
+      <span class="hstatus" id="hstatus" style="cursor:pointer" title="点击切换"><span class="hdot" id="hdot"></span><span id="hstatTxt">已连接</span></span>
+      <button id="clientsAction" class="hact" style="display:none">全部断开</button>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- ============ 首页：内网直连 ============ -->
+    <div class="page on" id="p-home-direct">
+      <div class="hero">
+        <div class="name">iPhone · 张三的 iPhone</div>
+        <div class="sub"><span class="gdot"></span>网关 10.0.0.1:8080</div>
+        <div class="seg" data-seg="mode">
+          <button class="active" data-go="p-home-direct">内网直连</button>
+          <button data-go="p-home-reverse">反向连接</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="t"><div class="ic" style="background:#E8F9EF"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="5" height="5" rx="1"/><rect x="16" y="3" width="5" height="5" rx="1"/><rect x="3" y="16" width="5" height="5" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3M21 21v.01M12 7v3a2 2 0 0 1-2 2H7M3 12h.01M12 3h.01M12 16v.01M16 12h1M21 12v.01M12 21v-1"/></svg></div><span class="tt">扫码直连</span></div>
+        <div class="qrcode"><div class="qr"><svg viewBox="0 0 29 29" shape-rendering="crispEdges"><rect width="29" height="29" fill="#fff"/><g fill="#0F172A"><rect x="0" y="0" width="7" height="7"/><rect x="11" y="0" width="7" height="7"/><rect x="22" y="0" width="7" height="7"/><rect x="0" y="11" width="7" height="7"/><rect x="22" y="11" width="7" height="7"/><rect x="0" y="22" width="7" height="7"/><rect x="11" y="22" width="7" height="7"/><rect x="22" y="22" width="7" height="7"/><rect x="9" y="9" width="1" height="1"/><rect x="11" y="9" width="1" height="1"/><rect x="13" y="10" width="1" height="1"/><rect x="15" y="9" width="1" height="1"/><rect x="17" y="10" width="1" height="1"/><rect x="19" y="9" width="1" height="1"/><rect x="10" y="12" width="1" height="1"/><rect x="14" y="12" width="1" height="1"/><rect x="18" y="12" width="1" height="1"/><rect x="9" y="15" width="1" height="1"/><rect x="13" y="15" width="1" height="1"/><rect x="17" y="16" width="1" height="1"/><rect x="11" y="18" width="1" height="1"/><rect x="15" y="19" width="1" height="1"/><rect x="19" y="18" width="1" height="1"/></g></svg></div></div>
+        <div class="qr-addr">192.168.1.23:5801</div>
+        <div class="qr-hint">内网设备扫码即可连接</div>
+      </div>
+      <div class="card">
+        <div class="t"><div class="ic" style="background:#FFF4E5"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg></div><span class="tt">在线客户端</span><span class="st" style="color:var(--sub)">3 台</span></div>
+        <div class="client"><div class="av"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div><div><div class="nm">MacBook Pro</div><div class="dt">192.168.1.5 · 12 分钟</div></div><span class="tag">在线</span></div>
+        <div class="client"><div class="av"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg></div><div><div class="nm">iPhone 15</div><div class="dt">192.168.1.31 · 3 分钟</div></div><span class="tag">在线</span></div>
+        <button class="more" data-go="p-clients">查看全部 ›</button>
+      </div>
+    </div>
+
+    <!-- ============ 首页：反向连接 ============ -->
+    <div class="page" id="p-home-reverse">
+      <div class="hero">
+        <div class="name">iPhone · 张三的 iPhone</div>
+        <div class="sub"><span class="gdot"></span>反向服务器 192.168.1.200:5500</div>
+        <div class="seg" data-seg="mode">
+          <button data-go="p-home-direct">内网直连</button>
+          <button class="active" data-go="p-home-reverse">反向连接</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="t"><div class="ic" style="background:#F3E8FF"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div><span class="tt">反向连接（需对端监听）</span></div>
+        <div class="seg2" id="revMode">
+          <button class="active" data-revmode="viewer">查看端</button>
+          <button data-revmode="repeater">中继器</button>
+        </div>
+        <label class="fld2"><span class="fl">服务器地址</span><input value="192.168.1.200:5500" placeholder="host:port 或 [IPv6]:port" /></label>
+        <label class="fld2" id="repIdRow" style="display:none"><span class="fl">中继 ID</span><input value="12345679" placeholder="数字 ID" /></label>
+        <label class="fld2"><span class="fl">重拨间隔（秒）</span><input value="30" placeholder="默认 30" /></label>
+        <div class="btnrow"><button class="btn" id="dialBtn">拨号</button></div>
+      </div>
+      <div class="card note">反向模式下本地直连/网页不可用（5901/5801 关闭）；客户端经反向通道接入。</div>
+      <div class="card">
+        <div class="t"><div class="ic" style="background:#FFF4E5"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg></div><span class="tt">已接入客户端</span><span class="st" style="color:var(--sub)">1 台</span></div>
+        <div class="client"><div class="av"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div><div><div class="nm">外部 Viewer</div><div class="dt">经反向 · 5 分钟</div></div><span class="tag">在线</span></div>
+        <button class="more" data-go="p-clients">查看全部 ›</button>
+      </div>
+    </div>
+
+    <!-- ============ 客户端页 ============ -->
+    <div class="page" id="p-clients">
+      <div class="grp">在线客户端 · 3</div>
+      <div class="card">
+        <div class="client"><div class="av"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div><div><div class="nm">MacBook Pro</div><div class="dt">192.168.1.5 · 接入 12 分钟 · 完整权限</div></div><span class="tag">在线</span><button class="kick">断开</button></div>
+        <div class="client"><div class="av"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg></div><div><div class="nm">iPhone 15</div><div class="dt">192.168.1.31 · 接入 3 分钟 · 完整权限</div></div><span class="tag">在线</span><button class="kick">断开</button></div>
+        <div class="client"><div class="av"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div><div><div class="nm">浏览器 (noVNC)</div><div class="dt">192.168.1.8 · 刚刚 · 只读</div></div><span class="tag">在线</span><button class="kick">断开</button></div>
+      </div>
+    </div>
+
+    <!-- ============ 控制端（云手机操作台）：设备画面卡片墙 ============ -->
+    <div class="page" id="p-controller">
+      <div class="cfilter">
+        <div class="fchips">
+          <button class="fchip active" data-f="all">全部</button>
+          <button class="fchip" data-f="d">直连</button>
+          <button class="fchip" data-f="r">中继</button>
+        </div>
+        <button id="layoutBtn" class="layicon" title="布局">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg>
+        </button>
+        <div id="layoutMenu" class="layout-menu hidden">
+          <div class="lopt" data-l="h1">横屏1<span class="chk">✓</span></div>
+          <div class="lopt" data-l="v1">竖屏1<span class="chk">✓</span></div>
+          <div class="lopt" data-l="h2">横屏2<span class="chk">✓</span></div>
+          <div class="lopt" data-l="v2 sel">竖屏2<span class="chk">✓</span></div>
+          <div class="lopt" data-l="h3">横屏3<span class="chk">✓</span></div>
+          <div class="lopt" data-l="v3">竖屏3<span class="chk">✓</span></div>
+          <div class="lopt" data-l="h4">横屏4<span class="chk">✓</span></div>
+          <div class="lopt" data-l="v4">竖屏4<span class="chk">✓</span></div>
+          <div class="lopt" data-l="h5">横屏5<span class="chk">✓</span></div>
+          <div class="lopt" data-l="v5">竖屏5<span class="chk">✓</span></div>
+          <div class="lopt" data-l="h6">横屏6<span class="chk">✓</span></div>
+          <div class="lopt" data-l="v6">竖屏6<span class="chk">✓</span></div>
+        </div>
+      </div>
+      <div class="ctrl-grid">
+        <div class="cdev d" data-cview="iPhone 15">
+          <div class="cthumb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg></div>
+          <div class="cbar"><span class="ctag d">直连</span><span class="cn">iPhone 15</span><span class="cok">●</span></div>
+        </div>
+        <div class="cdev r" data-cview="iPhone 13">
+          <div class="cthumb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg></div>
+          <div class="cbar"><span class="ctag r">中继</span><span class="cn">iPhone 13</span><span class="cok">●</span></div>
+        </div>
+        <div class="cdev r" data-cview="iPhone 12">
+          <div class="cthumb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg></div>
+          <div class="cbar"><span class="ctag r">中继</span><span class="cn">iPhone 12</span><span class="cok">●</span></div>
+        </div>
+        <div class="cdev d" data-cview="iPad">
+          <div class="cthumb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg></div>
+          <div class="cbar"><span class="ctag d">直连</span><span class="cn">iPad</span><span class="cok">●</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 控制端：点卡片 -> 真全屏控制 + 悬浮按钮 -->
+    <div class="page" id="p-cview">
+      <div class="cview-screen"></div>
+      <button id="fab2"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg></button>
+      <div id="cmenu" class="cmenu hidden">
+        <div class="cmenu-title">控制选项</div>
+        <div class="cmenu-grid">
+          <button data-op="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>Home</button>
+          <button data-op="power"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>电源</button>
+          <button data-op="volup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>音量 +</button>
+          <button data-op="voldn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>音量 −</button>
+          <button data-op="mute"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>静音</button>
+          <button data-op="briup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>亮度 +</button>
+          <button data-op="bridn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/></svg>亮度 −</button>
+          <button data-op="kb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M8 14h8"/></svg>键盘</button>
+          <button data-op="clip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>剪贴板</button>
+        </div>
+        <button id="cEnd" class="cend">结束控制</button>
+      </div>
+    </div>
+
+    <!-- ============ 设置页 ============ -->
+    <div class="page" id="p-settings">
+      <div class="glist">
+        <div class="gitem" data-goto="s-gateway"><div class="gi" style="background:#EAF1FE"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></div><div><div class="gt">网关</div><div class="gdesc">自动发现 / 手动配置 · 令牌</div></div><span class="chev">›</span></div>
+        <div class="gitem" data-goto="s-direct"><div class="gi" style="background:#E8F9EF"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="5" height="5" rx="1"/><rect x="16" y="3" width="5" height="5" rx="1"/><rect x="3" y="16" width="5" height="5" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3M21 21v.01M12 7v3a2 2 0 0 1-2 2H7M3 12h.01M12 3h.01M12 16v.01M16 12h1M21 12v.01M12 21v-1"/></svg></div><div><div class="gt">直连参数</div><div class="gdesc">端口 · 绑定地址 · Bonjour · HTTP</div></div><span class="chev">›</span></div>
+        <div class="gitem" data-goto="s-security"><div class="gi" style="background:#FEE2E2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div><div class="gt">安全</div><div class="gdesc">密码 · 只读 · 剪贴板</div></div><span class="chev">›</span></div>
+        <div class="gitem" data-goto="s-display"><div class="gi" style="background:#FFF4E5"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.289-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg></div><div><div class="gt">画面与性能</div><div class="gdesc">缩放 · 帧率 · 方向 · 脏区</div></div><span class="chev">›</span></div>
+        <div class="gitem" data-goto="s-input"><div class="gi" style="background:#F3E8FF"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M8 14h8"/></svg></div><div><div class="gt">输入</div><div class="gdesc">滚轮 · 修饰键 · 辅助触控</div></div><span class="chev">›</span></div>
+        <div class="gitem" data-goto="s-notify"><div class="gi" style="background:#E0F2FE"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></div><div><div class="gt">通知与保活</div><div class="gdesc">连接通知 · 防休眠</div></div><span class="chev">›</span></div>
+        <div class="gitem" data-goto="s-advanced"><div class="gi" style="background:#F1F5F9"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div><div><div class="gt">高级</div><div class="gdesc">SSL 证书 · 键盘日志</div></div><span class="chev">›</span></div>
+        <div class="gitem" data-goto="s-about"><div class="gi" style="background:#FEF3C7"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></div><div><div class="gt">关于与诊断</div><div class="gdesc">版本 · 日志 · 重置</div></div><span class="chev">›</span></div>
+      </div>
+    </div>
+
+    <!-- ============ 设置子页：网关 ============ -->
+    <div class="page" id="s-gateway">
+      <div class="subhead"><button data-back>‹</button><span>网关</span></div>
+      <div class="card">
+        <label class="fld2"><span class="fl">网关地址</span><input value="10.0.0.1" placeholder="如 192.168.1.1" /></label>
+        <label class="fld2"><span class="fl">网关注册端口</span><input value="18081" /></label>
+        <label class="fld2"><span class="fl">网关令牌（可选）</span><input type="password" placeholder="FARM_TOKEN" /></label>
+        <div class="btnrow"><button class="btn">搜索网关</button></div>
+      </div>
+    </div>
+
+    <!-- ============ 设置子页：直连参数 ============ -->
+    <div class="page" id="s-direct">
+      <div class="subhead"><button data-back>‹</button><span>直连参数</span></div>
+      <div class="card">
+        <label class="fld2"><span class="fl">服务开关</span><span class="sw on"></span></label>
+        <label class="fld2"><span class="fl">设备名称</span><input value="张三的 iPhone" /></label>
+        <label class="fld2"><span class="fl">TCP 端口</span><input value="5901" /></label>
+        <label class="fld2"><span class="fl">绑定地址</span><input placeholder="留空 = 所有接口" /></label>
+        <label class="fld2"><span class="fl">Bonjour 自动发现</span><span class="sw on"></span></label>
+        <label class="fld2"><span class="fl">HTTP 端口</span><input value="5801" /></label>
+        <label class="fld2"><span class="fl">HTTP 文档根目录</span><input placeholder="留空 = 内置" /></label>
+      </div>
+    </div>
+
+    <!-- ============ 设置子页：安全 ============ -->
+    <div class="page" id="s-security">
+      <div class="subhead"><button data-back>‹</button><span>安全</span></div>
+      <div class="card">
+        <label class="fld2"><span class="fl">完整访问密码</span><input type="password" placeholder="最多 8 位" /></label>
+        <label class="fld2"><span class="fl">只读密码</span><input type="password" placeholder="可选" /></label>
+        <label class="fld2"><span class="fl">全局只读</span><span class="sw"></span></label>
+        <label class="fld2"><span class="fl">剪贴板同步</span><span class="sw on"></span></label>
+      </div>
+    </div>
+
+    <!-- ============ 设置子页：画面与性能 ============ -->
+    <div class="page" id="s-display">
+      <div class="subhead"><button data-back>‹</button><span>画面与性能</span></div>
+      <div class="card">
+        <div class="fld2 slider"><span class="fl">输出缩放</span><input class="rng" type="range" min="0.1" max="1" step="0.05" value="1" /><span class="val">1.00</span></div>
+        <label class="fld2"><span class="fl">帧率</span><input value="30:60:120" placeholder="60 或 30-60 或 30:60:120" /></label>
+        <label class="fld2"><span class="fl">方向同步</span><span class="sw on"></span></label>
+        <label class="fld2"><span class="fl">方向偏移</span><select><option>0°</option><option>90°</option><option>180°</option><option>270°</option></select></label>
+        <label class="fld2"><span class="fl">服务端光标</span><span class="sw"></span></label>
+      </div>
+      <div class="grp">进阶（画面）</div>
+      <div class="card">
+        <div class="fld2 slider"><span class="fl">合并窗口(秒)</span><input class="rng" type="range" min="0" max="0.5" step="0.005" value="0.015" /><span class="val">0.015</span></div>
+        <div class="fld2 slider"><span class="fl">最大在途帧</span><input class="rng" type="range" min="0" max="8" step="1" value="2" /><span class="val">2</span></div>
+        <div class="fld2 slider"><span class="fl">脏区块大小</span><input class="rng" type="range" min="8" max="128" step="8" value="32" /><span class="val">32</span></div>
+        <div class="fld2 slider"><span class="fl">全屏阈值%</span><input class="rng" type="range" min="0" max="100" step="5" value="0" /><span class="val">0</span></div>
+        <div class="fld2 slider"><span class="fl">最大矩形数</span><input class="rng" type="range" min="0" max="512" step="16" value="256" /><span class="val">256</span></div>
+        <label class="fld2"><span class="fl">非阻塞交换</span><span class="sw"></span></label>
+      </div>
+    </div>
+
+    <!-- ============ 设置子页：输入 ============ -->
+    <div class="page" id="s-input">
+      <div class="subhead"><button data-back>‹</button><span>输入</span></div>
+      <div class="card">
+        <label class="fld2"><span class="fl">自然滚动方向</span><span class="sw on"></span></label>
+        <label class="fld2"><span class="fl">修饰键映射</span><select><option>标准（Alt=Option）</option><option>macOS（Alt=Command）</option></select></label>
+        <label class="fld2"><span class="fl">辅助触控自动开启</span><span class="sw"></span></label>
+        <div class="fld2 slider"><span class="fl">滚轮步长(px)</span><input class="rng" type="range" min="0" max="200" step="8" value="48" /><span class="val">48</span></div>
+        <label class="fld2"><span class="fl">滚轮微调</span><input placeholder="step=48,coalesce=0.03,…" /></label>
+      </div>
+    </div>
+
+    <!-- ============ 设置子页：通知与保活 ============ -->
+    <div class="page" id="s-notify">
+      <div class="subhead"><button data-back>‹</button><span>通知与保活</span></div>
+      <div class="card">
+        <div class="fld2 slider"><span class="fl">防休眠(秒)</span><input class="rng" type="range" min="0" max="300" step="15" value="0" /><span class="val">0</span></div>
+        <label class="fld2"><span class="fl">首连单条通知</span><span class="sw on"></span></label>
+        <label class="fld2"><span class="fl">连接/断开通知</span><span class="sw on"></span></label>
+      </div>
+    </div>
+
+    <!-- ============ 设置子页：高级 ============ -->
+    <div class="page" id="s-advanced">
+      <div class="subhead"><button data-back>‹</button><span>高级</span></div>
+      <div class="card">
+        <label class="fld2"><span class="fl">SSL 证书文件</span><input placeholder="/path/to/cert.pem" /></label>
+        <label class="fld2"><span class="fl">SSL 私钥文件</span><input placeholder="/path/to/key.pem" /></label>
+        <div class="btnrow"><button class="btn">生成 CA 证书</button></div>
+        <label class="fld2" style="margin-top:12px"><span class="fl">记录键盘事件</span><span class="sw"></span></label>
+      </div>
+    </div>
+
+    <!-- ============ 设置子页：关于与诊断 ============ -->
+    <div class="page" id="s-about">
+      <div class="subhead"><button data-back>‹</button><span>关于与诊断</span></div>
+      <div class="card">
+        <div class="fld2"><span class="fl">版本</span><span style="font-weight:700">3.2-272</span></div>
+        <div class="fld2"><span class="fl">设备标识</span><span style="font-weight:700">A7F3…2C9E</span></div>
+      </div>
+      <div class="btnrow"><button class="btn" data-goto="p-logs">查看日志</button><button class="btn danger">重置默认设置</button></div>
+    </div>
+
+    <!-- ============ 日志页 ============ -->
+    <div class="page" id="p-logs">
+      <div class="subhead"><button data-back>‹</button><span>日志</span></div>
+      <div class="card" style="font-family:ui-monospace,monospace;font-size:11px;color:var(--sub);line-height:1.7;white-space:pre-wrap">2026-08-07 12:00:01 [gw] connected to 10.0.0.1:18081
+2026-08-07 12:00:02 [reg] registered: A7F3…2C9E
+2026-08-07 12:00:30 [vnc] client connected: 192.168.1.5:5901
+2026-08-07 12:12:05 [vnc] client disconnected: 192.168.1.5</div>
+    </div>
+  </main>
+
+  <nav>
+    <button class="active" data-nav="p-home-direct"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5a10 10 0 0 1 14 0"/><path d="M8.5 16a5.5 5.5 0 0 1 7 0"/><circle cx="12" cy="19" r="1.2" fill="currentColor" stroke="none"/></svg><span>连接</span></button>
+    <button data-nav="p-clients"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg><span>客户端</span></button>
+    <button data-nav="p-controller"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2.5"/><path d="M8 20h8M12 16v4"/></svg><span>控制端</span></button>
+    <button data-nav="p-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg><span>设置</span></button>
+  </nav>
+</div>
+
+<script>
+(function(){
+  var pages = document.querySelectorAll('.page');
+  var mains = ['p-home-direct','p-home-reverse','p-clients','p-settings'];
+  var navBtns = document.querySelectorAll('nav button');
+  function show(id){
+    pages.forEach(function(p){ p.classList.toggle('on', p.id===id); });
+    main.scrollTop = 0;
+    navBtns.forEach(function(b){ b.classList.toggle('active', b.dataset.nav===id); });
+    var hstatus = document.getElementById('hstatus');
+    var clientsAction = document.getElementById('clientsAction');
+    if(id === 'p-clients'){ hstatus.style.display='none'; clientsAction.style.display='inline-flex'; }
+    else if(id === 'p-settings' || id.startsWith('s-') || id === 'p-logs'){ hstatus.style.display='none'; clientsAction.style.display='none'; }
+    else if(id === 'p-controller'){ hstatus.style.display='inline-flex'; clientsAction.style.display='none'; setListen(listenState); }
+    else if(id === 'p-cview'){ hstatus.style.display='inline-flex'; clientsAction.style.display='none'; setListen(listenState); document.body.classList.add('in-cview'); }
+    else { hstatus.style.display='inline-flex'; clientsAction.style.display='none'; setConn(connState); document.body.classList.remove('in-cview'); }
+  }
+  // 模式分段（首页）
+  document.querySelectorAll('[data-seg="mode"]').forEach(function(seg){
+    seg.addEventListener('click', function(e){
+      var b = e.target.closest('button'); if(!b) return;
+      seg.querySelectorAll('button').forEach(function(x){ x.classList.toggle('active', x===b); });
+      show(b.dataset.go);
+    });
+  });
+  // 反向拨号状态联动
+  var hstatus = document.getElementById('hstatus');
+  var hdot = document.getElementById('hdot');
+  var hstatTxt = document.getElementById('hstatTxt');
+  var dialBtn = document.getElementById('dialBtn');
+  var connState = true;   // 连接状态（非控制端页）
+  var listenState = true; // 控制端：监听状态
+  function setConn(connected){
+    connState = connected;
+    if(connected){
+      hstatus.style.color='#22C55E'; hstatus.style.background='#E8F9EF'; hdot.style.background='#22C55E'; hstatTxt.textContent='已连接';
+      dialBtn.disabled = true; dialBtn.textContent = '已连接'; dialBtn.style.opacity = '.5';
+    }else{
+      hstatus.style.color='#94A3B8'; hstatus.style.background='#F1F5F9'; hdot.style.background='#94A3B8'; hstatTxt.textContent='未连接';
+      dialBtn.disabled = false; dialBtn.textContent = '拨号'; dialBtn.style.opacity = '1';
+    }
+  }
+  function setListen(on){
+    listenState = on;
+    if(on){ hstatus.style.color='#22C55E'; hstatus.style.background='#E8F9EF'; hdot.style.background='#22C55E'; hstatTxt.textContent='监听：101.12.34.56:5902'; }
+    else { hstatus.style.color='#94A3B8'; hstatus.style.background='#F1F5F9'; hdot.style.background='#94A3B8'; hstatTxt.textContent='未监听'; }
+  }
+  dialBtn.addEventListener('click', function(){
+    dialBtn.disabled = true; dialBtn.textContent = '拨号中…';
+    setTimeout(function(){ setConn(true); }, 700);
+  });
+  hstatus.addEventListener('click', function(){
+    var cur = document.querySelector('.page.on');
+    if(cur && cur.id === 'p-controller'){ setListen(!listenState); }
+    else { setConn(hstatTxt.textContent !== '已连接'); }
+  });
+  // 控制端布局下拉（标签式）
+  var layoutBtn = document.getElementById('layoutBtn');
+  var layoutMenu = document.getElementById('layoutMenu');
+  var ctrlGrid = document.querySelector('.ctrl-grid');
+  function applyLayout(v){
+    var n = v.slice(1);
+    var isH = v.charAt(0) === 'h';
+    ctrlGrid.classList.toggle('landscape', isH);
+    ctrlGrid.style.gridTemplateColumns = 'repeat(' + n + ', 1fr)';
+    layoutMenu.querySelectorAll('.lopt').forEach(function(o){
+      o.classList.toggle('sel', o.dataset.l === v);
+    });
+  }
+  layoutBtn.addEventListener('click', function(e){
+    e.stopPropagation();
+    layoutMenu.classList.toggle('hidden');
+  });
+  layoutMenu.addEventListener('click', function(e){
+    var o = e.target.closest('.lopt'); if(!o) return;
+    applyLayout(o.dataset.l);
+    layoutMenu.classList.add('hidden');
+  });
+  document.addEventListener('click', function(e){
+    if(!e.target.closest('#layoutMenu') && !e.target.closest('#layoutBtn')){
+      layoutMenu.classList.add('hidden');
+    }
+  });
+  // 控制端筛选（独立圆角胶囊）
+  document.querySelectorAll('.fchip').forEach(function(chip){
+    chip.addEventListener('click', function(){
+      document.querySelectorAll('.fchip').forEach(function(x){ x.classList.toggle('active', x===chip); });
+      var f = chip.dataset.f;
+      document.querySelectorAll('.cdev').forEach(function(card){
+        var show = (f==='all') || card.classList.contains(f);
+        card.classList.toggle('hide', !show);
+      });
+    });
+  });
+
+  // 客户端：全部断开（模拟）
+  var clientsAction = document.getElementById('clientsAction');
+  if(clientsAction){ clientsAction.addEventListener('click', function(){ alert('已断开全部客户端（模拟）'); }); }
+
+  // 控制端：点卡片进入全屏控制
+  document.querySelectorAll('.cdev').forEach(function(card){
+    card.addEventListener('click', function(){
+      show('p-cview');
+    });
+  });
+  // 控制端全屏：悬浮按钮拖动 + 菜单
+  var fab2 = document.getElementById('fab2');
+  var cmenu = document.getElementById('cmenu');
+  var drag = false, sx=0, sy=0, bx=0, by=0;
+  fab2.addEventListener('pointerdown', function(e){
+    drag = true; sx = e.clientX; sy = e.clientY;
+    var r = fab2.getBoundingClientRect(); bx = r.left; by = r.top;
+    fab2.setPointerCapture(e.pointerId);
+  });
+  fab2.addEventListener('pointermove', function(e){
+    if(!drag) return;
+    fab2.style.right = 'auto'; fab2.style.bottom = 'auto';
+    fab2.style.left = Math.max(4, Math.min(bx + (e.clientX - sx), window.innerWidth - 58)) + 'px';
+    fab2.style.top = Math.max(4, Math.min(by + (e.clientY - sy), window.innerHeight - 58)) + 'px';
+  });
+  fab2.addEventListener('pointerup', function(){ drag = false; });
+  fab2.addEventListener('click', function(e){ e.stopPropagation(); cmenu.classList.toggle('hidden'); });
+  document.getElementById('cEnd').addEventListener('click', function(){
+    cmenu.classList.add('hidden');
+    document.body.classList.remove('in-cview');
+    show('p-controller');
+  });
+  document.addEventListener('click', function(e){
+    if(!e.target.closest('#cmenu') && !e.target.closest('#fab2')) cmenu.classList.add('hidden');
+  });
+  document.querySelectorAll('#cmenu [data-op]').forEach(function(b){
+    b.addEventListener('click', function(){ cmenu.classList.add('hidden'); });
+  });
+
+  // 查看端/中继器
+  var revMode = document.getElementById('revMode');
+  var repIdRow = document.getElementById('repIdRow');
+  revMode.addEventListener('click', function(e){
+    var b = e.target.closest('button'); if(!b) return;
+    revMode.querySelectorAll('button').forEach(function(x){ x.classList.toggle('active', x===b); });
+    repIdRow.style.display = (b.dataset.revmode==='repeater') ? 'flex' : 'none';
+  });
+  // data-go / data-goto / data-back / data-nav
+  document.addEventListener('click', function(e){
+    var go = e.target.closest('[data-go]'); if(go){ show(go.dataset.go); return; }
+    var g2 = e.target.closest('[data-goto]'); if(g2){ show(g2.dataset.goto); return; }
+    var back = e.target.closest('[data-back]'); if(back){ show('p-settings'); return; }
+    var nav = e.target.closest('[data-nav]'); if(nav){ show(nav.dataset.nav); return; }
+  });
+})();
+</script>
+</body>
+</html>
