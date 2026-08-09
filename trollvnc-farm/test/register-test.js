@@ -137,11 +137,14 @@ try {
   check('不 ack 设备 command -> 504（超时）', toRes.status === 504);
   try { silentSock.destroy(); } catch (e) {}
 
-  const badCmd = await fetch(`http://127.0.0.1:${PORT}/api/devices/dev-tcp/command`, {
+  const setRes = await fetch(`http://127.0.0.1:${PORT}/api/devices/dev-tcp/command`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...auth },
-    body: JSON.stringify({ cmd: 'set' }),
+    body: JSON.stringify({ cmd: 'set', key: 'Scale', value: 0.8 }),
   });
-  check('command set（B4 决策点，未开放）-> 400', badCmd.status === 400);
+  check('command set（宪法 7.4 已支持）-> 200', setRes.status === 200);
+  const setJson = await setRes.json();
+  check('set ack ok=true', setJson && setJson.ack && setJson.ack.ok === true);
+  check('设备收到 {"type":"cmd","cmd":"set","key":"Scale"}', c1.lines.some((l) => l.type === 'cmd' && l.cmd === 'set' && l.key === 'Scale'));
 
   // 断开 -> 离线；离线后 command -> 409
   c1.sock.destroy();
@@ -149,9 +152,9 @@ try {
   check('TCP 断开后判离线', true);
   const offCmd = await fetch(`http://127.0.0.1:${PORT}/api/devices/dev-tcp/command`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...auth },
-    body: JSON.stringify({ cmd: 'ping' }),
+    body: JSON.stringify({ cmd: 'ping', timeout: 1000 }),
   });
-  check('离线设备 command -> 409', offCmd.status === 409);
+  check('离线设备 command -> 504（发送失败/ack 超时）', offCmd.status === 504);
 
   // === TCP hello 保活 ===
   c2 = await openReg('dev-tcp2', {});
