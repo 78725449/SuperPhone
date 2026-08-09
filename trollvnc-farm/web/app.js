@@ -1,6 +1,6 @@
 // TrollVNC 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
 import RFB from '/novnc/core/rfb.js';
-import { CAP_META, deviceCaps } from './caps.js';
+import { deviceCaps, configSchemaByReload, invokeCap, setConfigs, RELOAD_LABELS, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS } from './caps.js';
 
 const $ = (id) => document.getElementById(id);
 const isMobile = () => window.matchMedia('(max-width: 900px)').matches;
@@ -36,6 +36,7 @@ let devices = [];
 let wallSession = 'wall-' + Date.now();
 let wallInstances = new Map();   // deviceId -> { rfb, tile, statusEl, paused }
 let focus = null;                // { device, rfb }
+let selectedDevices = new Set(); // 批量操作选中的设备 ID 集合（Phase 10.2）
 
 // ---------- login ----------
 function showLogin() {
@@ -76,11 +77,14 @@ async function refreshDevices() {
   // 移除已不存在的设备卡片（仅手动删除才会消失）
   for (const [id, inst] of wallInstances) {
     if (!devices.find((d) => d.id === id)) {
-      closeRfb(inst.rfb);
+      stopWallRfb(inst);
       inst.tile.remove();
       wallInstances.delete(id);
+      // 同步清理批量选中集合（Phase 10.2）
+      selectedDevices.delete(id);
     }
   }
+  updateBatchBar();
   // 渲染全部设备（在线=实时画面；离线=置灰占位+上次在线）
   for (const d of devices) {
     let inst = wallInstances.get(d.id);
@@ -94,6 +98,7 @@ function createWallTile(d) {
   tile.className = 'tile' + (d.online ? '' : ' tile-offline');
   tile.innerHTML = `
     <div class="tv"></div>
+    <input type="checkbox" class="tile-checkbox" title="勾选加入批量操作" />
     <div class="tile-bar">
       <span class="dot ${d.online ? 'on' : 'off'}"></span>
       <span class="tname">${escapeHtml(d.name)}</span>
@@ -102,22 +107,38 @@ function createWallTile(d) {
     </div>`;
   const tv = tile.querySelector('.tv');
   const statusEl = tile.querySelector('.tstate');
-  const inst = { device: d, rfb: null, tile, statusEl, paused: false };
+  const cb = tile.querySelector('.tile-checkbox');
+  // Phase 12.1（v2.3 恢复）：卡片墙建立完整 RFB 连接（viewOnly 只读），实时渲染画面。
+  // v1.8.3 的 invoke screenshot API 轮询设计已弃用。
+  // rfb：noVNC RFB 实例（viewOnly），ThumbInterval 可选作为帧渲染频率节流（默认不限制）。
+  const inst = { device: d, tile, statusEl, paused: false, rfb: null, checkbox: cb };
+  // 恢复已选中状态（设备刷新后保持勾选）
+  if (selectedDevices.has(d.id)) {
+    cb.checked = true;
+    tile.classList.add('tile-selected');
+  }
   // 连接前先用上报屏幕比例预置卡片（消除“先宽后窄”闪烁）
   if (d.screen && d.screen.width && d.screen.height) {
     tile.style.setProperty('--tile-ratio', d.screen.width + ' / ' + d.screen.height);
     tile.dataset.wh = d.screen.width + 'x' + d.screen.height;
   }
   if (d.online) {
-    inst.rfb = createRfb(tv, d, { grp: wallSession, tile, viewOnly: true }, statusEl);
+    tv.innerHTML = '<div class="offline-ph">连接中…</div>';
+    startWallRfb(inst);
   } else {
     tv.innerHTML = '<div class="offline-ph">离线</div>';
     statusEl.textContent = d.lastSeen ? '离线 · ' + fmtTime(d.lastSeen) : '离线';
   }
   wallInstances.set(d.id, inst);
 
+  // checkbox 勾选切换：阻止冒泡避免触发卡片点击进入聚焦（Phase 10.2）
+  cb.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleSelect(d.id);
+  });
   tile.addEventListener('click', (e) => {
     if (e.target.closest('.tmore')) return;
+    if (e.target.closest('.tile-checkbox')) return;
     const dev = inst.device;
     if (dev.online === false) {
       alert(`设备「${dev.name}」离线，请唤醒手机后重试`);
@@ -133,23 +154,441 @@ function createWallTile(d) {
   return inst;
 }
 
-// ---------- 按能力清单渲染操作按钮（宪法 4.2/5.2/7.3） ----------
-// 适配/全屏/断开为控制台本地操作，不在 capabilities 内，由静态按钮提供
-function renderCapOps(container, caps) {
+/**
+ * 启动卡片墙 RFB 连接（Phase 12.1，v2.3 恢复）
+ * 功能：为卡片墙建立完整 RFB 连接（viewOnly 只读），实时渲染设备画面。
+ *       v1.8.3 的 invoke screenshot API 轮询设计已弃用，改回 noVNC 持久连接。
+ *       ThumbInterval 可选作为帧渲染频率节流（默认不限制=实时渲染）。
+ * 错误处理：RFB 断开时标记卡片"不可达"；focus 视图复用同一连接或重建。
+ * @param {object} inst 卡片墙实例 { device, tile, statusEl, rfb, paused }
+ * @returns {void}
+ */
+function startWallRfb(inst) {
+  if (!inst || inst.paused || inst.rfb) return;
+  const tv = inst.tile.querySelector('.tv');
+  if (!tv) return;
+  tv.innerHTML = '<div class="offline-ph">连接中…</div>';
+  inst.rfb = createRfb(tv, inst.device, { viewOnly: true, tile: inst.tile }, inst.statusEl);
+  inst.rfb.addEventListener('disconnect', () => {
+    if (inst.paused) return; // 进入 focus 时主动断开，不算失败
+    const tv2 = inst.tile.querySelector('.tv');
+    if (tv2) tv2.innerHTML = '<div class="offline-ph">跨网络不可达</div>';
+    inst.statusEl.textContent = '跨网络不可达';
+    inst.rfb = null;
+  });
+}
+
+/**
+ * 停止卡片墙 RFB 连接（Phase 12.1，v2.3 恢复）
+ * 功能：断开卡片墙的 RFB 连接并清空 tv 容器；进入 focus 视图或设备离线时调用。
+ * @param {object} inst 卡片墙实例 { rfb, tile }
+ * @returns {void}
+ */
+function stopWallRfb(inst) {
+  if (!inst) return;
+  if (inst.rfb) { closeRfb(inst.rfb); inst.rfb = null; }
+  const tv = inst.tile && inst.tile.querySelector('.tv');
+  if (tv) tv.innerHTML = '';
+}
+
+// ---------- 批量操作（Phase 10.2） ----------
+/**
+ * 切换设备选中状态：更新 selectedDevices Set 与卡片 checkbox UI，并刷新批量操作栏显隐
+ * @param {string} deviceId 设备 ID
+ * @returns {void}
+ */
+function toggleSelect(deviceId) {
+  if (selectedDevices.has(deviceId)) {
+    selectedDevices.delete(deviceId);
+  } else {
+    selectedDevices.add(deviceId);
+  }
+  const inst = wallInstances.get(deviceId);
+  if (inst && inst.checkbox) {
+    inst.checkbox.checked = selectedDevices.has(deviceId);
+    inst.tile.classList.toggle('tile-selected', inst.checkbox.checked);
+  }
+  updateBatchBar();
+}
+
+/**
+ * 全选当前可见设备：将所有在线（含离线）的墙卡片对应的设备加入 selectedDevices
+ * @returns {void}
+ */
+function selectAll() {
+  for (const d of devices) selectedDevices.add(d.id);
+  for (const [id, inst] of wallInstances) {
+    if (inst.checkbox) {
+      inst.checkbox.checked = true;
+      inst.tile.classList.add('tile-selected');
+    }
+  }
+  updateBatchBar();
+}
+
+/**
+ * 取消全选：清空 selectedDevices 并清除所有 checkbox 勾选状态
+ * @returns {void}
+ */
+function deselectAll() {
+  selectedDevices.clear();
+  for (const [, inst] of wallInstances) {
+    if (inst.checkbox) {
+      inst.checkbox.checked = false;
+      inst.tile.classList.remove('tile-selected');
+    }
+  }
+  updateBatchBar();
+}
+
+/**
+ * 更新批量操作栏显隐与计数：勾选≥1 台时显示，否则隐藏
+ * @returns {void}
+ */
+function updateBatchBar() {
+  const btn = $('batchBtn');
+  const cnt = $('batchCount');
+  if (!btn) return;
+  const n = selectedDevices.size;
+  if (cnt) cnt.textContent = String(n);
+  btn.classList.toggle('hidden', n === 0);
+}
+
+/**
+ * 弹出批量操作菜单：勾选设备后点击"批量操作"按钮触发
+ * 菜单包含三个分组：批量调用能力 / 批量调整配置 / 批量重启（需二次确认）
+ * @returns {void}
+ */
+function showBatchMenu() {
+  const ids = Array.from(selectedDevices);
+  if (ids.length === 0) { alert('请先勾选至少一台设备'); return; }
+
+  // 关闭已存在菜单
+  const old = document.getElementById('batchMenu');
+  if (old) old.remove();
+
+  const menu = document.createElement('div');
+  menu.id = 'batchMenu';
+  menu.className = 'batch-menu';
+  menu.innerHTML = `<div class="batch-menu-title">批量操作（${ids.length} 台）</div>`;
+
+  // 1) 全选/取消全选
+  const selectRow = document.createElement('div');
+  selectRow.className = 'batch-menu-row';
+  const selAll = document.createElement('button');
+  selAll.textContent = '全选';
+  const deselAll = document.createElement('button');
+  deselAll.textContent = '取消全选';
+  selAll.addEventListener('click', () => { selectAll(); menu.remove(); });
+  deselAll.addEventListener('click', () => { deselectAll(); menu.remove(); });
+  selectRow.appendChild(selAll);
+  selectRow.appendChild(deselAll);
+  menu.appendChild(selectRow);
+
+  // 2) 批量调用能力（取所有选中设备能力元数据的并集，按 category 分组渲染）
+  const capList = document.createElement('div');
+  capList.className = 'batch-menu-section';
+  capList.innerHTML = '<div class="batch-menu-sec-title">批量调用能力</div>';
+  // 合并选中设备的能力清单（用 id 去重）
+  const capMap = new Map();
+  for (const id of ids) {
+    const inst = wallInstances.get(id);
+    const dev = inst ? inst.device : devices.find((d) => d.id === id);
+    if (!dev) continue;
+    for (const meta of deviceCaps(dev)) {
+      if (meta && meta.id && !capMap.has(meta.id)) capMap.set(meta.id, meta);
+    }
+  }
+  // 按 category 分组
+  const grouped = groupByCategory(Array.from(capMap.values()));
+  for (const [cat, metas] of grouped) {
+    const grpTitle = document.createElement('div');
+    grpTitle.className = 'cap-group-title';
+    grpTitle.textContent = CATEGORY_LABELS[cat] || cat || '其它';
+    capList.appendChild(grpTitle);
+    for (const meta of metas) {
+      const b = document.createElement('button');
+      b.className = 'batch-cap-btn';
+      b.innerHTML = '<span class="cap-icon">' + escapeHtml(meta.icon || '?') + '</span><span class="cap-name">' + escapeHtml(meta.title || meta.id) + '</span>';
+      b.addEventListener('click', () => doBatchInvoke(ids, meta));
+      capList.appendChild(b);
+    }
+  }
+  menu.appendChild(capList);
+
+  // 3) 批量调整配置（从选中设备 configSchema 并集渲染表单）
+  const cfgBtn = document.createElement('button');
+  cfgBtn.className = 'batch-menu-row-item';
+  cfgBtn.innerHTML = '<span class="cap-icon">⚙</span><span class="cap-name">批量调整配置</span>';
+  cfgBtn.addEventListener('click', () => { menu.remove(); showBatchConfigPanel(ids); });
+  menu.appendChild(cfgBtn);
+
+  // 4) 批量重启（危险操作，需二次确认）
+  const restartBtn = document.createElement('button');
+  restartBtn.className = 'batch-menu-row-item danger';
+  restartBtn.innerHTML = '<span class="cap-icon">🔄</span><span class="cap-name">批量重启</span>';
+  restartBtn.addEventListener('click', async () => {
+    if (!confirm(`确认批量重启选中的 ${ids.length} 台设备？`)) return;
+    menu.remove();
+    try {
+      const r = await batchRestart('', ids);
+      const fails = (r.results || []).filter((x) => !x.ok);
+      if (fails.length === 0) alert(`已对 ${ids.length} 台设备下发重启`);
+      else alert(`部分设备重启失败：\n${fails.map((x) => `${x.deviceId}: ${x.error || ''}`).join('\n')}`);
+    } catch (e) {
+      alert(`批量重启失败：${e.message}`);
+    }
+  });
+  menu.appendChild(restartBtn);
+
+  // 关闭按钮
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'batch-menu-close';
+  closeBtn.textContent = '取消';
+  closeBtn.addEventListener('click', () => menu.remove());
+  menu.appendChild(closeBtn);
+
+  document.body.appendChild(menu);
+  // 点击外部关闭
+  setTimeout(() => {
+    const handler = (e) => {
+      if (!e.target.closest('#batchMenu') && !e.target.closest('#batchBtn')) {
+        menu.remove();
+        document.removeEventListener('click', handler);
+      }
+    };
+    document.addEventListener('click', handler);
+  }, 0);
+}
+
+/**
+ * 批量调用能力：对选中设备逐台调用 invoke（若有参数先弹表单）
+ * @param {string[]} ids 设备 ID 数组
+ * @param {object} meta 能力元数据 { id, title, params }
+ * @returns {Promise<void>}
+ */
+async function doBatchInvoke(ids, meta) {
+  let params = {};
+  if (Array.isArray(meta.params) && meta.params.length > 0) {
+    params = await promptParams(meta.params);
+    if (params === null) return;
+  }
+  try {
+    const r = await batchInvoke('', ids, meta.id, params);
+    const fails = (r.results || []).filter((x) => !x.ok);
+    if (fails.length === 0) alert(`已对 ${ids.length} 台设备下发「${meta.title || meta.id}」`);
+    else alert(`部分设备执行失败：\n${fails.map((x) => `${x.deviceId}: ${x.error || ''}`).join('\n')}`);
+  } catch (e) {
+    alert(`批量调用「${meta.title || meta.id}」失败：${e.message}`);
+  }
+}
+
+/**
+ * 弹出批量配置面板：从选中设备 configSchema 取并集，渲染表单，保存后调用 batchSetConfigs
+ * @param {string[]} ids 设备 ID 数组
+ * @returns {Promise<void>}
+ */
+async function showBatchConfigPanel(ids) {
+  // 合并选中设备的 configSchema（按 key 去重，取首个 schema 定义）
+  const schemaMap = new Map();
+  for (const id of ids) {
+    const inst = wallInstances.get(id);
+    const dev = inst ? inst.device : devices.find((d) => d.id === id);
+    if (!dev || !Array.isArray(dev.configSchema)) continue;
+    for (const s of dev.configSchema) {
+      if (s && s.key && !schemaMap.has(s.key)) schemaMap.set(s.key, s);
+    }
+  }
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+  card.innerHTML = `<h3>批量配置（${ids.length} 台设备）</h3>`;
+
+  if (schemaMap.size === 0) {
+    const empty = document.createElement('div');
+    empty.style.color = 'var(--muted)';
+    empty.textContent = '选中设备未上报可配置项';
+    card.appendChild(empty);
+  } else {
+    const sec = document.createElement('div');
+    sec.className = 'cfg-section';
+    const inputs = {};
+    for (const schema of schemaMap.values()) {
+      const row = document.createElement('label');
+      row.className = 'cfg-row';
+      row.textContent = schema.title || schema.key;
+      const inp = buildConfigInput(schema, undefined);
+      inputs[schema.key] = inp;
+      row.appendChild(inp);
+      sec.appendChild(row);
+    }
+    card.appendChild(sec);
+
+    const btns = document.createElement('div');
+    btns.className = 'modal-btns';
+    const cancel = document.createElement('button');
+    cancel.textContent = '取消';
+    const save = document.createElement('button');
+    save.className = 'primary';
+    save.textContent = '保存';
+    btns.appendChild(cancel);
+    btns.appendChild(save);
+    card.appendChild(btns);
+
+    cancel.onclick = () => modal.remove();
+    save.onclick = async () => {
+      const cfg = {};
+      for (const [key, inp] of Object.entries(inputs)) {
+        cfg[key] = readConfigValue(inp);
+      }
+      try {
+        const r = await batchSetConfigs('', ids, cfg);
+        const fails = (r.results || []).filter((x) => x.results && Object.values(x.results).some((v) => !v.ok));
+        if (fails.length === 0) {
+          modal.remove();
+          alert(`已对 ${ids.length} 台设备下发配置`);
+        } else {
+          alert(`部分设备配置失败：\n${fails.map((x) => x.deviceId).join('\n')}`);
+        }
+      } catch (e) {
+        alert(`批量保存失败：${e.message}`);
+      }
+    };
+  }
+
+  // 若无配置项，仅提供关闭按钮
+  if (schemaMap.size === 0) {
+    const btns = document.createElement('div');
+    btns.className = 'modal-btns';
+    const close = document.createElement('button');
+    close.textContent = '关闭';
+    btns.appendChild(close);
+    card.appendChild(btns);
+    close.onclick = () => modal.remove();
+  }
+
+  modal.appendChild(card);
+  document.body.appendChild(modal);
+}
+
+// ---------- 按能力元数据渲染操作按钮（Phase 4.7：数据驱动，不再硬编码 keysym；Phase 10.3：按 category 分组） ----------
+// 适配/全屏/断开为控制台本地操作，不在能力清单内，由静态按钮提供
+/**
+ * 按能力元数据渲染操作按钮，按 category 分组（Phase 10.3）
+ * 每个分组前插入分组标题，分组内仍为纵向列表按钮（图标+名称），分组间用 hr 分隔
+ * @param {HTMLElement} container 容器元素
+ * @param {Array<object>} capMetadata 能力元数据数组
+ * @returns {void}
+ */
+function renderCapOps(container, capMetadata) {
   if (!container) return;
   container.innerHTML = '';
-  for (const c of caps) {
-    const meta = CAP_META[c];
-    if (!meta) continue;
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'op';
-    b.dataset.op = meta.op;
-    b.title = meta.title;
-    b.textContent = meta.icon;
-    b.addEventListener('click', () => doOp(meta.op));
-    container.appendChild(b);
+  // 按 category 分组渲染（Phase 10.3）
+  const grouped = groupByCategory(capMetadata);
+  let groupIdx = 0;
+  for (const [cat, metas] of grouped) {
+    // 分组之间插入分隔线（首个分组前不插）
+    if (groupIdx > 0) {
+      const divider = document.createElement('hr');
+      divider.className = 'cap-group-divider';
+      container.appendChild(divider);
+    }
+    groupIdx++;
+    // 分组标题（中文映射，兜底显示原 category）
+    const title = document.createElement('div');
+    title.className = 'cap-group-title';
+    title.textContent = CATEGORY_LABELS[cat] || cat || '其它';
+    container.appendChild(title);
+    // 分组内纵向列表按钮
+    for (const meta of metas) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'op';
+      b.dataset.cap = meta.id;
+      b.title = meta.title || meta.id;
+      // 按钮内“图标+名称”横向布局：移动端 ops-menu-grid 显示两者，PC 端 focus-ops-cap 通过 CSS 隐藏 cap-name
+      b.innerHTML = '<span class="cap-icon">' + escapeHtml(meta.icon || '?') + '</span><span class="cap-name">' + escapeHtml(meta.title || meta.id) + '</span>';
+      b.addEventListener('click', () => doInvoke(meta));
+      container.appendChild(b);
+    }
   }
+  // 追加配置入口按钮（二级菜单）
+  const cfgBtn = document.createElement('button');
+  cfgBtn.type = 'button';
+  cfgBtn.className = 'op';
+  cfgBtn.dataset.op = 'config';
+  cfgBtn.title = '设备配置';
+  cfgBtn.innerHTML = '<span class="cap-icon">⚙</span><span class="cap-name">设备配置</span>';
+  cfgBtn.addEventListener('click', () => showConfigPanel());
+  container.appendChild(cfgBtn);
+}
+
+/**
+ * 调用设备能力（通过网关 invoke API，Phase 4.7）
+ * 无参能力直接调用；有参能力弹出参数输入
+ */
+async function doInvoke(meta) {
+  if (!focus || !focus.device) return;
+  const devId = focus.device.id;
+  // 有参数的能力：弹出简易表单
+  let params = {};
+  if (Array.isArray(meta.params) && meta.params.length > 0) {
+    params = await promptParams(meta.params);
+    if (params === null) return; // 用户取消
+  }
+  try {
+    const r = await invokeCap('', devId, meta.id, params);
+    if (!r.ok) alert(`能力「${meta.title}」执行失败：${r.ack?.error || '未知错误'}`);
+  } catch (e) {
+    alert(`能力「${meta.title}」调用失败：${e.message}`);
+  }
+}
+
+/**
+ * 弹出参数输入表单（简化版，支持 number/string）
+ * @param paramDefs 参数定义数组
+ * @returns 参数对象，取消返回 null
+ */
+function promptParams(paramDefs) {
+  return new Promise((resolve) => {
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    const card = document.createElement('div');
+    card.className = 'modal-card';
+    const inputs = {};
+    for (const p of paramDefs) {
+      const lbl = document.createElement('label');
+      lbl.textContent = `${p.name}${p.required ? ' *' : ''} (${p.type})`;
+      const inp = document.createElement('input');
+      if (p.default !== undefined) inp.value = p.default;
+      inputs[p.name] = inp;
+      lbl.appendChild(inp);
+      card.appendChild(lbl);
+    }
+    const btns = document.createElement('div');
+    btns.className = 'modal-btns';
+    const ok = document.createElement('button');
+    ok.className = 'primary'; ok.textContent = '执行';
+    const cancel = document.createElement('button');
+    cancel.textContent = '取消';
+    btns.appendChild(cancel); btns.appendChild(ok);
+    card.appendChild(btns);
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+    cancel.onclick = () => { modal.remove(); resolve(null); };
+    ok.onclick = () => {
+      const params = {};
+      for (const p of paramDefs) {
+        const v = inputs[p.name].value.trim();
+        if (p.required && !v) { alert(`${p.name} 为必填`); return; }
+        if (p.type === 'number') params[p.name] = Number(v) || 0;
+        else params[p.name] = v;
+      }
+      modal.remove();
+      resolve(params);
+    };
+  });
 }
 
 // ---------- 聚焦视图 ----------
@@ -167,9 +606,9 @@ function enterFocus(d) {
   }
   prefitFocusPanel(knownRatio || (9 / 16));
 
-  // 隐藏该设备的墙卡片（它已放大到左侧）
+  // 隐藏该设备的墙卡片（它已放大到左侧）：断开卡片墙 RFB，focus 视图重建可操控 RFB
   if (wallInst) {
-    closeRfb(wallInst.rfb);
+    stopWallRfb(wallInst);
     wallInst.paused = true;
     wallInst.tile.classList.add('focused-tile');
   }
@@ -184,6 +623,9 @@ function enterFocus(d) {
   $('workspace').classList.add('focus-open');
   renderCapOps($('focusOpsCap'), deviceCaps(d));
   renderCapOps($('opsMenuCap'), deviceCaps(d));
+  // 缓存设备元数据供配置面板使用
+  focus.capMetadata = deviceCaps(d);
+  focus.configSchema = d.configSchema || [];
   if (window.matchMedia('(max-width: 900px)').matches) $('fab').classList.remove('hidden');
   const grp = $('chkFocusBroadcast').checked ? wallSession : '';
   const broadcast = $('chkFocusBroadcast').checked ? '1' : '';
@@ -210,7 +652,8 @@ function restoreWallTile(id) {
   if (!inst || !inst.paused) return;
   inst.paused = false;
   inst.tile.classList.remove('focused-tile');
-  inst.rfb = createRfb(inst.tile.querySelector('.tv'), inst.device, { grp: wallSession, tile: inst.tile, viewOnly: true }, inst.statusEl);
+  // 退出 focus：恢复卡片墙 RFB 连接（Phase 12.1，v2.3 恢复）
+  startWallRfb(inst);
 }
 
 function fmtTime(ts) {
@@ -230,13 +673,13 @@ function updateWallTile(inst, d) {
   if (d.online) {
     if (inst.paused) return; // 聚焦中，保持隐藏
     tile.classList.remove('tile-offline');
-    if (!inst.rfb) {
-      tv.innerHTML = '';
-      inst.rfb = createRfb(tv, d, { grp: wallSession, tile, viewOnly: true }, inst.statusEl);
+    if (!inst.rfb) { // RFB 未连接，启动它（Phase 12.1，v2.3 恢复）
+      tv.innerHTML = '<div class="offline-ph">连接中…</div>';
+      startWallRfb(inst);
     }
   } else {
     tile.classList.add('tile-offline');
-    if (inst.rfb) { closeRfb(inst.rfb); inst.rfb = null; }
+    stopWallRfb(inst);
     tv.innerHTML = '<div class="offline-ph">离线</div>';
     inst.statusEl.textContent = d.lastSeen ? '离线 · ' + fmtTime(d.lastSeen) : '离线';
   }
@@ -288,39 +731,17 @@ function fitFocusPanel() {
   stage.style.height = availH + 'px';
 }
 
-// ---------- 操作（与手机 web 同能力层） ----------
+// ---------- 本地操作（适配/全屏/断开，控制台本地能力，不通过设备 API） ----------
 function currentRfb() { return focus ? focus.rfb : null; }
 
-function tapKey(rfb, ks, code) {
-  try { rfb.sendKey(ks, code, true); } catch (e) { return; }
-  setTimeout(() => { try { rfb.sendKey(ks, code, false); } catch (e) {} }, 60);
-}
-function pointer(rfb, mask) {
-  try {
-    const b = new Uint8Array(6);
-    b[0] = 5; b[1] = mask; b[2] = 0; b[3] = 1; b[4] = 0; b[5] = 1;
-    rfb._sock.send(b.buffer);
-    if (mask !== 0) setTimeout(() => pointer(rfb, 0), 80);
-  } catch (e) {}
-}
-
+/**
+ * 本地操作：适配画面/全屏/断开
+ * 控制型能力（Home/电源/音量等）已改走 doInvoke → 网关 invoke API
+ */
 function doOp(op) {
   const rfb = currentRfb();
-  if (!rfb) return;
+  if (!rfb && op !== 'disc') return;
   switch (op) {
-    case 'home': tapKey(rfb, 0xff50, 'Home'); break;
-    case 'power': pointer(rfb, 2); break;                 // 中键=电源（TrollVNC 映射）
-    case 'volup': tapKey(rfb, 0x1008ff13, 'AudioVolumeUp'); break;
-    case 'voldn': tapKey(rfb, 0x1008ff11, 'AudioVolumeDown'); break;
-    case 'mute': tapKey(rfb, 0x1008ff12, 'AudioVolumeMute'); break;
-    case 'briup': tapKey(rfb, 0x1008ff03, 'BrightnessUp'); break;
-    case 'bridn': tapKey(rfb, 0x1008ff02, 'BrightnessDown'); break;
-    case 'kb': try { rfb.focus(); } catch (e) {} break;
-    case 'clip':
-      navigator.clipboard.readText().then((t) => {
-        if (t) try { rfb.clipboardPasteFrom(t); } catch (e) {}
-      }).catch(() => {});
-      break;
     case 'fit': rfb.scaleViewport = true; break;
     case 'full':
       if (document.fullscreenElement) document.exitFullscreen();
@@ -328,6 +749,146 @@ function doOp(op) {
       break;
     case 'disc': try { rfb.disconnect(); } catch (e) {} exitFocus(); break;
   }
+}
+
+// ---------- 配置面板（二级菜单，按 reload 分区显示，Phase 4.7） ----------
+
+/**
+ * 显示设备配置面板：拉取当前配置值 + 按 schema 渲染表单 + 按 reload 分区
+ */
+async function showConfigPanel() {
+  if (!focus || !focus.device) return;
+  const dev = focus.device;
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+  card.innerHTML = `<h3>${escapeHtml(dev.name)} - 设备配置</h3>`;
+
+  // 拉取当前配置值
+  let configs = {};
+  try {
+    const resp = await fetch(`/api/devices/${encodeURIComponent(dev.id)}/configs`, {
+      headers: window._farmAuthHeader || {},
+    });
+    if (resp.ok) configs = (await resp.json()).configs || {};
+  } catch (e) { /* ignore */ }
+
+  // 按 reload 分区渲染表单
+  const groups = configSchemaByReload({ configSchema: focus.configSchema });
+  const inputs = {};
+  for (const [reload, items] of Object.entries(groups)) {
+    if (items.length === 0) continue;
+    const sec = document.createElement('div');
+    sec.className = 'cfg-section';
+    sec.innerHTML = `<div class="cfg-sec-title">${RELOAD_LABELS[reload] || reload}</div>`;
+    for (const schema of items) {
+      const val = configs[schema.key];
+      const row = document.createElement('label');
+      row.className = 'cfg-row';
+      row.textContent = schema.title || schema.key;
+      const inp = buildConfigInput(schema, val);
+      inputs[schema.key] = inp;
+      row.appendChild(inp);
+      sec.appendChild(row);
+    }
+    card.appendChild(sec);
+  }
+
+  // 保存按钮
+  const btns = document.createElement('div');
+  btns.className = 'modal-btns';
+  const cancel = document.createElement('button');
+  cancel.textContent = '取消';
+  const save = document.createElement('button');
+  save.className = 'primary'; save.textContent = '保存';
+  btns.appendChild(cancel); btns.appendChild(save);
+  card.appendChild(btns);
+  modal.appendChild(card);
+  document.body.appendChild(modal);
+
+  cancel.onclick = () => modal.remove();
+  save.onclick = async () => {
+    const cfg = {};
+    for (const [key, inp] of Object.entries(inputs)) {
+      cfg[key] = readConfigValue(inp);
+    }
+    try {
+      const r = await setConfigs('', dev.id, cfg);
+      const fails = Object.entries(r.results || {}).filter(([, v]) => !v.ok);
+      if (fails.length === 0) {
+        modal.remove();
+        alert('配置已保存');
+      } else {
+        const msg = fails.map(([k, v]) => `${k}: ${v.error || v.reload}`).join('\n');
+        alert(`部分配置失败：\n${msg}`);
+      }
+    } catch (e) {
+      alert(`保存失败：${e.message}`);
+    }
+  };
+}
+
+/**
+ * 根据 schema 构建配置输入控件
+ * @param schema 配置 schema（含 type/min/max/enum）
+ * @param val   当前值
+ * @returns HTMLInputElement 或 HTMLSelectElement
+ */
+function buildConfigInput(schema, val) {
+  if (schema.type === 'bool') {
+    const inp = document.createElement('input');
+    inp.type = 'checkbox';
+    inp.checked = !!val;
+    return inp;
+  }
+  if (schema.type === 'enum') {
+    const sel = document.createElement('select');
+    const vals = schema.enumValues || [];
+    const titles = schema.enumTitles || vals;
+    vals.forEach((v, i) => {
+      const opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = titles[i] || String(v);
+      if (String(v) === String(val)) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    return sel;
+  }
+  if (schema.type === 'number') {
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    if (schema.min !== undefined) inp.min = schema.min;
+    if (schema.max !== undefined) inp.max = schema.max;
+    if (schema.step !== undefined) inp.step = schema.step;
+    inp.value = val ?? '';
+    return inp;
+  }
+  // string / password
+  const inp = document.createElement('input');
+  inp.type = schema.type === 'password' ? 'password' : 'text';
+  inp.value = val ?? '';
+  return inp;
+}
+
+/**
+ * 从输入控件读取配置值
+ * @param inp 输入控件
+ * @returns 配置值（bool/number/string）
+ */
+function readConfigValue(inp) {
+  if (inp.type === 'checkbox') return inp.checked;
+  if (inp.type === 'number') {
+    const v = Number(inp.value);
+    return isNaN(v) ? 0 : v;
+  }
+  if (inp.tagName === 'SELECT') {
+    const v = inp.value;
+    // 数字字符串转数字
+    if (/^-?\d+$/.test(v)) return Number(v);
+    return v;
+  }
+  return inp.value;
 }
 
 // ---------- RFB 帮助 ----------
@@ -426,20 +987,74 @@ function openDetail(d) {
   $('detailModal').classList.remove('hidden');
 }
 
+/**
+ * 显示卡片右下角⋯菜单（Phase 10.3：按 category 分组，能力+管理操作合并）
+ * 菜单分两段：上半段为设备能力（按 category 分组渲染，点击调用 doInvoke）；
+ * 下半段为管理操作（查看/控制、详情、编辑、测试在线、删除）。
+ * @param {HTMLElement} tile 卡片元素（用于定位菜单）
+ * @param {object} d 设备对象
+ * @param {number} x 点击位置 clientX
+ * @param {number} y 点击位置 clientY
+ * @returns {void}
+ */
 function showTileMenu(tile, d, x, y) {
   const m = $('tileMenu');
-  m.innerHTML = `
-    <button data-a="view">查看/控制</button>
-    <button data-a="detail">详情</button>
-    <button data-a="edit">编辑</button>
-    <button data-a="ping">测试在线</button>
-    <button data-a="del">删除</button>`;
+  m.innerHTML = '';
+
+  // 1) 能力分组（按 category 分组渲染，Phase 10.3）
+  const grouped = groupByCategory(deviceCaps(d));
+  let groupIdx = 0;
+  for (const [cat, metas] of grouped) {
+    if (groupIdx > 0) {
+      const divider = document.createElement('hr');
+      divider.className = 'cap-group-divider';
+      m.appendChild(divider);
+    }
+    groupIdx++;
+    const title = document.createElement('div');
+    title.className = 'cap-group-title';
+    title.textContent = CATEGORY_LABELS[cat] || cat || '其它';
+    m.appendChild(title);
+    for (const meta of metas) {
+      const b = document.createElement('button');
+      b.dataset.cap = meta.id;
+      b.innerHTML = '<span class="cap-icon">' + escapeHtml(meta.icon || '?') + '</span><span class="cap-name">' + escapeHtml(meta.title || meta.id) + '</span>';
+      b.addEventListener('click', () => {
+        m.classList.add('hidden');
+        doInvoke(meta);
+      });
+      m.appendChild(b);
+    }
+  }
+
+  // 2) 管理操作（分段分隔线 + 纵向列表）
+  const mgmtDivider = document.createElement('hr');
+  mgmtDivider.className = 'cap-group-divider';
+  m.appendChild(mgmtDivider);
+  const mgmtTitle = document.createElement('div');
+  mgmtTitle.className = 'cap-group-title';
+  mgmtTitle.textContent = '设备管理';
+  m.appendChild(mgmtTitle);
+  for (const [a, label] of [
+    ['view', '查看/控制'],
+    ['detail', '详情'],
+    ['edit', '编辑'],
+    ['ping', '测试在线'],
+    ['del', '删除'],
+  ]) {
+    const b = document.createElement('button');
+    b.dataset.a = a;
+    b.textContent = label;
+    m.appendChild(b);
+  }
+
   m.classList.remove('hidden');
   const rect = tile.getBoundingClientRect();
   m.style.left = Math.min(x, window.innerWidth - 140) + 'px';
   m.style.top = Math.min(y, window.innerHeight - 160) + 'px';
   m.onclick = async (e) => {
     const a = e.target.dataset.a;
+    if (!a) return;
     m.classList.add('hidden');
     if (a === 'view') enterFocus(d);
     else if (a === 'detail') openDetail(d);
@@ -454,7 +1069,7 @@ function showTileMenu(tile, d, x, y) {
       if (confirm(`删除设备 ${d.name}？`)) {
         await api(`/api/devices/${encodeURIComponent(d.id)}`, { method: 'DELETE' });
         const inst = wallInstances.get(d.id);
-        if (inst) { closeRfb(inst.rfb); inst.tile.remove(); wallInstances.delete(d.id); }
+        if (inst) { stopWallRfb(inst); inst.tile.remove(); wallInstances.delete(d.id); }
         await refreshDevices();
       }
     }
@@ -468,6 +1083,22 @@ function initFab() {
   let startX = 0, startY = 0, baseLeft = 0, baseTop = 0, dragging = false;
   let pinchDist = 0, baseScale = 1;
 
+  /**
+   * 计算 FAB 拖动安全边界（考虑 env(safe-area-inset-*) 避开刘海/Home 条）
+   * @returns {{minX:number, minY:number, maxX:number, maxY:number}} FAB 左上角可移动范围（px）
+   */
+  function getSafeBounds() {
+    const cs = getComputedStyle(document.documentElement);
+    const st = parseInt(cs.getPropertyValue('--safe-top')) || 0;
+    const sr = parseInt(cs.getPropertyValue('--safe-right')) || 0;
+    const sb = parseInt(cs.getPropertyValue('--safe-bottom')) || 0;
+    const sl = parseInt(cs.getPropertyValue('--safe-left')) || 0;
+    const pad = 4;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const fw = fab.offsetWidth || 56, fh = fab.offsetHeight || 56;
+    return { minX: sl + pad, minY: st + pad, maxX: vw - fw - sr - pad, maxY: vh - fh - sb - pad };
+  }
+
   head.addEventListener('pointerdown', (e) => {
     dragging = true;
     startX = e.clientX; startY = e.clientY;
@@ -479,8 +1110,9 @@ function initFab() {
     if (!dragging) return;
     const nx = baseLeft + (e.clientX - startX);
     const ny = baseTop + (e.clientY - startY);
-    fab.style.left = Math.max(4, Math.min(nx, window.innerWidth - 60)) + 'px';
-    fab.style.top = Math.max(4, Math.min(ny, window.innerHeight - 60)) + 'px';
+    const b = getSafeBounds();
+    fab.style.left = Math.max(b.minX, Math.min(nx, b.maxX)) + 'px';
+    fab.style.top = Math.max(b.minY, Math.min(ny, b.maxY)) + 'px';
     fab.style.right = 'auto'; fab.style.bottom = 'auto';
   });
   head.addEventListener('pointerup', () => { dragging = false; });
@@ -520,6 +1152,11 @@ $('zoomRange').addEventListener('input', () => {
 // ---------- init ----------
 $('btnRefresh').onclick = () => refreshDevices().catch(() => showLogin());
 $('btnAdd').onclick = openAdd;
+// 批量操作按钮（Phase 10.2）：勾选≥1 台设备后点击弹出批量菜单
+$('batchBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  showBatchMenu();
+});
 $('btnBack').onclick = exitFocus;
 $('btnCancelAdd').onclick = () => $('addModal').classList.add('hidden');
 $('btnDetailClose').onclick = () => $('detailModal').classList.add('hidden');
@@ -562,6 +1199,49 @@ document.addEventListener('click', (e) => {
     $('opsMenu').classList.add('hidden');
   }
 });
+
+// ===== 布局切换：横屏1-6列 / 竖屏1-6列（手机端布局按钮，与 PC 端尺寸调节阀为同一组件两态） =====
+const layoutBtn = $('layoutBtn');
+const layoutMenu = $('layoutMenu');
+const wallEl = $('wall');
+
+/**
+ * 应用布局到设备墙：切换横竖屏方向 + 设置列数
+ * @param {string} v - 布局标识，格式 'h1'..'h6'（横屏1-6列）/ 'v1'..'v6'（竖屏1-6列）
+ * @returns {void}
+ */
+function applyLayout(v) {
+  const n = parseInt(v.slice(1), 10);
+  const isH = v.charAt(0) === 'h';
+  wallEl.classList.toggle('layout-h', isH);
+  wallEl.classList.toggle('layout-v', !isH);
+  wallEl.style.gridTemplateColumns = 'repeat(' + n + ', 1fr)';
+  layoutMenu.querySelectorAll('.lopt').forEach((o) => {
+    o.classList.toggle('sel', o.dataset.l === v);
+  });
+}
+
+// 初始化默认布局为竖屏 2 列
+applyLayout('v2');
+
+layoutBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  layoutMenu.classList.toggle('hidden');
+});
+
+layoutMenu.addEventListener('click', (e) => {
+  const o = e.target.closest('.lopt');
+  if (!o) return;
+  applyLayout(o.dataset.l);
+  layoutMenu.classList.add('hidden');
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#layoutMenu') && !e.target.closest('#layoutBtn')) {
+    layoutMenu.classList.add('hidden');
+  }
+});
+
 window.addEventListener('resize', fitFocusPanel);
 
 (async () => {

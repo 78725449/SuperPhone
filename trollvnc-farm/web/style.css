@@ -8,6 +8,11 @@
   --accent: #4f8cff;
   --ok: #35c26b;
   --bad: #ff5d5d;
+  /* 安全区域变量：JS 通过 getComputedStyle 读取，用于 FAB 拖动边界约束 */
+  --safe-top: env(safe-area-inset-top);
+  --safe-right: env(safe-area-inset-right);
+  --safe-bottom: env(safe-area-inset-bottom);
+  --safe-left: env(safe-area-inset-left);
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -76,13 +81,15 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 /* 右：设备墙（默认全宽；聚焦时收为右侧竖条） */
 #wall {
   flex: 1 1 auto; min-width: 0;
-  display: flex; flex-wrap: wrap; gap: 12px; align-content: flex-start; align-items: flex-start;
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;
+  align-content: flex-start;
   --zoom: 1; --card-w: 280px;
   overflow: auto; height: 100%;
 }
 #workspace.focus-open #wall {
   flex: 0 0 auto; width: calc(var(--card-w) * var(--zoom) + 12px);
   margin-left: 12px; overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-wrap: wrap;
 }
 
 /* 设备卡片 */
@@ -94,6 +101,37 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
   display: flex; align-items: stretch;
   transition: width .12s ease;
 }
+
+/* 布局切换按钮 + 下拉菜单 */
+.layout-switch { position: relative; display: inline-flex; }
+.layout-btn {
+  background: var(--panel); border: 1px solid var(--line); color: var(--text);
+  border-radius: 8px; width: 36px; height: 36px; padding: 6px;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.layout-btn svg { width: 20px; height: 20px; }
+.layout-btn:active { background: var(--accent-soft); }
+.layout-menu {
+  position: absolute; top: 100%; right: 0; margin-top: 6px; z-index: 80;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.35); padding: 6px;
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 140px;
+}
+.layout-menu.hidden { display: none; }
+.layout-menu .lopt {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 12px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  color: var(--text); cursor: pointer; user-select: none;
+}
+.layout-menu .lopt:active { background: var(--accent-soft); }
+.layout-menu .lopt .chk { color: var(--accent); font-weight: 700; visibility: hidden; }
+.layout-menu .lopt.sel { color: var(--accent); }
+.layout-menu .lopt.sel .chk { visibility: visible; }
+
+/* 布局应用到设备墙：横屏模式卡片宽高比 16:9，竖屏模式保持原始比例 */
+#wall.layout-h .tile { aspect-ratio: 16 / 9; }
+#wall.layout-v .tile { aspect-ratio: var(--tile-ratio, 9 / 16); }
 .tile:hover { border-color: var(--accent); }
 .tile .tv { position: relative; flex: 1; min-width: 0; }
 .tile canvas { position: absolute; left: 0; top: 0; pointer-events: none; }
@@ -138,8 +176,11 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
   box-shadow: 0 8px 28px rgba(0,0,0,.55); padding: 10px;
 }
 .ops-menu-title { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
-.ops-menu-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-.ops-menu-grid button { min-height: 44px; font-size: 18px; padding: 4px; }
+/* 移动端 opsMenu：垂直列表（与 5801 直连一致），按钮内“图标+名称”横向布局 */
+.ops-menu-grid { display: flex; flex-direction: column; gap: 2px; }
+.ops-menu-grid button { min-height: 44px; font-size: 16px; padding: 8px 12px; display: flex; flex-direction: row; align-items: center; gap: 10px; justify-content: flex-start; text-align: left; }
+.ops-menu-grid button .cap-icon { font-size: 20px; }
+.ops-menu-grid button .cap-name { font-size: 14px; }
 .ops-exit { width: 100%; margin-top: 8px; color: #ff9d9d; }
 
 .tile-menu {
@@ -155,6 +196,7 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 .modal-card {
   margin: auto; background: var(--panel); border: 1px solid var(--line);
   border-radius: 12px; padding: 20px; width: min(420px, 92vw);
+  max-height: 80vh; overflow-y: auto;
   display: flex; flex-direction: column; gap: 10px;
 }
 .modal-card h3 { margin: 0; }
@@ -165,6 +207,16 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 }
 .modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .hidden { display: none !important; }
+
+/* Phase 4.7：配置面板（二级菜单，按 reload 分区） */
+.cfg-section { margin-bottom: 12px; }
+.cfg-sec-title { font-size: 12px; font-weight: 700; color: var(--accent); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .5px; }
+.cfg-row { display: flex; flex-direction: column; gap: 3px; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.cfg-row input, .cfg-row select {
+  background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 6px; padding: 6px 9px; font-size: 14px;
+}
+.cfg-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
 .login {
   margin: 10vh auto; width: min(380px, 92vw);
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
@@ -187,8 +239,10 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
   .wall-grid .tile { width: calc(min(var(--card-w), 46vw) * var(--zoom)); }
 }
 
-/* 能力清单动态操作列 */
+/* 能力清单动态操作列（PC 端图标列：与移动端 ops-menu-grid 分离，只显示图标） */
 .focus-ops-cap { display: flex; flex-direction: column; gap: 6px; }
+.focus-ops-cap .cap-name { display: none; }
+.focus-ops-cap .cap-icon { font-size: 18px; }
 
 /* 设备详情（能力清单只读） */
 .detail-body {
@@ -204,3 +258,121 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 .detail-body table.dcfg { width: 100%; border-collapse: collapse; font-size: 12px; }
 .detail-body table.dcfg td { border-bottom: 1px solid var(--line); padding: 5px 6px; vertical-align: top; word-break: break-all; }
 .detail-body table.dcfg td:first-child { color: var(--muted); width: 42%; }
+
+/* ========== Phase 10.2：批量操作栏 / 卡片 checkbox / 批量菜单 ========== */
+/* 批量操作按钮：嵌在顶部 actions 区域，勾选≥1 台时显示 */
+.batch-bar {
+  background: var(--panel2);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.batch-bar:hover { background: var(--accent); color: #fff; }
+.batch-bar.hidden { display: none !important; }
+
+/* 卡片左上角 checkbox：不遮挡缩略图，半透明背景圆角 */
+.tile-checkbox {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 6;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin: 0;
+  background: rgba(0, 0, 0, .45);
+  border-radius: 4px;
+}
+.tile.tile-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* 批量操作菜单：纵向列表，浮动定位 */
+.batch-menu {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 85;
+  width: min(360px, 92vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .55);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.batch-menu-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+.batch-menu-row {
+  display: flex;
+  gap: 6px;
+}
+.batch-menu-row button { flex: 1; }
+.batch-menu-section {
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+  margin-top: 2px;
+}
+.batch-menu-sec-title {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+.batch-cap-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 14px;
+  width: 100%;
+}
+.batch-cap-btn .cap-icon { font-size: 18px; }
+.batch-menu-row-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 14px;
+  width: 100%;
+}
+.batch-menu-row-item.danger { color: #ff9d9d; }
+.batch-menu-close {
+  margin-top: 6px;
+  width: 100%;
+}
+
+/* ========== Phase 10.3：能力菜单 category 分组渲染 ========== */
+/* 分组标题：小字、灰色、上下间距 */
+.cap-group-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  margin: 8px 0 4px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+.cap-group-title:first-child { margin-top: 0; }
+/* 分组分隔线 */
+.cap-group-divider {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 6px 0;
+}

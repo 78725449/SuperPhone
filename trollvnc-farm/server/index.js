@@ -22,6 +22,7 @@ const HOST = process.env.FARM_HOST || '0.0.0.0';
 const TOKEN = process.env.FARM_TOKEN || '';          // 若设置，访问需带 token
 const PROBE_INTERVAL = parseInt(process.env.FARM_PROBE_INTERVAL || '15000', 10);
 const REG_PORT = parseInt(process.env.FARM_REG_PORT || '18081', 10);   // 手机注册 TCP 端口
+const TUNNEL_PORT = parseInt(process.env.FARM_TUNNEL_PORT || '18181', 10); // 手机隧道 TCP 端口（RFB/命令透传）
 
 // ---------- 设备数据库 ----------
 let devices = [];
@@ -111,6 +112,9 @@ function upsertRegistered(input) {
   // 能力清单（v1 只上报；旧客户端缺省不报错，控制台按默认全集渲染）
   if (Array.isArray(input.capabilities)) dev.capabilities = input.capabilities;
   if (input.configs !== undefined) dev.configs = input.configs;
+  // Phase 4：能力元数据 + 配置 schema（供前端自动渲染按钮/表单）
+  if (Array.isArray(input.capMetadata)) dev.capMetadata = input.capMetadata;
+  if (Array.isArray(input.configSchema)) dev.configSchema = input.configSchema;
   if (input.screen !== undefined) dev.screen = input.screen;
   if (input.httpPort !== undefined) dev.httpPort = input.httpPort;
   saveDb();
@@ -198,6 +202,14 @@ const sessionsByDevice = new Map();   // deviceId -> Set<ws>
 const sessionGroup = new Map();       // ws -> groupName
 const sessionBroadcaster = new Map(); // ws -> true
 const registeredDevices = new Map(); // deviceId -> { sock, lastHeartbeat }
+// Phase 7：设备隧道连接（deviceId -> { sock, wsSet }），跨网络 RFB 透传 + 命令复用
+const tunnels = new Map();
+// 隧道帧协议常量（type:1B + length:4B BE + payload）
+const FT_DATA    = 0x01;  // RFB 透传数据
+const FT_PING    = 0x02;  // 心跳请求
+const FT_PONG    = 0x03;  // 心跳响应
+const FT_CMD     = 0x04;  // 命令 JSON（网关→设备）
+const FT_CMDACK  = 0x05;  // 命令 ack JSON（设备→网关）
 
 // 向已注册设备下发 JSON 命令（写注册 socket；v1 仅 ping 验证，set 类留 B4）
 function sendToDevice(deviceId, obj) {
@@ -213,8 +225,65 @@ function sendToDevice(deviceId, obj) {
   }
 }
 
+/**
+ * 向隧道 socket 写入一个帧（type + 4字节大端 length + payload）
+ * @param {net.Socket} sock 隧道 socket
+ * @param {number} type 帧类型（FT_*）
+ * @param {Buffer} payload 负载（可为空 Buffer）
+ * @returns {boolean} 是否写入成功
+ */
+function writeTunnelFrame(sock, type, payload) {
+  if (!sock || sock.destroyed || !sock.writable) return false;
+  const len = payload ? payload.length : 0;
+  const header = Buffer.alloc(5);
+  header[0] = type;
+  header.writeUInt32BE(len, 1);
+  try {
+    sock.write(header);
+    if (len > 0) sock.write(payload);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * 查询设备是否在线（注册通道存活 或 隧道连接存活，任一即在线）
+ * @param {string} deviceId 设备 ID
+ * @returns {boolean} 是否在线
+ */
+function isDeviceOnline(deviceId) {
+  return registeredDevices.has(deviceId) || tunnels.has(deviceId);
+}
+
 // 命令通道：等待手机 ack 的挂起表（id -> { resolve, timer, cmd, deviceId }，宪法 7.4）
 const pendingCmds = new Map();
+
+/**
+ * 向设备下发命令并等待 ACK（Phase 4.2：支持 query/set/invoke/restart）
+ * @param deviceId  设备 ID
+ * @param cmdObj    命令对象（{cmd:'set', key:'Scale', value:0.8, ...}）
+ * @param timeoutMs 超时（默认 5s，restart 类可调大）
+ * @returns ack 对象，超时返回 null
+ */
+function sendDeviceCmd(deviceId, cmdObj, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const cid = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    const payload = { type: 'cmd', id: cid, ts: Date.now(), ...cmdObj };
+    // Phase 7：优先走隧道（CMD 帧），隧道不可用时回退到注册通道
+    const tun = tunnels.get(deviceId);
+    let sent = false;
+    if (tun && tun.sock && !tun.sock.destroyed && tun.sock.writable) {
+      sent = writeTunnelFrame(tun.sock, FT_CMD, Buffer.from(JSON.stringify(payload), 'utf8'));
+    }
+    if (!sent) {
+      sent = sendToDevice(deviceId, payload);
+    }
+    if (!sent) { resolve(null); return; }
+    const timer = setTimeout(() => { pendingCmds.delete(cid); resolve(null); }, timeoutMs);
+    pendingCmds.set(cid, { resolve, timer, cmd: cmdObj.cmd, deviceId });
+  });
+}
 
 function getDeviceSessions(deviceId) {
   if (!sessionsByDevice.has(deviceId)) sessionsByDevice.set(deviceId, new Set());
@@ -244,6 +313,33 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast) {
   const sessions = getDeviceSessions(deviceId);
   sessions.add(ws);
 
+  // Phase 7：优先走隧道（跨网络），隧道不可用回退直连 dev.host:dev.port
+  const tun = tunnels.get(deviceId);
+  if (tun && tun.sock && !tun.sock.destroyed && tun.sock.writable) {
+    tun.wsSet.add(ws);
+    ws.sock = null;  // 标记走隧道（无直连 TCP）
+    console.log(`[vnc] tunnel bridge ${dev.name} (${deviceId}) grp=${grp || '-'}${isBroadcast ? ' MASTER' : ''}`);
+    ws.on('message', (data, isBinary) => {
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      writeTunnelFrame(tun.sock, FT_DATA, buf);
+      if (isBroadcast && grp) broadcastInput(ws, grp, buf);
+    });
+    ws.on('close', () => {
+      sessions.delete(ws);
+      sessionGroup.delete(ws);
+      sessionBroadcaster.delete(ws);
+      tun.wsSet.delete(ws);
+    });
+    ws.on('error', () => {
+      sessions.delete(ws);
+      sessionGroup.delete(ws);
+      sessionBroadcaster.delete(ws);
+      tun.wsSet.delete(ws);
+    });
+    return;
+  }
+
+  // 回退：直连设备 RFB
   const sock = net.connect({ host: dev.host, port: dev.port });
   ws.sock = sock;
 
@@ -279,6 +375,105 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast) {
     sessionGroup.delete(ws);
     sessionBroadcaster.delete(ws);
     try { sock.destroy(); } catch { /* noop */ }
+  });
+}
+
+// ---------- AI 工具 WS 控制端点（Phase 4.8）----------
+/**
+ * 处理 AI 工具 WS 控制端点 /ws/control/:id
+ * 接收 JSON 行命令（ping/query/invoke/set/restart），经 sendDeviceCmd 转发到设备命令通道，
+ * 并把设备 ACK 透传回客户端。供 AI 工具/自动化系统通过单条 WS 连接流式调用设备能力。
+ * @param {WebSocket} ws       WebSocket 连接实例
+ * @param {object} req         HTTP 升级请求（鉴权已在 wss connection 顶层完成）
+ * @param {string} deviceId    目标设备 ID
+ * @returns {void}
+ */
+function handleControlSocket(ws, req, deviceId) {
+  const dev = findDevice(deviceId);
+  if (!dev) {
+    ws.close(4004, 'device not found');
+    return;
+  }
+  console.log(`[control] ai tool connected: device=${deviceId} (${dev.name})`);
+
+  /**
+   * 向客户端发送一条 JSON 行 ACK
+   * @param {object} obj 待发送的 ACK 对象
+   * @returns {void}
+   */
+  const sendAck = (obj) => {
+    if (ws.readyState === ws.OPEN) {
+      try { ws.send(JSON.stringify(obj) + '\n'); } catch { /* noop */ }
+    }
+  };
+
+  ws.on('message', async (data) => {
+    const text = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
+    let msg;
+    try {
+      msg = JSON.parse(text);
+    } catch {
+      sendAck({ type: 'ack', ok: false, error: 'invalid json' });
+      return;
+    }
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+      sendAck({ type: 'ack', ok: false, error: 'invalid json' });
+      return;
+    }
+    const cmd = msg.cmd;
+    const id = msg.id;
+    if (!cmd) {
+      sendAck({ type: 'ack', id, ok: false, error: 'missing cmd' });
+      return;
+    }
+
+    // 设备离线（未注册且无隧道）→ 与超时区分开，立即返回
+    if (!isDeviceOnline(deviceId)) {
+      sendAck({ type: 'ack', cmd, id, ok: false, error: 'device offline' });
+      return;
+    }
+
+    // 按命令组装下发对象与超时（设备侧已实现 query/set/invoke/restart/ping 处理）
+    const cmdObj = { cmd };
+    let timeoutMs = 5000;
+    switch (cmd) {
+      case 'ping':
+        break;
+      case 'query':
+        if (msg.target) cmdObj.target = msg.target;   // caps/configs/schema/status
+        break;
+      case 'invoke':
+        if (msg.cap) cmdObj.cap = msg.cap;
+        cmdObj.params = msg.params || {};
+        break;
+      case 'set':
+        if (msg.key) cmdObj.key = msg.key;
+        if (msg.value !== undefined) cmdObj.value = msg.value;
+        break;
+      case 'restart':
+        timeoutMs = 15000;   // 重启类超时调大至 15s
+        break;
+      default:
+        sendAck({ type: 'ack', cmd, id, ok: false, error: 'unknown cmd: ' + cmd });
+        return;
+    }
+
+    const ack = await sendDeviceCmd(deviceId, cmdObj, timeoutMs);
+    if (!ack) {
+      sendAck({ type: 'ack', cmd, id, ok: false, error: 'device timeout' });
+      return;
+    }
+    // 透传设备 ack 的数据字段（capabilities/capMetadata/configSchema/configs/result/reload/error 等），
+    // 用本端 envelope 覆盖 type/cmd/id/ok（id 回填客户端原始 id）
+    const ok = ack.ok !== false;
+    sendAck({ ...ack, type: 'ack', cmd, id, ok });
+  });
+
+  ws.on('close', () => {
+    console.log(`[control] ai tool disconnected: device=${deviceId}`);
+  });
+  ws.on('error', () => {
+    console.log(`[control] ai tool socket error: device=${deviceId}`);
   });
 }
 
@@ -412,27 +607,114 @@ async function handleApi(req, res, url) {
         const body = await readBody(req).catch(() => ({}));
         const cmd = String(body.cmd || '');
         if (!cmd) { sendJson(res, 400, { error: 'cmd required' }); return true; }
-        const supported = ['ping'];
+        const supported = ['ping', 'query', 'set', 'invoke', 'restart'];
         if (!supported.includes(cmd)) { sendJson(res, 400, { error: 'unsupported command: ' + cmd }); return true; }
-        const cid = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
         const timeoutMs = Math.min(Math.max(Number(body.timeout) || 5000, 500), 15000);
-        if (!sendToDevice(id, { type: 'cmd', cmd, id: cid, ts: Date.now() })) {
-          sendJson(res, 409, { error: 'device not registered / offline' });
-          return true;
-        }
-        // 等待手机 ack（宪法 7.4：网关→手机 cmd，手机→网关 ack）
-        const ack = await new Promise((resolve) => {
-          const timer = setTimeout(() => { pendingCmds.delete(cid); resolve(null); }, timeoutMs);
-          pendingCmds.set(cid, { resolve, timer, cmd, deviceId: dev.id });
+        const cmdObj = { cmd };
+        if (body.target) cmdObj.target = body.target;
+        if (body.key) cmdObj.key = body.key;
+        if (body.value !== undefined) cmdObj.value = body.value;
+        if (body.cap) cmdObj.cap = body.cap;
+        if (body.params) cmdObj.params = body.params;
+        const ack = await sendDeviceCmd(id, cmdObj, timeoutMs);
+        if (!ack) { sendJson(res, 504, { error: 'ack timeout', cmd }); return true; }
+        sendJson(res, 200, { ok: ack.ok !== false, cmd, deviceId: dev.id, ack });
+        return true;
+      }
+      // Phase 4.6：查询能力元数据（含 capMetadata + configSchema）
+      if (req.method === 'GET' && sub === 'caps') {
+        sendJson(res, 200, {
+          deviceId: dev.id,
+          capabilities: dev.capabilities || [],
+          capMetadata: dev.capMetadata || [],
+          configSchema: dev.configSchema || [],
+          configs: dev.configs || {},
         });
-        if (!ack) { sendJson(res, 504, { error: 'ack timeout', cmd, id: cid }); return true; }
-        sendJson(res, 200, { ok: ack.ok !== false, cmd, id: cid, deviceId: dev.id, ack });
+        return true;
+      }
+      // Phase 4.6：查询/设置配置
+      if (req.method === 'GET' && sub === 'configs') {
+        sendJson(res, 200, { deviceId: dev.id, configs: dev.configs || {} });
+        return true;
+      }
+      if (req.method === 'POST' && sub === 'configs') {
+        const body = await readBody(req).catch(() => ({}));
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          sendJson(res, 400, { error: 'expected JSON object of {key:value}' }); return true;
+        }
+        const results = {};
+        for (const [key, value] of Object.entries(body)) {
+          const ack = await sendDeviceCmd(id, { cmd: 'set', key, value });
+          results[key] = ack ? { ok: ack.ok !== false, reload: ack.reload, error: ack.error } : { ok: false, error: 'timeout' };
+        }
+        sendJson(res, 200, { deviceId: dev.id, results });
+        return true;
+      }
+      // Phase 4.6：调用控制型能力
+      if (req.method === 'POST' && sub === 'invoke') {
+        const body = await readBody(req).catch(() => ({}));
+        const cap = String(body.cap || '');
+        if (!cap) { sendJson(res, 400, { error: 'cap required' }); return true; }
+        const timeoutMs = Math.min(Math.max(Number(body.timeout) || 5000, 500), 15000);
+        const ack = await sendDeviceCmd(id, { cmd: 'invoke', cap, params: body.params || {} }, timeoutMs);
+        if (!ack) { sendJson(res, 504, { error: 'ack timeout', cap }); return true; }
+        sendJson(res, 200, { ok: ack.ok !== false, cap, deviceId: dev.id, ack });
+        return true;
+      }
+      // Phase 4.6：重启设备服务（单台）
+      if (req.method === 'POST' && sub === 'restart') {
+        const ack = await sendDeviceCmd(id, { cmd: 'restart' }, 8000);
+        if (!ack) { sendJson(res, 504, { error: 'ack timeout' }); return true; }
+        sendJson(res, 200, { ok: ack.ok !== false, deviceId: dev.id, ack });
         return true;
       }
       if (req.method === 'POST' && sub === 'ping') {
         const ok = await probeDevice(dev);
         saveDb();
         sendJson(res, 200, { id: dev.id, online: ok });
+        return true;
+      }
+    }
+    // Phase 4.6：批量操作（invoke/configs/restart）
+    if (id === 'batch' && req.method === 'POST') {
+      const body = await readBody(req).catch(() => ({}));
+      const deviceIds = Array.isArray(body.deviceIds) ? body.deviceIds.filter((x) => typeof x === 'string') : [];
+      if (deviceIds.length === 0) { sendJson(res, 400, { error: 'deviceIds required' }); return true; }
+      // 批量调用能力
+      if (sub === 'invoke') {
+        const cap = String(body.cap || '');
+        if (!cap) { sendJson(res, 400, { error: 'cap required' }); return true; }
+        const params = body.params || {};
+        const timeoutMs = Math.min(Math.max(Number(body.timeout) || 5000, 500), 15000);
+        const results = await Promise.all(deviceIds.map(async (did) => {
+          const ack = await sendDeviceCmd(did, { cmd: 'invoke', cap, params }, timeoutMs);
+          return ack ? { deviceId: did, ok: ack.ok !== false, error: ack.error } : { deviceId: did, ok: false, error: 'timeout' };
+        }));
+        sendJson(res, 200, { cap, results });
+        return true;
+      }
+      // 批量设置配置
+      if (sub === 'configs') {
+        const configs = (body.configs && typeof body.configs === 'object' && !Array.isArray(body.configs)) ? body.configs : null;
+        if (!configs) { sendJson(res, 400, { error: 'configs object required' }); return true; }
+        const results = await Promise.all(deviceIds.map(async (did) => {
+          const cfgResults = {};
+          for (const [key, value] of Object.entries(configs)) {
+            const ack = await sendDeviceCmd(did, { cmd: 'set', key, value });
+            cfgResults[key] = ack ? { ok: ack.ok !== false, reload: ack.reload, error: ack.error } : { ok: false, error: 'timeout' };
+          }
+          return { deviceId: did, results: cfgResults };
+        }));
+        sendJson(res, 200, { results });
+        return true;
+      }
+      // 批量重启（前端需二次确认）
+      if (sub === 'restart') {
+        const results = await Promise.all(deviceIds.map(async (did) => {
+          const ack = await sendDeviceCmd(did, { cmd: 'restart' }, 8000);
+          return ack ? { deviceId: did, ok: ack.ok !== false, error: ack.error } : { deviceId: did, ok: false, error: 'timeout' };
+        }));
+        sendJson(res, 200, { results });
         return true;
       }
     }
@@ -484,6 +766,13 @@ wss.on('connection', (ws, req) => {
     handleVncSocket(ws, req, deviceId, grp, isBroadcast);
     return;
   }
+  // Phase 4.8：AI 工具 WS 控制端点 /ws/control/:id
+  const mc = url.pathname.match(/^\/ws\/control\/([^/]+)$/);
+  if (mc) {
+    const deviceId = decodeURIComponent(mc[1]);
+    handleControlSocket(ws, req, deviceId);
+    return;
+  }
   ws.close(4000, 'unknown ws path');
 });
 
@@ -500,7 +789,13 @@ setInterval(() => {
   for (const [deviceId, rec] of registeredDevices) {
     if (now - rec.lastHeartbeat > 90000) {
       const dev = findDevice(deviceId);
-      if (dev) { dev.online = false; dev.lastSeen = null; saveDb(); }
+      if (dev) {
+        // Phase 7：注册心跳超时时，隧道仍存活则保持在线
+        const tunnelAlive = tunnels.has(deviceId);
+        dev.online = tunnelAlive;
+        if (!tunnelAlive) dev.lastSeen = null;
+        saveDb();
+      }
       try { rec.ws && rec.ws.terminate(); } catch { /* noop */ }
       try { rec.sock && rec.sock.destroy(); } catch { /* noop */ }
       registeredDevices.delete(deviceId);
@@ -533,6 +828,8 @@ const regServer = net.createServer((sock) => {
         // 能力清单（宪法 7.3；旧客户端缺省不报错）
         capabilities: Array.isArray(msg.capabilities) ? msg.capabilities : undefined,
         configs: (msg.configs && typeof msg.configs === 'object') ? msg.configs : undefined,
+        capMetadata: Array.isArray(msg.capMetadata) ? msg.capMetadata : undefined,
+        configSchema: Array.isArray(msg.configSchema) ? msg.configSchema : undefined,
         screen: (msg.screen && typeof msg.screen === 'object') ? msg.screen : undefined,
         httpPort: validPort(msg.httpPort) ? Number(msg.httpPort) : undefined,
       });
@@ -576,8 +873,14 @@ const regServer = net.createServer((sock) => {
       const cur = registeredDevices.get(deviceId);
       if (cur && cur.sock === sock) {
         registeredDevices.delete(deviceId);
-        if (dev) { dev.online = false; saveDb(); }
-        console.log(`[reg] device offline: ${deviceId}`);
+        if (dev) {
+          // Phase 7：隧道仍存活则保持在线，仅注册通道断开
+          const tunnelAlive = tunnels.has(deviceId);
+          dev.online = tunnelAlive;
+          if (!tunnelAlive) dev.lastSeen = Date.now();
+          saveDb();
+        }
+        console.log(`[reg] device offline: ${deviceId}${tunnels.has(deviceId) ? ' (tunnel still alive)' : ''}`);
       }
     }
   });
@@ -585,6 +888,147 @@ const regServer = net.createServer((sock) => {
 });
 regServer.listen(REG_PORT, HOST, () => {
   console.log(`[farm] registration TCP listener on ${HOST}:${REG_PORT} (JSON lines)`);
+});
+
+// ---- 手机隧道 TCP 监听（Phase 7：跨网络 RFB/命令透传）----
+// 握手阶段用 JSON 行（tunnel_hello → tunnel_ack），握手后切换为帧封装模式
+const tunnelServer = net.createServer((sock) => {
+  let buf = Buffer.alloc(0);
+  let deviceId = null;
+  let dev = null;
+  let framed = false;       // 是否已完成握手进入帧模式
+  let frameBuf = Buffer.alloc(0);  // 帧解析缓冲
+
+  /**
+   * 处理一个完整帧（DATA/CMDACK/PING/PONG）
+   * @param {number} type 帧类型
+   * @param {Buffer} payload 负载
+   * @returns {void}
+   */
+  const handleFrame = (type, payload) => {
+    if (type === FT_DATA) {
+      // RFB 数据：广播到该设备的所有 WS 会话
+      const rec = tunnels.get(deviceId);
+      if (rec) {
+        for (const ws of rec.wsSet) {
+          if (ws.readyState === ws.OPEN) {
+            try { ws.send(payload); } catch { /* ignore */ }
+          }
+        }
+      }
+    } else if (type === FT_CMDACK) {
+      // 命令 ack：按 id 匹配挂起命令
+      let ack;
+      try { ack = JSON.parse(payload.toString('utf8')); } catch { return; }
+      const p = ack && ack.id ? pendingCmds.get(String(ack.id)) : undefined;
+      if (p) {
+        clearTimeout(p.timer);
+        pendingCmds.delete(String(ack.id));
+        p.resolve(ack);
+      }
+    } else if (type === FT_PING) {
+      // 心跳请求：回 PONG（双向保活）
+      writeTunnelFrame(sock, FT_PONG, Buffer.alloc(0));
+    } else if (type === FT_PONG) {
+      // 心跳响应：链路存活即可
+    }
+  };
+
+  /**
+   * 喂入隧道原始字节，解析为帧并处理
+   * @param {Buffer} chunk 原始字节
+   * @returns {void}
+   */
+  const feedFrame = (chunk) => {
+    frameBuf = frameBuf.length ? Buffer.concat([frameBuf, chunk]) : chunk;
+    while (frameBuf.length >= 5) {
+      const type = frameBuf[0];
+      const len = frameBuf.readUInt32BE(1);
+      if (len > 16 * 1024 * 1024) {
+        // 帧过大：异常，断开
+        console.error(`[tunnel] frame too large (${len}) from ${deviceId}, closing`);
+        sock.destroy();
+        return;
+      }
+      if (frameBuf.length < 5 + len) break;  // 不完整，等更多数据
+      const payload = frameBuf.subarray(5, 5 + len);
+      handleFrame(type, payload);
+      frameBuf = frameBuf.subarray(5 + len);
+    }
+  };
+
+  const onData = (chunk) => {
+    if (!framed) {
+      // 握手阶段：行缓冲，等待 tunnel_hello
+      buf = Buffer.concat([buf, chunk]);
+      const nl = buf.indexOf('\n');
+      if (nl < 0) return;
+      const line = buf.slice(0, nl).toString('utf8').trim();
+      buf = buf.slice(nl + 1);
+      sock.off('data', onData);
+      let hello;
+      try { hello = JSON.parse(line); } catch (e) { sock.destroy(); return; }
+      if (hello.type !== 'tunnel_hello' || !hello.deviceId) { sock.destroy(); return; }
+      // 校验 deviceId 是否已注册（可选校验 token）
+      deviceId = hello.deviceId;
+      dev = findDevice(deviceId);
+      if (!dev) {
+        sock.write(JSON.stringify({ type: 'tunnel_ack', ok: false, error: 'device not registered' }) + '\n');
+        sock.destroy();
+        return;
+      }
+      // 注册隧道（同设备重复隧道：关闭旧的）
+      const old = tunnels.get(deviceId);
+      if (old && old.sock !== sock) {
+        try { old.sock.destroy(); } catch { /* noop */ }
+      }
+      tunnels.set(deviceId, { sock, wsSet: new Set() });
+      sock.write(JSON.stringify({ type: 'tunnel_ack', ok: true }) + '\n');
+      framed = true;
+      dev.online = true;
+      dev.lastSeen = Date.now();
+      saveDb();
+      console.log(`[tunnel] established for device ${deviceId} (${dev.name})`);
+      // buf 中剩余字节作为首批帧数据
+      if (buf.length > 0) {
+        feedFrame(buf);
+        buf = Buffer.alloc(0);
+      }
+      // 后续数据走帧解析
+      sock.on('data', feedFrame);
+      sock.on('close', () => {
+        const rec = tunnels.get(deviceId);
+        if (rec && rec.sock === sock) {
+          tunnels.delete(deviceId);
+          // 关闭关联的 WS 会话，避免挂起（客户端可重连）
+          if (rec.wsSet) {
+            for (const ws of rec.wsSet) {
+              try { ws.close(4002, 'tunnel closed'); } catch { /* noop */ }
+            }
+            rec.wsSet.clear();
+          }
+          // 注册通道仍存活则保持在线，否则判离线
+          if (dev) {
+            const regAlive = registeredDevices.has(deviceId);
+            dev.online = regAlive;
+            if (!regAlive) dev.lastSeen = Date.now();
+            saveDb();
+          }
+          console.log(`[tunnel] closed for device ${deviceId}`);
+        }
+      });
+      sock.on('error', () => {
+        if (tunnels.get(deviceId) && tunnels.get(deviceId).sock === sock) {
+          tunnels.delete(deviceId);
+        }
+      });
+    }
+  };
+  sock.on('data', onData);
+  sock.on('error', () => { /* noop */ });
+});
+tunnelServer.listen(TUNNEL_PORT, HOST, () => {
+  console.log(`[farm] tunnel TCP listener on ${HOST}:${TUNNEL_PORT}`);
 });
 
 server.listen(PORT, HOST, () => {

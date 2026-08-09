@@ -16,7 +16,28 @@
       <input type="range" id="zoomRange" min="50" max="220" value="100" />
       <span id="zoomVal">100%</span>
     </label>
+    <!-- 布局切换：横屏1-6列 / 竖屏1-6列（手机端布局按钮，PC 端尺寸调节阀的另一态） -->
+    <div class="layout-switch">
+      <button id="layoutBtn" class="layout-btn" title="布局切换">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg>
+      </button>
+      <div id="layoutMenu" class="layout-menu hidden">
+        <div class="lopt" data-l="h1">横屏 1<span class="chk">✓</span></div>
+        <div class="lopt" data-l="h2">横屏 2<span class="chk">✓</span></div>
+        <div class="lopt" data-l="h3">横屏 3<span class="chk">✓</span></div>
+        <div class="lopt" data-l="h4">横屏 4<span class="chk">✓</span></div>
+        <div class="lopt" data-l="h5">横屏 5<span class="chk">✓</span></div>
+        <div class="lopt" data-l="h6">横屏 6<span class="chk">✓</span></div>
+        <div class="lopt sel" data-l="v2">竖屏 2<span class="chk">✓</span></div>
+        <div class="lopt" data-l="v1">竖屏 1<span class="chk">✓</span></div>
+        <div class="lopt" data-l="v3">竖屏 3<span class="chk">✓</span></div>
+        <div class="lopt" data-l="v4">竖屏 4<span class="chk">✓</span></div>
+        <div class="lopt" data-l="v5">竖屏 5<span class="chk">✓</span></div>
+        <div class="lopt" data-l="v6">竖屏 6<span class="chk">✓</span></div>
+      </div>
+    </div>
     <button id="btnRefresh" title="刷新设备状态">刷新</button>
+    <button id="batchBtn" class="batch-bar hidden" title="对勾选设备批量操作">批量操作 (<span id="batchCount">0</span>)</button>
     <button id="btnAdd" class="primary" title="手动添加设备">+ 添加设备</button>
   </div>
 </header>
@@ -62,9 +83,9 @@
     <div class="ops-menu-title">设备操作</div>
     <div id="opsMenuCap" class="ops-menu-grid"></div>
     <div class="ops-menu-grid" style="margin-top:6px">
-      <button data-op="fit" title="适配">⛶</button>
-      <button data-op="full" title="全屏">🖥️</button>
-      <button data-op="disc" title="断开">⏹</button>
+      <button data-op="fit" title="适配"><span class="cap-icon">⛶</span><span class="cap-name">适配</span></button>
+      <button data-op="full" title="全屏"><span class="cap-icon">🖥️</span><span class="cap-name">全屏</span></button>
+      <button data-op="disc" title="断开"><span class="cap-icon">⏹</span><span class="cap-name">断开</span></button>
     </div>
     <button id="opsExit" class="ops-exit danger">← 退出控制</button>
   </div>
@@ -98,6 +119,6 @@
 <!-- 设备卡片小菜单 -->
 <div id="tileMenu" class="tile-menu hidden"></div>
 
-<script type="module" src="app.js?v=13"></script>
+<script type="module" src="app.js?v=15"></script>
 </body>
 </html>
