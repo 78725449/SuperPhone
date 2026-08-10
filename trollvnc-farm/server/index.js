@@ -338,6 +338,10 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
       try { old.close(4001, 'preempted by another controller'); } catch { /* noop */ }
     }
     tun.controller = ws;
+    // ???????????????? RFB ???????
+    // ? noVNC ? WS ?????????????? RFB ?????????????
+    const rfbStart = Buffer.from(JSON.stringify({ type: 'cmd', cmd: 'rfb.restart', id: 'r' + Date.now().toString(36) }), 'utf8');
+    writeTunnelFrame(tun.sock, FT_CMD, rfbStart);
   }
 
   ws.on('message', (data, isBinary) => {
@@ -888,6 +892,12 @@ const tunnelServer = net.createServer((sock) => {
    */
   const handleFrame = (type, payload) => {
     if (type === FT_DATA) {
+      // DIAG: count FT_DATA frames from device
+      const diag = tunnels.get(deviceId) || {};
+      diag._dataCount = (diag._dataCount || 0) + 1;
+      if (diag._dataCount === 1 || diag._dataCount % 50 === 0) {
+        console.log(`[tunnel] FT_DATA from ${deviceId} count=${diag._dataCount} ws=${(tunnels.get(deviceId)||{wsSet:new Set()}).wsSet.size}`);
+      }
       // RFB data: broadcast to subscribed WS; buffer when no subscriber yet
       // (RFB handshake head), replay on first subscribe so noVNC sees the
       // server version instead of hanging black
