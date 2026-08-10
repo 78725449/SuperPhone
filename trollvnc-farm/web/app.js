@@ -629,7 +629,7 @@ function enterFocus(d) {
   if (window.matchMedia('(max-width: 900px)').matches) $('fab').classList.remove('hidden');
   const grp = $('chkFocusBroadcast').checked ? wallSession : '';
   const broadcast = $('chkFocusBroadcast').checked ? '1' : '';
-  focus = { device: d, rfb: createRfb(stage, d, { grp, broadcast }, $('focusStatus')) };
+  focus = { device: d, rfb: createRfb(stage, d, { grp, broadcast, ctrl: true }, $('focusStatus')) };
   focus.rfb.addEventListener('connect', () => setTimeout(fitFocusPanel, 300));
   setTimeout(fitFocusPanel, 400);
 }
@@ -896,6 +896,7 @@ function createRfb(container, device, opts = {}, statusEl = null) {
   const params = {};
   if (opts.grp) params.grp = opts.grp;
   if (opts.broadcast) params.broadcast = '1';
+  if (opts.ctrl) params.ctrl = '1';
   const uri = wsUrl(`/ws/vnc/${encodeURIComponent(device.id)}`, params);
   const rfb = new RFB(container, uri, {});
   rfb.scaleViewport = true;
@@ -917,7 +918,11 @@ function createRfb(container, device, opts = {}, statusEl = null) {
     applyRatio();
     setTimeout(applyRatio, 300);
   });
-  rfb.addEventListener('disconnect', () => setStatus('已断开'));
+  rfb.addEventListener('disconnect', (e) => {
+    setStatus('已断开');
+    const code = e && e.detail && e.detail.code;
+    if (code === 4001) alert('设备已被其它端接管，已中断控制');
+  });
   rfb.addEventListener('credentialsrequired', () => {
     const p = prompt(`请输入 ${device.name} 的 VNC 密码：`);
     if (p) rfb.sendCredentials({ password: p });

@@ -199,7 +199,7 @@ async function probeAll() {
 
 // ---------- 广播组（群控）：会话 -> 组 ----------
 const sessionsByDevice = new Map();   // deviceId -> Set<ws>
-const sessionGroup = new Map();       // ws -> groupName
+const sessionGroup = new Map();       // ws -> { group, deviceId }???????????
 const sessionBroadcaster = new Map(); // ws -> true
 const registeredDevices = new Map(); // deviceId -> { sock, lastHeartbeat }
 // Phase 7：设备隧道连接（deviceId -> { sock, wsSet }），跨网络 RFB 透传 + 命令复用
@@ -293,101 +293,67 @@ function getDeviceSessions(deviceId) {
 // 把上游输入字节广播给同组的其它会话（写往它们各自的 TCP 连接）
 function broadcastInput(fromWs, groupName, data) {
   if (!groupName) return;
-  for (const [ws, grp] of sessionGroup) {
-    if (ws === fromWs || grp !== groupName) continue;
-    if (ws.sock && ws.sock.writable) {
-      try { ws.sock.write(data); } catch { /* ignore */ }
+  for (const [ws, info] of sessionGroup) {
+    if (ws === fromWs || !info || info.group !== groupName) continue;
+    const targetTun = tunnels.get(info.deviceId);
+    if (targetTun && targetTun.sock && !targetTun.sock.destroyed && targetTun.sock.writable) {
+      try { writeTunnelFrame(targetTun.sock, FT_DATA, data); } catch { /* ignore */ }
     }
   }
 }
 
 // ---------- WebSocket <-> VNC 桥接 ----------
-function handleVncSocket(ws, req, deviceId, grp, isBroadcast) {
+function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
   const dev = findDevice(deviceId);
   if (!dev) {
     ws.close(4004, 'device not found');
     return;
   }
+  // ????????????????/??????????????????
+  const tun = tunnels.get(deviceId);
+  if (!tun || !tun.sock || tun.sock.destroyed || !tun.sock.writable) {
+    ws.close(4003, 'no tunnel: device not registered');
+    return;
+  }
   if (isBroadcast) sessionBroadcaster.set(ws, true);
-  if (grp) sessionGroup.set(ws, grp);
+  if (grp) sessionGroup.set(ws, { group: grp, deviceId });
   const sessions = getDeviceSessions(deviceId);
   sessions.add(ws);
 
-  // Phase 7：优先走隧道（跨网络），隧道不可用回退直连 dev.host:dev.port
-  const tun = tunnels.get(deviceId);
-  if (tun && tun.sock && !tun.sock.destroyed && tun.sock.writable) {
-    tun.wsSet.add(ws);
-    ws.sock = null;  // 标记走隧道（无直连 TCP）
-    console.log(`[vnc] tunnel bridge ${dev.name} (${deviceId}) grp=${grp || '-'}${isBroadcast ? ' MASTER' : ''}`);
-    ws.on('message', (data, isBinary) => {
-      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-      writeTunnelFrame(tun.sock, FT_DATA, buf);
-      if (isBroadcast && grp) broadcastInput(ws, grp, buf);
-    });
-    ws.on('close', () => {
-      sessions.delete(ws);
-      sessionGroup.delete(ws);
-      sessionBroadcaster.delete(ws);
-      tun.wsSet.delete(ws);
-    });
-    ws.on('error', () => {
-      sessions.delete(ws);
-      sessionGroup.delete(ws);
-      sessionBroadcaster.delete(ws);
-      tun.wsSet.delete(ws);
-    });
-    return;
+  // ??????? WS ???????? viewOnly ??? + ?????? DATA ???? wsSet
+  tun.wsSet.add(ws);
+  ws.isController = !!isCtrl;
+  console.log(`[vnc] tunnel bridge ${dev.name} (${deviceId}) ctrl=${isCtrl ? 'YES' : 'viewOnly'} grp=${grp || '-'}${isBroadcast ? ' MASTER' : ''}`);
+
+  // ?????????????????????
+  if (isCtrl) {
+    const old = tun.controller;
+    if (old && old !== ws && old.readyState === old.OPEN) {
+      try { old.close(4001, 'preempted by another controller'); } catch { /* noop */ }
+    }
+    tun.controller = ws;
   }
-
-  // 回退：直连设备 RFB
-  const sock = net.connect({ host: dev.host, port: dev.port });
-  ws.sock = sock;
-
-  sock.once('connect', () => {
-    console.log(`[vnc] connected ${dev.name} (${dev.host}:${dev.port}) grp=${grp || '-'}${isBroadcast ? ' MASTER' : ''}`);
-  });
-  sock.on('data', (buf) => {
-    if (ws.readyState === ws.OPEN) ws.send(buf);
-  });
-  sock.on('error', (err) => {
-    console.error(`[vnc] tcp error ${dev.name}:`, err.message);
-    try { ws.close(4003, 'tcp error'); } catch { /* noop */ }
-  });
-  sock.on('close', () => {
-    try { ws.close(4002, 'tcp closed'); } catch { /* noop */ }
-  });
 
   ws.on('message', (data, isBinary) => {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    if (sock.writable) {
-      try { sock.write(buf); } catch { /* ignore */ }
-    }
+    // ???? / ???? ????????viewOnly ????????????
+    const canWrite = isCtrl || (isBroadcast && grp);
+    if (!canWrite) return;
+    writeTunnelFrame(tun.sock, FT_DATA, buf);
     if (isBroadcast && grp) broadcastInput(ws, grp, buf);
   });
-  ws.on('close', () => {
+
+  const cleanup = () => {
     sessions.delete(ws);
     sessionGroup.delete(ws);
     sessionBroadcaster.delete(ws);
-    try { sock.destroy(); } catch { /* noop */ }
-  });
-  ws.on('error', () => {
-    sessions.delete(ws);
-    sessionGroup.delete(ws);
-    sessionBroadcaster.delete(ws);
-    try { sock.destroy(); } catch { /* noop */ }
-  });
+    tun.wsSet.delete(ws);
+    if (tun.controller === ws) tun.controller = null;
+  };
+  ws.on('close', cleanup);
+  ws.on('error', cleanup);
 }
 
-// ---------- AI 工具 WS 控制端点（Phase 4.8）----------
-/**
- * 处理 AI 工具 WS 控制端点 /ws/control/:id
- * 接收 JSON 行命令（ping/query/invoke/set/restart），经 sendDeviceCmd 转发到设备命令通道，
- * 并把设备 ACK 透传回客户端。供 AI 工具/自动化系统通过单条 WS 连接流式调用设备能力。
- * @param {WebSocket} ws       WebSocket 连接实例
- * @param {object} req         HTTP 升级请求（鉴权已在 wss connection 顶层完成）
- * @param {string} deviceId    目标设备 ID
- * @returns {void}
- */
 function handleControlSocket(ws, req, deviceId) {
   const dev = findDevice(deviceId);
   if (!dev) {
@@ -763,7 +729,8 @@ wss.on('connection', (ws, req) => {
     const deviceId = decodeURIComponent(m[1]);
     const grp = url.searchParams.get('grp') || '';
     const isBroadcast = url.searchParams.get('broadcast') === '1';
-    handleVncSocket(ws, req, deviceId, grp, isBroadcast);
+    const isCtrl = url.searchParams.get('ctrl') === '1';
+    handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl);
     return;
   }
   // Phase 4.8：AI 工具 WS 控制端点 /ws/control/:id
@@ -982,7 +949,7 @@ const tunnelServer = net.createServer((sock) => {
       if (old && old.sock !== sock) {
         try { old.sock.destroy(); } catch { /* noop */ }
       }
-      tunnels.set(deviceId, { sock, wsSet: new Set() });
+      tunnels.set(deviceId, { sock, wsSet: new Set(), controller: null });
       sock.write(JSON.stringify({ type: 'tunnel_ack', ok: true }) + '\n');
       framed = true;
       dev.online = true;
