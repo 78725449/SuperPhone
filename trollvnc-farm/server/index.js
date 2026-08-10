@@ -322,6 +322,12 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
 
   // ??????? WS ???????? viewOnly ??? + ?????? DATA ???? wsSet
   tun.wsSet.add(ws);
+  // ???????????? RFB ????
+  if (tun.pending && tun.pending.length) {
+    const p = tun.pending;
+    tun.pending = Buffer.alloc(0);
+    try { ws.send(p); } catch { /* ignore */ }
+  }
   ws.isController = !!isCtrl;
   console.log(`[vnc] tunnel bridge ${dev.name} (${deviceId}) ctrl=${isCtrl ? 'YES' : 'viewOnly'} grp=${grp || '-'}${isBroadcast ? ' MASTER' : ''}`);
 
@@ -781,11 +787,17 @@ const regServer = net.createServer((sock) => {
   let deviceId = null;
   let dev = null;
   const remoteIp = (sock.remoteAddress || '').replace(/^::ffff:/, '');
+  console.log(`[reg] TCP connection from ${remoteIp}`);
   const send = (obj) => { try { sock.write(JSON.stringify(obj) + '\n'); } catch { /* noop */ } };
   const handleLine = (line) => {
     let msg;
-    try { msg = JSON.parse(line); } catch { return; }
+    try { msg = JSON.parse(line); } catch (e) {
+      console.log(`[reg] unparseable line from ${remoteIp}: ${JSON.stringify(line.slice(0, 200))}`);
+      return;
+    }
+    console.log(`[reg] line from ${remoteIp}: ${JSON.stringify(line.slice(0, 200))}`);
     if (msg.type === 'register' && msg.deviceId) {
+      console.log(`[reg] register received deviceId=${msg.deviceId} name=${String(msg.name || '')} vncPort=${msg.vncPort}`);
       deviceId = msg.deviceId;
       dev = upsertRegistered({
         id: deviceId,
@@ -860,6 +872,8 @@ regServer.listen(REG_PORT, HOST, () => {
 // ---- 手机隧道 TCP 监听（Phase 7：跨网络 RFB/命令透传）----
 // 握手阶段用 JSON 行（tunnel_hello → tunnel_ack），握手后切换为帧封装模式
 const tunnelServer = net.createServer((sock) => {
+  const tunRemote = (sock.remoteAddress || '').replace(/^::ffff:/, '');
+  console.log(`[tunnel] TCP connection from ${tunRemote}`);
   let buf = Buffer.alloc(0);
   let deviceId = null;
   let dev = null;
@@ -874,16 +888,26 @@ const tunnelServer = net.createServer((sock) => {
    */
   const handleFrame = (type, payload) => {
     if (type === FT_DATA) {
-      // RFB 数据：广播到该设备的所有 WS 会话
+      // RFB data: broadcast to subscribed WS; buffer when no subscriber yet
+      // (RFB handshake head), replay on first subscribe so noVNC sees the
+      // server version instead of hanging black
       const rec = tunnels.get(deviceId);
       if (rec) {
-        for (const ws of rec.wsSet) {
-          if (ws.readyState === ws.OPEN) {
-            try { ws.send(payload); } catch { /* ignore */ }
+        if (rec.wsSet.size > 0) {
+          rec.pending = Buffer.alloc(0);
+          for (const ws of rec.wsSet) {
+            if (ws.readyState === ws.OPEN) {
+              try { ws.send(payload); } catch { /* ignore */ }
+            }
+          }
+        } else {
+          rec.pending = Buffer.concat([rec.pending, payload]);
+          if (rec.pending.length > 64 * 1024) {
+            rec.pending = rec.pending.subarray(rec.pending.length - 64 * 1024);
           }
         }
       }
-    } else if (type === FT_CMDACK) {
+        } else if (type === FT_CMDACK) {
       // 命令 ack：按 id 匹配挂起命令
       let ack;
       try { ack = JSON.parse(payload.toString('utf8')); } catch { return; }
@@ -949,7 +973,7 @@ const tunnelServer = net.createServer((sock) => {
       if (old && old.sock !== sock) {
         try { old.sock.destroy(); } catch { /* noop */ }
       }
-      tunnels.set(deviceId, { sock, wsSet: new Set(), controller: null });
+      tunnels.set(deviceId, { sock, wsSet: new Set(), controller: null, pending: Buffer.alloc(0) });
       sock.write(JSON.stringify({ type: 'tunnel_ack', ok: true }) + '\n');
       framed = true;
       dev.online = true;

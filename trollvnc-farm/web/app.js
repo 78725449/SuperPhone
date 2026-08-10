@@ -181,14 +181,14 @@ function startWallRfb(inst) {
     if (inst.paused || inst.rfb.closed) return;
     try {
       const r = await invokeCap('', inst.device.id, 'screenshot', {});
-      const result = r && r.ack && r.ack.result;
-      const b64 = result && (result.image || result.base64);
+      const ack = (r && r.ack) || {};
+      const b64 = ack.image || ack.base64;
       if (b64) {
         tv.innerHTML = `<img class="thumb" src="data:image/jpeg;base64,${b64}" alt="" />`;
         if (inst.statusEl) inst.statusEl.textContent = '';
-        if (inst.tile && result.width && result.height) {
-          inst.tile.style.setProperty('--tile-ratio', result.width + ' / ' + result.height);
-          inst.tile.dataset.wh = result.width + 'x' + result.height;
+        if (inst.tile && ack.width && ack.height) {
+          inst.tile.style.setProperty('--tile-ratio', ack.width + ' / ' + ack.height);
+          inst.tile.dataset.wh = ack.width + 'x' + ack.height;
         }
       }
     } catch (e) {
