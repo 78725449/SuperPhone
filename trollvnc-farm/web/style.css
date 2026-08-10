@@ -150,7 +150,13 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 .tile.focused-tile { display: none; }
 .tile.tile-offline { opacity: .55; }
 .tile.tile-offline .tv { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; }
-.offline-ph { text-align: center; }
+.offline-ph {
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 2px 4px;
+  line-height: 1.4;
+}
 
 /* 移动端悬浮操作簇 */
 .fab {
