@@ -167,34 +167,53 @@ function startWallRfb(inst) {
   if (!inst || inst.paused || inst.rfb) return;
   const tv = inst.tile.querySelector('.tv');
   if (!tv) return;
-  // 只走隧道：未注册（无隧道）设备不发起 RFB，直接显示占位
+  // ???????????????????????
   if (inst.device.source !== 'register') {
     tv.innerHTML = '<div class="offline-ph">未注册 · 请先配置网关</div>';
     if (inst.statusEl) inst.statusEl.textContent = '未注册';
     return;
   }
-  tv.innerHTML = '<div class="offline-ph">连接中…</div>';
-  inst.rfb = createRfb(tv, inst.device, { viewOnly: true, tile: inst.tile }, inst.statusEl);
-  inst.rfb.addEventListener('disconnect', (e) => {
-    if (inst.paused) return; // 进入 focus 时主动断开，不算失败
-    const code = e && e.detail && e.detail.code;
-    const msg = code === 4003 ? '未注册 · 待配置网关' : '连接失败';
-    const tv2 = inst.tile.querySelector('.tv');
-    if (tv2) tv2.innerHTML = `<div class="offline-ph">${msg}</div>`;
-    if (inst.statusEl) inst.statusEl.textContent = msg;
-    inst.rfb = null;
-  });
+  // ?????? = ??????? RFB ???????? RFB ????
+  // ?? noVNC ???????????/???????????????? RFB ??
+  tv.innerHTML = '<div class="offline-ph">加载中…</div>';
+  inst.rfb = { kind: 'screenshot', timer: null, closed: false };
+  const tick = async () => {
+    if (inst.paused || inst.rfb.closed) return;
+    try {
+      const r = await invokeCap('', inst.device.id, 'screenshot', {});
+      const result = r && r.ack && r.ack.result;
+      const b64 = result && (result.image || result.base64);
+      if (b64) {
+        tv.innerHTML = `<img class="thumb" src="data:image/jpeg;base64,${b64}" alt="" />`;
+        if (inst.statusEl) inst.statusEl.textContent = '';
+        if (inst.tile && result.width && result.height) {
+          inst.tile.style.setProperty('--tile-ratio', result.width + ' / ' + result.height);
+          inst.tile.dataset.wh = result.width + 'x' + result.height;
+        }
+      }
+    } catch (e) {
+      if (inst.statusEl) inst.statusEl.textContent = '截图失败';
+    } finally {
+      if (!inst.paused && !inst.rfb.closed) {
+        const iv = (inst.device.configs && inst.device.configs.ThumbInterval) || 5;
+        inst.rfb.timer = setTimeout(tick, Math.max(1, Number(iv) || 5) * 1000);
+      }
+    }
+  };
+  tick();
 }
 
-/**
- * 停止卡片墙 RFB 连接（Phase 12.1，v2.3 恢复）
- * 功能：断开卡片墙的 RFB 连接并清空 tv 容器；进入 focus 视图或设备离线时调用。
- * @param {object} inst 卡片墙实例 { rfb, tile }
- * @returns {void}
- */
 function stopWallRfb(inst) {
   if (!inst) return;
-  if (inst.rfb) { closeRfb(inst.rfb); inst.rfb = null; }
+  if (inst.rfb) {
+    if (inst.rfb.kind === 'screenshot') {
+      inst.rfb.closed = true;
+      if (inst.rfb.timer) clearTimeout(inst.rfb.timer);
+    } else {
+      closeRfb(inst.rfb);
+    }
+    inst.rfb = null;
+  }
   const tv = inst.tile && inst.tile.querySelector('.tv');
   if (tv) tv.innerHTML = '';
 }
@@ -1195,7 +1214,7 @@ $('chkFocusBroadcast').onchange = () => {
   stage.className = 'focus-stage';
   $('focusScreen').innerHTML = '';
   $('focusScreen').appendChild(stage);
-  focus.rfb = createRfb(stage, d, { grp, broadcast }, $('focusStatus'));
+  focus.rfb = createRfb(stage, d, { grp, broadcast, ctrl: true }, $('focusStatus'));
   focus.rfb.addEventListener('connect', () => setTimeout(fitFocusPanel, 300));
   setTimeout(fitFocusPanel, 400);
 };
