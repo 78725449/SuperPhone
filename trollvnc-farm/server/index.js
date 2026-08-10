@@ -321,12 +321,11 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
   sessions.add(ws);
 
   // ??????? WS ???????? viewOnly ??? + ?????? DATA ???? wsSet
-  tun.wsSet.add(ws);
-  // ???????????? RFB ????
+  // ???????????? RFB ?????? RFB ??????????????
   if (tun.pending && tun.pending.length) {
-    const p = tun.pending;
+    const pv = tun.pending;
     tun.pending = Buffer.alloc(0);
-    try { ws.send(p); } catch { /* ignore */ }
+    try { ws.send(pv); } catch { /* ignore */ }
   }
   ws.isController = !!isCtrl;
   console.log(`[vnc] tunnel bridge ${dev.name} (${deviceId}) ctrl=${isCtrl ? 'YES' : 'viewOnly'} grp=${grp || '-'}${isBroadcast ? ' MASTER' : ''}`);
@@ -338,9 +337,8 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
       try { old.close(4001, 'preempted by another controller'); } catch { /* noop */ }
     }
     tun.controller = ws;
-    // ???????????????? RFB ???????
-    // ? noVNC ? WS ?????????????? RFB ?????????????
-    const rfbStart = Buffer.from(JSON.stringify({ type: 'cmd', cmd: 'rfb.restart', id: 'r' + Date.now().toString(36) }), 'utf8');
+    // ???????????????? 5901?RFB ?????????????? noVNC?
+    const rfbStart = Buffer.from(JSON.stringify({ type: 'cmd', cmd: 'rfb.start', id: 's' + Date.now().toString(36) }), 'utf8');
     writeTunnelFrame(tun.sock, FT_CMD, rfbStart);
   }
 
@@ -349,7 +347,8 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
     // ???? / ???? ????????viewOnly ????????????
     const canWrite = isCtrl || (isBroadcast && grp);
     if (!canWrite) return;
-    writeTunnelFrame(tun.sock, FT_DATA, buf);
+    const ok = writeTunnelFrame(tun.sock, FT_DATA, buf);
+    console.log(`[vnc] ws->tunnel ${deviceId} bytes=${buf.length} wrote=${ok}`);
     if (isBroadcast && grp) broadcastInput(ws, grp, buf);
   });
 
@@ -358,7 +357,14 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
     sessionGroup.delete(ws);
     sessionBroadcaster.delete(ws);
     tun.wsSet.delete(ws);
-    if (tun.controller === ws) tun.controller = null;
+    if (tun.controller === ws) {
+      tun.controller = null;
+      // ????????????? 5901?????????????????
+      if (tun.sock && !tun.sock.destroyed && tun.sock.writable) {
+        const rfbStop = Buffer.from(JSON.stringify({ type: 'cmd', cmd: 'rfb.stop', id: 'e' + Date.now().toString(36) }), 'utf8');
+        try { writeTunnelFrame(tun.sock, FT_CMD, rfbStop); } catch { /* noop */ }
+      }
+    }
   };
   ws.on('close', cleanup);
   ws.on('error', cleanup);
@@ -918,16 +924,17 @@ const tunnelServer = net.createServer((sock) => {
         }
       }
         } else if (type === FT_CMDACK) {
-      // 命令 ack：按 id 匹配挂起命令
+      // cmd ack: match pending cmds
       let ack;
       try { ack = JSON.parse(payload.toString('utf8')); } catch { return; }
+      console.log(`[tunnel] FT_CMDACK from ${deviceId} cmd=${ack && ack.cmd} ok=${ack && ack.ok}`);
       const p = ack && ack.id ? pendingCmds.get(String(ack.id)) : undefined;
       if (p) {
         clearTimeout(p.timer);
         pendingCmds.delete(String(ack.id));
         p.resolve(ack);
       }
-    } else if (type === FT_PING) {
+        } else if (type === FT_PING) {
       // 心跳请求：回 PONG（双向保活）
       writeTunnelFrame(sock, FT_PONG, Buffer.alloc(0));
     } else if (type === FT_PONG) {
