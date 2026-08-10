@@ -167,13 +167,21 @@ function startWallRfb(inst) {
   if (!inst || inst.paused || inst.rfb) return;
   const tv = inst.tile.querySelector('.tv');
   if (!tv) return;
+  // 只走隧道：未注册（无隧道）设备不发起 RFB，直接显示占位
+  if (inst.device.source !== 'register') {
+    tv.innerHTML = '<div class="offline-ph">未注册 · 请先配置网关</div>';
+    if (inst.statusEl) inst.statusEl.textContent = '未注册';
+    return;
+  }
   tv.innerHTML = '<div class="offline-ph">连接中…</div>';
   inst.rfb = createRfb(tv, inst.device, { viewOnly: true, tile: inst.tile }, inst.statusEl);
-  inst.rfb.addEventListener('disconnect', () => {
+  inst.rfb.addEventListener('disconnect', (e) => {
     if (inst.paused) return; // 进入 focus 时主动断开，不算失败
+    const code = e && e.detail && e.detail.code;
+    const msg = code === 4003 ? '未注册 · 待配置网关' : '连接失败';
     const tv2 = inst.tile.querySelector('.tv');
-    if (tv2) tv2.innerHTML = '<div class="offline-ph">跨网络不可达</div>';
-    inst.statusEl.textContent = '跨网络不可达';
+    if (tv2) tv2.innerHTML = `<div class="offline-ph">${msg}</div>`;
+    if (inst.statusEl) inst.statusEl.textContent = msg;
     inst.rfb = null;
   });
 }
@@ -596,6 +604,8 @@ function enterFocus(d) {
   if (focus && focus.device.id === d.id) return;
   if (focus) exitFocus();
   if (d.online === false) { alert(`设备「${d.name}」离线，请唤醒手机后重试`); return; }
+  // 只走隧道：未注册设备不可控制
+  if (d.source !== 'register') { alert('设备未注册（无隧道），请先在手机 App 配置网关完成注册'); return; }
 
   // 预置面板宽度（用墙卡片已知的设备比例），避免“先宽后窄”闪烁
   const wallInst = wallInstances.get(d.id);
