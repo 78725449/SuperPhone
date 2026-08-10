@@ -135,6 +135,10 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 .tile:hover { border-color: var(--accent); }
 .tile .tv { position: relative; flex: 1; min-width: 0; }
 .tile canvas { position: absolute; left: 0; top: 0; pointer-events: none; }
+.tile .thumb {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  object-fit: cover; pointer-events: none; background: #000;
+}
 .tile .tile-bar {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 4;
   display: flex; align-items: center; gap: 6px;
