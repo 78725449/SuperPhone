@@ -922,6 +922,7 @@ function createRfb(container, device, opts = {}, statusEl = null) {
     setStatus('已断开');
     const code = e && e.detail && e.detail.code;
     if (code === 4001) alert('设备已被其它端接管，已中断控制');
+    else if (code === 4003) alert('设备未注册（无隧道），无法控制。请在手机 App 中配置网关并完成注册');
   });
   rfb.addEventListener('credentialsrequired', () => {
     const p = prompt(`请输入 ${device.name} 的 VNC 密码：`);
