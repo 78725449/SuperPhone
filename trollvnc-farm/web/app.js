@@ -1003,7 +1003,8 @@ function openEdit(d) {
 }
 // 设备详情（能力清单只读：能力/配置/屏幕/httpPort/上次在线）
 function openDetail(d) {
-  const caps = deviceCaps(d).map((c) => (CAP_META[c] && CAP_META[c].label) || c).join('、') || '—';
+  // deviceCaps 返回元数据对象数组，取 title（无则 id）作为展示名
+  const caps = deviceCaps(d).map((c) => (c && (c.title || c.id)) || '?').join('、') || '—';
   const cfg = (d.configs && typeof d.configs === 'object') ? d.configs : {};
   const cfgRows = Object.entries(cfg).map(([k, v]) => '<tr><td>' + escapeHtml(k) + '</td><td>' + escapeHtml(String(v)) + '</td></tr>').join('') || '<tr><td colspan="2">未上报</td></tr>';
   $('detailTitle').textContent = d.name || d.id;
