@@ -29,9 +29,10 @@ export function attachPress(element, keyDef, opts = {}) {
     // 有 double/triple 才启用多击窗口
     if (events.double || events.triple) {
       clearTimeout(clickTimer);
-      const need = events.triple ? 3 : 2;
       clickTimer = setTimeout(() => {
-        if (pressCount >= need) fire(events.triple ? 'triple' : 'double');
+        // 分级判定：达到三击阈值触发 triple，否则达双击阈值触发 double，否则按单击
+        if (events.triple && pressCount >= 3) fire('triple');
+        else if (events.double && pressCount >= 2) fire('double');
         else fire('click');
         pressCount = 0;
       }, DOUBLE_MS);

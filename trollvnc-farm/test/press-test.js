@@ -59,6 +59,13 @@ function pressHold(el, t, holdMs) {
   await new Promise((r) => setTimeout(r, 400));
   check('power 三击识别为 power.triple', calls.includes('power.triple') && !calls.includes('power'));
 
+  calls.length = 0;
+  const el6 = makeEl();
+  attachPress(el6, { events: { click: 'power', double: 'power.double', triple: 'power.triple', long: 'power.long' } }, { invoke: (id) => calls.push(id) });
+  await press(el6, 0); await press(el6, 120);        // 两次快速点击 → double（非 triple）
+  await new Promise((r) => setTimeout(r, 400));
+  check('power 双击识别为 power.double', calls.includes('power.double') && !calls.includes('power.triple'));
+
   console.log(failures === 0 ? '\nALL PRESS TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 })();
