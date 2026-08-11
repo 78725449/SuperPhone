@@ -1236,10 +1236,11 @@ function doOp(op) {
 
 /**
  * 显示设备配置面板：拉取当前配置值 + 按 schema 渲染表单 + 按 reload 分区
+ * @param {object} [device] 目标设备对象；缺省时回退到全局 focus 设备（控制台场景）
  */
-async function showConfigPanel() {
-  if (!focus || !focus.device) return;
-  const dev = focus.device;
+async function showConfigPanel(device) {
+  const dev = device || (focus && focus.device);
+  if (!dev) return;
   const modal = document.createElement('div');
   modal.className = 'modal';
   const card = document.createElement('div');
@@ -1256,7 +1257,7 @@ async function showConfigPanel() {
   } catch (e) { /* ignore */ }
 
   // 按 reload 分区渲染表单
-  const groups = configSchemaByReload({ configSchema: focus.configSchema });
+  const groups = configSchemaByReload({ configSchema: dev.configSchema || [] });
   const inputs = {};
   for (const [reload, items] of Object.entries(groups)) {
     if (items.length === 0) continue;
@@ -1479,8 +1480,8 @@ function openDetail(d) {
 
 /**
  * 显示卡片右下角⋯菜单（Phase 10.3：按 category 分组，能力+管理操作合并）
- * 菜单分两段：上半段为设备能力（按 category 分组渲染，点击调用 doInvoke）；
- * 下半段为管理操作（查看/控制、详情、编辑、测试在线、删除）。
+ * 菜单分两段：上半段为设备能力（menuCaps('tile') 按 category 分组渲染，点击调用 doInvoke）；
+ * 下半段为管理操作（查看/控制、详情、编辑、测试在线、⚙ 设备配置、删除）。
  * @param {HTMLElement} tile 卡片元素（用于定位菜单）
  * @param {object} d 设备对象
  * @param {number} x 点击位置 clientX
@@ -1491,8 +1492,8 @@ function showTileMenu(tile, d, x, y) {
   const m = $('tileMenu');
   m.innerHTML = '';
 
-  // 1) 能力分组（按 category 分组渲染，Phase 10.3）
-  const grouped = groupByCategory(deviceCaps(d));
+  // 1) 能力分组（menuCaps('tile') 排除 internal 原语，Phase 1 任务 6）
+  const grouped = groupByCategory(menuCaps(d, 'tile'));
   let groupIdx = 0;
   for (const [cat, metas] of grouped) {
     if (groupIdx > 0) {
@@ -1530,6 +1531,7 @@ function showTileMenu(tile, d, x, y) {
     ['detail', '详情'],
     ['edit', '编辑'],
     ['ping', '测试在线'],
+    ['config', '⚙ 设备配置'],
     ['del', '删除'],
   ]) {
     const b = document.createElement('button');
@@ -1555,7 +1557,8 @@ function showTileMenu(tile, d, x, y) {
         alert(`${d.name}: ${r.online ? '在线' : '离线'}`);
         await refreshDevices();
       } catch (err) { alert('测试失败: ' + err.message); }
-    } else if (a === 'del') {
+    } else if (a === 'config') showConfigPanel(d);
+    else if (a === 'del') {
       if (confirm(`删除设备 ${d.name}？`)) {
         await api(`/api/devices/${encodeURIComponent(d.id)}`, { method: 'DELETE' });
         const inst = wallInstances.get(d.id);
