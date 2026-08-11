@@ -175,3 +175,47 @@ export async function batchRestart(apiBase, deviceIds) {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+/** 按键对象清单（07 §3.1/§4.1）：events 引用设备端能力 id，前端按按压模式翻译 */
+export const KEY_DEFS = [
+  { key: 'home',    title: 'Home 键',  icon: '🏠', events: { click: 'home',           double: 'home.double',   long: 'home.long' } },
+  { key: 'power',   title: '电源',     icon: '⏻',  events: { click: 'power',          double: 'power.double',  triple: 'power.triple', long: 'power.long' } },
+  { key: 'volup',   title: '音量 +',   icon: '🔊', events: { click: 'volup',          down: 'volup.down',      up: 'volup.up' } },
+  { key: 'voldn',   title: '音量 −',   icon: '🔉', events: { click: 'voldn',          down: 'voldn.down',      up: 'voldn.up' } },
+  { key: 'mute',    title: '静音',     icon: '🔇', events: { click: 'mute',           down: 'mute.down',       up: 'mute.up' } },
+  { key: 'briup',   title: '亮度 +',   icon: '☀️', events: { click: 'briup',          down: 'briup.down',      up: 'briup.up' } },
+  { key: 'bridn',   title: '亮度 −',   icon: '🌙', events: { click: 'bridn',          down: 'bridn.down',      up: 'bridn.up' } },
+  { key: 'keyboard',title: '键盘',     icon: '⌨️', events: { click: 'keyboard' } },
+  { key: 'spotlight',title: '搜索',    icon: '🔍', events: { click: 'spotlight' } },
+  { key: 'snapshot',title: 'Home+Power截屏', icon: '📸', events: { click: 'snapshot' } },
+  { key: 'hwlock',  title: '键盘锁/解锁', icon: '🔒', events: { click: 'hwlock' } },
+  { key: 'releasekeys', title: '释放按键', icon: '🙊', events: { click: 'releasekeys' } },
+];
+
+/** 动作区固定能力 id（07 §4.1，从设备 capMetadata 取元数据渲染） */
+export const ACTION_CAPS = ['type.text', 'type.paste', 'clipboard.get', 'clipboard.set', 'screenshot'];
+
+/**
+ * 按场景过滤设备能力（07 §3.3/§4）
+ * @param device 设备对象
+ * @param scope 'console' 控制台侧边栏/悬浮 | 'tile' 卡片菜单 | 'batch' 批量
+ * @returns 过滤后的能力元数据数组
+ */
+export function menuCaps(device, scope) {
+  const caps = deviceCaps(device);
+  const byId = new Map(caps.filter((c) => c && c.id).map((c) => [c.id, c]));
+  if (scope === 'console') {
+    // 按键区：KEY_DEFS 的 events 引用的能力；动作区：ACTION_CAPS
+    const ids = [...KEY_DEFS.flatMap((k) => Object.values(k.events)), ...ACTION_CAPS];
+    return ids.map((id) => byId.get(id)).filter(Boolean);
+  }
+  if (scope === 'tile') {
+    return caps.filter((c) => c && c.menu !== 'internal');
+  }
+  if (scope === 'batch') {
+    return caps.filter((c) =>
+      c && c.menu !== 'internal' && c.category !== 'touch' && c.category !== 'stylus'
+      && !/screenshot|screen\.|clipboard|type\./i.test(c.id));
+  }
+  return caps;
+}
