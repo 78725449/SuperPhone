@@ -1,4 +1,4 @@
-// TrollVNC 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
+// SuperPhone 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
 import RFB from '/novnc/core/rfb.js';
 import { deviceCaps, configSchemaByReload, invokeCap, setConfigs, RELOAD_LABELS, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS } from './caps.js';
 
@@ -37,6 +37,7 @@ let wallSession = 'wall-' + Date.now();
 let wallInstances = new Map();   // deviceId -> { rfb, tile, statusEl, paused }
 let focus = null;                // { device, rfb }
 let selectedDevices = new Set(); // 批量操作选中的设备 ID 集合（Phase 10.2）
+let fabSigTimer = null;          // 移动端 FAB 延迟轮询定时器
 
 // ---------- login ----------
 function showLogin() {
@@ -45,7 +46,7 @@ function showLogin() {
   wrap.id = 'loginBox';
   wrap.className = 'login';
   wrap.innerHTML = `
-    <h3>TrollVNC 群控台</h3>
+    <h3>SuperPhone 群控台</h3>
     <input id="loginToken" type="password" placeholder="访问令牌 (FARM_TOKEN)" />
     <button id="btnLogin" class="primary">进入</button>`;
   document.body.prepend(wrap);
@@ -61,9 +62,77 @@ function escapeHtml(s) {
 }
 
 // ---------- 设备墙（实时画面卡片） ----------
+/**
+ * 生成虚拟预览设备：用于本地查看卡片墙布局与多数比例自适应效果。
+ * 比例分布：9:16 占多数（体现自适应选型），另含 16:9 / 3:4 / 20:9（体现 contain 黑边）。
+ * @param {number} n 生成的虚拟设备数量
+ * @returns {object[]} 虚拟设备数组（mock:true 标记，不参与真实拉流/批量操作）
+ */
+function makeMockDevices(n) {
+  const sizes = [
+    { w: 1080, h: 1920 }, { w: 1080, h: 1920 }, { w: 1080, h: 1920 }, // 9:16 占多数
+    { w: 1920, h: 1080 }, { w: 1620, h: 2160 }, { w: 1080, h: 2400 }, // 16:9 / 3:4 / 20:9
+  ];
+  const arr = [];
+  for (let i = 0; i < n; i++) {
+    const s = sizes[i % sizes.length];
+    arr.push({
+      id: 'mock-' + (i + 1),
+      name: '测试设备 ' + (i + 1),
+      online: true,
+      source: 'register',
+      mock: true,
+      screen: { width: s.w, height: s.h },
+      caps: [], configSchema: [], lastSeen: Date.now(),
+    });
+  }
+  return arr;
+}
+const MOCK_COUNT = 30;  // 虚拟预览设备数量，置 0 即关闭预览
+const MOCK_DEVICES = makeMockDevices(MOCK_COUNT);
+
+/**
+ * 渲染虚拟设备占位画面：按设备屏幕尺寸生成等比 SVG 色块画面，
+ * 复用 .thumb 的 object-fit:contain，直观展示不同比例在统一卡片中的黑边效果。
+ * @param {HTMLElement} tv 卡片 .tv 容器元素
+ * @param {object} d 虚拟设备对象（mock:true）
+ * @returns {void}
+ */
+function renderMockScreen(tv, d) {
+  const w = (d.screen && d.screen.width) || 1080;
+  const h = (d.screen && d.screen.height) || 1920;
+  const fs = Math.round(Math.min(w, h) / 16);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
+    `<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">` +
+    `<stop offset="0" stop-color="#1c2a44"/><stop offset="1" stop-color="#35527f"/>` +
+    `</linearGradient></defs>` +
+    `<rect width="${w}" height="${h}" fill="url(#g)"/>` +
+    `<rect x="2" y="2" width="${w - 4}" height="${h - 4}" fill="none" stroke="#4a6ea8" stroke-width="${Math.max(3, Math.round(Math.min(w, h) / 120))}"/>` +
+    `<text x="50%" y="48%" text-anchor="middle" dominant-baseline="middle" fill="#8fa8cf" font-size="${fs}" font-family="sans-serif">${escapeHtml(d.name)}</text>` +
+    `<text x="50%" y="${48 + fs * 1.6}%" text-anchor="middle" dominant-baseline="middle" fill="#6d87b3" font-size="${Math.round(fs * 0.72)}" font-family="sans-serif">${w}×${h}</text>` +
+    `</svg>`;
+  tv.innerHTML = `<img class="thumb" src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}" alt="" />`;
+}
+
+let lastDevSig = ''; // 上次已应用比例的设备集合签名
+
+/**
+ * 生成在线设备集合签名：设备 id + 屏幕尺寸 + 在线状态。
+ * 仅当签名变化时才重算卡片比例（变化驱动，替代每轮轮询重算）。
+ * @returns {string} 排序拼接后的签名
+ */
+function devicesSignature() {
+  return devices
+    .filter((d) => d.online === true)
+    .map((d) => d.id + ':' + ((d.screen && d.screen.width) || 0) + 'x' + ((d.screen && d.screen.height) || 0))
+    .sort()
+    .join('|');
+}
+
 async function refreshDevices() {
   const data = await api('/api/devices');
-  devices = data.devices || [];
+  // 注入虚拟预览设备（MOCK_COUNT=30 便于查看卡片墙布局与比例自适应；置 0 即关闭）
+  devices = (data.devices || []).concat(MOCK_DEVICES);
   const onlineCount = devices.filter((d) => d.online === true).length;
   $('empty').classList.toggle('hidden', devices.length > 0);
   $('meta').textContent = `共 ${devices.length} 台 · ${onlineCount} 在线 · ${devices.length - onlineCount} 离线`;
@@ -82,6 +151,12 @@ async function refreshDevices() {
       wallInstances.delete(id);
       // 同步清理批量选中集合（Phase 10.2）
       selectedDevices.delete(id);
+      // 直控模式：设备被移除应立即清理其直控 RFB（stopWallRfb 不处理 directRfbs）
+      if (directRfbs.has(id)) {
+        closeRfb(directRfbs.get(id));
+        directRfbs.delete(id);
+        updateDirectBtn();
+      }
     }
   }
   updateBatchBar();
@@ -91,11 +166,27 @@ async function refreshDevices() {
     if (!inst) inst = createWallTile(d);
     updateWallTile(inst, d);
   }
+  // 卡片比例自适应：仅当在线设备集合/屏幕尺寸签名变化才更新 --tile-pb
+  // （变化驱动，避免每次轮询都重算；轮询本身仍是设备发现机制）
+  const sig = devicesSignature();
+  if (sig !== lastDevSig) { lastDevSig = sig; applyAutoTileRatio(); }
+  // 直控模式：新上线的在线真实设备自动补建直控 RFB，保持"所有在线设备直达控制"语义
+  if (directMode) {
+    let added = 0;
+    for (const d of devices) {
+      if (!d.online || d.mock || d.source !== 'register') continue;
+      if (!directRfbs.has(d.id) && startDirectRfb(d)) added++;
+    }
+    if (added > 0) {
+      updateDirectBtn();
+      toast(`直控模式：新增 ${added} 台设备推流`);
+    }
+  }
 }
 
 function createWallTile(d) {
   const tile = document.createElement('div');
-  tile.className = 'tile' + (d.online ? '' : ' tile-offline');
+  tile.className = 'tile' + (d.online ? '' : ' tile-offline') + (d.mock ? ' tile-mock' : '');
   tile.innerHTML = `
     <div class="tv"></div>
     <input type="checkbox" class="tile-checkbox" title="勾选加入批量操作" />
@@ -108,18 +199,18 @@ function createWallTile(d) {
   const tv = tile.querySelector('.tv');
   const statusEl = tile.querySelector('.tstate');
   const cb = tile.querySelector('.tile-checkbox');
-  // Phase 12.1（v2.3 恢复）：卡片墙建立完整 RFB 连接（viewOnly 只读），实时渲染画面。
-  // v1.8.3 的 invoke screenshot API 轮询设计已弃用。
-  // rfb：noVNC RFB 实例（viewOnly），ThumbInterval 可选作为帧渲染频率节流（默认不限制）。
+  // 卡片墙画面获取：hash 门控 + 变化拉图（每 ThumbInterval 秒先取轻量 pHash，
+  // 画面未变化不拉图；变化才 invoke screenshot 渲染新帧）。不建 RFB 持久连接。
+  // rfb：截图轮询实例（字段名沿用历史），ThumbInterval 为 hash 检测间隔（默认 5 秒）。
   const inst = { device: d, tile, statusEl, paused: false, rfb: null, checkbox: cb };
   // 恢复已选中状态（设备刷新后保持勾选）
   if (selectedDevices.has(d.id)) {
     cb.checked = true;
     tile.classList.add('tile-selected');
   }
-  // 连接前先用上报屏幕比例预置卡片（消除“先宽后窄”闪烁）
+  // 记录设备上报屏幕比例（仅供聚焦面板 prefit 使用；卡片墙本身统一 9:16 尺寸规格，
+  // 不再按设备分辨率差异化 --tile-ratio，保证所有卡片一样大、画面 contain 完整显示）
   if (d.screen && d.screen.width && d.screen.height) {
-    tile.style.setProperty('--tile-ratio', d.screen.width + ' / ' + d.screen.height);
     tile.dataset.wh = d.screen.width + 'x' + d.screen.height;
   }
   if (d.online) {
@@ -131,23 +222,29 @@ function createWallTile(d) {
   }
   wallInstances.set(d.id, inst);
 
-  // checkbox 勾选切换：阻止冒泡避免触发卡片点击进入聚焦（Phase 10.2）
+  // checkbox 勾选切换：阻止冒泡避免触发卡片点击；同步模式下切换同步，否则切换批量选中
   cb.addEventListener('click', (e) => {
     e.stopPropagation();
-    toggleSelect(d.id);
+    if (syncMode) toggleSync(d.id);
+    else toggleSelect(d.id);
   });
   tile.addEventListener('click', (e) => {
     if (e.target.closest('.tmore')) return;
     if (e.target.closest('.tile-checkbox')) return;
     const dev = inst.device;
+    if (dev.mock) { alert('虚拟设备仅用于布局预览，不可控制'); return; }
+    if (directMode) return; // 直控模式：点击卡片直达 RFB 控制（canvas 输入事件由 noVNC 处理），不聚焦、无悬停提示
+    if (syncMode) { toggleSync(d.id); return; } // 同步选择模式：点卡片切换同步（选中态=边框高亮+同步中）
     if (dev.online === false) {
       alert(`设备「${dev.name}」离线，请唤醒手机后重试`);
       return;
     }
+    if (batchMode) exitBatchMode(); // 批量模式下点卡片聚焦：退出批量选择
     enterFocus(dev);
   });
   tile.querySelector('.tmore').addEventListener('click', (e) => {
     e.stopPropagation();
+    if (d.mock) { alert('虚拟设备仅用于布局预览'); return; }
     showTileMenu(tile, d, e.clientX, e.clientY);
   });
   $('wall').appendChild(tile);
@@ -155,11 +252,13 @@ function createWallTile(d) {
 }
 
 /**
- * 启动卡片墙 RFB 连接（Phase 12.1，v2.3 恢复）
- * 功能：为卡片墙建立完整 RFB 连接（viewOnly 只读），实时渲染设备画面。
- *       v1.8.3 的 invoke screenshot API 轮询设计已弃用，改回 noVNC 持久连接。
- *       ThumbInterval 可选作为帧渲染频率节流（默认不限制=实时渲染）。
- * 错误处理：RFB 断开时标记卡片"不可达"；focus 视图复用同一连接或重建。
+ * 启动卡片墙画面获取（hash 门控 + 变化拉图）
+ * 功能：每 ThumbInterval 秒先调 screen.hash（0.3ms 级轻量 pHash，CPU<1%），
+ *       与上次 hash 相同则画面未变化，不拉图（卡片保持缓存帧，静止时零图片流量）；
+ *       仅当 hash 变化才调 screenshot 拉取新帧渲染。
+ * 说明：v1.8.3 的定时全量截图轮询已升级为 hash 门控；卡片墙不建 RFB 持久连接。
+ * 前提：所有安装本 IPA 的设备均注册 screen.hash/screenshot 能力（无旧版回退）。
+ * 错误处理：hash/拉图失败均显式标记"获取失败"，不影响下一轮检测。
  * @param {object} inst 卡片墙实例 { device, tile, statusEl, rfb, paused }
  * @returns {void}
  */
@@ -167,19 +266,41 @@ function startWallRfb(inst) {
   if (!inst || inst.paused || inst.rfb) return;
   const tv = inst.tile.querySelector('.tv');
   if (!tv) return;
-  // ???????????????????????
+  // 虚拟预览设备：不建立真实拉流，直接渲染等比 SVG 占位画面
+  if (inst.device.mock) {
+    renderMockScreen(tv, inst.device);
+    if (inst.statusEl) inst.statusEl.textContent = '预览';
+    inst.rfb = { kind: 'mock', closed: false }; // 占位标记：避免 updateWallTile 每轮重复渲染
+    return;
+  }
+  // 仅隧道设备（source=register）支持画面获取
   if (inst.device.source !== 'register') {
     tv.innerHTML = '<div class="offline-ph">未注册 · 请先配置网关</div>';
     if (inst.statusEl) inst.statusEl.textContent = '未注册';
     return;
   }
-  // ?????? = ??????? RFB ???????? RFB ????
-  // ?? noVNC ???????????/???????????????? RFB ??
   tv.innerHTML = '<div class="offline-ph">加载中…</div>';
-  inst.rfb = { kind: 'screenshot', timer: null, closed: false };
+  // rfb 字段仅为兼容既有 stopWallRfb/updateWallTile 引用，实为截图轮询实例
+  inst.rfb = { kind: 'screenshot', timer: null, closed: false, lastHash: null, silent: 0, suppressHash: false };
   const tick = async () => {
     if (inst.paused || inst.rfb.closed) return;
+    let changed = false;
     try {
+      // 1) 轻量屏幕 hash：安装本 IPA 的设备均具备 screen.hash 能力，失败即显式报错，无回退
+      const h = await invokeCap('', inst.device.id, 'screen.hash', {});
+      const hash = ((h && h.ack) || {}).hash;
+      if (!hash) throw new Error('screen.hash 未返回 hash');
+      if (inst.rfb.suppressHash) {
+        // Phase C 增量通道刚拉过新帧：吸收本次 hash，避免重复拉图
+        inst.rfb.lastHash = hash;
+        inst.rfb.suppressHash = false;
+        return;
+      }
+      changed = (hash !== inst.rfb.lastHash);
+      if (!changed) { inst.rfb.silent = (inst.rfb.silent || 0) + 1; return; } // 画面未变化，保持缓存帧
+      inst.rfb.lastHash = hash;
+      inst.rfb.silent = 0;
+      // 2) 画面变化 → 拉取新帧
       const r = await invokeCap('', inst.device.id, 'screenshot', {});
       const ack = (r && r.ack) || {};
       const b64 = ack.image || ack.base64;
@@ -187,20 +308,92 @@ function startWallRfb(inst) {
         tv.innerHTML = `<img class="thumb" src="data:image/jpeg;base64,${b64}" alt="" />`;
         if (inst.statusEl) inst.statusEl.textContent = '';
         if (inst.tile && ack.width && ack.height) {
-          inst.tile.style.setProperty('--tile-ratio', ack.width + ' / ' + ack.height);
+          // 仅记录设备屏幕比例供聚焦面板使用；卡片墙统一 9:16（见 createWallTile）
           inst.tile.dataset.wh = ack.width + 'x' + ack.height;
         }
       }
     } catch (e) {
-      if (inst.statusEl) inst.statusEl.textContent = '截图失败';
+      if (inst.statusEl) inst.statusEl.textContent = '获取失败';
     } finally {
       if (!inst.paused && !inst.rfb.closed) {
-        const iv = (inst.device.configs && inst.device.configs.ThumbInterval) || 5;
-        inst.rfb.timer = setTimeout(tick, Math.max(1, Number(iv) || 5) * 1000);
+        // 双速检测（与 IPA 控制端一致）：变化后快检 1s；静止按 1.5 倍退避至 15s 封顶
+        const base = Number((inst.device.configs && inst.device.configs.ThumbInterval) || 5) || 5;
+        let next;
+        if (changed) next = 1;
+        else next = Math.min(Math.max(base * Math.pow(1.5, (inst.rfb.silent || 0) - 1), base), 15);
+        inst.rfb.timer = setTimeout(tick, Math.max(1, next) * 1000);
       }
     }
   };
   tick();
+  startWallChangedPoller(); // Phase C：设备端变化上报增量通道（事件驱动主通道）
+}
+
+// ---------- Phase C：画面变化增量通道（事件驱动） ----------
+// 设备端 screen_changed 上报 → 网关记录 screenChangedAt → 控制端低频查询 changedSince 增量拉图。
+// 作为画面获取的主事件通道（静止时零图片流量）；hash tick 保留为旧设备兜底（双速退避）。
+let wallChangedTimer = null;
+let wallLastChangedSince = Date.now();
+
+/**
+ * 启动全局画面变化增量轮询（幂等）。
+ * 低频（1.5s）查询 GET /api/devices?changedSince=ts，仅对上报过画面变化的设备拉图。
+ * @returns {void}
+ */
+function startWallChangedPoller() {
+  if (wallChangedTimer) return;
+  wallChangedTimer = setInterval(pollWallChanged, 1500);
+}
+
+/**
+ * 设备墙为空时停止增量轮询（节省后台开销）。
+ * @returns {void}
+ */
+function stopWallChangedPollerIfIdle() {
+  if (wallInstances.size === 0 && wallChangedTimer) {
+    clearInterval(wallChangedTimer);
+    wallChangedTimer = null;
+  }
+}
+
+/**
+ * 增量查询回调：对网关返回的「画面变化设备」立即拉取新帧渲染。
+ * @returns {void}
+ */
+async function pollWallChanged() {
+  const since = wallLastChangedSince;
+  wallLastChangedSince = Date.now();
+  let list = [];
+  try {
+    const r = await api(`/api/devices?changedSince=${since}`);
+    list = (r && r.devices) || [];
+  } catch { return; }
+  for (const d of list) {
+    const inst = wallInstances.get(d.id);
+    if (inst && inst.rfb && !inst.rfb.closed && !inst.paused) {
+      fetchWallShot(inst);
+    }
+  }
+}
+
+/**
+ * 拉取单台设备最新截图渲染（增量通道/首帧共用）。
+ * @param {object} inst 卡片墙实例
+ * @returns {Promise<void>}
+ */
+async function fetchWallShot(inst) {
+  if (!inst || inst.paused || inst.rfb.closed) return;
+  try {
+    const r = await invokeCap('', inst.device.id, 'screenshot', {});
+    const ack = (r && r.ack) || {};
+    const b64 = ack.image || ack.base64;
+    if (!b64) return;
+    const tv = inst.tile && inst.tile.querySelector('.tv');
+    if (tv) tv.innerHTML = `<img class="thumb" src="data:image/jpeg;base64,${b64}" alt="" />`;
+    if (inst.statusEl) inst.statusEl.textContent = '';
+    if (inst.tile && ack.width && ack.height) inst.tile.dataset.wh = ack.width + 'x' + ack.height;
+    if (inst.rfb) inst.rfb.suppressHash = true; // 已拉新帧：hash tick 下一轮吸收，避免重复拉图
+  } catch { /* 拉图失败：下一轮增量/兜底重试 */ }
 }
 
 function stopWallRfb(inst) {
@@ -216,6 +409,7 @@ function stopWallRfb(inst) {
   }
   const tv = inst.tile && inst.tile.querySelector('.tv');
   if (tv) tv.innerHTML = '';
+  stopWallChangedPollerIfIdle(); // Phase C：设备墙为空时停止增量轮询
 }
 
 // ---------- 批量操作（Phase 10.2） ----------
@@ -225,6 +419,8 @@ function stopWallRfb(inst) {
  * @returns {void}
  */
 function toggleSelect(deviceId) {
+  const dev = devices.find((d) => d.id === deviceId);
+  if (dev && dev.mock) return; // 虚拟设备仅预览布局，不可加入批量操作
   if (selectedDevices.has(deviceId)) {
     selectedDevices.delete(deviceId);
   } else {
@@ -268,17 +464,58 @@ function deselectAll() {
   updateBatchBar();
 }
 
+let batchMode = false; // 批量选择模式：点击"批量操作"进入，卡片出现复选框
+
 /**
- * 更新批量操作栏显隐与计数：勾选≥1 台时显示，否则隐藏
+ * 更新批量操作按钮文案（竞态二态）：
+ *   未进入批量模式 → "批量操作"；已进入且未勾选 → "取消"；已勾选 N 台 → "批量操作 (N)"
  * @returns {void}
  */
 function updateBatchBar() {
   const btn = $('batchBtn');
-  const cnt = $('batchCount');
   if (!btn) return;
   const n = selectedDevices.size;
-  if (cnt) cnt.textContent = String(n);
-  btn.classList.toggle('hidden', n === 0);
+  if (!batchMode) btn.textContent = '批量操作';
+  else if (n > 0) btn.textContent = `批量操作 (${n})`;
+  else btn.textContent = '取消';
+  btn.classList.toggle('batch-mode-active', batchMode);
+}
+
+/**
+ * 进入批量选择模式：所有卡片显示左上角复选框（CSS .batch-mode 驱动）
+ * @returns {void}
+ */
+function enterBatchMode() {
+  batchMode = true;
+  const wall = $('wall');
+  if (wall) wall.classList.add('batch-mode');
+  updateBatchBar();
+}
+
+/**
+ * 退出批量选择模式：隐藏复选框并清空选中状态，按钮复位
+ * @returns {void}
+ */
+function exitBatchMode() {
+  batchMode = false;
+  const wall = $('wall');
+  if (wall) wall.classList.remove('batch-mode');
+  selectedDevices.clear();
+  for (const inst of wallInstances.values()) {
+    if (inst.checkbox) inst.checkbox.checked = false;
+    if (inst.tile) inst.tile.classList.remove('tile-selected');
+  }
+  updateBatchBar();
+}
+
+/**
+ * 关闭批量菜单并退出批量模式（批量操作完成/取消时调用）
+ * @param {HTMLElement} menu 批量菜单元素
+ * @returns {void}
+ */
+function finishBatch(menu) {
+  if (menu && menu.parentNode) menu.remove();
+  exitBatchMode();
 }
 
 /**
@@ -347,7 +584,7 @@ function showBatchMenu() {
   const cfgBtn = document.createElement('button');
   cfgBtn.className = 'batch-menu-row-item';
   cfgBtn.innerHTML = '<span class="cap-icon">⚙</span><span class="cap-name">批量调整配置</span>';
-  cfgBtn.addEventListener('click', () => { menu.remove(); showBatchConfigPanel(ids); });
+  cfgBtn.addEventListener('click', () => { finishBatch(menu); showBatchConfigPanel(ids); });
   menu.appendChild(cfgBtn);
 
   // 4) 批量重启（危险操作，需二次确认）
@@ -356,7 +593,7 @@ function showBatchMenu() {
   restartBtn.innerHTML = '<span class="cap-icon">🔄</span><span class="cap-name">批量重启</span>';
   restartBtn.addEventListener('click', async () => {
     if (!confirm(`确认批量重启选中的 ${ids.length} 台设备？`)) return;
-    menu.remove();
+    finishBatch(menu);
     try {
       const r = await batchRestart('', ids);
       const fails = (r.results || []).filter((x) => !x.ok);
@@ -372,15 +609,15 @@ function showBatchMenu() {
   const closeBtn = document.createElement('button');
   closeBtn.className = 'batch-menu-close';
   closeBtn.textContent = '取消';
-  closeBtn.addEventListener('click', () => menu.remove());
+  closeBtn.addEventListener('click', () => finishBatch(menu));
   menu.appendChild(closeBtn);
 
   document.body.appendChild(menu);
-  // 点击外部关闭
+  // 点击外部关闭并退出批量模式
   setTimeout(() => {
     const handler = (e) => {
       if (!e.target.closest('#batchMenu') && !e.target.closest('#batchBtn')) {
-        menu.remove();
+        finishBatch(menu);
         document.removeEventListener('click', handler);
       }
     };
@@ -511,6 +748,8 @@ async function showBatchConfigPanel(ids) {
 function renderCapOps(container, capMetadata) {
   if (!container) return;
   container.innerHTML = '';
+  // 使用 DocumentFragment 批量渲染，避免逐元素 append 触发多次 forced reflow
+  const frag = document.createDocumentFragment();
   // 按 category 分组渲染（Phase 10.3）
   const grouped = groupByCategory(capMetadata);
   let groupIdx = 0;
@@ -519,14 +758,14 @@ function renderCapOps(container, capMetadata) {
     if (groupIdx > 0) {
       const divider = document.createElement('hr');
       divider.className = 'cap-group-divider';
-      container.appendChild(divider);
+      frag.appendChild(divider);
     }
     groupIdx++;
     // 分组标题（中文映射，兜底显示原 category）
     const title = document.createElement('div');
     title.className = 'cap-group-title';
     title.textContent = CATEGORY_LABELS[cat] || cat || '其它';
-    container.appendChild(title);
+    frag.appendChild(title);
     // 分组内纵向列表按钮
     for (const meta of metas) {
       const b = document.createElement('button');
@@ -537,7 +776,7 @@ function renderCapOps(container, capMetadata) {
       // 按钮内“图标+名称”横向布局：移动端 ops-menu-grid 显示两者，PC 端 focus-ops-cap 通过 CSS 隐藏 cap-name
       b.innerHTML = '<span class="cap-icon">' + escapeHtml(meta.icon || '?') + '</span><span class="cap-name">' + escapeHtml(meta.title || meta.id) + '</span>';
       b.addEventListener('click', () => doInvoke(meta));
-      container.appendChild(b);
+      frag.appendChild(b);
     }
   }
   // 追加配置入口按钮（二级菜单）
@@ -548,12 +787,34 @@ function renderCapOps(container, capMetadata) {
   cfgBtn.title = '设备配置';
   cfgBtn.innerHTML = '<span class="cap-icon">⚙</span><span class="cap-name">设备配置</span>';
   cfgBtn.addEventListener('click', () => showConfigPanel());
-  container.appendChild(cfgBtn);
+  frag.appendChild(cfgBtn);
+  // 一次性插入，仅触发一次 reflow
+  container.appendChild(frag);
+}
+
+/**
+ * 显示轻量 toast 提示（右上角短暂浮现，自动消失）
+ * @param {string} msg 提示文案
+ * @returns {void}
+ */
+let farmToastTimer = null;
+function toast(msg) {
+  let el = document.getElementById('farmToast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'farmToast';
+    el.style.cssText = 'position:fixed;top:14px;right:14px;z-index:999;background:rgba(20,26,40,.92);color:#fff;padding:10px 14px;border-radius:10px;font:13px/1.4 system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.4);max-width:70vw;pointer-events:none;transition:opacity .25s;';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.opacity = '1';
+  if (farmToastTimer) clearTimeout(farmToastTimer);
+  farmToastTimer = setTimeout(() => { el.style.opacity = '0'; }, 2000);
 }
 
 /**
  * 调用设备能力（通过网关 invoke API，Phase 4.7）
- * 无参能力直接调用；有参能力弹出参数输入
+ * 无参能力直接调用；有参能力弹出参数输入；成功/失败均有 toast 反馈
  */
 async function doInvoke(meta) {
   if (!focus || !focus.device) return;
@@ -566,9 +827,10 @@ async function doInvoke(meta) {
   }
   try {
     const r = await invokeCap('', devId, meta.id, params);
-    if (!r.ok) alert(`能力「${meta.title}」执行失败：${r.ack?.error || '未知错误'}`);
+    if (r && r.ok) toast(`✓ 已执行：${meta.title}`);
+    else toast(`✗ 能力「${meta.title}」执行失败：${r?.ack?.error || '未知错误'}`);
   } catch (e) {
-    alert(`能力「${meta.title}」调用失败：${e.message}`);
+    toast(`✗ 能力「${meta.title}」调用失败：${e.message}`);
   }
 }
 
@@ -652,22 +914,28 @@ function enterFocus(d) {
   $('workspace').classList.add('focus-open');
   renderCapOps($('focusOpsCap'), deviceCaps(d));
   renderCapOps($('opsMenuCap'), deviceCaps(d));
-  // 缓存设备元数据供配置面板使用
+  if (window.matchMedia('(max-width: 900px)').matches) $('fab').classList.remove('hidden');
+  // 主控连接始终携带 grp+broadcast（广播到同 session 的同步/群控订阅设备）。
+  // 保证勾选同步设备时无需重建主控连接 → 主控画面不跳动、不改变。
+  const grp = wallSession;
+  const broadcast = '1';
+  // 先初始化 focus 再挂载元数据，避免在 null 上赋值抛错（修复点击卡片黑屏）
+  focus = { device: d, rfb: null };
   focus.capMetadata = deviceCaps(d);
   focus.configSchema = d.configSchema || [];
-  if (window.matchMedia('(max-width: 900px)').matches) $('fab').classList.remove('hidden');
-  const grp = $('chkFocusBroadcast').checked ? wallSession : '';
-  const broadcast = $('chkFocusBroadcast').checked ? '1' : '';
-  focus = { device: d, rfb: createRfb(stage, d, { grp, broadcast, ctrl: true }, $('focusStatus')) };
+  focus.rfb = createRfb(stage, d, { grp, broadcast, ctrl: true }, $('focusStatusDot'));
   focus.rfb.addEventListener('connect', () => setTimeout(fitFocusPanel, 300));
   setTimeout(fitFocusPanel, 400);
+  startFabSignalPoll(); // 移动端悬浮按钮延迟信号轮询（仅在 focus 建立后）
 }
 
 function exitFocus() {
   if (!focus) return;
   const devId = focus.device.id;
   closeRfb(focus.rfb);
+  stopFabSignalPoll();
   focus = null;
+  exitSyncMode(); // 关闭同步订阅与选择模式
   $('focusPanel').classList.add('hidden');
   $('focusOps').classList.add('hidden');
   $('workspace').classList.remove('focus-open');
@@ -685,11 +953,231 @@ function restoreWallTile(id) {
   startWallRfb(inst);
 }
 
+// ---------- 同步控制（勾选设备与主控同步操作） ----------
+let syncMode = false;            // 同步选择模式：点击"同步"进入，墙卡片出现复选框
+const syncRfbs = new Map();      // deviceId -> RFB（grp viewOnly 订阅：接收主控广播输入 + 卡片推流显示执行情况）
+
+/**
+ * 切换同步选择模式：进入后点卡片即切换同步（无复选框），再次点击按钮退出。
+ * 仅聚焦状态下可用。
+ * @returns {void}
+ */
+function toggleSyncMode() {
+  if (!focus) return;
+  if (syncMode) { exitSyncMode(); return; }
+  syncMode = true;
+  updateSyncBtn();
+}
+
+/**
+ * 退出同步选择模式：关闭全部同步 RFB（恢复卡片墙截图轮询）、清空选中态与"同步中"徽标。
+ * @returns {void}
+ */
+function exitSyncMode() {
+  if (!syncMode && syncRfbs.size === 0) return;
+  syncMode = false;
+  for (const inst of wallInstances.values()) {
+    const badge = inst.tile && inst.tile.querySelector('.sync-badge');
+    if (badge) badge.remove();
+    if (inst.checkbox) inst.checkbox.checked = false;
+    if (inst.tile) inst.tile.classList.remove('tile-selected');
+  }
+  // 关闭全部同步 RFB 订阅并置空，随后恢复卡片墙截图轮询
+  for (const id of syncRfbs.keys()) {
+    const inst = wallInstances.get(id);
+    if (inst) stopWallRfb(inst);
+  }
+  syncRfbs.clear();
+  updateSyncBtn();
+  // 恢复截图轮询：仅在线且未暂停（主控自身）的卡片
+  for (const inst of wallInstances.values()) {
+    if (inst.device.online === true && !inst.paused) startWallRfb(inst);
+  }
+  // 主控连接始终携带广播标记，退出同步无需重建 → 主控画面不跳动
+}
+
+/**
+ * 设置卡片"同步中"徽标（卡片中央覆盖层，不遮挡推流画面）
+ * @param {object} inst 墙卡片实例
+ * @param {boolean} on 是否显示
+ * @returns {void}
+ */
+function setSyncBadge(inst, on) {
+  if (!inst || !inst.tile) return;
+  let badge = inst.tile.querySelector('.sync-badge');
+  if (on && !badge) {
+    badge = document.createElement('div');
+    badge.className = 'sync-badge';
+    badge.textContent = '同步中';
+    inst.tile.appendChild(badge);
+  } else if (!on && badge) {
+    badge.remove();
+  }
+}
+
+/**
+ * 勾选/取消同步某设备：建立或关闭该设备的 grp viewOnly RFB 订阅。
+ * RFB 渲染到墙卡片（实时推流显示同步执行情况），同时作为广播接收成员——
+ * 主控输入经网关 broadcastInput 转发到该设备隧道执行。
+ * 选中态 = 卡片边框高亮（tile-selected）+ 中央"同步中"徽标。
+ * @param {string} deviceId 设备 ID
+ * @returns {void}
+ */
+function toggleSync(deviceId) {
+  const dev = devices.find((d) => d.id === deviceId);
+  if (!dev || dev.mock) { alert('虚拟设备仅用于布局预览，不支持同步'); return; }
+  if (dev.online === false) { alert(`设备「${dev.name}」离线，无法同步`); return; }
+  if (focus && deviceId === focus.device.id) { alert('主控设备本身无需同步'); return; }
+  const inst = wallInstances.get(deviceId);
+  if (!inst) { alert('设备卡片未就绪，请稍后重试'); return; }
+  if (syncRfbs.has(deviceId)) {
+    // 取消同步：关闭 RFB 订阅并置空，移除选中态，恢复卡片墙截图轮询
+    stopWallRfb(inst);
+    syncRfbs.delete(deviceId);
+    setSyncBadge(inst, false);
+    if (inst.checkbox) inst.checkbox.checked = false;
+    inst.tile.classList.remove('tile-selected');
+    startWallRfb(inst);
+  } else {
+    // 勾选同步：停截图轮询，建立 grp viewOnly RFB 渲染卡片（实时画面 + 接收广播输入）
+    stopWallRfb(inst);
+    const tv = inst.tile.querySelector('.tv');
+    const rfb = createRfb(tv, dev, { grp: wallSession, viewOnly: true });
+    rfb.addEventListener('disconnect', () => {
+      // 连接异常断开（设备离线等）：清理同步标记，移除选中态，恢复截图轮询
+      if (syncRfbs.get(deviceId) === rfb) {
+        syncRfbs.delete(deviceId);
+        setSyncBadge(inst, false);
+        if (inst.checkbox) inst.checkbox.checked = false;
+        inst.tile.classList.remove('tile-selected');
+        updateSyncBtn();
+        startWallRfb(inst);
+      }
+    });
+    syncRfbs.set(deviceId, rfb);
+    setSyncBadge(inst, true);
+    if (inst.checkbox) inst.checkbox.checked = true;
+    inst.tile.classList.add('tile-selected');
+    // 主控连接始终携带广播标记，勾选同步设备无需重建 → 主控画面不跳动
+  }
+  updateSyncBtn();
+}
+
+/**
+ * 更新同步按钮状态（竞态二态）：图标恒为 🔗；进入同步选择模式后按钮变红，
+ * 再次点击断开并恢复原色。
+ * @returns {void}
+ */
+function updateSyncBtn() {
+  const btn = $('btnSync');
+  if (!btn) return;
+  const n = syncRfbs.size;
+  const active = syncMode;
+  btn.textContent = '🔗';
+  btn.classList.toggle('sync-active', active);
+  btn.title = active
+    ? (n > 0 ? `同步中（${n} 台设备），点击断开并恢复` : '同步选择中，点击断开')
+    : '同步控制：点击选择设备与主控同步';
+}
+
 function fmtTime(ts) {
   if (!ts) return '未知';
   const d = new Date(ts);
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// ---------- 直控模式（所有设备开启推流，卡片上直接点击控制） ----------
+let directMode = false;          // 直控模式：卡片直达控制，悬停效果与引导提示失效
+const directRfbs = new Map();    // deviceId -> RFB（非 ctrl 可输入连接，互不抢占）
+
+/**
+ * 为单个真实设备建立直控 RFB（非 ctrl 可输入连接：互不抢占、输入直达设备）。
+ * 重复调用安全：设备已在直控中则直接返回其 RFB。
+ * @param {object} d 设备对象（须为在线真实隧道设备）
+ * @returns {object|null} 直控 RFB 或 null（卡片实例未就绪）
+ */
+function startDirectRfb(d) {
+  const inst = wallInstances.get(d.id);
+  if (!inst) return null;
+  const exist = directRfbs.get(d.id);
+  if (exist) return exist;
+  stopWallRfb(inst); // 停截图轮询
+  const tv = inst.tile.querySelector('.tv');
+  const rfb = createRfb(tv, d, { ctrl: false }); // 非 ctrl 可输入连接：互不抢占、输入直达设备
+  rfb.addEventListener('disconnect', (e) => {
+    // 设备离线/隧道断/服务端断开：清理直控标记，恢复截图轮询
+    if (directRfbs.get(d.id) === rfb) {
+      directRfbs.delete(d.id);
+      startWallRfb(inst);
+      updateDirectBtn();
+      if (directMode) {
+        const code = e && e.detail && e.detail.code;
+        toast(`设备「${d.name}」直控已断开` + (code ? `（${code}）` : ''));
+      }
+    }
+  });
+  directRfbs.set(d.id, rfb);
+  return rfb;
+}
+
+/**
+ * 切换直控模式（竞态二态）：进入 = 所有在线真实设备建立可输入 RFB 推流到卡片；
+ * 退出 = 关闭全部直控 RFB，恢复截图轮询（变化帧采样）。
+ * @returns {void}
+ */
+function toggleDirectMode() {
+  if (directMode) { exitDirectMode(); return; }
+  directMode = true;
+  const wall = $('wall');
+  if (wall) wall.classList.add('direct-mode');
+  let n = 0;
+  for (const d of devices) {
+    if (!d.online || d.mock || d.source !== 'register') continue; // 仅在线真实隧道设备
+    if (startDirectRfb(d)) n++;
+  }
+  updateDirectBtn();
+  if (n > 0) toast(`直控模式：${n} 台设备已开启推流，点击卡片直接控制`);
+  else toast('直控模式：当前无在线真实设备');
+}
+
+/**
+ * 退出直控模式：关闭全部直控 RFB，恢复截图轮询（变化帧采样），按钮恢复原色。
+ * @returns {void}
+ */
+function exitDirectMode() {
+  if (!directMode && directRfbs.size === 0) return;
+  directMode = false;
+  const wall = $('wall');
+  if (wall) wall.classList.remove('direct-mode');
+  // 先 close 全部直控 RFB（必须真正断开 WS，否则残留会话持续占用设备推流，
+  // 再次进入直控时会话堆积 → 服务端 sessions=2/3…，还会与后续 rfb.stop 互扰）。
+  // 注意 stopWallRfb 只处理 inst.rfb（截图轮询），直控 RFB 在 directRfbs 中，须显式 close。
+  for (const [id, rfb] of directRfbs.entries()) {
+    closeRfb(rfb);
+    const inst = wallInstances.get(id);
+    if (inst) stopWallRfb(inst);
+  }
+  directRfbs.clear();
+  updateDirectBtn();
+  for (const inst of wallInstances.values()) {
+    if (inst.device.online === true && !inst.paused) startWallRfb(inst); // 恢复变化帧采样
+  }
+}
+
+/**
+ * 更新直控按钮状态：激活态变色并显示直控设备数
+ * @returns {void}
+ */
+function updateDirectBtn() {
+  const btn = $('directBtn');
+  if (!btn) return;
+  const n = directRfbs.size;
+  btn.textContent = n > 0 ? `直控 (${n})` : '直控';
+  btn.classList.toggle('direct-active', directMode);
+  btn.title = directMode
+    ? (n > 0 ? `直控中（${n} 台），点击退出` : '直控模式')
+    : '直控模式：所有设备开启推流，卡片上直接点击控制';
 }
 
 // 设备状态变化时更新墙卡片（在线<->离线切换、名称、状态、上次在线）
@@ -702,12 +1190,21 @@ function updateWallTile(inst, d) {
   if (d.online) {
     if (inst.paused) return; // 聚焦中，保持隐藏
     tile.classList.remove('tile-offline');
+    // 直控模式：该设备已有直控 RFB（实时推流 canvas）。设备信息轮询刷新
+    // 绝不能覆盖直控画面或恢复截图轮询，否则“操作两下后直控失效”（canvas 被替换）。
+    if (directMode && directRfbs.has(d.id)) return;
     if (!inst.rfb) { // RFB 未连接，启动它（Phase 12.1，v2.3 恢复）
       tv.innerHTML = '<div class="offline-ph">连接中…</div>';
       startWallRfb(inst);
     }
   } else {
     tile.classList.add('tile-offline');
+    // 直控模式：设备离线应立即退出直控（WS 断开可能滞后，且 stopWallRfb 不处理 directRfbs）
+    if (directRfbs.has(d.id)) {
+      closeRfb(directRfbs.get(d.id));
+      directRfbs.delete(d.id);
+      updateDirectBtn();
+    }
     stopWallRfb(inst);
     tv.innerHTML = '<div class="offline-ph">离线</div>';
     inst.statusEl.textContent = d.lastSeen ? '离线 · ' + fmtTime(d.lastSeen) : '离线';
@@ -722,7 +1219,7 @@ function prefitFocusPanel(ratio) {
   if (!panel || !workspace) return;
   const wsW = workspace.clientWidth;
   const wsH = workspace.clientHeight;
-  const headH = 48;
+  const headH = 26; // 紧凑头部高度（padding 3px*2 + 13px 行高 + 边框）
   const opsW = ($('focusOps').offsetWidth) || 64;
   const availH = Math.max(200, wsH - headH);
   const availW = Math.max(200, wsW - opsW - 130);
@@ -737,11 +1234,17 @@ function prefitFocusPanel(ratio) {
 // 操作列紧贴面板右侧，剩余空间给右侧设备墙
 function fitFocusPanel() {
   if (!focus || !focus.rfb) return;
-  if (window.matchMedia('(max-width: 900px)').matches) return; // 移动端保持全宽
   const panel = $('focusPanel');
   const screenEl = $('focusScreen');
   const stage = $('focusStage');
   if (!panel || !screenEl || !stage) return;
+  if (window.matchMedia('(max-width: 900px)').matches) {
+    // 移动端全屏：stage 必须撑满 focusScreen（noVNC scaleViewport 以此为适配基准，
+    // 否则容器高度 0 → 画面被缩放到 0 → 黑屏）。CSS 兜底 100%，此处显式再设一次。
+    stage.style.width = '100%';
+    stage.style.height = '100%';
+    return;
+  }
   const disp = focus.rfb._display;
   const fw = focus.rfb._fb_width || (disp && disp._fbWidth) || 0;
   const fh = focus.rfb._fb_height || (disp && disp._fbHeight) || 0;
@@ -932,26 +1435,20 @@ function createRfb(container, device, opts = {}, statusEl = null) {
   rfb.resizeSession = false;
   rfb.showDotCursor = true;
   if (opts.viewOnly) rfb.viewOnly = true;   // 墙缩略图只读：点击卡片=切入大屏控制，不直接操控
-  const setStatus = (s) => { if (statusEl) statusEl.textContent = s; };
-  const applyRatio = () => {
-    if (!opts.tile) return;
-    try {
-      const disp = rfb._display;
-      const w = rfb._fb_width || (disp && (disp._fbWidth || (disp.get_width && disp.get_width()))) || 0;
-      const h = rfb._fb_height || (disp && (disp._fbHeight || (disp.get_height && disp.get_height()))) || 0;
-      if (w && h) { opts.tile.style.setProperty('--tile-ratio', w + ' / ' + h); opts.tile.dataset.wh = w + 'x' + h; }
-    } catch (e) { /* ignore */ }
+  // 状态用红/蓝圆点表示（蓝=已连接，红=已断开/失败），不再显示文字
+  const setStatus = (s) => {
+    if (!statusEl) return;
+    statusEl.classList.toggle('on', s === '已连接');
+    statusEl.classList.toggle('off', s !== '已连接');
   };
   rfb.addEventListener('connect', () => {
     setStatus('已连接');
-    applyRatio();
-    setTimeout(applyRatio, 300);
   });
   rfb.addEventListener('disconnect', (e) => {
     setStatus('已断开');
     const code = e && e.detail && e.detail.code;
     if (code === 4001) alert('设备已被其它端接管，已中断控制');
-    else if (code === 4003) alert('设备未注册（无隧道），无法控制。请在手机 App 中配置网关并完成注册');
+    else if (code === 4003) alert('设备隧道未建立（可能刚注册或正在重连），请稍候重试');
   });
   rfb.addEventListener('credentialsrequired', () => {
     const p = prompt(`请输入 ${device.name} 的 VNC 密码：`);
@@ -960,7 +1457,15 @@ function createRfb(container, device, opts = {}, statusEl = null) {
   return rfb;
 }
 function closeRfb(rfb) {
-  try { rfb.disconnect(); } catch (e) {}
+  if (!rfb) return;
+  try {
+    // noVNC 的 disconnected/disconnecting 是终态/过渡态，再次 disconnect 会抛
+    // "Tried changing state of a disconnected RFB object"，先检查状态再断开
+    const st = rfb._rfbConnectionState;
+    if (st && st !== 'disconnected' && st !== 'disconnecting') {
+      rfb.disconnect();
+    }
+  } catch (e) { /* ignore */ }
 }
 
 // ---------- 设备管理 ----------
@@ -1112,12 +1617,45 @@ function showTileMenu(tile, d, x, y) {
   };
 }
 
-// ---------- 移动端悬浮操作簇（可拖动 + 双指缩放） ----------
+// ---------- 移动端悬浮信号按钮（圆形可拖动 + 点击展开操作菜单 + 延迟信号状态） ----------
+
+/**
+ * 将悬浮操作菜单定位到 FAB 附近且避开按钮区域。
+ * 优先放在 FAB 下方，空间不足则上方；按可用空间裁剪 max-height，
+ * 保证菜单任何情况下都不覆盖悬浮按钮（修复"点穿"到菜单项的问题）。
+ * 菜单必须已可见（调用前 remove hidden）以便测量真实尺寸。
+ * @returns {void}
+ */
+function positionOpsMenu() {
+  const menu = $('opsMenu'), fab = $('fab');
+  if (!menu || !fab) return;
+  const fr = fab.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const pad = 8, gap = 10;
+  const mw = menu.offsetWidth || 200;
+  const rawH = menu.offsetHeight || 300;
+  const below = vh - fr.bottom - gap - pad;   // FAB 下方可用空间
+  const above = fr.top - gap - pad;           // FAB 上方可用空间
+  const placeBelow = below >= 120 && below >= above;
+  const maxH = Math.max(80, Math.min(rawH, placeBelow ? below : above));
+  menu.style.maxHeight = maxH + 'px';
+  const mh = Math.min(rawH, maxH);
+  let top = placeBelow ? fr.bottom + gap : fr.top - gap - mh;
+  if (top < pad) top = pad;
+  if (top + mh > vh - pad) top = Math.max(pad, vh - mh - pad);
+  let left = fr.right - mw;                   // 与 FAB 右对齐，越界左移
+  if (left < pad) left = pad;
+  if (left + mw > vw - pad) left = vw - mw - pad;
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+  menu.style.right = 'auto';
+  menu.style.bottom = 'auto';
+}
+
 function initFab() {
   const fab = $('fab');
-  const head = $('fabHead');
-  let startX = 0, startY = 0, baseLeft = 0, baseTop = 0, dragging = false;
-  let pinchDist = 0, baseScale = 1;
+  let startX = 0, startY = 0, baseLeft = 0, baseTop = 0, dragging = false, moved = false;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
 
   /**
    * 计算 FAB 拖动安全边界（考虑 env(safe-area-inset-*) 避开刘海/Home 条）
@@ -1135,62 +1673,163 @@ function initFab() {
     return { minX: sl + pad, minY: st + pad, maxX: vw - fw - sr - pad, maxY: vh - fh - sb - pad };
   }
 
-  head.addEventListener('pointerdown', (e) => {
-    dragging = true;
+  // 整个圆形按钮可拖动；位移超过阈值才算拖动，否则 pointerup 视为"点击"展开菜单
+  fab.addEventListener('pointerdown', (e) => {
+    dragging = true; moved = false;
     startX = e.clientX; startY = e.clientY;
     const r = fab.getBoundingClientRect();
     baseLeft = r.left; baseTop = r.top;
-    head.setPointerCapture(e.pointerId);
+    e.preventDefault(); e.stopPropagation();   // 阻止点击穿透到下方画面/被覆盖的菜单项
+    fab.setPointerCapture(e.pointerId);
   });
-  head.addEventListener('pointermove', (e) => {
+  fab.addEventListener('pointermove', (e) => {
     if (!dragging) return;
-    const nx = baseLeft + (e.clientX - startX);
-    const ny = baseTop + (e.clientY - startY);
+    const dx = e.clientX - startX, dy = e.clientY - startY;
+    if (!moved && Math.abs(dx) + Math.abs(dy) > 6) moved = true;
+    if (!moved) return;
     const b = getSafeBounds();
-    fab.style.left = Math.max(b.minX, Math.min(nx, b.maxX)) + 'px';
-    fab.style.top = Math.max(b.minY, Math.min(ny, b.maxY)) + 'px';
+    fab.style.left = clamp(baseLeft + dx, b.minX, b.maxX) + 'px';
+    fab.style.top = clamp(baseTop + dy, b.minY, b.maxY) + 'px';
     fab.style.right = 'auto'; fab.style.bottom = 'auto';
+    // 菜单已展开时实时跟随 FAB 重新定位，避免拖动后遮挡
+    const menu = $('opsMenu');
+    if (menu && !menu.classList.contains('hidden')) positionOpsMenu();
   });
-  head.addEventListener('pointerup', () => { dragging = false; });
-
-  // 双指捏合缩放
-  fab.addEventListener('touchstart', (e) => {
-    if (e.touches.length === 2) {
-      pinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-      baseScale = parseFloat(fab.dataset.scale || '1');
-    }
-  }, { passive: true });
-  fab.addEventListener('touchmove', (e) => {
-    if (e.touches.length === 2) {
-      const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-      const s = Math.min(2.2, Math.max(0.6, baseScale * (d / pinchDist)));
-      fab.dataset.scale = String(s);
-      fab.style.transform = `scale(${s})`;
-    }
-  }, { passive: true });
+  const endDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    if (moved) return;
+    const menu = $('opsMenu');
+    const willOpen = menu.classList.contains('hidden');
+    menu.classList.toggle('hidden');           // 未拖动 = 点击 → 展开/收起菜单
+    if (willOpen) positionOpsMenu();           // 展开后立即定位（避开 FAB 区域）
+  };
+  fab.addEventListener('pointerup', endDrag);
+  fab.addEventListener('pointercancel', () => { dragging = false; });
+  // 窗口尺寸/方向变化时，若菜单已展开则重新定位，避免旋转后覆盖按钮或越界
+  window.addEventListener('resize', () => {
+    const menu = $('opsMenu');
+    if (menu && !menu.classList.contains('hidden')) positionOpsMenu();
+  });
 }
 
-// ---------- 墙屏缩放（统一缩放所有卡片） ----------
-function applyZoom(z) {
+/**
+ * 按延迟更新 FAB 信号格状态（data-sig 由 CSS 驱动颜色/格数）
+ * @param {number} ms 延迟毫秒；<0 表示无响应/失败
+ * @returns {void}
+ */
+function updateFabSignal(ms) {
+  const fab = $('fab');
+  if (!fab) return;
+  if (ms >= 0 && ms < 150) fab.dataset.sig = 'sig-high';
+  else if (ms >= 0 && ms < 400) fab.dataset.sig = 'sig-mid';
+  else fab.dataset.sig = 'sig-low';
+  fab.title = (ms >= 0 ? `延迟 ${ms}ms` : '设备无响应') + '（拖动调整位置，点击展开操作）';
+}
+
+/**
+ * 控制会话期间轮询设备延迟（command ping 等 ack，测往返耗时），驱动信号格
+ * @returns {void}
+ */
+function startFabSignalPoll() {
+  stopFabSignalPoll();
+  if (!focus) return;
+  const d = focus.device;
+  const tick = async () => {
+    if (!focus || focus.device.id !== d.id) { stopFabSignalPoll(); return; }
+    try {
+      const t0 = performance.now();
+      await api(`/api/devices/${encodeURIComponent(d.id)}/ping`, { method: 'POST' });
+      updateFabSignal(Math.round(performance.now() - t0));
+    } catch { updateFabSignal(-1); }
+  };
+  tick();
+  fabSigTimer = setInterval(tick, 3000);
+}
+
+/**
+ * 停止延迟轮询（退出控制/切换设备时调用）
+ * @returns {void}
+ */
+function stopFabSignalPoll() {
+  if (fabSigTimer) { clearInterval(fabSigTimer); fabSigTimer = null; }
+}
+
+// ---------- 墙屏卡片宽度（px，替代原百分比缩放：直接控制单卡像素宽，自适应平铺填满） ----------
+
+/**
+ * 应用卡片宽度到设备墙：设置 --card-w（px），grid auto-fill 按该宽度自适应列数，
+ * 卡片从左到右逐行平铺、填满整行；窗口变化时列数自动增减，卡片始终紧挨排列。
+ * @param {number} px 卡片宽度（像素）
+ * @returns {void}
+ */
+function applyCardW(px) {
   const wall = $('wall');
-  if (wall) wall.style.setProperty('--zoom', z);
-  $('zoomVal').textContent = Math.round(z * 100) + '%';
-  $('zoomRange').value = Math.round(z * 100);
+  if (wall) wall.style.setProperty('--card-w', px + 'px');
+  $('cardwVal').textContent = px + 'px';
+  $('cardwRange').value = px;
 }
-const savedZoom = parseFloat(localStorage.getItem('farm_zoom') || '1');
-applyZoom(savedZoom);
-$('zoomRange').addEventListener('input', () => {
-  const z = parseFloat($('zoomRange').value) / 100;
-  localStorage.setItem('farm_zoom', String(z));
-  applyZoom(z);
+
+/**
+ * 计算卡片宽度滑杆的范围：基于墙容器可用宽度（未聚焦全宽）。
+ * 最小固定 110px、默认固定 175px；最大保持动态（每行 5 列，随容器宽度自适应）。
+ * 由 grid auto-fill 列数公式反推：列数 n = floor((W + gap) / (cardW + gap))，
+ * 故 cardW = (W + gap) / n - gap，其中 W 为容器宽、gap 为卡片间距（12px）。
+ * 动态值取整用 floor 并向下对齐 step（5px），保证滑杆可达值均在目标列数内。
+ * @returns {{minPx:number, defaultPx:number, maxPx:number}} 最小宽度 / 默认宽度 / 每行5列的最大宽度（px）
+ */
+function computeCardWBounds() {
+  const main = document.querySelector('main');
+  const wallW = Math.max(200, (main ? main.clientWidth : 1280) - 28); // 减去 main 左右 padding 14*2
+  const gap = 12;   // #wall grid gap
+  const step = 5;   // 与滑杆 step 一致，min/max 必须为滑杆可达值
+  const cardFor = (n) => Math.floor(((wallW + gap) / n - gap) / step) * step; // 指定列数的卡片宽度
+  const maxPx = Math.max(cardFor(5), 110 + step);       // 每行 =5 列（动态，兜底保证大于最小）
+  const minPx = Math.min(110, maxPx - step);            // 固定最小 110px
+  const defaultPx = Math.min(Math.max(175, minPx), maxPx); // 固定默认 175px，钳制在有效区间
+  return { minPx, defaultPx, maxPx };
+}
+
+/**
+ * 应用滑杆范围并钳制当前值：窗口 resize 后重新计算，保证当前值始终落在有效区间内
+ * @returns {void}
+ */
+function applyCardWBounds() {
+  const { minPx, maxPx } = computeCardWBounds();
+  const r = $('cardwRange');
+  r.min = minPx;
+  r.max = maxPx;
+  let px = parseInt(r.value, 10);
+  if (!Number.isFinite(px) || px < minPx) px = minPx;
+  if (px > maxPx) px = maxPx;
+  applyCardW(px);
+}
+// 默认值 = 每行 10 列对应的 px；仅当用户手动调整过（localStorage 有值）才沿用
+const b = computeCardWBounds();
+const savedCardW = parseInt(localStorage.getItem('farm_cardw') || String(b.defaultPx), 10);
+applyCardW(savedCardW);
+applyCardWBounds();
+$('cardwRange').addEventListener('input', () => {
+  const px = parseInt($('cardwRange').value, 10) || b.defaultPx;
+  localStorage.setItem('farm_cardw', String(px));
+  applyCardW(px);
 });
+// 窗口尺寸变化时重算范围并钳制当前值
+window.addEventListener('resize', applyCardWBounds);
 
 // ---------- init ----------
 $('btnRefresh').onclick = () => refreshDevices().catch(() => showLogin());
 $('btnAdd').onclick = openAdd;
-// 批量操作按钮（Phase 10.2）：勾选≥1 台设备后点击弹出批量菜单
+// 直控按钮：进入/退出直控模式（竞态二态，激活变色）
+$('directBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleDirectMode();
+});
+// 批量操作按钮：未进入批量模式 → 进入（卡片出现复选框）；已进入且无勾选 → 退出；已勾选 → 弹出批量菜单
 $('batchBtn').addEventListener('click', (e) => {
   e.stopPropagation();
+  if (!batchMode) { enterBatchMode(); return; }
+  if (selectedDevices.size === 0) { exitBatchMode(); return; }
   showBatchMenu();
 });
 $('btnBack').onclick = exitFocus;
@@ -1203,62 +1842,101 @@ document.addEventListener('click', (e) => {
 document.querySelectorAll('#focusOps [data-op], #opsMenu [data-op]').forEach((b) => {
   b.addEventListener('click', () => doOp(b.dataset.op));
 });
-$('chkFocusBroadcast').onchange = () => {
-  if (!focus) return;
-  // 重建聚焦连接以切换广播标记
-  const d = focus.device;
-  closeRfb(focus.rfb);
-  const grp = $('chkFocusBroadcast').checked ? wallSession : '';
-  const broadcast = $('chkFocusBroadcast').checked ? '1' : '';
-  const stage = document.createElement('div');
-  stage.id = 'focusStage';
-  stage.className = 'focus-stage';
-  $('focusScreen').innerHTML = '';
-  $('focusScreen').appendChild(stage);
-  focus.rfb = createRfb(stage, d, { grp, broadcast, ctrl: true }, $('focusStatus'));
-  focus.rfb.addEventListener('connect', () => setTimeout(fitFocusPanel, 300));
-  setTimeout(fitFocusPanel, 400);
-};
+// 同步按钮：进入/退出同步选择模式（竞态二态）
+$('btnSync').addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleSyncMode();
+});
 
 initFab();
-// 移动端悬浮菜单
-$('fabMenuBtn').addEventListener('click', (e) => {
-  e.stopPropagation();
-  $('opsMenu').classList.toggle('hidden');
-});
+// 移动端悬浮菜单：展开/收起由 FAB 的 pointerup（未拖动=点击）处理；退出按钮独立绑定
 $('opsExit').addEventListener('click', () => {
   $('opsMenu').classList.add('hidden');
   exitFocus();
 });
-document.addEventListener('click', (e) => {
+// 点击空白处收起悬浮菜单：用 pointerdown 而非 click —— noVNC canvas 的 gesturehandler
+// 在 touchstart 里 preventDefault/stopPropagation，会阻止合成 click 冒泡，导致点画面关不掉菜单；
+// pointerdown 先于 touch 事件派发且不受其 preventDefault 影响
+document.addEventListener('pointerdown', (e) => {
   if (!e.target.closest('#opsMenu') && !e.target.closest('#fab')) {
     $('opsMenu').classList.add('hidden');
   }
 });
 
-// ===== 布局切换：横屏1-6列 / 竖屏1-6列（手机端布局按钮，与 PC 端尺寸调节阀为同一组件两态） =====
+// ===== 布局切换：卡片（宫格）/ 列表 两档（借鉴 IPA 控制端布局按钮，PC 端隐藏、移动端主用） =====
 const layoutBtn = $('layoutBtn');
 const layoutMenu = $('layoutMenu');
+const layoutIcon = $('layoutIcon');
 const wallEl = $('wall');
+// 布局状态持久化：'grid'（卡片宫格，比例自适应）/ 'list'（单列列表行）；PC 端恒为卡片宫格（布局按钮仅移动端可见）
+let layoutMode = 'grid';
+if (window.matchMedia('(max-width: 900px)').matches) {
+  layoutMode = localStorage.getItem('farm_layout') || 'grid';
+}
+// 布局切换图标：grid=四宫格 / list=三横线
+const LAYOUT_ICONS = {
+  grid: '<rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/>',
+  list: '<line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/>',
+};
 
 /**
- * 应用布局到设备墙：切换横竖屏方向 + 设置列数
- * @param {string} v - 布局标识，格式 'h1'..'h6'（横屏1-6列）/ 'v1'..'v6'（竖屏1-6列）
+ * 统计所有在线设备中数量最多的屏幕比例（宽高比，0.01 精度分组），
+ * 返回该组平均比例对应的 padding-bottom 百分比（(h/w)*100）。
+ * @returns {number|null} padding-bottom 百分比；无在线设备或均无屏幕信息时返回 null
+ */
+function majorityTilePb() {
+  const groups = new Map(); // key=round(w/h*100)/100 -> { sum, n }
+  for (const d of devices) {
+    if (d.online !== true) continue; // 仅统计当前连接的设备
+    const w = d.screen && d.screen.width;
+    const h = d.screen && d.screen.height;
+    if (!w || !h) continue;
+    const r = w / h;
+    const key = Math.round(r * 100) / 100;
+    const g = groups.get(key) || { sum: 0, n: 0 };
+    g.sum += r; g.n += 1;
+    groups.set(key, g);
+  }
+  if (groups.size === 0) return null;
+  let bestKey = null; let bestN = -1;
+  for (const [key, g] of groups) {
+    if (g.n > bestN) { bestN = g.n; bestKey = key; }
+  }
+  const g = groups.get(bestKey);
+  return 100 / (g.sum / g.n); // padding-bottom % = (h/w)*100
+}
+
+/**
+ * 应用卡片比例自适应：以多数设备的屏幕比例设置 --tile-pb。
+ * 用户手动切换过横/竖屏（layoutManual）或墙不存在时跳过。
  * @returns {void}
  */
-function applyLayout(v) {
-  const n = parseInt(v.slice(1), 10);
-  const isH = v.charAt(0) === 'h';
-  wallEl.classList.toggle('layout-h', isH);
-  wallEl.classList.toggle('layout-v', !isH);
-  wallEl.style.gridTemplateColumns = 'repeat(' + n + ', 1fr)';
+function applyAutoTileRatio() {
+  if (layoutMode !== 'grid' || !wallEl) return; // 列表视图为固定行高，不参与卡片比例自适应
+  const pb = majorityTilePb();
+  if (pb != null) wallEl.style.setProperty('--tile-pb', pb.toFixed(4) + '%');
+}
+
+/**
+ * 应用布局到设备墙：'grid'（卡片宫格）/ 'list'（单列列表行）。
+ * 卡片视图走 grid 平铺（PC auto-fill 多列 / 移动端 2 列）+ --tile-pb 比例自适应；
+ * 列表视图为单列行式（固定行高，不参与比例自适应）。
+ * @param {string} mode - 'grid' | 'list'
+ * @returns {void}
+ */
+function applyLayout(mode) {
+  layoutMode = mode;
+  localStorage.setItem('farm_layout', mode);
+  wallEl.classList.toggle('wall-grid', mode === 'grid');
+  wallEl.classList.toggle('wall-list', mode === 'list');
+  layoutIcon.innerHTML = LAYOUT_ICONS[mode] || LAYOUT_ICONS.grid;
   layoutMenu.querySelectorAll('.lopt').forEach((o) => {
-    o.classList.toggle('sel', o.dataset.l === v);
+    o.classList.toggle('sel', o.dataset.l === mode);
   });
 }
 
-// 初始化默认布局为竖屏 2 列
-applyLayout('v2');
+// 初始化：读取上次布局（卡片/列表）；grid 下由多数设备比例自适应覆盖 --tile-pb
+applyLayout(layoutMode);
 
 layoutBtn.addEventListener('click', (e) => {
   e.stopPropagation();

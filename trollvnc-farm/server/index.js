@@ -1,6 +1,6 @@
 /*
- * trollvnc-farm gateway
- * 软路由部署的 TrollVNC 群控网关：REST API + WebSocket<->VNC 桥接 + mDNS 发现 + 广播输入
+ * superphone-farm gateway
+ * 软路由部署的 SuperPhone 群控网关：REST API + WebSocket<->VNC 桥接 + mDNS 发现 + 广播输入
  */
 import http from 'node:http';
 import fs from 'node:fs';
@@ -165,8 +165,8 @@ function startDiscovery() {
     });
     console.log('[mdns] discovering _rfb._tcp ...');
     try {
-      bonjour.publish({ name: 'TrollVNCFarm', type: 'trollvnc-farm', port: REG_PORT });
-      console.log('[mdns] publishing _trollvnc-farm._tcp on :' + REG_PORT);
+      bonjour.publish({ name: 'SuperPhoneFarm', type: 'superphone-farm', port: REG_PORT });
+      console.log('[mdns] publishing _superphone-farm._tcp on :' + REG_PORT);
     } catch (e) {
       console.error('[mdns] publish failed:', e.message);
     }
@@ -309,7 +309,7 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
     ws.close(4004, 'device not found');
     return;
   }
-  // ????????????????/??????????????????
+  // 隧道不存在（设备未注册/已掉线）时拒绝会话
   const tun = tunnels.get(deviceId);
   if (!tun || !tun.sock || tun.sock.destroyed || !tun.sock.writable) {
     ws.close(4003, 'no tunnel: device not registered');
@@ -319,50 +319,133 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
   if (grp) sessionGroup.set(ws, { group: grp, deviceId });
   const sessions = getDeviceSessions(deviceId);
   sessions.add(ws);
+  // Phase 7.2 修复：WS 会话必须注册进 tun.wsSet（RFB 数据订阅集合），
+  // 否则 FT_DATA 无订阅者，设备回传的画面字节只会进 pending 缓冲导致黑屏。
+  // 首个会话触发 rfb.start、末个会话 rfb.stop（on-demand RFB 引用计数）。
+  tun.wsSet.add(ws);
+  // 新会话建立：取消延迟 rfb.stop（快速进出时避免 stop/start 乒乓抖动，提升流畅度）
+  if (tun.stopTimer) {
+    clearTimeout(tun.stopTimer);
+    tun.stopTimer = null;
+  }
+  // 同设备仅保留一个活跃会话：设备端仅 1 条隧道 + 1 个 5901 连接（_localFd），
+  // 多个会话（含未清理的残留、直控与同步并存等）同时上行会共同驱动 5901 协议状态机，
+  // 握手/输入字节相互串扰 → noVNC 在消息循环收到非法字节 "Unexpected server message (type N)" 断开。
+  // 顶掉旧会话后按"首会话"语义触发 5901 重建，新会话拿到干净握手；ctrl 间抢占由下方分支处理。
+  for (const other of [...tun.wsSet]) {
+    if (other === ws || other.readyState !== other.OPEN || other.isController) continue;
+    tun.wsSet.delete(other);
+    sessions.delete(other);
+    sessionGroup.delete(other);
+    sessionBroadcaster.delete(other);
+    if (tun.controller === other) tun.controller = null;
+    try { other.close(4001, 'preempted by new session'); } catch { /* noop */ }
+  }
+  const isFirstSession = tun.wsSet.size === 1;
+  // ctrl 会话（唯一控制者）无条件重建设备 5901：接管场景（新 ctrl 顶掉旧 ctrl）必须重建，
+  // 否则新 noVNC 的握手字节会转发到旧 5901 连接上，协议状态错乱导致黑屏；
+  // viewOnly 会话仍仅在"首个会话"（wsSet 0→1）时触发，避免多会话互相打断。
+  const needRfbRebuild = isCtrl || isFirstSession;
 
-  // ??????? WS ???????? viewOnly ??? + ?????? DATA ???? wsSet
-  // ???????????? RFB ?????? RFB ??????????????
-  if (tun.pending && tun.pending.length) {
+  // 无订阅期间的 RFB 握手头（pending 缓冲）补发给新会话，避免 noVNC 悬挂黑屏。
+  // 注意：仅"不触发重建"的会话才可复用旧缓冲数据；触发重建（ctrl / 首会话）的
+  // 会话即将 stop→start 全新 5901 连接，旧 pending 是上一个会话的残留帧
+  // （退出时 rfb.stop 延迟 800ms 下发，期间旧连接仍在推帧被缓冲），
+  // 直接补发会让 noVNC 把旧帧当版本响应 → "Invalid server version" 黑屏。
+  if (!needRfbRebuild && tun.pending && tun.pending.length) {
     const pv = tun.pending;
     tun.pending = Buffer.alloc(0);
     try { ws.send(pv); } catch { /* ignore */ }
   }
   ws.isController = !!isCtrl;
-  console.log(`[vnc] tunnel bridge ${dev.name} (${deviceId}) ctrl=${isCtrl ? 'YES' : 'viewOnly'} grp=${grp || '-'}${isBroadcast ? ' MASTER' : ''}`);
+  console.log(`[vnc] tunnel bridge ${dev.name} (${deviceId}) ctrl=${isCtrl ? 'YES' : 'viewOnly'} grp=${grp || '-'}${isBroadcast ? ' MASTER' : ''} sessions=${tun.wsSet.size}`);
 
-  // ?????????????????????
+  // 控制会话抢占：新 ctrl 顶掉旧 ctrl
   if (isCtrl) {
     const old = tun.controller;
     if (old && old !== ws && old.readyState === old.OPEN) {
       try { old.close(4001, 'preempted by another controller'); } catch { /* noop */ }
     }
     tun.controller = ws;
-    // ???????????????? 5901?RFB ?????????????? noVNC?
-    const rfbStart = Buffer.from(JSON.stringify({ type: 'cmd', cmd: 'rfb.start', id: 's' + Date.now().toString(36) }), 'utf8');
-    writeTunnelFrame(tun.sock, FT_CMD, rfbStart);
+  }
+  // on-demand RFB：强制设备侧重建本地 5901（stop→start），确保新会话拿到全新 RFB 握手，
+  // 避免复用旧连接导致 "Invalid server version" / 协议错乱黑屏。
+  // ack 驱动：设备端同步 connect 后回 ack 携带结果——收到 ack 才精确放行缓冲的握手字节
+  // （替代固定 400ms 窗口，消除设备冷启动/慢连接的竞态）；connect 失败则显式断开控制会话报错，
+  // 3s 超时兜底（旧设备不 ack 时强制放行，防永久卡死）。
+  if (needRfbRebuild && tun.sock && !tun.sock.destroyed && tun.sock.writable) {
+    const rid = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const mkCmd = (cmd, id) => Buffer.from(JSON.stringify({ type: 'cmd', cmd, id: id || ('s' + Date.now().toString(36)) }), 'utf8');
+    // 先 rfb.stop（断开设备侧可能残留的旧 5901 连接），重建窗口期内缓冲上行握手字节
+    try { writeTunnelFrame(tun.sock, FT_CMD, mkCmd('rfb.stop')); } catch { /* noop */ }
+    // 重建即将开始全新 RFB 连接：丢弃上一个会话残留的下行缓冲（防污染新会话握手）
+    tun.pending = Buffer.alloc(0);
+    tun.pendingUp = Buffer.alloc(0);
+    tun.pendingUpUntil = Date.now() + 3000; // 兜底：ack 正常会在设备 connect 完成后提前结束
+    tun.rebuild = { id: rid, timer: null };
+    // 兜底超时：ack 丢失/旧设备不 ack 时强制放行，避免握手字节永久卡在缓冲
+    tun.rebuild.timer = setTimeout(() => {
+      if (tun.rebuild && tun.rebuild.id === rid) {
+        tun.pendingUpUntil = 0;
+        console.log(`[vnc] rfb.start ack timeout, force release (${deviceId})`);
+        if (tun.pendingUp && tun.pendingUp.length) {
+          try { writeTunnelFrame(tun.sock, FT_DATA, tun.pendingUp); } catch { /* noop */ }
+        }
+        tun.pendingUp = null;
+        tun.rebuild = null;
+      }
+    }, 3000);
+    try { writeTunnelFrame(tun.sock, FT_CMD, mkCmd('rfb.start', rid)); } catch { /* noop */ }
   }
 
   ws.on('message', (data, isBinary) => {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    // ???? / ???? ????????viewOnly ????????????
-    const canWrite = isCtrl || (isBroadcast && grp);
-    if (!canWrite) return;
+    // 设备 5901 重建窗口期内缓冲上行字节（等 rfb.start 重建完成后再放行），
+    // 避免 noVNC 握手字节发到旧/未就绪连接
+    if (tun.pendingUpUntil && Date.now() < tun.pendingUpUntil) {
+      tun.pendingUp = Buffer.concat([tun.pendingUp || Buffer.alloc(0), buf]);
+      if (tun.pendingUp.length > 64 * 1024) {
+        tun.pendingUp = tun.pendingUp.subarray(tun.pendingUp.length - 64 * 1024);
+      }
+      return;
+    }
+    // RFB 握手必需字节（版本响应/ClientInit/PixelFormat 等）在 viewOnly 会话也要转发，
+    // 否则 noVNC 握手被卡死导致黑屏。noVNC 的 viewOnly 模式本身不会发送输入事件，
+    // 因此允许所有会话上行转发是安全的；输入转发仅广播主控触发。
     const ok = writeTunnelFrame(tun.sock, FT_DATA, buf);
     console.log(`[vnc] ws->tunnel ${deviceId} bytes=${buf.length} wrote=${ok}`);
     if (isBroadcast && grp) broadcastInput(ws, grp, buf);
   });
 
   const cleanup = () => {
+    // close/error 双触发幂等保护：已清理过则直接返回
+    if (!tun.wsSet.has(ws)) return;
     sessions.delete(ws);
     sessionGroup.delete(ws);
     sessionBroadcaster.delete(ws);
     tun.wsSet.delete(ws);
     if (tun.controller === ws) {
       tun.controller = null;
-      // ????????????? 5901?????????????????
+    }
+    // 最后一个会话断开：清空 pending（旧会话残留数据失效，防补发给新会话造成握手错乱）+ 延迟 rfb.stop
+    if (tun.wsSet.size === 0) {
+      tun.pending = Buffer.alloc(0);
+      // 会话全断：作废设备 5901 重建窗口的缓冲与 ack 等待状态
+      tun.pendingUp = null;
+      tun.pendingUpUntil = 0;
+      if (tun.rebuild) {
+        if (tun.rebuild.timer) clearTimeout(tun.rebuild.timer);
+        tun.rebuild = null;
+      }
+      if (tun.stopTimer) clearTimeout(tun.stopTimer);
       if (tun.sock && !tun.sock.destroyed && tun.sock.writable) {
-        const rfbStop = Buffer.from(JSON.stringify({ type: 'cmd', cmd: 'rfb.stop', id: 'e' + Date.now().toString(36) }), 'utf8');
-        try { writeTunnelFrame(tun.sock, FT_CMD, rfbStop); } catch { /* noop */ }
+        // debounce 800ms：快速重进时设备 5901 连接保持，减少 stop/start 乒乓
+        tun.stopTimer = setTimeout(() => {
+          tun.stopTimer = null;
+          if (!tun.sock || tun.sock.destroyed || !tun.sock.writable) return;
+          const rfbStop = Buffer.from(JSON.stringify({ type: 'cmd', cmd: 'rfb.stop', id: 'e' + Date.now().toString(36) }), 'utf8');
+          try { writeTunnelFrame(tun.sock, FT_CMD, rfbStop); } catch { /* noop */ }
+        }, 800);
       }
     }
   };
@@ -539,7 +622,7 @@ async function handleApi(req, res, url) {
   const [ , resource, id, sub ] = parts;
 
   if (resource === 'state' && req.method === 'GET') {
-    sendJson(res, 200, { name: 'trollvnc-farm', version: '0.1.0', deviceCount: devices.length, uptime: Math.floor(process.uptime()) });
+    sendJson(res, 200, { name: 'superphone-farm', version: '0.0.1', deviceCount: devices.length, uptime: Math.floor(process.uptime()) });
     return true;
   }
 
@@ -716,7 +799,67 @@ const server = http.createServer(async (req, res) => {
     // API 与 WebSocket 由 authOk 单独保护（见 handleApi / wss.on('connection')）
     if (url.pathname === '/') { serveStatic(res, 'index.html', WEB_DIR); return; }
     if (url.pathname.startsWith('/novnc/')) {
-      serveStatic(res, url.pathname.slice('/novnc/'.length), NOVNC_DIR);
+      const novncRel = url.pathname.slice('/novnc/'.length);
+      // 内网 HTTP 环境：屏蔽 noVNC 的「requires a secure context (TLS)」警告。
+      // RFB 连接本身不受影响，仅在内存中替换，不修改 node_modules。
+      if (novncRel.endsWith('core/rfb.js')) {
+        console.log(`[novnc] patching rfb.js (${novncRel})`);
+        try {
+          let rfbSrc = fs.readFileSync(path.join(NOVNC_DIR, novncRel), 'utf8');
+          const before = rfbSrc.includes('secure context (TLS)');
+          rfbSrc = rfbSrc.replace(
+            'Log.Error("noVNC requires a secure context (TLS). Expect crashes!");',
+            '/* TLS 上下文警告已屏蔽：内网 HTTP 环境，RFB 不受影响 */'
+          );
+          // wheel 事件显式 passive:false（noVNC 滚轮缩放需 preventDefault，消除 Chrome Violation 警告）
+          rfbSrc = rfbSrc.replace(
+            'this._canvas.addEventListener("wheel", this._eventHandlers.handleWheel);',
+            'this._canvas.addEventListener("wheel", this._eventHandlers.handleWheel, { passive: false });'
+          );
+          // touchstart 聚焦监听不调用 preventDefault（focus 用 preventScroll），
+          // 显式 passive:true 消除 Chrome「scroll-blocking touchstart」Violation 警告
+          rfbSrc = rfbSrc.replace(
+            'this._canvas.addEventListener("touchstart", this._eventHandlers.focusCanvas);',
+            'this._canvas.addEventListener("touchstart", this._eventHandlers.focusCanvas, { passive: true });'
+          );
+          const after = rfbSrc.includes('secure context (TLS)');
+          console.log(`[novnc] rfb.js patch: before=${before} after=${after}`);
+          res.writeHead(200, {
+            'Content-Type': 'text/javascript',
+            'Content-Length': Buffer.byteLength(rfbSrc),
+            'Cache-Control': 'no-cache',
+          });
+          res.end(rfbSrc);
+          return;
+        } catch (e) { console.log(`[novnc] patch failed: ${e.message}`); /* fallthrough */ }
+      }
+      // gesturehandler：touchstart/touchmove 处理器需 preventDefault（手势检测），
+      // 显式 passive:false（语义与默认一致），消除 Chrome scroll-blocking Violation 警告
+      if (novncRel.endsWith('core/input/gesturehandler.js')) {
+        console.log(`[novnc] patching gesturehandler.js (${novncRel})`);
+        try {
+          let gSrc = fs.readFileSync(path.join(NOVNC_DIR, novncRel), 'utf8');
+          const before = gSrc.includes('passive: false');
+          gSrc = gSrc.replace(
+            /addEventListener\('touchstart',\n(\s*)this\._boundEventHandler\);/,
+            "addEventListener('touchstart',\n$1this._boundEventHandler, { passive: false });"
+          );
+          gSrc = gSrc.replace(
+            /addEventListener\('touchmove',\n(\s*)this\._boundEventHandler\);/,
+            "addEventListener('touchmove',\n$1this._boundEventHandler, { passive: false });"
+          );
+          const after = gSrc.includes('passive: false');
+          console.log(`[novnc] gesturehandler.js patch: before=${before} after=${after}`);
+          res.writeHead(200, {
+            'Content-Type': 'text/javascript',
+            'Content-Length': Buffer.byteLength(gSrc),
+            'Cache-Control': 'no-cache',
+          });
+          res.end(gSrc);
+          return;
+        } catch (e) { console.log(`[novnc] gesturehandler patch failed: ${e.message}`); /* fallthrough */ }
+      }
+      serveStatic(res, novncRel, NOVNC_DIR);
       return;
     }
     if (url.pathname.startsWith('/web/')) {
@@ -838,6 +981,10 @@ const regServer = net.createServer((sock) => {
       const rec = registeredDevices.get(deviceId);
       if (rec) rec.lastHeartbeat = Date.now();
       if (dev) dev.lastSeen = Date.now();
+    } else if (msg.type === 'screen_changed' && deviceId) {
+      // Phase C：设备画面变化上报 → 记录变化标记（控制端 changedSince 增量查询 / 后续可广播）
+      const dev0 = devices.find((d) => d.id === deviceId);
+      if (dev0) dev0.screenChangedAt = Date.now();
     } else if (msg.type === 'ack') {
       // 手机对下发命令的确认（宪法 7.4）：按 id 匹配挂起命令
       const p = msg.id ? pendingCmds.get(String(msg.id)) : undefined;
@@ -909,6 +1056,8 @@ const tunnelServer = net.createServer((sock) => {
       // server version instead of hanging black
       const rec = tunnels.get(deviceId);
       if (rec) {
+        // 设备 5901 重建窗口期：丢弃旧连接残留的下行数据（防污染新会话握手）
+        if (rec.pendingUpUntil && Date.now() < rec.pendingUpUntil) return;
         if (rec.wsSet.size > 0) {
           rec.pending = Buffer.alloc(0);
           for (const ws of rec.wsSet) {
@@ -928,6 +1077,28 @@ const tunnelServer = net.createServer((sock) => {
       let ack;
       try { ack = JSON.parse(payload.toString('utf8')); } catch { return; }
       console.log(`[tunnel] FT_CMDACK from ${deviceId} cmd=${ack && ack.cmd} ok=${ack && ack.ok}`);
+      // rfb.start ack：设备 5901 就绪确认（ack 驱动精确放行握手字节）
+      const tunRec = tunnels.get(deviceId);
+      if (tunRec && tunRec.rebuild && ack && ack.cmd === 'rfb.start' && ack.id === tunRec.rebuild.id) {
+        if (tunRec.rebuild.timer) { clearTimeout(tunRec.rebuild.timer); tunRec.rebuild.timer = null; }
+        tunRec.pendingUpUntil = 0; // 结束下行丢弃窗口（设备 5901 已就绪）
+        if (ack.ok) {
+          // connect 成功：放行缓冲的握手字节，noVNC 必然拿到 server version 出画面
+          console.log(`[vnc] rfb.start ack ok, release handshake bytes (${deviceId})`);
+          if (tunRec.pendingUp && tunRec.pendingUp.length) {
+            try { writeTunnelFrame(sock, FT_DATA, tunRec.pendingUp); } catch { /* noop */ }
+          }
+        } else {
+          // connect 失败：显式断开控制会话（前端提示"画面服务不可用"），不静默黑屏
+          console.log(`[vnc] rfb.start ack failed (${deviceId}), closing ctrl session`);
+          if (tunRec.controller && tunRec.controller.readyState === 1) {
+            try { tunRec.controller.close(4005, 'device RFB unavailable'); } catch { /* noop */ }
+          }
+        }
+        tunRec.pendingUp = null;
+        tunRec.rebuild = null;
+        return;
+      }
       const p = ack && ack.id ? pendingCmds.get(String(ack.id)) : undefined;
       if (p) {
         clearTimeout(p.timer);
@@ -1040,7 +1211,7 @@ tunnelServer.listen(TUNNEL_PORT, HOST, () => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`[farm] trollvnc-farm gateway listening on http://${HOST}:${PORT}`);
+  console.log(`[farm] superphone-farm gateway listening on http://${HOST}:${PORT}`);
   console.log(`[farm] data dir: ${DATA_DIR}`);
   console.log(`[farm] token auth: ${TOKEN ? 'enabled' : 'disabled (LAN only!)'}`);
 });
