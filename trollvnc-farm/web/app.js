@@ -687,16 +687,22 @@ async function showBatchConfigPanel(ids) {
  */
 function renderCapOps(container, device) {
   if (!container) return;
+  // 清理上次挂载的按压识别（防挂起定时器在切换设备后误触发）
+  if (Array.isArray(container.__pressCleanups)) {
+    for (const detach of container.__pressCleanups) detach();
+  }
+  container.__pressCleanups = [];
   container.innerHTML = '';
   const frag = document.createDocumentFragment();
   const caps = menuCaps(device, 'console');
   const byId = new Map(caps.map((c) => [c.id, c]));
 
   // 按键区：分组标题 + 按键对象按钮（按压识别，07 §3.2）
+  // 按键按钮先构建进临时数组，存在按键才追加分组标题，避免渲染孤立空标题
   const keyTitle = document.createElement('div');
   keyTitle.className = 'cap-group-title';
   keyTitle.textContent = '按键';
-  frag.appendChild(keyTitle);
+  const keyBtns = [];
   for (const k of KEY_DEFS) {
     const meta = byId.get(k.events.click) || byId.get(k.events.down);
     if (!meta) continue; // 设备不支持该按键能力则跳过
@@ -705,11 +711,15 @@ function renderCapOps(container, device) {
     b.className = 'op key-op';
     b.title = k.title;
     b.innerHTML = '<span class="cap-icon">' + escapeHtml(k.icon || meta.icon || '?') + '</span><span class="cap-name">' + escapeHtml(k.title) + '</span>';
-    attachPress(b, k, { invoke: (capId) => {
+    container.__pressCleanups.push(attachPress(b, k, { invoke: (capId) => {
       const m = byId.get(capId) || { id: capId, title: capId, params: [] };
       doInvoke(m);
-    } });
-    frag.appendChild(b);
+    } }));
+    keyBtns.push(b);
+  }
+  if (keyBtns.length > 0) {
+    frag.appendChild(keyTitle);
+    keyBtns.forEach((b) => frag.appendChild(b));
   }
 
   // 动作区：ACTION_CAPS 单击直执行
