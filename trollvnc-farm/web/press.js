@@ -51,7 +51,22 @@ export function attachPress(element, keyDef, opts = {}) {
     }
   };
 
+  const onCancel = () => {
+    // 触摸被系统打断（滚动/来电/手势）：复位按压状态，不触发 click/double 计数
+    clearTimeout(longTimer);
+    clearTimeout(clickTimer);
+    isLong = false;
+    pressCount = 0;
+  };
+
   element.addEventListener('pointerdown', onDown);
   element.addEventListener('pointerup', onUp);
-  return () => { element.removeEventListener('pointerdown', onDown); element.removeEventListener('pointerup', onUp); };
+  element.addEventListener('pointercancel', onCancel);
+  return () => {
+    clearTimeout(longTimer);                         // 卸载时兜底清理挂起的长按/多击窗口定时器
+    clearTimeout(clickTimer);
+    element.removeEventListener('pointerdown', onDown);
+    element.removeEventListener('pointerup', onUp);
+    element.removeEventListener('pointercancel', onCancel);
+  };
 }
