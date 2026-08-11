@@ -499,7 +499,7 @@ function showBatchMenu() {
     const inst = wallInstances.get(id);
     const dev = inst ? inst.device : devices.find((d) => d.id === id);
     if (!dev) continue;
-    for (const meta of deviceCaps(dev)) {
+    for (const meta of menuCaps(dev, 'batch')) {
       if (meta && meta.id && !capMap.has(meta.id)) capMap.set(meta.id, meta);
     }
   }
