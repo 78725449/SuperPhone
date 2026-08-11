@@ -1,6 +1,7 @@
 // SuperPhone 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
 import RFB from '/novnc/core/rfb.js';
-import { deviceCaps, configSchemaByReload, invokeCap, setConfigs, RELOAD_LABELS, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS } from './caps.js';
+import { deviceCaps, configSchemaByReload, invokeCap, setConfigs, RELOAD_LABELS, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, ACTION_CAPS, menuCaps } from './caps.js';
+import { attachPress } from './press.js';
 
 const $ = (id) => document.getElementById(id);
 const isMobile = () => window.matchMedia('(max-width: 900px)').matches;
@@ -13,6 +14,18 @@ function setToken(t) {
   if (TOKEN) localStorage.setItem('farm_token', TOKEN);
   else localStorage.removeItem('farm_token');
 }
+
+// ---------- 容器参数（IPA WKWebView 容器 / 普通浏览器 双模） ----------
+// IPA 控制端整 Tab 由 WKWebView 加载本页面（Web 容器化），经 URL 传入：
+//   ?selfId=<DeviceUUID>   本设备标识：从设备墙过滤自身，避免卡片墙显示自己（与原生 handleDevices 一致）
+//   ?container=ipa         容器模式标记：后续容器差异行为（如全屏接管/隐藏）按此分支
+// 普通浏览器访问不带这些参数，行为与现状完全一致。
+const SELF_ID = url.searchParams.get('selfId') || '';
+const IS_IPA_CONTAINER = url.searchParams.get('container') === 'ipa';
+// 暴露到 body data 属性与全局：CSS 可用 body[data-container="ipa"] 做容器样式差异，JS 模块可直接引用
+document.body.dataset.container = IS_IPA_CONTAINER ? 'ipa' : 'web';
+window.__FARM_CONTAINER = IS_IPA_CONTAINER;
+if (IS_IPA_CONTAINER) console.info(`[farm] IPA container mode: selfId=${SELF_ID || '(none)'}`);
 
 // ---------- api ----------
 async function api(path, opts = {}) {
@@ -131,8 +144,10 @@ function devicesSignature() {
 
 async function refreshDevices() {
   const data = await api('/api/devices');
+  // 容器模式（?selfId=）过滤自身设备：卡片墙不显示本设备（与 IPA 原生 handleDevices 的 UUID 去重一致）
+  const remote = SELF_ID ? (data.devices || []).filter((d) => String(d.id) !== SELF_ID) : (data.devices || []);
   // 注入虚拟预览设备（MOCK_COUNT=30 便于查看卡片墙布局与比例自适应；置 0 即关闭）
-  devices = (data.devices || []).concat(MOCK_DEVICES);
+  devices = remote.concat(MOCK_DEVICES);
   const onlineCount = devices.filter((d) => d.online === true).length;
   $('empty').classList.toggle('hidden', devices.length > 0);
   $('meta').textContent = `共 ${devices.length} 台 · ${onlineCount} 在线 · ${devices.length - onlineCount} 离线`;
@@ -281,7 +296,7 @@ function startWallRfb(inst) {
   }
   tv.innerHTML = '<div class="offline-ph">加载中…</div>';
   // rfb 字段仅为兼容既有 stopWallRfb/updateWallTile 引用，实为截图轮询实例
-  inst.rfb = { kind: 'screenshot', timer: null, closed: false, lastHash: null, silent: 0, suppressHash: false };
+  inst.rfb = { kind: 'screenshot', timer: null, closed: false, lastHash: null, silent: 0 };
   const tick = async () => {
     if (inst.paused || inst.rfb.closed) return;
     let changed = false;
@@ -290,12 +305,6 @@ function startWallRfb(inst) {
       const h = await invokeCap('', inst.device.id, 'screen.hash', {});
       const hash = ((h && h.ack) || {}).hash;
       if (!hash) throw new Error('screen.hash 未返回 hash');
-      if (inst.rfb.suppressHash) {
-        // Phase C 增量通道刚拉过新帧：吸收本次 hash，避免重复拉图
-        inst.rfb.lastHash = hash;
-        inst.rfb.suppressHash = false;
-        return;
-      }
       changed = (hash !== inst.rfb.lastHash);
       if (!changed) { inst.rfb.silent = (inst.rfb.silent || 0) + 1; return; } // 画面未变化，保持缓存帧
       inst.rfb.lastHash = hash;
@@ -325,75 +334,7 @@ function startWallRfb(inst) {
       }
     }
   };
-  tick();
-  startWallChangedPoller(); // Phase C：设备端变化上报增量通道（事件驱动主通道）
-}
-
-// ---------- Phase C：画面变化增量通道（事件驱动） ----------
-// 设备端 screen_changed 上报 → 网关记录 screenChangedAt → 控制端低频查询 changedSince 增量拉图。
-// 作为画面获取的主事件通道（静止时零图片流量）；hash tick 保留为旧设备兜底（双速退避）。
-let wallChangedTimer = null;
-let wallLastChangedSince = Date.now();
-
-/**
- * 启动全局画面变化增量轮询（幂等）。
- * 低频（1.5s）查询 GET /api/devices?changedSince=ts，仅对上报过画面变化的设备拉图。
- * @returns {void}
- */
-function startWallChangedPoller() {
-  if (wallChangedTimer) return;
-  wallChangedTimer = setInterval(pollWallChanged, 1500);
-}
-
-/**
- * 设备墙为空时停止增量轮询（节省后台开销）。
- * @returns {void}
- */
-function stopWallChangedPollerIfIdle() {
-  if (wallInstances.size === 0 && wallChangedTimer) {
-    clearInterval(wallChangedTimer);
-    wallChangedTimer = null;
-  }
-}
-
-/**
- * 增量查询回调：对网关返回的「画面变化设备」立即拉取新帧渲染。
- * @returns {void}
- */
-async function pollWallChanged() {
-  const since = wallLastChangedSince;
-  wallLastChangedSince = Date.now();
-  let list = [];
-  try {
-    const r = await api(`/api/devices?changedSince=${since}`);
-    list = (r && r.devices) || [];
-  } catch { return; }
-  for (const d of list) {
-    const inst = wallInstances.get(d.id);
-    if (inst && inst.rfb && !inst.rfb.closed && !inst.paused) {
-      fetchWallShot(inst);
-    }
-  }
-}
-
-/**
- * 拉取单台设备最新截图渲染（增量通道/首帧共用）。
- * @param {object} inst 卡片墙实例
- * @returns {Promise<void>}
- */
-async function fetchWallShot(inst) {
-  if (!inst || inst.paused || inst.rfb.closed) return;
-  try {
-    const r = await invokeCap('', inst.device.id, 'screenshot', {});
-    const ack = (r && r.ack) || {};
-    const b64 = ack.image || ack.base64;
-    if (!b64) return;
-    const tv = inst.tile && inst.tile.querySelector('.tv');
-    if (tv) tv.innerHTML = `<img class="thumb" src="data:image/jpeg;base64,${b64}" alt="" />`;
-    if (inst.statusEl) inst.statusEl.textContent = '';
-    if (inst.tile && ack.width && ack.height) inst.tile.dataset.wh = ack.width + 'x' + ack.height;
-    if (inst.rfb) inst.rfb.suppressHash = true; // 已拉新帧：hash tick 下一轮吸收，避免重复拉图
-  } catch { /* 拉图失败：下一轮增量/兜底重试 */ }
+  tick(); // hash 门控变化拉图：画面静止零图片流量（ThumbInterval 间隔 + 变化 1s 快检 / 静止 1.5 倍退避至 15s 封顶）
 }
 
 function stopWallRfb(inst) {
@@ -409,7 +350,6 @@ function stopWallRfb(inst) {
   }
   const tv = inst.tile && inst.tile.querySelector('.tv');
   if (tv) tv.innerHTML = '';
-  stopWallChangedPollerIfIdle(); // Phase C：设备墙为空时停止增量轮询
 }
 
 // ---------- 批量操作（Phase 10.2） ----------
@@ -736,59 +676,58 @@ async function showBatchConfigPanel(ids) {
   document.body.appendChild(modal);
 }
 
-// ---------- 按能力元数据渲染操作按钮（Phase 4.7：数据驱动，不再硬编码 keysym；Phase 10.3：按 category 分组） ----------
+// ---------- 控制台操作菜单（07 §4.1：按键区 KEY_DEFS + 动作区 ACTION_CAPS） ----------
 // 适配/全屏/断开为控制台本地操作，不在能力清单内，由静态按钮提供
 /**
- * 按能力元数据渲染操作按钮，按 category 分组（Phase 10.3）
- * 每个分组前插入分组标题，分组内仍为纵向列表按钮（图标+名称），分组间用 hr 分隔
- * @param {HTMLElement} container 容器元素
- * @param {Array<object>} capMetadata 能力元数据数组
+ * 渲染控制台操作菜单（07 §4.1）：按键区（KEY_DEFS 按键对象+按压识别）+ 动作区（ACTION_CAPS）
+ * 按键区按钮挂 attachPress 按压识别（click/double/triple/long/down/up），动作区按钮单击直执行
+ * @param {HTMLElement} container 容器（focusOpsCap / opsMenuCap）
+ * @param {object} device 当前聚焦设备
  * @returns {void}
  */
-function renderCapOps(container, capMetadata) {
+function renderCapOps(container, device) {
   if (!container) return;
   container.innerHTML = '';
-  // 使用 DocumentFragment 批量渲染，避免逐元素 append 触发多次 forced reflow
   const frag = document.createDocumentFragment();
-  // 按 category 分组渲染（Phase 10.3）
-  const grouped = groupByCategory(capMetadata);
-  let groupIdx = 0;
-  for (const [cat, metas] of grouped) {
-    // 分组之间插入分隔线（首个分组前不插）
-    if (groupIdx > 0) {
-      const divider = document.createElement('hr');
-      divider.className = 'cap-group-divider';
-      frag.appendChild(divider);
-    }
-    groupIdx++;
-    // 分组标题（中文映射，兜底显示原 category）
-    const title = document.createElement('div');
-    title.className = 'cap-group-title';
-    title.textContent = CATEGORY_LABELS[cat] || cat || '其它';
-    frag.appendChild(title);
-    // 分组内纵向列表按钮
-    for (const meta of metas) {
+  const caps = menuCaps(device, 'console');
+  const byId = new Map(caps.map((c) => [c.id, c]));
+
+  // 按键区：分组标题 + 按键对象按钮（按压识别，07 §3.2）
+  const keyTitle = document.createElement('div');
+  keyTitle.className = 'cap-group-title';
+  keyTitle.textContent = '按键';
+  frag.appendChild(keyTitle);
+  for (const k of KEY_DEFS) {
+    const meta = byId.get(k.events.click) || byId.get(k.events.down);
+    if (!meta) continue; // 设备不支持该按键能力则跳过
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'op key-op';
+    b.title = k.title;
+    b.innerHTML = '<span class="cap-icon">' + escapeHtml(k.icon || meta.icon || '?') + '</span><span class="cap-name">' + escapeHtml(k.title) + '</span>';
+    attachPress(b, k, { invoke: (capId) => {
+      const m = byId.get(capId) || { id: capId, title: capId, params: [] };
+      doInvoke(m);
+    } });
+    frag.appendChild(b);
+  }
+
+  // 动作区：ACTION_CAPS 单击直执行
+  const actMeta = ACTION_CAPS.map((id) => byId.get(id)).filter(Boolean);
+  if (actMeta.length > 0) {
+    const actTitle = document.createElement('div');
+    actTitle.className = 'cap-group-title';
+    actTitle.textContent = '动作';
+    frag.appendChild(actTitle);
+    for (const meta of actMeta) {
       const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'op';
-      b.dataset.cap = meta.id;
-      b.title = meta.title || meta.id;
-      // 按钮内“图标+名称”横向布局：移动端 ops-menu-grid 显示两者，PC 端 focus-ops-cap 通过 CSS 隐藏 cap-name
+      b.type = 'button'; b.className = 'op';
+      b.dataset.cap = meta.id; b.title = meta.title;
       b.innerHTML = '<span class="cap-icon">' + escapeHtml(meta.icon || '?') + '</span><span class="cap-name">' + escapeHtml(meta.title || meta.id) + '</span>';
       b.addEventListener('click', () => doInvoke(meta));
       frag.appendChild(b);
     }
   }
-  // 追加配置入口按钮（二级菜单）
-  const cfgBtn = document.createElement('button');
-  cfgBtn.type = 'button';
-  cfgBtn.className = 'op';
-  cfgBtn.dataset.op = 'config';
-  cfgBtn.title = '设备配置';
-  cfgBtn.innerHTML = '<span class="cap-icon">⚙</span><span class="cap-name">设备配置</span>';
-  cfgBtn.addEventListener('click', () => showConfigPanel());
-  frag.appendChild(cfgBtn);
-  // 一次性插入，仅触发一次 reflow
   container.appendChild(frag);
 }
 
@@ -912,8 +851,8 @@ function enterFocus(d) {
   $('focusPanel').classList.remove('hidden');
   $('focusOps').classList.remove('hidden');
   $('workspace').classList.add('focus-open');
-  renderCapOps($('focusOpsCap'), deviceCaps(d));
-  renderCapOps($('opsMenuCap'), deviceCaps(d));
+  renderCapOps($('focusOpsCap'), d);
+  renderCapOps($('opsMenuCap'), d);
   if (window.matchMedia('(max-width: 900px)').matches) $('fab').classList.remove('hidden');
   // 主控连接始终携带 grp+broadcast（广播到同 session 的同步/群控订阅设备）。
   // 保证勾选同步设备时无需重建主控连接 → 主控画面不跳动、不改变。
