@@ -182,8 +182,11 @@ export async function batchRestart(apiBase, deviceIds) {
  *   - ks   X11 keysym 数值，noVNC rfb.sendKey(keysym, code, down) 用
  *   - code noVNC 键码名（KeyTable 映射）
  *   - ptr  指针掩码（仅 power 用中键=2，模拟电源键；rfb.pointer 同款）
- * 无 ks/ptr 的按键（keyboard/spotlight/snapshot/hwlock/releasekeys）无 keysym 语义，
- * 保留能力链路（设备端 API：toggleOnScreenKeyboard 等）
+ * 控制台直连模式：12 键全部经 RFB 直发（无 keysym 回退能力链路）。
+ * 系统动作键使用自定义 keysym（keyboard=0x1008ff2e / spotlight=0x1008ff1d /
+ * snapshot=0x1008ff8a / hwlock=0x1008ff8b / releasekeys=0x1008ff8c），设备端
+ * kbdAddEvent 映射到 STHIDEventGenerator API（toggleOnScreenKeyboard 等），
+ * 单击执行（down 触发）、up 忽略。
  */
 export const KEY_DEFS = [
   { key: 'home',    title: 'Home 键',  icon: '🏠', ks: 0xff50,       code: 'Home',            events: { click: 'home',           double: 'home.double',   long: 'home.long' } },
@@ -193,11 +196,11 @@ export const KEY_DEFS = [
   { key: 'mute',    title: '静音',     icon: '🔇', ks: 0x1008ff12,   code: 'AudioVolumeMute', events: { click: 'mute',           down: 'mute.down',       up: 'mute.up' } },
   { key: 'briup',   title: '亮度 +',   icon: '☀️', ks: 0x1008ff03,   code: 'BrightnessUp',    events: { click: 'briup',          down: 'briup.down',      up: 'briup.up' } },
   { key: 'bridn',   title: '亮度 −',   icon: '🌙', ks: 0x1008ff02,   code: 'BrightnessDown',  events: { click: 'bridn',          down: 'bridn.down',      up: 'bridn.up' } },
-  { key: 'keyboard',title: '键盘',     icon: '⌨️',                     events: { click: 'keyboard' } },
-  { key: 'spotlight',title: '搜索',    icon: '🔍',                     events: { click: 'spotlight' } },
-  { key: 'snapshot',title: 'Home+Power截屏', icon: '📸',              events: { click: 'snapshot' } },
-  { key: 'hwlock',  title: '键盘锁/解锁', icon: '🔒',                  events: { click: 'hwlock' } },
-  { key: 'releasekeys', title: '释放按键', icon: '🙊',                 events: { click: 'releasekeys' } },
+  { key: 'keyboard',title: '键盘',     icon: '⌨️', ks: 0x1008ff2e,   code: 'Keyboard',        events: { click: 'keyboard' } },
+  { key: 'spotlight',title: '搜索',    icon: '🔍', ks: 0x1008ff1d,   code: 'Search',          events: { click: 'spotlight' } },
+  { key: 'snapshot',title: 'Home+Power截屏', icon: '📸', ks: 0x1008ff8a, code: 'Snapshot',   events: { click: 'snapshot' } },
+  { key: 'hwlock',  title: '键盘锁/解锁', icon: '🔒', ks: 0x1008ff8b, code: 'HardwareLock',   events: { click: 'hwlock' } },
+  { key: 'releasekeys', title: '释放按键', icon: '🙊', ks: 0x1008ff8c, code: 'ReleaseKeys',   events: { click: 'releasekeys' } },
 ];
 
 /** 动作区固定能力 id（07 §4.1，从设备 capMetadata 取元数据渲染） */

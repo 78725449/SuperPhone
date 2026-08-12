@@ -748,12 +748,8 @@ function renderCapOps(container, device) {
     b.innerHTML = '<span class="cap-icon">' + escapeHtml(k.icon || meta.icon || '?') + '</span><span class="cap-name">' + escapeHtml(k.title) + '</span>';
     container.__pressCleanups.push(attachPress(b, k, { invoke: (capId) => {
       const rfb = focus && focus.rfb;
-      if (rfb && rfb._farmConnected && (k.ks !== undefined || k.ptr !== undefined)) {
-        rfbPressKey(rfb, k, capId); // RFB 直发：低延迟、时序保证、纳入广播（静默，无 toast）
-        return;
-      }
-      const m = byId.get(capId) || { id: capId, title: capId, params: [] };
-      doInvoke(m);
+      if (rfb && rfb._farmConnected) rfbPressKey(rfb, k, capId);
+      // 控制台直连模式：按键仅在有活跃 RFB 连接时可用，无连接不发送
     } }));
     keyBtns.push(b);
   }
@@ -1260,7 +1256,7 @@ function currentRfb() { return focus ? focus.rfb : null; }
 
 /**
  * 本地操作：适配画面/全屏/断开
- * 控制型能力（Home/电源/音量等）已改走 doInvoke → 网关 invoke API
+ * 控制型按键（Home/电源/音量/系统动作等）走 RFB 直发（rfbPressKey，见 renderCapOps）
  */
 function doOp(op) {
   const rfb = currentRfb();

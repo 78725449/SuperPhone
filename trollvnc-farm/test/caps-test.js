@@ -54,12 +54,15 @@ check('keysym 映射：home/音量/静音/亮度', KEY_DEFS.find((k) => k.key ==
   && KEY_DEFS.find((k) => k.key === 'briup').ks === 0x1008ff03 && KEY_DEFS.find((k) => k.key === 'briup').code === 'BrightnessUp'
   && KEY_DEFS.find((k) => k.key === 'bridn').ks === 0x1008ff02 && KEY_DEFS.find((k) => k.key === 'bridn').code === 'BrightnessDown');
 check('power 指针掩码 ptr=2（中键模拟电源）', KEY_DEFS.find((k) => k.key === 'power').ptr === 2);
-check('无 keysym 语义按键不含 ks/code/ptr（走能力链路）',
-  ['keyboard', 'spotlight', 'snapshot', 'hwlock', 'releasekeys'].every((k) => {
-    const d = KEY_DEFS.find((x) => x.key === k);
-    return d && d.ks === undefined && d.code === undefined && d.ptr === undefined;
-  }));
-check('有 keysym 语义按键不含 ptr', ['home', 'volup', 'voldn', 'mute', 'briup', 'bridn'].every((k) => KEY_DEFS.find((x) => x.key === k).ptr === undefined));
+check('12 键全部含 keysym 或 ptr（控制台直连模式全 RFB 直发）',
+  KEY_DEFS.every((k) => k.ks !== undefined || k.ptr !== undefined));
+check('系统动作键 keysym 映射（与设备端 kbdAddEvent 一致）',
+  KEY_DEFS.find((k) => k.key === 'keyboard').ks === 0x1008ff2e
+  && KEY_DEFS.find((k) => k.key === 'spotlight').ks === 0x1008ff1d
+  && KEY_DEFS.find((k) => k.key === 'snapshot').ks === 0x1008ff8a
+  && KEY_DEFS.find((k) => k.key === 'hwlock').ks === 0x1008ff8b
+  && KEY_DEFS.find((k) => k.key === 'releasekeys').ks === 0x1008ff8c);
+check('无按键同时含 ks 与 ptr（仅 power 用 ptr）', KEY_DEFS.every((k) => k.ptr === undefined || k.ks === undefined));
 check('ACTION_CAPS 5 项', ACTION_CAPS.length === 5);
 
 // menuCaps 过滤
