@@ -59,9 +59,9 @@ check('12 键全部含 keysym 或 ptr（控制台直连模式全 RFB 直发）',
 check('系统动作键 keysym 映射（与设备端 kbdAddEvent 一致）',
   KEY_DEFS.find((k) => k.key === 'keyboard').ks === 0x1008ff2e
   && KEY_DEFS.find((k) => k.key === 'spotlight').ks === 0x1008ff1d
-  && KEY_DEFS.find((k) => k.key === 'snapshot').ks === 0x1008ff8a
-  && KEY_DEFS.find((k) => k.key === 'hwlock').ks === 0x1008ff8b
-  && KEY_DEFS.find((k) => k.key === 'releasekeys').ks === 0x1008ff8c);
+  && KEY_DEFS.find((k) => k.key === 'snapshot').ks === 0x1008ff80
+  && KEY_DEFS.find((k) => k.key === 'hwlock').ks === 0x1008ff81
+  && KEY_DEFS.find((k) => k.key === 'releasekeys').ks === 0x1008ff82);
 check('无按键同时含 ks 与 ptr（仅 power 用 ptr）', KEY_DEFS.every((k) => k.ptr === undefined || k.ks === undefined));
 check('ACTION_CAPS 5 项', ACTION_CAPS.length === 5);
 

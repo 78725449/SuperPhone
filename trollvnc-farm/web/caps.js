@@ -184,7 +184,7 @@ export async function batchRestart(apiBase, deviceIds) {
  *   - ptr  指针掩码（仅 power 用中键=2，模拟电源键；rfb.pointer 同款）
  * 控制台直连模式：12 键全部经 RFB 直发（无 keysym 回退能力链路）。
  * 系统动作键使用自定义 keysym（keyboard=0x1008ff2e / spotlight=0x1008ff1d /
- * snapshot=0x1008ff8a / hwlock=0x1008ff8b / releasekeys=0x1008ff8c），设备端
+ * snapshot=0x1008ff80 / hwlock=0x1008ff81 / releasekeys=0x1008ff82），设备端
  * kbdAddEvent 映射到 STHIDEventGenerator API（toggleOnScreenKeyboard 等），
  * 单击执行（down 触发）、up 忽略。
  */
@@ -196,11 +196,11 @@ export const KEY_DEFS = [
   { key: 'mute',    title: '静音',     icon: '🔇', ks: 0x1008ff12,   code: 'AudioVolumeMute', events: { click: 'mute',           down: 'mute.down',       up: 'mute.up' } },
   { key: 'briup',   title: '亮度 +',   icon: '☀️', ks: 0x1008ff03,   code: 'BrightnessUp',    events: { click: 'briup',          down: 'briup.down',      up: 'briup.up' } },
   { key: 'bridn',   title: '亮度 −',   icon: '🌙', ks: 0x1008ff02,   code: 'BrightnessDown',  events: { click: 'bridn',          down: 'bridn.down',      up: 'bridn.up' } },
-  { key: 'keyboard',title: '键盘',     icon: '⌨️', ks: 0x1008ff2e,   code: 'Keyboard',        events: { click: 'keyboard' } },
-  { key: 'spotlight',title: '搜索',    icon: '🔍', ks: 0x1008ff1d,   code: 'Search',          events: { click: 'spotlight' } },
-  { key: 'snapshot',title: 'Home+Power截屏', icon: '📸', ks: 0x1008ff8a, code: 'Snapshot',   events: { click: 'snapshot' } },
-  { key: 'hwlock',  title: '键盘锁/解锁', icon: '🔒', ks: 0x1008ff8b, code: 'HardwareLock',   events: { click: 'hwlock' } },
-  { key: 'releasekeys', title: '释放按键', icon: '🙊', ks: 0x1008ff8c, code: 'ReleaseKeys',   events: { click: 'releasekeys' } },
+  { key: 'keyboard',title: '键盘',     icon: '⌨️', ks: 0x1008ff2e, code: 'XF86Keyboard', events: { click: 'keyboard' } },
+  { key: 'spotlight',title: '搜索',    icon: '🔍', ks: 0x1008ff1d, code: 'XF86Search',   events: { click: 'spotlight' } },
+  { key: 'snapshot',title: 'Home+Power截屏', icon: '📸', ks: 0x1008ff80, code: 'CustomSnapshot', events: { click: 'snapshot' } },
+  { key: 'hwlock',  title: '键盘锁/解锁', icon: '🔒', ks: 0x1008ff81, code: 'CustomHwLock',   events: { click: 'hwlock' } },
+  { key: 'releasekeys', title: '释放按键', icon: '🙊', ks: 0x1008ff82, code: 'CustomReleaseKeys', events: { click: 'releasekeys' } },
 ];
 
 /** 动作区固定能力 id（07 §4.1，从设备 capMetadata 取元数据渲染） */
