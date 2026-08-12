@@ -764,10 +764,13 @@ function toast(msg) {
 /**
  * 调用设备能力（通过网关 invoke API，Phase 4.7）
  * 无参能力直接调用；有参能力弹出参数输入；成功/失败均有 toast 反馈
+ * @param {object} meta 能力元数据（{id, title, params, ...}）
+ * @param {string} [deviceId] 显式指定目标设备 id；缺省时回退到全局 focus 设备
+ * @returns {Promise<void>}
  */
-async function doInvoke(meta) {
-  if (!focus || !focus.device) return;
-  const devId = focus.device.id;
+async function doInvoke(meta, deviceId) {
+  const devId = deviceId || (focus && focus.device && focus.device.id);
+  if (!devId) return;
   // 有参数的能力：弹出简易表单
   let params = {};
   if (Array.isArray(meta.params) && meta.params.length > 0) {
@@ -1512,7 +1515,7 @@ function showTileMenu(tile, d, x, y) {
       b.innerHTML = '<span class="cap-icon">' + escapeHtml(meta.icon || '?') + '</span><span class="cap-name">' + escapeHtml(meta.title || meta.id) + '</span>';
       b.addEventListener('click', () => {
         m.classList.add('hidden');
-        doInvoke(meta);
+        doInvoke(meta, d.id);
       });
       m.appendChild(b);
     }
