@@ -687,25 +687,22 @@ async function showBatchConfigPanel(ids) {
  * @returns {void}
  */
 function rfbPressKey(rfb, keyDef, capId) {
-  // noVNC 1.5.0 无公开 sendPointer(x, y, mask)，等价内部实现为 _sendMouse(x, y, mask)
-  // （参数语义一致：x/y 显示坐标、mask 为 RFB 按钮掩码 bit1=中键=2）；
-  // 未来版本若公开 sendPointer 则自动优先
-  const sendPtr = (mask) => {
-    if (typeof rfb.sendPointer === 'function') rfb.sendPointer(0, 0, mask);
-    else if (typeof rfb._sendMouse === 'function') rfb._sendMouse(0, 0, mask);
-  };
   const ev = capId.includes('.') ? capId.split('.').pop() : 'click';
+  // noVNC 1.7.0 无公开 sendPointer(x, y, mask)，等价内部实现为 _sendMouse(x, y, mask)
+  // （参数语义一致：x/y 显示坐标、mask 为 RFB 按钮掩码 bit1=中键=2）；
+  // 未来版本若公开 sendPointer 则自动优先；sendKey/_sendMouse 异常静默忽略，防中断按压状态机
+  const send = (f) => { try { f(); } catch (e) { /* noVNC API 异常静默忽略 */ } };
   const tap = () => {
     if (keyDef.ptr) {
-      sendPtr(keyDef.ptr);
-      setTimeout(() => sendPtr(0), 60);
+      send(() => rfb.sendPointer ? rfb.sendPointer(0, 0, keyDef.ptr) : rfb._sendMouse(0, 0, keyDef.ptr));
+      setTimeout(() => send(() => rfb.sendPointer ? rfb.sendPointer(0, 0, 0) : rfb._sendMouse(0, 0, 0)), 60);
     } else {
-      rfb.sendKey(keyDef.ks, keyDef.code, true);
-      setTimeout(() => rfb.sendKey(keyDef.ks, keyDef.code, false), 60);
+      send(() => rfb.sendKey(keyDef.ks, keyDef.code, true));
+      setTimeout(() => send(() => rfb.sendKey(keyDef.ks, keyDef.code, false)), 60);
     }
   };
-  const down = () => { keyDef.ptr ? sendPtr(keyDef.ptr) : rfb.sendKey(keyDef.ks, keyDef.code, true); };
-  const up = () => { keyDef.ptr ? sendPtr(0) : rfb.sendKey(keyDef.ks, keyDef.code, false); };
+  const down = () => { if (keyDef.ptr) send(() => rfb.sendPointer ? rfb.sendPointer(0, 0, keyDef.ptr) : rfb._sendMouse(0, 0, keyDef.ptr)); else send(() => rfb.sendKey(keyDef.ks, keyDef.code, true)); };
+  const up = () => { if (keyDef.ptr) send(() => rfb.sendPointer ? rfb.sendPointer(0, 0, 0) : rfb._sendMouse(0, 0, 0)); else send(() => rfb.sendKey(keyDef.ks, keyDef.code, false)); };
   switch (ev) {
     case 'down': down(); break;
     case 'up': up(); break;
