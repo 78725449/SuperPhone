@@ -36,6 +36,10 @@ export function attachPress(element, keyDef, opts = {}) {
         else fire('click');
         pressCount = 0;
       }, DOUBLE_MS);
+    } else if (events.down) {
+      // 按压式按键（音量/亮度/静音：down 按下、up 抬起已表达一次按压）：
+      // 不补 click，避免一次短按触发 down+up+click 三次注入导致设备端双响应（如音量跳两格）
+      pressCount = 0;
     } else {
       fire('click');                                 // 无多击：立即执行，零延迟
     }

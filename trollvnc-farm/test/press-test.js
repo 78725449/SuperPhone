@@ -26,10 +26,10 @@ function pressHold(el, t, holdMs) {
   const el = makeEl();
   attachPress(el, volup, { invoke: (id) => calls.push(id) });
 
-  await press(el, 0);                                // 单击 → down/click/up
+  await press(el, 0);                                // 单击 → down/up（按压式按键不补 click，防音量跳两格）
   check('volup 按下触发 down', calls.includes('volup.down'));
   check('volup 抬起触发 up', calls.includes('volup.up'));
-  check('volup 单击立即执行（无多击延迟）', calls.includes('volup') && calls[0] === 'volup.down');
+  check('volup 一次按压不补 click（一格音量）', !calls.includes('volup') && calls[0] === 'volup.down' && calls[1] === 'volup.up');
 
   calls.length = 0;
   const el2 = makeEl();
