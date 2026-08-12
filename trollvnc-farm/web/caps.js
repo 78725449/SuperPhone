@@ -176,20 +176,28 @@ export async function batchRestart(apiBase, deviceIds) {
   return res.json();
 }
 
-/** 按键对象清单（07 §3.1/§4.1）：events 引用设备端能力 id，前端按按压模式翻译 */
+/**
+ * 按键对象清单（07 §3.1/§4.1）：events 引用设备端能力 id，前端按按压模式翻译
+ * ks/code/ptr 为 RFB 直发通道映射（与 5801 index.vnc dispatchOp 一致）：
+ *   - ks   X11 keysym 数值，noVNC rfb.sendKey(keysym, code, down) 用
+ *   - code noVNC 键码名（KeyTable 映射）
+ *   - ptr  指针掩码（仅 power 用中键=2，模拟电源键；rfb.pointer 同款）
+ * 无 ks/ptr 的按键（keyboard/spotlight/snapshot/hwlock/releasekeys）无 keysym 语义，
+ * 保留能力链路（设备端 API：toggleOnScreenKeyboard 等）
+ */
 export const KEY_DEFS = [
-  { key: 'home',    title: 'Home 键',  icon: '🏠', events: { click: 'home',           double: 'home.double',   long: 'home.long' } },
-  { key: 'power',   title: '电源',     icon: '⏻',  events: { click: 'power',          double: 'power.double',  triple: 'power.triple', long: 'power.long' } },
-  { key: 'volup',   title: '音量 +',   icon: '🔊', events: { click: 'volup',          down: 'volup.down',      up: 'volup.up' } },
-  { key: 'voldn',   title: '音量 −',   icon: '🔉', events: { click: 'voldn',          down: 'voldn.down',      up: 'voldn.up' } },
-  { key: 'mute',    title: '静音',     icon: '🔇', events: { click: 'mute',           down: 'mute.down',       up: 'mute.up' } },
-  { key: 'briup',   title: '亮度 +',   icon: '☀️', events: { click: 'briup',          down: 'briup.down',      up: 'briup.up' } },
-  { key: 'bridn',   title: '亮度 −',   icon: '🌙', events: { click: 'bridn',          down: 'bridn.down',      up: 'bridn.up' } },
-  { key: 'keyboard',title: '键盘',     icon: '⌨️', events: { click: 'keyboard' } },
-  { key: 'spotlight',title: '搜索',    icon: '🔍', events: { click: 'spotlight' } },
-  { key: 'snapshot',title: 'Home+Power截屏', icon: '📸', events: { click: 'snapshot' } },
-  { key: 'hwlock',  title: '键盘锁/解锁', icon: '🔒', events: { click: 'hwlock' } },
-  { key: 'releasekeys', title: '释放按键', icon: '🙊', events: { click: 'releasekeys' } },
+  { key: 'home',    title: 'Home 键',  icon: '🏠', ks: 0xff50,       code: 'Home',            events: { click: 'home',           double: 'home.double',   long: 'home.long' } },
+  { key: 'power',   title: '电源',     icon: '⏻',  ptr: 2,                                   events: { click: 'power',          double: 'power.double',  triple: 'power.triple', long: 'power.long' } },
+  { key: 'volup',   title: '音量 +',   icon: '🔊', ks: 0x1008ff13,   code: 'AudioVolumeUp',   events: { click: 'volup',          down: 'volup.down',      up: 'volup.up' } },
+  { key: 'voldn',   title: '音量 −',   icon: '🔉', ks: 0x1008ff11,   code: 'AudioVolumeDown', events: { click: 'voldn',          down: 'voldn.down',      up: 'voldn.up' } },
+  { key: 'mute',    title: '静音',     icon: '🔇', ks: 0x1008ff12,   code: 'AudioVolumeMute', events: { click: 'mute',           down: 'mute.down',       up: 'mute.up' } },
+  { key: 'briup',   title: '亮度 +',   icon: '☀️', ks: 0x1008ff03,   code: 'BrightnessUp',    events: { click: 'briup',          down: 'briup.down',      up: 'briup.up' } },
+  { key: 'bridn',   title: '亮度 −',   icon: '🌙', ks: 0x1008ff02,   code: 'BrightnessDown',  events: { click: 'bridn',          down: 'bridn.down',      up: 'bridn.up' } },
+  { key: 'keyboard',title: '键盘',     icon: '⌨️',                     events: { click: 'keyboard' } },
+  { key: 'spotlight',title: '搜索',    icon: '🔍',                     events: { click: 'spotlight' } },
+  { key: 'snapshot',title: 'Home+Power截屏', icon: '📸',              events: { click: 'snapshot' } },
+  { key: 'hwlock',  title: '键盘锁/解锁', icon: '🔒',                  events: { click: 'hwlock' } },
+  { key: 'releasekeys', title: '释放按键', icon: '🙊',                 events: { click: 'releasekeys' } },
 ];
 
 /** 动作区固定能力 id（07 §4.1，从设备 capMetadata 取元数据渲染） */

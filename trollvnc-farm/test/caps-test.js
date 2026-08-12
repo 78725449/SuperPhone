@@ -45,6 +45,21 @@ check('home 支持 double/long', KEY_DEFS.find((k) => k.key === 'home').events.d
 check('power 支持 triple', KEY_DEFS.find((k) => k.key === 'power').events.triple === 'power.triple');
 check('volup 支持 down/up', KEY_DEFS.find((k) => k.key === 'volup').events.down === 'volup.down'
   && KEY_DEFS.find((k) => k.key === 'volup').events.up === 'volup.up');
+// RFB 直发通道映射（与 5801 index.vnc dispatchOp 一致）：ks/code 有 keysym 语义，ptr 仅 power 中键
+check('keysym 映射：home/音量/静音/亮度', KEY_DEFS.find((k) => k.key === 'home').ks === 0xff50
+  && KEY_DEFS.find((k) => k.key === 'home').code === 'Home'
+  && KEY_DEFS.find((k) => k.key === 'volup').ks === 0x1008ff13 && KEY_DEFS.find((k) => k.key === 'volup').code === 'AudioVolumeUp'
+  && KEY_DEFS.find((k) => k.key === 'voldn').ks === 0x1008ff11 && KEY_DEFS.find((k) => k.key === 'voldn').code === 'AudioVolumeDown'
+  && KEY_DEFS.find((k) => k.key === 'mute').ks === 0x1008ff12 && KEY_DEFS.find((k) => k.key === 'mute').code === 'AudioVolumeMute'
+  && KEY_DEFS.find((k) => k.key === 'briup').ks === 0x1008ff03 && KEY_DEFS.find((k) => k.key === 'briup').code === 'BrightnessUp'
+  && KEY_DEFS.find((k) => k.key === 'bridn').ks === 0x1008ff02 && KEY_DEFS.find((k) => k.key === 'bridn').code === 'BrightnessDown');
+check('power 指针掩码 ptr=2（中键模拟电源）', KEY_DEFS.find((k) => k.key === 'power').ptr === 2);
+check('无 keysym 语义按键不含 ks/code/ptr（走能力链路）',
+  ['keyboard', 'spotlight', 'snapshot', 'hwlock', 'releasekeys'].every((k) => {
+    const d = KEY_DEFS.find((x) => x.key === k);
+    return d && d.ks === undefined && d.code === undefined && d.ptr === undefined;
+  }));
+check('有 keysym 语义按键不含 ptr', ['home', 'volup', 'voldn', 'mute', 'briup', 'bridn'].every((k) => KEY_DEFS.find((x) => x.key === k).ptr === undefined));
 check('ACTION_CAPS 5 项', ACTION_CAPS.length === 5);
 
 // menuCaps 过滤
