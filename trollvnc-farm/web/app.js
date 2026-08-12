@@ -679,6 +679,44 @@ async function showBatchConfigPanel(ids) {
 // ---------- 控制台操作菜单（07 §4.1：按键区 KEY_DEFS + 动作区 ACTION_CAPS） ----------
 // 适配/全屏/断开为控制台本地操作，不在能力清单内，由静态按钮提供
 /**
+ * 按键区 RFB 直发：与画布同通道（noVNC sendKey/_sendMouse），低延迟、时序保证、纳入广播。
+ * 按 capId 推断按压事件（click/double/triple/long/down/up），用 keyDef 的 keysym/ptr 发对应时序。
+ * @param {object} rfb    - noVNC RFB 实例（focus.rfb）
+ * @param {object} keyDef - KEY_DEFS 按键对象（含 ks/code/ptr）
+ * @param {string} capId  - 触发的能力 id（含事件类型信息，如 home.double/volup.down）
+ * @returns {void}
+ */
+function rfbPressKey(rfb, keyDef, capId) {
+  // noVNC 1.5.0 无公开 sendPointer(x, y, mask)，等价内部实现为 _sendMouse(x, y, mask)
+  // （参数语义一致：x/y 显示坐标、mask 为 RFB 按钮掩码 bit1=中键=2）；
+  // 未来版本若公开 sendPointer 则自动优先
+  const sendPtr = (mask) => {
+    if (typeof rfb.sendPointer === 'function') rfb.sendPointer(0, 0, mask);
+    else if (typeof rfb._sendMouse === 'function') rfb._sendMouse(0, 0, mask);
+  };
+  const ev = capId.includes('.') ? capId.split('.').pop() : 'click';
+  const tap = () => {
+    if (keyDef.ptr) {
+      sendPtr(keyDef.ptr);
+      setTimeout(() => sendPtr(0), 60);
+    } else {
+      rfb.sendKey(keyDef.ks, keyDef.code, true);
+      setTimeout(() => rfb.sendKey(keyDef.ks, keyDef.code, false), 60);
+    }
+  };
+  const down = () => { keyDef.ptr ? sendPtr(keyDef.ptr) : rfb.sendKey(keyDef.ks, keyDef.code, true); };
+  const up = () => { keyDef.ptr ? sendPtr(0) : rfb.sendKey(keyDef.ks, keyDef.code, false); };
+  switch (ev) {
+    case 'down': down(); break;
+    case 'up': up(); break;
+    case 'double': tap(); setTimeout(tap, 120); break;
+    case 'triple': tap(); setTimeout(tap, 100); setTimeout(tap, 200); break;
+    case 'long': down(); setTimeout(up, 800); break;
+    default: tap(); break; // click
+  }
+}
+
+/**
  * 渲染控制台操作菜单（07 §4.1）：按键区（KEY_DEFS 按键对象+按压识别）+ 动作区（ACTION_CAPS）
  * 按键区按钮挂 attachPress 按压识别（click/double/triple/long/down/up），动作区按钮单击直执行
  * @param {HTMLElement} container 容器（focusOpsCap / opsMenuCap）
@@ -712,6 +750,11 @@ function renderCapOps(container, device) {
     b.title = k.title;
     b.innerHTML = '<span class="cap-icon">' + escapeHtml(k.icon || meta.icon || '?') + '</span><span class="cap-name">' + escapeHtml(k.title) + '</span>';
     container.__pressCleanups.push(attachPress(b, k, { invoke: (capId) => {
+      const rfb = focus && focus.rfb;
+      if (rfb && rfb._farmConnected && (k.ks !== undefined || k.ptr !== undefined)) {
+        rfbPressKey(rfb, k, capId); // RFB 直发：低延迟、时序保证、纳入广播（静默，无 toast）
+        return;
+      }
       const m = byId.get(capId) || { id: capId, title: capId, params: [] };
       doInvoke(m);
     } }));
@@ -1395,9 +1438,11 @@ function createRfb(container, device, opts = {}, statusEl = null) {
     statusEl.classList.toggle('off', s !== '已连接');
   };
   rfb.addEventListener('connect', () => {
+    rfb._farmConnected = true;   // RFB 直发通道就绪标志（按键区判断用）
     setStatus('已连接');
   });
   rfb.addEventListener('disconnect', (e) => {
+    rfb._farmConnected = false;  // 通道断开：按键区回退能力链路
     setStatus('已断开');
     const code = e && e.detail && e.detail.code;
     if (code === 4001) alert('设备已被其它端接管，已中断控制');
