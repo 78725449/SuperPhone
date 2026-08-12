@@ -79,8 +79,12 @@ const dev = { capMetadata: fullCaps };
 check('console 场景仅含按键对象引用与动作区能力',
   ids(menuCaps(dev, 'console')).every((c) => [...KEY_DEFS.flatMap((k) => Object.values(k.events)), ...ACTION_CAPS].includes(c)));
 check('console 场景含按键与动作区', ['home', 'type.text', 'screenshot'].every((c) => ids(menuCaps(dev, 'console')).includes(c)));
-check('tile 场景排除 internal 保留 secondary', menuCaps(dev, 'tile').some((c) => c.id === 'service.restart')
-  && !menuCaps(dev, 'tile').some((c) => c.id === 'home.down'));
+check('tile 场景保留管理/查询类（service）', menuCaps(dev, 'tile').some((c) => c.id === 'service.restart'));
+check('tile 场景排除按键/动作/触控（控制台职责）',
+  !menuCaps(dev, 'tile').some((c) => c.id === 'home')
+  && !menuCaps(dev, 'tile').some((c) => c.id === 'type.text')
+  && !menuCaps(dev, 'tile').some((c) => c.id === 'screenshot')
+  && !menuCaps(dev, 'tile').some((c) => c.category === 'touch'));
 check('batch 场景排除 touch/截图/文本/剪贴板', !menuCaps(dev, 'batch').some((c) => c.category === 'touch' || /screenshot|clipboard|type\./i.test(c.id)));
 
 console.log(failures === 0 ? '\nALL CAPS TESTS PASSED' : `\n${failures} TEST(S) FAILED`);

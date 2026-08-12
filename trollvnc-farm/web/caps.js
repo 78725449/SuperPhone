@@ -221,7 +221,12 @@ export function menuCaps(device, scope) {
     return ids.map((id) => byId.get(id)).filter(Boolean);
   }
   if (scope === 'tile') {
-    return caps.filter((c) => c && c.menu !== 'internal');
+    // 卡片 ⋯ 菜单（07 §4.2 修正）：仅管理/查询类 + 设备管理段
+    // 排除控制台能力——按键对象（KEY_DEFS events）、动作区（ACTION_CAPS）、触控/触控笔分类
+    // 这些在控制台（按键区/动作区/画布直操）有入口，卡片菜单不再重复
+    const consoleIds = new Set([...KEY_DEFS.flatMap((k) => Object.values(k.events)), ...ACTION_CAPS]);
+    return caps.filter((c) => c && c.menu !== 'internal' && !consoleIds.has(c.id)
+      && c.category !== 'hid' && c.category !== 'touch' && c.category !== 'stylus');
   }
   if (scope === 'batch') {
     return caps.filter((c) =>
