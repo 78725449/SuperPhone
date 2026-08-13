@@ -105,6 +105,16 @@
 <!-- 设备卡片小菜单 -->
 <div id="tileMenu" class="tile-menu hidden"></div>
 
-<script type="module" src="app.js?v=35"></script>
+<!-- 跨设备粘贴条：操作被控屏幕时长按（移动端）/ Ctrl+V（电脑端）触发，捕获控制端剪贴板文本注入被控设备 -->
+<div id="pasteBar" class="paste-bar hidden">
+  <span id="pasteHint" class="paste-hint">粘贴</span>
+  <textarea id="pasteInput" class="paste-input" rows="1" placeholder="在此粘贴（Ctrl+V / 长按）"></textarea>
+  <div class="paste-ops">
+    <button id="pasteCancel" type="button" class="paste-cancel">取消</button>
+    <button id="pasteSend" type="button" class="paste-send">粘贴</button>
+  </div>
+</div>
+
+<script type="module" src="app.js?v=36"></script>
 </body>
 </html>

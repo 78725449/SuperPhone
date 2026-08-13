@@ -863,6 +863,107 @@ function promptParams(paramDefs, title) {
   });
 }
 
+// ---------- 跨设备粘贴条（2026-08-13：操作被控屏幕时长按 / Ctrl+V 触发，取控制端剪贴板注入被控设备） ----------
+let pasteTarget = null;     // 目标设备 id（粘贴注入对象）
+let pasteBarShown = false;  // 粘贴条是否打开（打开期间不拦截 Ctrl+V）
+
+/**
+ * 打开跨设备粘贴条：捕获控制端剪贴板文本，注入被控设备（type.paste：设备端写剪贴板 + 模拟 Cmd+V）。
+ * 粘贴条输入框自动聚焦：桌面端再按 Ctrl+V / 移动端长按输入框 → 系统粘贴 → paste 事件捕获 → 自动提交。
+ * @param {string} deviceId 目标设备 id
+ * @param {string} hint 提示文字（触发来源说明）
+ * @returns {void}
+ */
+function openPasteBar(deviceId, hint) {
+  if (!deviceId) return;
+  pasteTarget = deviceId;
+  $('pasteHint').textContent = hint || '粘贴';
+  const ta = $('pasteInput');
+  ta.value = '';
+  $('pasteBar').classList.remove('hidden');
+  pasteBarShown = true;
+  // 延迟聚焦：等粘贴条渲染完成。桌面端随即提示再按 Ctrl+V；移动端聚焦后长按输入框弹系统粘贴菜单
+  setTimeout(() => ta.focus(), 80);
+}
+
+/**
+ * 关闭跨设备粘贴条：清空目标与输入，焦点还给被控屏幕 canvas。
+ * @returns {void}
+ */
+function closePasteBar() {
+  pasteTarget = null;
+  pasteBarShown = false;
+  $('pasteBar').classList.add('hidden');
+  $('pasteInput').value = '';
+  if (focus && focus.rfb && focus.rfb._canvas) focus.rfb._canvas.focus();
+}
+
+/**
+ * 提交粘贴文本到目标设备：invoke type.paste（设备端写剪贴板 + 模拟 Cmd+V 注入当前输入框）。
+ * @param {string} text 控制端剪贴板/输入的文本
+ * @returns {Promise<void>}
+ */
+async function submitPaste(text) {
+  const devId = pasteTarget;
+  const t = (text || '').trim();
+  closePasteBar();
+  if (!devId || !t) return;
+  try {
+    const r = await invokeCap('', devId, 'type.paste', { text: t });
+    toast(r && r.ok ? '✓ 已粘贴到被控设备' : `✗ 粘贴失败：${(r && r.ack && r.ack.error) || '未知错误'}`);
+  } catch (e) {
+    toast(`✗ 粘贴失败：${e.message}`);
+  }
+}
+
+/**
+ * 尝试自动读取控制端剪贴板并注入：
+ * 1) 安全上下文（HTTPS/localhost）→ navigator.clipboard.readText() 直接读；
+ * 2) Chrome 桌面 → execCommand('paste') 触发粘贴条 textarea 的 paste 事件（用户激活内允许）；
+ * 3) 均失败 → 提示手动粘贴（再按一次 Ctrl+V / 长按输入框）。
+ * @returns {Promise<void>}
+ */
+async function tryAutoReadPaste() {
+  const ta = $('pasteInput');
+  // 1) 安全上下文直接读
+  if (window.isSecureContext && navigator.clipboard && navigator.clipboard.readText) {
+    try {
+      const t = await navigator.clipboard.readText();
+      if (t && t.trim()) { submitPaste(t); return; }
+    } catch (e) { /* 无权限/拒绝：继续降级 */ }
+  }
+  // 2) Chrome 桌面：execCommand('paste')（text 输入框聚焦 + 用户激活内被允许）
+  if (document.execCommand) {
+    try {
+      ta.focus();
+      document.execCommand('paste');
+      // 300ms 内 paste 事件未触发提交 → 提示手动粘贴
+      setTimeout(() => { if (pasteTarget) $('pasteHint').textContent = '请再按一次 Ctrl+V（或长按输入框）粘贴'; }, 300);
+      return;
+    } catch (e) { /* Safari 等不支持：继续 */ }
+  }
+  // 3) 降级：提示手动粘贴
+  $('pasteHint').textContent = '请再按一次 Ctrl+V（或长按输入框）粘贴';
+  setTimeout(() => ta.focus(), 0);
+}
+
+/**
+ * 绑定"屏幕上长按 = 跨设备粘贴"（noVNC gesturehandler 已 patch：长按 → farmlongpress 事件，不发右键）。
+ * 事件挂到容器元素（focus 大屏 stage / 直控卡片 tv），防重复绑定。
+ * @param {HTMLElement} container 手势容器（canvas 父级或同级）
+ * @param {string} deviceId 目标设备 id
+ * @returns {void}
+ */
+function bindLongPressPaste(container, deviceId) {
+  if (!container || !deviceId) return;
+  if (container.dataset.pasteBound) return; // 防重复绑定（直控卡片复用）
+  container.dataset.pasteBound = '1';
+  container.addEventListener('farmlongpress', () => {
+    openPasteBar(deviceId, '长按粘贴到被控设备');
+    tryAutoReadPaste();
+  });
+}
+
 // ---------- 聚焦视图 ----------
 function enterFocus(d) {
   if (focus && focus.device.id === d.id) return;
@@ -895,6 +996,8 @@ function enterFocus(d) {
   $('focusPanel').classList.remove('hidden');
   $('focusOps').classList.remove('hidden');
   $('workspace').classList.add('focus-open');
+  // 屏幕上长按 = 跨设备粘贴（noVNC 长按已 patch 为 farmlongpress 事件）
+  bindLongPressPaste(stage, d.id);
   renderCapOps($('focusOpsCap'), d);
   renderCapOps($('opsMenuCap'), d);
   if (window.matchMedia('(max-width: 900px)').matches) $('fab').classList.remove('hidden');
@@ -913,6 +1016,7 @@ function enterFocus(d) {
 function exitFocus() {
   if (!focus) return;
   const devId = focus.device.id;
+  closePasteBar(); // 退出大屏：收起跨设备粘贴条（目标随 focus 失效）
   closeRfb(focus.rfb);
   stopFabSignalPoll();
   focus = null;
@@ -1084,6 +1188,8 @@ function startDirectRfb(d) {
   if (exist) return exist;
   stopWallRfb(inst); // 停截图轮询
   const tv = inst.tile.querySelector('.tv');
+  // 卡片上长按 = 跨设备粘贴（noVNC 长按已 patch 为 farmlongpress 事件）
+  bindLongPressPaste(tv, d.id);
   const rfb = createRfb(tv, d, { ctrl: false }); // 非 ctrl 可输入连接：互不抢占、输入直达设备
   rfb.addEventListener('disconnect', (e) => {
     // 设备离线/隧道断/服务端断开：清理直控标记，恢复截图轮询
@@ -1133,6 +1239,7 @@ function exitDirectMode() {
   // 先 close 全部直控 RFB（必须真正断开 WS，否则残留会话持续占用设备推流，
   // 再次进入直控时会话堆积 → 服务端 sessions=2/3…，还会与后续 rfb.stop 互扰）。
   // 注意 stopWallRfb 只处理 inst.rfb（截图轮询），直控 RFB 在 directRfbs 中，须显式 close。
+  closePasteBar(); // 退出直控：收起跨设备粘贴条
   for (const [id, rfb] of directRfbs.entries()) {
     closeRfb(rfb);
     const inst = wallInstances.get(id);
@@ -1839,6 +1946,29 @@ $('btnSync').addEventListener('click', (e) => {
   e.stopPropagation();
   toggleSyncMode();
 });
+
+// ===== 跨设备粘贴条（2026-08-13）=====
+// 粘贴条输入框：paste 事件捕获控制端剪贴板（桌面 Ctrl+V / 移动端系统粘贴菜单）→ 自动注入被控设备
+$('pasteInput').addEventListener('paste', (e) => {
+  const txt = (e.clipboardData && e.clipboardData.getData('text')) || '';
+  if (txt) { e.preventDefault(); submitPaste(txt); }
+});
+$('pasteCancel').addEventListener('click', closePasteBar);
+$('pasteSend').addEventListener('click', () => submitPaste($('pasteInput').value));
+// 电脑端：操作被控屏幕（focus 大屏）时按 Ctrl+V → 拦截（不发给设备），取控制端剪贴板注入。
+// capture 阶段先于 noVNC 键盘（canvas 冒泡监听）执行，stopPropagation 阻断其收到该键。
+document.addEventListener('keydown', (e) => {
+  if (pasteBarShown) return; // 粘贴条激活：text 输入框原生粘贴不受干扰
+  if (!focus || !focus.device) return; // 仅 focus 大屏操作被控设备时拦截
+  const el = document.activeElement;
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return; // 页面输入框内不拦截
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+    e.preventDefault();
+    e.stopPropagation();
+    openPasteBar(focus.device.id, 'Ctrl+V 粘贴到被控设备');
+    tryAutoReadPaste();
+  }
+}, true);
 
 initFab();
 // 移动端悬浮菜单：展开/收起由 FAB 的 pointerup（未拖动=点击）处理；退出按钮独立绑定
