@@ -164,6 +164,23 @@ try {
   c2.sock.destroy();
   await waitFor(async () => (await getDevices()).some((d) => d.id === 'dev-tcp2' && d.online === false));
   check('TCP 断开后判离线（dev-tcp2）', true);
+
+  // 批量端点可达性（2026-08-13 修复：batch 分支先于单设备 findDevice 拦截，否则 id='batch' 会 404）
+  const bInvoke = await fetch(`http://127.0.0.1:${PORT}/api/devices/batch/invoke`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ deviceIds: ['dev-tcp'], cap: 'home' }),
+  });
+  check('批量 invoke 端点可达（非 404）', bInvoke.status === 200, 'status=' + bInvoke.status);
+  const bCfg = await fetch(`http://127.0.0.1:${PORT}/api/devices/batch/configs`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ deviceIds: ['dev-tcp'], configs: { Scale: 1.0 } }),
+  });
+  check('批量 configs 端点可达（非 404）', bCfg.status === 200, 'status=' + bCfg.status);
+  const bIds = await fetch(`http://127.0.0.1:${PORT}/api/devices/batch/invoke`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ cap: 'home' }),
+  });
+  check('批量 invoke 缺 deviceIds -> 400', bIds.status === 400, 'status=' + bIds.status);
 } catch (e) {
   console.error('TEST ERROR:', e.message);
   console.log(childOut);
