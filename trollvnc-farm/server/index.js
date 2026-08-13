@@ -821,38 +821,7 @@ const server = http.createServer(async (req, res) => {
             /addEventListener\('touchmove',\n(\s*)this\._boundEventHandler\);/,
             "addEventListener('touchmove',\n$1this._boundEventHandler, { passive: false });"
           );
-          // 长按 = 控制端粘贴手势（2026-08-13）：原 noVNC 长按=右键，与"屏幕上长按取控制端剪贴板"冲突。
-          // 改为分发 farmlongpress 自定义事件（坐标），触摸进入忽略列表——不再产生任何鼠标/手势事件，
-          // 前端 app.js 监听该事件弹出粘贴条，跨设备粘贴文本到被控设备。
-          const longpressOld = `    _longpressTimeout() {
-        if (this._hasDetectedGesture()) {
-            throw new Error("A longpress gesture failed, conflict with a different gesture");
-        }
-
-        this._state = GH_LONGPRESS;
-        this._pushEvent('gesturestart');
-    }`;
-          const longpressNew = `    _longpressTimeout() {
-        if (this._hasDetectedGesture()) {
-            throw new Error("A longpress gesture failed, conflict with a different gesture");
-        }
-
-        // [farm patch] 长按 = 控制端粘贴手势：分发 farmlongpress（不发右键），
-        // 触摸进忽略列表，剩余 touchend 不再触发任何鼠标/手势事件。
-        // 注意：CustomEvent 必须 bubbles:true，否则事件不冒泡到外层监听容器。
-        if (this._tracked.length > 0) {
-            const t = this._tracked[0];
-            this._target.dispatchEvent(new CustomEvent('farmlongpress', {
-                bubbles: true,
-                detail: { x: t.firstX, y: t.firstY }
-            }));
-            this._ignored.push(t.id);
-        }
-        this._tracked = [];
-        this._state = GH_NOGESTURE;
-    }`;
-          gSrc = gSrc.replace(longpressOld, longpressNew);
-          const after = gSrc.includes('passive: false') && gSrc.includes('farmlongpress');
+          const after = gSrc.includes('passive: false');
           console.log(`[novnc] gesturehandler.js patch: before=${before} after=${after}`);
           res.writeHead(200, {
             'Content-Type': 'text/javascript',
