@@ -839,9 +839,11 @@ const server = http.createServer(async (req, res) => {
 
         // [farm patch] 长按 = 控制端粘贴手势：分发 farmlongpress（不发右键），
         // 触摸进忽略列表，剩余 touchend 不再触发任何鼠标/手势事件。
+        // 注意：CustomEvent 必须 bubbles:true，否则事件不冒泡到外层监听容器。
         if (this._tracked.length > 0) {
             const t = this._tracked[0];
             this._target.dispatchEvent(new CustomEvent('farmlongpress', {
+                bubbles: true,
                 detail: { x: t.firstX, y: t.firstY }
             }));
             this._ignored.push(t.id);
