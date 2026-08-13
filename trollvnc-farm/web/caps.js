@@ -44,13 +44,13 @@ export const KEY_DEFS = [
     ks: 0x1008ff82, code: 'CustomReleaseKeys', events: { click: 'releasekeys' } },
 ];
 
-/** 动作区能力（控制台，点击 invoke 直达设备 executor）——自包含定义 */
+/** 动作区能力（控制台，点击 invoke 直达设备 executor）——自包含定义
+ *  2026-08-13 精简：删 type.text（屏幕直接打字，仅 ASCII 无场景）、clipboard.set（并入 type.paste 内部流程）、
+ *  screenshot 按钮（能力保留供卡片墙内部拉图，动作区无需手动截图）；保留 type.paste（跨设备粘贴，弹窗自动捕获
+ *  控制端剪贴板 Ctrl+V/长按粘贴）+ clipboard.get（远程读设备剪贴板窄场景） */
 export const ACT_DEFS = [
-  { id: 'type.text',   title: '文本输入',   icon: '⌨', params: [{ name: 'text', type: 'string', required: true }] },
   { id: 'type.paste',  title: '粘贴输入',   icon: '📋', params: [{ name: 'text', type: 'string', required: true }] },
   { id: 'clipboard.get', title: '获取剪贴板', icon: '📋', params: [] },
-  { id: 'clipboard.set', title: '设置剪贴板', icon: '📋', params: [{ name: 'text', type: 'string', required: true }] },
-  { id: 'screenshot',  title: '屏幕快照',   icon: '📷', params: [] },
 ];
 
 /** 卡片 ⋯ 菜单「常用能力」（点击 invoke 直达设备）——自包含定义 */

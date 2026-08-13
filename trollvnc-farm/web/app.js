@@ -563,7 +563,7 @@ function showBatchMenu() {
 async function doBatchInvoke(ids, meta) {
   let params = {};
   if (Array.isArray(meta.params) && meta.params.length > 0) {
-    params = await promptParams(meta.params);
+    params = await promptParams(meta.params, meta.title);
     if (params === null) return;
   }
   try {
@@ -785,10 +785,10 @@ function toast(msg) {
 async function doInvoke(meta, deviceId) {
   const devId = deviceId || (focus && focus.device && focus.device.id);
   if (!devId) return;
-  // 有参数的能力：弹出简易表单
+  // 有参数的能力：弹出简易表单（string 输入框自动聚焦 + 捕获控制端剪贴板 paste，便于跨设备粘贴）
   let params = {};
   if (Array.isArray(meta.params) && meta.params.length > 0) {
-    params = await promptParams(meta.params);
+    params = await promptParams(meta.params, meta.title);
     if (params === null) return; // 用户取消
   }
   try {
@@ -802,24 +802,41 @@ async function doInvoke(meta, deviceId) {
 
 /**
  * 弹出参数输入表单（简化版，支持 number/string）
+ * string 输入框自动聚焦 + 监听 paste 事件捕获控制端剪贴板（桌面 Ctrl+V / 移动端长按粘贴），
+ * 便于"粘贴输入"类能力跨设备传文本（控制端手机/电脑剪贴板 → 被控设备）。
  * @param paramDefs 参数定义数组
+ * @param {string} [title] 能力标题（显示在表单顶部）
  * @returns 参数对象，取消返回 null
  */
-function promptParams(paramDefs) {
+function promptParams(paramDefs, title) {
   return new Promise((resolve) => {
     const modal = document.createElement('div');
     modal.className = 'modal';
     const card = document.createElement('div');
     card.className = 'modal-card';
+    if (title) {
+      const h = document.createElement('h3');
+      h.textContent = title;
+      card.appendChild(h);
+    }
     const inputs = {};
+    let focused = false;
     for (const p of paramDefs) {
       const lbl = document.createElement('label');
       lbl.textContent = `${p.name}${p.required ? ' *' : ''} (${p.type})`;
       const inp = document.createElement('input');
       if (p.default !== undefined) inp.value = p.default;
+      // string 输入框：捕获控制端剪贴板 paste 事件（用户 Ctrl+V / 移动端长按粘贴时自动填入）
+      if (p.type === 'string') {
+        inp.addEventListener('paste', (e) => {
+          const txt = (e.clipboardData && e.clipboardData.getData('text')) || '';
+          if (txt) { inp.value = txt; e.preventDefault(); }
+        });
+      }
       inputs[p.name] = inp;
       lbl.appendChild(inp);
       card.appendChild(lbl);
+      if (!focused) { inp.focus(); focused = true; } // 自动聚焦首个输入框
     }
     const btns = document.createElement('div');
     btns.className = 'modal-btns';
