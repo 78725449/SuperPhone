@@ -641,6 +641,49 @@ async function handleApi(req, res, url) {
       sendJson(res, 201, { device: dev });
       return true;
     }
+    // Phase 4.6：批量操作（invoke/configs/restart）——必须先于单设备分支，否则 id='batch' 会被 findDevice 404 拦截
+    if (id === 'batch' && req.method === 'POST') {
+      const body = await readBody(req).catch(() => ({}));
+      const deviceIds = Array.isArray(body.deviceIds) ? body.deviceIds.filter((x) => typeof x === 'string') : [];
+      if (deviceIds.length === 0) { sendJson(res, 400, { error: 'deviceIds required' }); return true; }
+      // 批量调用能力
+      if (sub === 'invoke') {
+        const cap = String(body.cap || '');
+        if (!cap) { sendJson(res, 400, { error: 'cap required' }); return true; }
+        const params = body.params || {};
+        const timeoutMs = Math.min(Math.max(Number(body.timeout) || 5000, 500), 15000);
+        const results = await Promise.all(deviceIds.map(async (did) => {
+          const ack = await sendDeviceCmd(did, { cmd: 'invoke', cap, params }, timeoutMs);
+          return ack ? { deviceId: did, ok: ack.ok !== false, error: ack.error } : { deviceId: did, ok: false, error: 'timeout' };
+        }));
+        sendJson(res, 200, { cap, results });
+        return true;
+      }
+      // 批量设置配置
+      if (sub === 'configs') {
+        const configs = (body.configs && typeof body.configs === 'object' && !Array.isArray(body.configs)) ? body.configs : null;
+        if (!configs) { sendJson(res, 400, { error: 'configs object required' }); return true; }
+        const results = await Promise.all(deviceIds.map(async (did) => {
+          const cfgResults = {};
+          for (const [key, value] of Object.entries(configs)) {
+            const ack = await sendDeviceCmd(did, { cmd: 'set', key, value });
+            cfgResults[key] = ack ? { ok: ack.ok !== false, reload: ack.reload, error: ack.error } : { ok: false, error: 'timeout' };
+          }
+          return { deviceId: did, results: cfgResults };
+        }));
+        sendJson(res, 200, { results });
+        return true;
+      }
+      // 批量重启（前端需二次确认）
+      if (sub === 'restart') {
+        const results = await Promise.all(deviceIds.map(async (did) => {
+          const ack = await sendDeviceCmd(did, { cmd: 'restart' }, 8000);
+          return ack ? { deviceId: did, ok: ack.ok !== false, error: ack.error } : { deviceId: did, ok: false, error: 'timeout' };
+        }));
+        sendJson(res, 200, { results });
+        return true;
+      }
+    }
     if (id) {
       const dev = findDevice(id);
       if (!dev) { sendJson(res, 404, { error: 'device not found' }); return true; }
@@ -710,49 +753,6 @@ async function handleApi(req, res, url) {
         const ok = await probeDevice(dev);
         saveDb();
         sendJson(res, 200, { id: dev.id, online: ok });
-        return true;
-      }
-    }
-    // Phase 4.6：批量操作（invoke/configs/restart）
-    if (id === 'batch' && req.method === 'POST') {
-      const body = await readBody(req).catch(() => ({}));
-      const deviceIds = Array.isArray(body.deviceIds) ? body.deviceIds.filter((x) => typeof x === 'string') : [];
-      if (deviceIds.length === 0) { sendJson(res, 400, { error: 'deviceIds required' }); return true; }
-      // 批量调用能力
-      if (sub === 'invoke') {
-        const cap = String(body.cap || '');
-        if (!cap) { sendJson(res, 400, { error: 'cap required' }); return true; }
-        const params = body.params || {};
-        const timeoutMs = Math.min(Math.max(Number(body.timeout) || 5000, 500), 15000);
-        const results = await Promise.all(deviceIds.map(async (did) => {
-          const ack = await sendDeviceCmd(did, { cmd: 'invoke', cap, params }, timeoutMs);
-          return ack ? { deviceId: did, ok: ack.ok !== false, error: ack.error } : { deviceId: did, ok: false, error: 'timeout' };
-        }));
-        sendJson(res, 200, { cap, results });
-        return true;
-      }
-      // 批量设置配置
-      if (sub === 'configs') {
-        const configs = (body.configs && typeof body.configs === 'object' && !Array.isArray(body.configs)) ? body.configs : null;
-        if (!configs) { sendJson(res, 400, { error: 'configs object required' }); return true; }
-        const results = await Promise.all(deviceIds.map(async (did) => {
-          const cfgResults = {};
-          for (const [key, value] of Object.entries(configs)) {
-            const ack = await sendDeviceCmd(did, { cmd: 'set', key, value });
-            cfgResults[key] = ack ? { ok: ack.ok !== false, reload: ack.reload, error: ack.error } : { ok: false, error: 'timeout' };
-          }
-          return { deviceId: did, results: cfgResults };
-        }));
-        sendJson(res, 200, { results });
-        return true;
-      }
-      // 批量重启（前端需二次确认）
-      if (sub === 'restart') {
-        const results = await Promise.all(deviceIds.map(async (did) => {
-          const ack = await sendDeviceCmd(did, { cmd: 'restart' }, 8000);
-          return ack ? { deviceId: did, ok: ack.ok !== false, error: ack.error } : { deviceId: did, ok: false, error: 'timeout' };
-        }));
-        sendJson(res, 200, { results });
         return true;
       }
     }
