@@ -1,58 +1,138 @@
-// 能力即服务前端驱动（Phase 4.7）
-// 从 /api/devices/:id/caps 拉取元数据，自动渲染控制按钮（一级菜单）+ 配置表单（二级菜单）
-// 不再硬编码 keysym；新增能力设备侧注册后前端自动渲染，无需改本文件
+// 能力即服务前端驱动（2026-08-13 重构：无上报、无元数据表，前端自包含定义 + 直接发送）
+// 原则：IPA 注册表仅存 executor；前端按需直接编写每个能力的调用实现（类似 KEY_DEFS 右侧按键模式）。
+// 新增能力/参数 = 设备端注册 executor + 前端定义数组加一条（两端约定对齐，不做运行时发现）。
+// 传输通道：按键走 RFB 直发（KEY_DEFS ks/code/ptr）；其余走 invoke API（网关隧道直达设备 executor）。
 
-/** 兜底默认能力 ID（设备未上报 capMetadata 时用，与设备侧 TRCapabilityRegistry 对齐） */
-export const DEFAULT_CAPS = ['home', 'power', 'volup', 'voldn', 'mute', 'briup', 'bridn', 'keyboard', 'clipboard.paste'];
+/** 右侧按键直发映射（RFB 通道，07 §4.1）：ks/code 为 X11 keysym 直发，ptr 为指针掩码（仅 power 用中键） */
+export const KEY_DEFS = [
+  { key: 'home',    title: 'Home 键',  icon: '🏠', ks: 0xff50,       code: 'Home',            events: { click: 'home',           double: 'home.double',   long: 'home.long' } },
+  { key: 'power',   title: '电源',     icon: '⏻',  ptr: 2,                                   events: { click: 'power',          double: 'power.double',  triple: 'power.triple', long: 'power.long' } },
+  { key: 'volup',   title: '音量 +',   icon: '🔊', ks: 0x1008ff13,   code: 'AudioVolumeUp',   events: { click: 'volup',          down: 'volup.down',      up: 'volup.up' } },
+  { key: 'voldn',   title: '音量 −',   icon: '🔉', ks: 0x1008ff11,   code: 'AudioVolumeDown', events: { click: 'voldn',          down: 'voldn.down',      up: 'voldn.up' } },
+  { key: 'mute',    title: '静音',     icon: '🔇', ks: 0x1008ff12,   code: 'AudioVolumeMute', events: { click: 'mute',           down: 'mute.down',       up: 'mute.up' } },
+  { key: 'briup',   title: '亮度 +',   icon: '☀️', ks: 0x1008ff03,   code: 'BrightnessUp',    events: { click: 'briup',          down: 'briup.down',      up: 'briup.up' } },
+  { key: 'bridn',   title: '亮度 −',   icon: '🌙', ks: 0x1008ff02,   code: 'BrightnessDown',  events: { click: 'bridn',          down: 'bridn.down',      up: 'bridn.up' } },
+  { key: 'keyboard',title: '键盘',     icon: '⌨️', ks: 0x1008ff2e, code: 'XF86Keyboard', events: { click: 'keyboard' } },
+  { key: 'spotlight',title: '搜索',    icon: '🔍', ks: 0x1008ff1d, code: 'XF86Search',   events: { click: 'spotlight' } },
+  { key: 'snapshot',title: 'Home+Power截屏', icon: '📸', ks: 0x1008ff80, code: 'CustomSnapshot', events: { click: 'snapshot' } },
+  { key: 'hwlock',  title: '键盘锁/解锁', icon: '🔒', ks: 0x1008ff81, code: 'CustomHwLock',   events: { click: 'hwlock' } },
+  { key: 'releasekeys', title: '释放按键', icon: '🙊', ks: 0x1008ff82, code: 'CustomReleaseKeys', events: { click: 'releasekeys' } },
+];
 
-/** 兜底能力元数据（设备未上报时用，保证前端可用） */
-export const CAP_FALLBACK = {
-  'home':            { id: 'home',            title: 'Home 键',  icon: '🏠', category: 'control', route: { type: 'hid' }, params: [] },
-  'power':           { id: 'power',            title: '电源',     icon: '⏻',  category: 'control', route: { type: 'hid' }, params: [] },
-  'volup':           { id: 'volup',            title: '音量 +',   icon: '🔊', category: 'control', route: { type: 'hid' }, params: [] },
-  'voldn':           { id: 'voldn',            title: '音量 −',  icon: '🔉', category: 'control', route: { type: 'hid' }, params: [] },
-  'mute':            { id: 'mute',             title: '静音',     icon: '🔇', category: 'control', route: { type: 'hid' }, params: [] },
-  'briup':           { id: 'briup',            title: '亮度 +',  icon: '☀️', category: 'control', route: { type: 'hid' }, params: [] },
-  'bridn':           { id: 'bridn',            title: '亮度 −',  icon: '🌙', category: 'control', route: { type: 'hid' }, params: [] },
-  'keyboard':        { id: 'keyboard',         title: '键盘',     icon: '⌨️', category: 'control', route: { type: 'hid' }, params: [] },
-  'clipboard.paste': { id: 'clipboard.paste',  title: '粘贴剪贴板', icon: '📋', category: 'control', route: { type: 'native' }, params: [] },
-};
+/** 动作区能力（控制台，点击 invoke 直达设备 executor）——自包含定义 */
+export const ACT_DEFS = [
+  { id: 'type.text',   title: '文本输入',   icon: '⌨', params: [{ name: 'text', type: 'string', required: true }] },
+  { id: 'type.paste',  title: '粘贴输入',   icon: '📋', params: [{ name: 'text', type: 'string', required: true }] },
+  { id: 'clipboard.get', title: '获取剪贴板', icon: '📋', params: [] },
+  { id: 'clipboard.set', title: '设置剪贴板', icon: '📋', params: [{ name: 'text', type: 'string', required: true }] },
+  { id: 'screenshot',  title: '屏幕快照',   icon: '📷', params: [] },
+];
 
-/** reload 分区标签（二级菜单按此分区显示） */
+/** 卡片 ⋯ 菜单「常用能力」（点击 invoke 直达设备）——自包含定义 */
+export const QUICK_ACTIONS = [
+  { id: 'service.restart', title: '重启服务', icon: '🔄', params: [] },
+];
+
+/** 批量「调用能力」清单（含 category 供分组渲染；点击 batchInvoke）——自包含定义，固化现状批量菜单能力 */
+export const BATCH_CAPS = [
+  { id: 'home',          title: 'Home 键',   icon: '🏠', category: 'hid', params: [] },
+  { id: 'power',         title: '电源',      icon: '⏻',  category: 'hid', params: [] },
+  { id: 'volup',         title: '音量 +',    icon: '🔊', category: 'hid', params: [] },
+  { id: 'voldn',         title: '音量 −',    icon: '🔉', category: 'hid', params: [] },
+  { id: 'mute',          title: '静音',      icon: '🔇', category: 'hid', params: [] },
+  { id: 'briup',         title: '亮度 +',    icon: '☀️', category: 'hid', params: [] },
+  { id: 'bridn',         title: '亮度 −',    icon: '🌙', category: 'hid', params: [] },
+  { id: 'keyboard',      title: '键盘',      icon: '⌨️', category: 'hid', params: [] },
+  { id: 'spotlight',     title: '搜索',      icon: '🔍', category: 'hid', params: [] },
+  { id: 'home.double',   title: '双击Home',  icon: '🏠', category: 'hid', params: [] },
+  { id: 'home.long',     title: '长按Home',  icon: '🏠', category: 'hid', params: [] },
+  { id: 'power.double',  title: '双击电源',  icon: '⏻',  category: 'hid', params: [] },
+  { id: 'power.triple',  title: '三击电源',  icon: '⏻',  category: 'hid', params: [] },
+  { id: 'power.long',    title: '长按电源',  icon: '⏻',  category: 'hid', params: [] },
+  { id: 'hwlock',        title: '硬件键盘锁', icon: '🔒', category: 'hid', params: [] },
+  { id: 'hwunlock',      title: '硬件键盘解锁', icon: '🔓', category: 'hid', params: [] },
+  { id: 'releasekeys',   title: '释放所有按键', icon: '🙊', category: 'hid', params: [] },
+  { id: 'service.restart', title: '重启服务', icon: '🔄', category: 'service', params: [] },
+  { id: 'settings.generateKeys', title: '生成证书', icon: '🔐', category: 'native', params: [] },
+  { id: 'settings.searchGateway', title: '搜索网关', icon: '🔍', category: 'native', params: [] },
+  { id: 'clients.count',  title: '客户端数量', icon: '🔢', category: 'system', params: [] },
+  { id: 'clients.list',   title: '客户端列表', icon: '📋', category: 'system', params: [] },
+  { id: 'clients.disconnect', title: '断开客户端', icon: '🔌', category: 'system', params: [{ name: 'clientId', type: 'string', required: true }] },
+  { id: 'clients.block',  title: '阻止客户端', icon: '🚫', category: 'system', params: [{ name: 'clientId', type: 'string', required: true }] },
+  { id: 'clients.unblock',title: '解除阻止', icon: '✅', category: 'system', params: [{ name: 'host', type: 'string', required: true }] },
+  { id: 'clients.blocked.list', title: '黑名单列表', icon: '📜', category: 'system', params: [] },
+  { id: 'sys.version',    title: '版本信息', icon: '🏷️', category: 'native', params: [] },
+  { id: 'sys.resolution', title: '屏幕分辨率', icon: '📐', category: 'native', params: [] },
+  { id: 'sys.rotation',   title: '当前旋转', icon: '🔄', category: 'native', params: [] },
+  { id: 'sys.bonjour.txt',title: 'Bonjour TXT', icon: '📡', category: 'native', params: [] },
+  { id: 'gateway.isConnected', title: '网关状态', icon: '🟢', category: 'gateway', params: [] },
+  { id: 'gateway.reconnect',   title: '手动重连', icon: '🔌', category: 'gateway', params: [] },
+];
+
+/** 配置表单定义（契约）：与设备端 _registerConfigSchemas 对齐（37 项全量保留——均有真实实现） */
+export const CONFIG_DEFS = [
+  { key: 'Scale', title: '输出缩放', type: 'number', min: 0.1, max: 1.0, step: 0.1, reload: 'hot' },
+  { key: 'FrameRateSpec', title: '帧率', type: 'string', reload: 'hot' },
+  { key: 'OrientationSync', title: '方向同步', type: 'bool', reload: 'hot' },
+  { key: 'OrientationPadFix', title: '方向偏移', type: 'enum', enumValues: [0, 1, 2, 3], enumTitles: ['禁用', '90°', '180°', '270°'], reload: 'hot' },
+  { key: 'ServerCursor', title: '服务端光标', type: 'bool', reload: 'hot' },
+  { key: 'DeferWindowSec', title: '延迟窗口', type: 'number', min: 0, max: 0.5, step: 0.005, reload: 'hot' },
+  { key: 'MaxInflight', title: '最大并行帧', type: 'number', min: 0, max: 8, step: 1, reload: 'hot' },
+  { key: 'PerformanceMode', title: '性能模式', type: 'enum', enumValues: ['balanced', 'quality', 'performance', 'custom'], enumTitles: ['均衡', '画质', '性能', '自定义'], reload: 'hot' },
+  { key: 'TileSize', title: '分块大小', type: 'number', min: 8, max: 128, step: 1, reload: 'restart' },
+  { key: 'FullscreenThresholdPercent', title: '脏区阈值', type: 'number', min: 0, max: 100, step: 1, reload: 'hot' },
+  { key: 'MaxRects', title: '最大矩形数', type: 'number', min: 1, max: 4096, step: 1, reload: 'restart' },
+  { key: 'AsyncSwap', title: '非阻塞交换', type: 'bool', reload: 'restart' },
+  { key: 'ThumbInterval', title: '卡片墙帧获取间隔(秒)', type: 'number', min: 1, max: 60, step: 1, reload: 'instant' },
+  { key: 'NaturalScroll', title: '自然滚动', type: 'bool', reload: 'instant' },
+  { key: 'ModifierMap', title: '修饰键映射', type: 'enum', enumValues: ['std', 'altcmd'], enumTitles: ['标准', 'Alt→Cmd'], reload: 'hot' },
+  { key: 'AutoAssistEnabled', title: '辅助触控', type: 'bool', reload: 'instant' },
+  { key: 'WheelStepPx', title: '滚轮步进', type: 'number', min: 0, max: 1000, step: 1, reload: 'hot' },
+  { key: 'WheelTuning', title: '滚轮调优', type: 'string', reload: 'hot' },
+  { key: 'ViewOnly', title: '全局只读', type: 'bool', reload: 'instant' },
+  { key: 'ClipboardEnabled', title: '剪贴板同步', type: 'bool', reload: 'instant' },
+  { key: 'FullPassword', title: '完全访问密码', type: 'password', reload: 'restart' },
+  { key: 'ViewOnlyPassword', title: '只读密码', type: 'password', reload: 'restart' },
+  { key: 'BindHost', title: '绑定地址', type: 'string', reload: 'restart' },
+  { key: 'BonjourEnabled', title: '自动发现', type: 'bool', reload: 'gateway' },
+  { key: 'HttpDir', title: 'HTTP 根目录', type: 'string', reload: 'restart' },
+  { key: 'Enabled', title: '服务启用', type: 'bool', reload: 'restart' },
+  { key: 'GatewayHost', title: '网关地址', type: 'string', reload: 'gateway' },
+  { key: 'GatewayToken', title: '网关令牌', type: 'password', reload: 'gateway' },
+  { key: 'SslCertFile', title: 'SSL证书文件', type: 'string', reload: 'restart' },
+  { key: 'SslKeyFile', title: 'SSL私钥文件', type: 'string', reload: 'restart' },
+  { key: 'KeepAliveSec', title: '保活间隔', type: 'number', min: 0, max: 300, step: 1, reload: 'hot' },
+  { key: 'Notifications', title: '通知模式', type: 'enum', enumValues: ['all', 'connectOnly', 'silent'], enumTitles: ['全部通知', '仅连接通知', '静默'], reload: 'instant' },
+  { key: 'KeyLogging', title: '键盘日志', type: 'bool', reload: 'instant' },
+  { key: 'WatchdogThrottleInterval', title: '重启节流间隔', type: 'number', min: 1, max: 300, step: 1, reload: 'hot' },
+  { key: 'WatchdogKeepAlive', title: '崩溃自动重启', type: 'bool', reload: 'hot' },
+  { key: 'WatchdogExitTimeout', title: '退出超时', type: 'number', min: 1, max: 60, step: 1, reload: 'hot' },
+  { key: 'HIDKeepAliveInterval', title: 'HID防休眠间隔', type: 'number', min: 0, max: 300, step: 1, reload: 'hot' },
+];
+export const CONFIG_BY_KEY = new Map(CONFIG_DEFS.map((s) => [s.key, s]));
+
+/** reload 分区标签（配置面板按此分区显示） */
 export const RELOAD_LABELS = {
-  instant: '立即生效',
-  hot: '热重载',
-  gateway: '网关刷新',
-  restart: '需重启服务',
+  instant: '立即生效', hot: '热重载', gateway: '网关刷新', restart: '需重启服务',
 };
 
-/**
- * 能力 category 中文分组标题映射（Phase 10.3）
- * 用于能力菜单按 category 分组渲染时的分组标题显示
- */
+/** 能力 category 中文分组标题（批量菜单按 category 分组显示） */
 export const CATEGORY_LABELS = {
-  hid: '硬件按键',
-  touch: '触控操作',
-  stylus: '触控笔',
-  system: '系统管理',
-  native: '原生功能',
-  service: '服务管理',
-  gateway: '网关信息',
-  control: '控制操作',  // 兜底
+  hid: '硬件按键', touch: '触控操作', stylus: '触控笔', system: '系统管理',
+  native: '原生功能', service: '服务管理', gateway: '网关信息', control: '控制操作',
 };
 
 /**
- * 按能力元数据的 category 字段分组（Phase 10.3）
- * 用于 renderCapOps / showBatchMenu 渲染分组能力列表
- * @param {Array<object>} capMetadata 能力元数据数组，每项含 { id, category, ... }
- * @returns {Map<string, Array<object>>} key=category, value=该 category 下的 meta 数组（保持插入顺序）
+ * 按能力元数据的 category 字段分组（批量菜单分组渲染）
+ * @param {Array<object>} caps 自包含能力定义数组，每项含 { id, category, ... }
+ * @returns {Map<string, Array<object>>} key=category, value=该 category 下的定义数组（保持插入顺序）
  */
-export function groupByCategory(capMetadata) {
+export function groupByCategory(caps) {
   const map = new Map();
-  if (!Array.isArray(capMetadata)) return map;
-  for (const meta of capMetadata) {
+  if (!Array.isArray(caps)) return map;
+  for (const meta of caps) {
     if (!meta || !meta.id) continue;
-    const cat = meta.category || 'control';  // 兜底归入 control
+    const cat = meta.category || 'control';
     if (!map.has(cat)) map.set(cat, []);
     map.get(cat).push(meta);
   }
@@ -60,30 +140,12 @@ export function groupByCategory(capMetadata) {
 }
 
 /**
- * 从设备能力元数据中提取控制型能力清单
- * 设备上报 capMetadata 时用上报值，否则回退兜底
- * @param device 设备对象（含 capMetadata/capabilities）
- * @returns 控制型能力元数据数组
- */
-export function deviceCaps(device) {
-  if (device && Array.isArray(device.capMetadata) && device.capMetadata.length > 0) {
-    return device.capMetadata.filter((c) => c && c.id);
-  }
-  // 回退：用 capabilities ID + 兜底元数据
-  const ids = (device && Array.isArray(device.capabilities) && device.capabilities.length) ? device.capabilities : DEFAULT_CAPS;
-  return ids.map((id) => CAP_FALLBACK[id]).filter(Boolean);
-}
-
-/**
- * 从设备 configSchema 中按 reload 分区
- * @param device 设备对象（含 configSchema）
+ * 按 reload 分区静态配置表单定义
  * @returns { instant: [], hot: [], gateway: [], restart: [] }
  */
-export function configSchemaByReload(device) {
-  const schema = (device && Array.isArray(device.configSchema)) ? device.configSchema : [];
+export function configSchemaByReload() {
   const groups = { instant: [], hot: [], gateway: [], restart: [] };
-  for (const item of schema) {
-    if (!item || !item.key) continue;
+  for (const item of CONFIG_DEFS) {
     const r = item.reload || 'instant';
     if (groups[r]) groups[r].push(item);
   }
@@ -176,62 +238,8 @@ export async function batchRestart(apiBase, deviceIds) {
   return res.json();
 }
 
-/**
- * 按键对象清单（07 §3.1/§4.1）：events 引用设备端能力 id，前端按按压模式翻译
- * ks/code/ptr 为 RFB 直发通道映射（与 5801 index.vnc dispatchOp 一致）：
- *   - ks   X11 keysym 数值，noVNC rfb.sendKey(keysym, code, down) 用
- *   - code noVNC 键码名（KeyTable 映射）
- *   - ptr  指针掩码（仅 power 用中键=2，模拟电源键；rfb.pointer 同款）
- * 控制台直连模式：12 键全部经 RFB 直发（无 keysym 回退能力链路）。
- * 系统动作键使用自定义 keysym（keyboard=0x1008ff2e / spotlight=0x1008ff1d /
- * snapshot=0x1008ff80 / hwlock=0x1008ff81 / releasekeys=0x1008ff82），设备端
- * kbdAddEvent 映射到 STHIDEventGenerator API（toggleOnScreenKeyboard 等），
- * 单击执行（down 触发）、up 忽略。
- */
-export const KEY_DEFS = [
-  { key: 'home',    title: 'Home 键',  icon: '🏠', ks: 0xff50,       code: 'Home',            events: { click: 'home',           double: 'home.double',   long: 'home.long' } },
-  { key: 'power',   title: '电源',     icon: '⏻',  ptr: 2,                                   events: { click: 'power',          double: 'power.double',  triple: 'power.triple', long: 'power.long' } },
-  { key: 'volup',   title: '音量 +',   icon: '🔊', ks: 0x1008ff13,   code: 'AudioVolumeUp',   events: { click: 'volup',          down: 'volup.down',      up: 'volup.up' } },
-  { key: 'voldn',   title: '音量 −',   icon: '🔉', ks: 0x1008ff11,   code: 'AudioVolumeDown', events: { click: 'voldn',          down: 'voldn.down',      up: 'voldn.up' } },
-  { key: 'mute',    title: '静音',     icon: '🔇', ks: 0x1008ff12,   code: 'AudioVolumeMute', events: { click: 'mute',           down: 'mute.down',       up: 'mute.up' } },
-  { key: 'briup',   title: '亮度 +',   icon: '☀️', ks: 0x1008ff03,   code: 'BrightnessUp',    events: { click: 'briup',          down: 'briup.down',      up: 'briup.up' } },
-  { key: 'bridn',   title: '亮度 −',   icon: '🌙', ks: 0x1008ff02,   code: 'BrightnessDown',  events: { click: 'bridn',          down: 'bridn.down',      up: 'bridn.up' } },
-  { key: 'keyboard',title: '键盘',     icon: '⌨️', ks: 0x1008ff2e, code: 'XF86Keyboard', events: { click: 'keyboard' } },
-  { key: 'spotlight',title: '搜索',    icon: '🔍', ks: 0x1008ff1d, code: 'XF86Search',   events: { click: 'spotlight' } },
-  { key: 'snapshot',title: 'Home+Power截屏', icon: '📸', ks: 0x1008ff80, code: 'CustomSnapshot', events: { click: 'snapshot' } },
-  { key: 'hwlock',  title: '键盘锁/解锁', icon: '🔒', ks: 0x1008ff81, code: 'CustomHwLock',   events: { click: 'hwlock' } },
-  { key: 'releasekeys', title: '释放按键', icon: '🙊', ks: 0x1008ff82, code: 'CustomReleaseKeys', events: { click: 'releasekeys' } },
+/** 卡片 ⋯ 菜单「常用参数」编排清单（QUICK_CONFIG_GROUPS：分组 + 键名，schema 从 CONFIG_DEFS 取） */
+export const QUICK_CONFIG_GROUPS = [
+  { title: '画面与性能', keys: ['Scale', 'FrameRateSpec', 'PerformanceMode'] },
+  { title: '输入与交互', keys: ['ClipboardEnabled', 'ViewOnly', 'Notifications'] },
 ];
-
-/** 动作区固定能力 id（07 §4.1，从设备 capMetadata 取元数据渲染） */
-export const ACTION_CAPS = ['type.text', 'type.paste', 'clipboard.get', 'clipboard.set', 'screenshot'];
-
-/**
- * 按场景过滤设备能力（07 §3.3/§4）
- * @param device 设备对象
- * @param scope 'console' 控制台侧边栏/悬浮 | 'tile' 卡片菜单 | 'batch' 批量
- * @returns 过滤后的能力元数据数组
- */
-export function menuCaps(device, scope) {
-  const caps = deviceCaps(device);
-  const byId = new Map(caps.filter((c) => c && c.id).map((c) => [c.id, c]));
-  if (scope === 'console') {
-    // 按键区：KEY_DEFS 的 events 引用的能力；动作区：ACTION_CAPS
-    const ids = [...KEY_DEFS.flatMap((k) => Object.values(k.events)), ...ACTION_CAPS];
-    return ids.map((id) => byId.get(id)).filter(Boolean);
-  }
-  if (scope === 'tile') {
-    // 卡片 ⋯ 菜单（07 §4.2 修正）：仅管理/查询类 + 设备管理段
-    // 排除控制台能力——按键对象（KEY_DEFS events）、动作区（ACTION_CAPS）、触控/触控笔分类
-    // 这些在控制台（按键区/动作区/画布直操）有入口，卡片菜单不再重复
-    const consoleIds = new Set([...KEY_DEFS.flatMap((k) => Object.values(k.events)), ...ACTION_CAPS]);
-    return caps.filter((c) => c && c.menu !== 'internal' && !consoleIds.has(c.id)
-      && c.category !== 'hid' && c.category !== 'touch' && c.category !== 'stylus');
-  }
-  if (scope === 'batch') {
-    return caps.filter((c) =>
-      c && c.menu !== 'internal' && c.category !== 'touch' && c.category !== 'stylus'
-      && !/screenshot|screen\.|clipboard|type\./i.test(c.id));
-  }
-  return caps;
-}

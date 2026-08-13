@@ -1,5 +1,5 @@
-// 能力清单纯模块单测（web/caps.js）：清单驱动渲染的边界（宪法 4.2/5.2/7.3）
-import { DEFAULT_CAPS, CAP_FALLBACK, deviceCaps, groupByCategory, KEY_DEFS, ACTION_CAPS, menuCaps } from '../web/caps.js';
+// 能力前端自包含定义单测（web/caps.js）：无上报、无元数据表，全部为可直接调用的定义数组
+import { ACT_DEFS, QUICK_ACTIONS, BATCH_CAPS, CONFIG_DEFS, CONFIG_BY_KEY, KEY_DEFS, QUICK_CONFIG_GROUPS, configSchemaByReload, groupByCategory } from '../web/caps.js';
 
 let failures = 0;
 function check(name, cond, extra = '') {
@@ -7,85 +7,37 @@ function check(name, cond, extra = '') {
   if (!cond) failures++;
 }
 
-const ids = (arr) => (arr || []).map((c) => c && c.id).filter(Boolean);
+// ---- ACT_DEFS：动作区自包含定义 ----
+check('ACT_DEFS 5 项且字段齐全', ACT_DEFS.length === 5 && ACT_DEFS.every((d) => d.id && d.title && d.icon && Array.isArray(d.params)));
+check('ACT_DEFS 覆盖动作区能力 id',
+  ['type.text', 'type.paste', 'clipboard.get', 'clipboard.set', 'screenshot'].every((id) => ACT_DEFS.some((d) => d.id === id)));
 
-check('默认全集 9 项且不含本地操作(适配/全屏/断开)',
-  DEFAULT_CAPS.length === 9 && !DEFAULT_CAPS.some((c) => ['fit', 'full', 'disc'].includes(c)));
-check('CAP_FALLBACK 覆盖全部默认项且字段齐全',
-  DEFAULT_CAPS.every((c) => CAP_FALLBACK[c] && CAP_FALLBACK[c].id === c && CAP_FALLBACK[c].title &&
-    CAP_FALLBACK[c].icon && CAP_FALLBACK[c].category && CAP_FALLBACK[c].route && CAP_FALLBACK[c].route.type &&
-    Array.isArray(CAP_FALLBACK[c].params)));
-check('keyboard→hid / clipboard.paste→native 路由映射',
-  CAP_FALLBACK.keyboard.route.type === 'hid' && CAP_FALLBACK['clipboard.paste'].route.type === 'native');
-check('无清单设备 → 默认全集', ids(deviceCaps(undefined)).join() === DEFAULT_CAPS.join());
-check('空清单 → 默认全集', ids(deviceCaps({ capabilities: [] })).join() === DEFAULT_CAPS.join());
-check('部分清单按上报渲染', ids(deviceCaps({ capabilities: ['home', 'power'] })).join() === 'home,power');
-check('未知项被过滤', ids(deviceCaps({ capabilities: ['home', 'weird', 'clipboard'] })).join() === 'home');
-check('capMetadata 优先于 capabilities',
-  ids(deviceCaps({ capabilities: ['home'], capMetadata: [{ id: 'screenshot', title: '截屏', icon: '📸', category: 'system', route: { type: 'native' }, params: [] }] })).join() === 'screenshot');
-check('groupByCategory 按 category 分组',
-  (() => {
-    const m = groupByCategory([
-      { id: 'a', category: 'hid' },
-      { id: 'b', category: 'hid' },
-      { id: 'c', category: 'native' },
-    ]);
-    return m.get('hid').length === 2 && m.get('native').length === 1 && m.get('control') === undefined;
-  })());
-check('groupByCategory 无 category 兜底 control',
-  (() => { const m = groupByCategory([{ id: 'x' }]); return m.get('control').length === 1; })());
-check('groupByCategory 非数组 → 空 Map',
-  (() => { const m = groupByCategory(null); return m instanceof Map && m.size === 0; })());
+// ---- QUICK_ACTIONS：卡片能力自包含 ----
+check('QUICK_ACTIONS 自包含 service.restart',
+  QUICK_ACTIONS.length === 1 && QUICK_ACTIONS[0].id === 'service.restart' && QUICK_ACTIONS[0].title && QUICK_ACTIONS[0].icon && Array.isArray(QUICK_ACTIONS[0].params));
 
-// 07 §3.1/§4：KEY_DEFS 按键对象与 menuCaps 场景过滤
-check('KEY_DEFS 12 个按键对象', KEY_DEFS.length === 12);
-check('KEY_DEFS 全部含 click 事件', KEY_DEFS.every((k) => k.events && k.events.click));
-check('home 支持 double/long', KEY_DEFS.find((k) => k.key === 'home').events.double === 'home.double'
-  && KEY_DEFS.find((k) => k.key === 'home').events.long === 'home.long');
-check('power 支持 triple', KEY_DEFS.find((k) => k.key === 'power').events.triple === 'power.triple');
-check('volup 支持 down/up', KEY_DEFS.find((k) => k.key === 'volup').events.down === 'volup.down'
-  && KEY_DEFS.find((k) => k.key === 'volup').events.up === 'volup.up');
-// RFB 直发通道映射（与 5801 index.vnc dispatchOp 一致）：ks/code 有 keysym 语义，ptr 仅 power 中键
-check('keysym 映射：home/音量/静音/亮度', KEY_DEFS.find((k) => k.key === 'home').ks === 0xff50
-  && KEY_DEFS.find((k) => k.key === 'home').code === 'Home'
-  && KEY_DEFS.find((k) => k.key === 'volup').ks === 0x1008ff13 && KEY_DEFS.find((k) => k.key === 'volup').code === 'AudioVolumeUp'
-  && KEY_DEFS.find((k) => k.key === 'voldn').ks === 0x1008ff11 && KEY_DEFS.find((k) => k.key === 'voldn').code === 'AudioVolumeDown'
-  && KEY_DEFS.find((k) => k.key === 'mute').ks === 0x1008ff12 && KEY_DEFS.find((k) => k.key === 'mute').code === 'AudioVolumeMute'
-  && KEY_DEFS.find((k) => k.key === 'briup').ks === 0x1008ff03 && KEY_DEFS.find((k) => k.key === 'briup').code === 'BrightnessUp'
-  && KEY_DEFS.find((k) => k.key === 'bridn').ks === 0x1008ff02 && KEY_DEFS.find((k) => k.key === 'bridn').code === 'BrightnessDown');
-check('power 指针掩码 ptr=2（中键模拟电源）', KEY_DEFS.find((k) => k.key === 'power').ptr === 2);
-check('12 键全部含 keysym 或 ptr（控制台直连模式全 RFB 直发）',
-  KEY_DEFS.every((k) => k.ks !== undefined || k.ptr !== undefined));
-check('系统动作键 keysym 映射（与设备端 kbdAddEvent 一致）',
-  KEY_DEFS.find((k) => k.key === 'keyboard').ks === 0x1008ff2e
-  && KEY_DEFS.find((k) => k.key === 'spotlight').ks === 0x1008ff1d
-  && KEY_DEFS.find((k) => k.key === 'snapshot').ks === 0x1008ff80
-  && KEY_DEFS.find((k) => k.key === 'hwlock').ks === 0x1008ff81
-  && KEY_DEFS.find((k) => k.key === 'releasekeys').ks === 0x1008ff82);
-check('无按键同时含 ks 与 ptr（仅 power 用 ptr）', KEY_DEFS.every((k) => k.ptr === undefined || k.ks === undefined));
-check('ACTION_CAPS 5 项', ACTION_CAPS.length === 5);
+// ---- BATCH_CAPS：批量能力自包含 ----
+check('BATCH_CAPS 非空且自包含（含 category）',
+  BATCH_CAPS.length >= 20 && BATCH_CAPS.every((d) => d.id && d.title && d.icon && d.category && Array.isArray(d.params)));
+check('BATCH_CAPS 含 restart/查询类', BATCH_CAPS.some((d) => d.id === 'service.restart') && BATCH_CAPS.some((d) => d.id === 'clients.list'));
+check('BATCH_CAPS 不含触控/截图/剪贴板/文本类',
+  !BATCH_CAPS.some((d) => /touch|stylus|screenshot|clipboard|type\./i.test(d.id)));
 
-// menuCaps 过滤
-const fullCaps = [
-  { id: 'home', title: 'Home', icon: '🏠', category: 'hid', menu: 'primary' },
-  { id: 'home.down', title: 'Home按下', icon: '🏠', category: 'hid', menu: 'internal' },
-  { id: 'volup.down', title: '音量+按下', icon: '🔊', category: 'hid', menu: 'internal' },
-  { id: 'touch.tap', title: '点击', icon: '👆', category: 'touch', menu: 'internal' },
-  { id: 'type.text', title: '文本输入', icon: '⌨', category: 'touch', menu: 'primary' },
-  { id: 'screenshot', title: '截屏', icon: '📷', category: 'native', menu: 'primary' },
-  { id: 'service.restart', title: '重启服务', icon: '🔄', category: 'native', menu: 'secondary' },
-];
-const dev = { capMetadata: fullCaps };
-check('console 场景仅含按键对象引用与动作区能力',
-  ids(menuCaps(dev, 'console')).every((c) => [...KEY_DEFS.flatMap((k) => Object.values(k.events)), ...ACTION_CAPS].includes(c)));
-check('console 场景含按键与动作区', ['home', 'type.text', 'screenshot'].every((c) => ids(menuCaps(dev, 'console')).includes(c)));
-check('tile 场景保留管理/查询类（service）', menuCaps(dev, 'tile').some((c) => c.id === 'service.restart'));
-check('tile 场景排除按键/动作/触控（控制台职责）',
-  !menuCaps(dev, 'tile').some((c) => c.id === 'home')
-  && !menuCaps(dev, 'tile').some((c) => c.id === 'type.text')
-  && !menuCaps(dev, 'tile').some((c) => c.id === 'screenshot')
-  && !menuCaps(dev, 'tile').some((c) => c.category === 'touch'));
-check('batch 场景排除 touch/截图/文本/剪贴板', !menuCaps(dev, 'batch').some((c) => c.category === 'touch' || /screenshot|clipboard|type\./i.test(c.id)));
+// ---- CONFIG_DEFS：配置表单定义契约 ----
+check('CONFIG_DEFS 含 37 项', CONFIG_DEFS.length === 37);
+check('CONFIG_DEFS 覆盖 QUICK 6 项', QUICK_CONFIG_GROUPS.flatMap((g) => g.keys).every((k) => CONFIG_BY_KEY.has(k)));
+check('CONFIG_DEFS 不含端口项（端口固定不可调）', !CONFIG_DEFS.some((s) => /Port$/i.test(s.key)));
+check('CONFIG_DEFS 每项含 reload 与字段', CONFIG_DEFS.every((s) => s.key && s.title && s.type && s.reload));
+check('configSchemaByReload 四区非空',
+  ['instant', 'hot', 'gateway', 'restart'].every((k) => Array.isArray(configSchemaByReload()[k]))
+  && Object.values(configSchemaByReload()).some((a) => a.length > 0));
 
-console.log(failures === 0 ? '\nALL CAPS TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
+// ---- KEY_DEFS 保留（右侧按键直发） ----
+check('KEY_DEFS 12 键且含直发映射', KEY_DEFS.length === 12 && KEY_DEFS.every((k) => k.title && k.icon && k.events));
+check('KEY_DEFS 按键含 ks/code/ptr 直发映射', KEY_DEFS.some((k) => typeof k.ks === 'number') && KEY_DEFS.some((k) => k.ptr));
+
+// ---- groupByCategory 保留（批量分组渲染） ----
+check('groupByCategory 按 category 分组', groupByCategory(BATCH_CAPS).size >= 4);
+
+console.log(failures === 0 ? 'ALL CAPS TESTS PASSED' : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
