@@ -17,6 +17,7 @@ const NOVNC_DIR = path.join(ROOT, 'node_modules', '@novnc', 'novnc');
 const DATA_DIR = process.env.FARM_DATA_DIR || path.join(ROOT, 'data');
 const DB_FILE = path.join(DATA_DIR, 'devices.json');
 
+// 端口默认固定（8080 = web/API，18081 = 注册，18181 = 隧道）；env 覆盖仅用于部署/测试隔离
 const PORT = parseInt(process.env.FARM_PORT || '8080', 10);
 const HOST = process.env.FARM_HOST || '0.0.0.0';
 const TOKEN = process.env.FARM_TOKEN || '';          // 若设置，访问需带 token
@@ -109,12 +110,8 @@ function upsertRegistered(input) {
     };
     devices.push(dev);
   }
-  // 能力清单（v1 只上报；旧客户端缺省不报错，控制台按默认全集渲染）
-  if (Array.isArray(input.capabilities)) dev.capabilities = input.capabilities;
+  // 2026-08-13：去除能力/配置 schema 存储（前端自包含定义驱动），configs/screen/httpPort 保留
   if (input.configs !== undefined) dev.configs = input.configs;
-  // Phase 4：能力元数据 + 配置 schema（供前端自动渲染按钮/表单）
-  if (Array.isArray(input.capMetadata)) dev.capMetadata = input.capMetadata;
-  if (Array.isArray(input.configSchema)) dev.configSchema = input.configSchema;
   if (input.screen !== undefined) dev.screen = input.screen;
   if (input.httpPort !== undefined) dev.httpPort = input.httpPort;
   saveDb();
@@ -528,7 +525,7 @@ function handleControlSocket(ws, req, deviceId) {
       sendAck({ type: 'ack', cmd, id, ok: false, error: 'device timeout' });
       return;
     }
-    // 透传设备 ack 的数据字段（capabilities/capMetadata/configSchema/configs/result/reload/error 等），
+    // 透传设备 ack 的数据字段（configs/result/reload/error 等），
     // 用本端 envelope 覆盖 type/cmd/id/ok（id 回填客户端原始 id）
     const ok = ack.ok !== false;
     sendAck({ ...ack, type: 'ack', cmd, id, ok });
@@ -668,33 +665,9 @@ async function handleApi(req, res, url) {
         sendJson(res, 200, { device: dev });
         return true;
       }
-      if (req.method === 'POST' && sub === 'command') {
-        const body = await readBody(req).catch(() => ({}));
-        const cmd = String(body.cmd || '');
-        if (!cmd) { sendJson(res, 400, { error: 'cmd required' }); return true; }
-        const supported = ['ping', 'query', 'set', 'invoke', 'restart'];
-        if (!supported.includes(cmd)) { sendJson(res, 400, { error: 'unsupported command: ' + cmd }); return true; }
-        const timeoutMs = Math.min(Math.max(Number(body.timeout) || 5000, 500), 15000);
-        const cmdObj = { cmd };
-        if (body.target) cmdObj.target = body.target;
-        if (body.key) cmdObj.key = body.key;
-        if (body.value !== undefined) cmdObj.value = body.value;
-        if (body.cap) cmdObj.cap = body.cap;
-        if (body.params) cmdObj.params = body.params;
-        const ack = await sendDeviceCmd(id, cmdObj, timeoutMs);
-        if (!ack) { sendJson(res, 504, { error: 'ack timeout', cmd }); return true; }
-        sendJson(res, 200, { ok: ack.ok !== false, cmd, deviceId: dev.id, ack });
-        return true;
-      }
-      // Phase 4.6：查询能力元数据（含 capMetadata + configSchema）
+      // 2026-08-13：能力/配置 schema 不再上报，/caps 仅返回当前配置值
       if (req.method === 'GET' && sub === 'caps') {
-        sendJson(res, 200, {
-          deviceId: dev.id,
-          capabilities: dev.capabilities || [],
-          capMetadata: dev.capMetadata || [],
-          configSchema: dev.configSchema || [],
-          configs: dev.configs || {},
-        });
+        sendJson(res, 200, { deviceId: dev.id, configs: dev.configs || {} });
         return true;
       }
       // Phase 4.6：查询/设置配置
@@ -957,11 +930,7 @@ const regServer = net.createServer((sock) => {
         name: String(msg.name || deviceId),
         host: remoteIp || '0.0.0.0',
         port: validPort(msg.vncPort) ? Number(msg.vncPort) : 5901,
-        // 能力清单（宪法 7.3；旧客户端缺省不报错）
-        capabilities: Array.isArray(msg.capabilities) ? msg.capabilities : undefined,
         configs: (msg.configs && typeof msg.configs === 'object') ? msg.configs : undefined,
-        capMetadata: Array.isArray(msg.capMetadata) ? msg.capMetadata : undefined,
-        configSchema: Array.isArray(msg.configSchema) ? msg.configSchema : undefined,
         screen: (msg.screen && typeof msg.screen === 'object') ? msg.screen : undefined,
         httpPort: validPort(msg.httpPort) ? Number(msg.httpPort) : undefined,
       });
@@ -981,10 +950,6 @@ const regServer = net.createServer((sock) => {
       const rec = registeredDevices.get(deviceId);
       if (rec) rec.lastHeartbeat = Date.now();
       if (dev) dev.lastSeen = Date.now();
-    } else if (msg.type === 'screen_changed' && deviceId) {
-      // Phase C：设备画面变化上报 → 记录变化标记（控制端 changedSince 增量查询 / 后续可广播）
-      const dev0 = devices.find((d) => d.id === deviceId);
-      if (dev0) dev0.screenChangedAt = Date.now();
     } else if (msg.type === 'ack') {
       // 手机对下发命令的确认（宪法 7.4）：按 id 匹配挂起命令
       const p = msg.id ? pendingCmds.get(String(msg.id)) : undefined;
