@@ -1528,6 +1528,7 @@ function showTileMenu(tile, d, x, y) {
             const vEl = head.querySelector('.qp-val');
             if (vEl) vEl.textContent = newVal;
             editor.classList.add('hidden');
+            wrap.__qpManual = false; // 仅成功时解锁（qpClose 与此收起重复，此处已收起）
           } else {
             toast(`✗ ${schema.title || schema.key} 保存失败：${(res && res.error) || '未知错误'}`);
           }
@@ -1549,13 +1550,6 @@ function showTileMenu(tile, d, x, y) {
         wrap.__qpManual = !wrap.__qpManual;
         if (wrap.__qpManual) qpOpen(); else qpClose();
       });
-      // 保存成功后解除锁定并收起
-      const origSave = save.onclick;
-      save.onclick = async () => {
-        await origSave();
-        wrap.__qpManual = false;
-        qpClose();
-      };
       m.appendChild(wrap);
     }
   }
