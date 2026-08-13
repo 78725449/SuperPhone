@@ -98,7 +98,7 @@ try {
   check('WS 注册端点已废弃（被拒 4000）', wsCode === 4000, 'code=' + wsCode);
 
   // === TCP 注册（含能力清单）===
-  c1 = await openReg('dev-tcp', MANIFEST);
+  c1 = await openReg('dev-tcp', { ...MANIFEST, capabilities: ['home', 'power'], capMetadata: [{ id: 'home' }], configSchema: [{ key: 'Scale' }] });
   await waitFor(async () => {
     const d = (await getDevices()).find((x) => x.id === 'dev-tcp');
     return d && d.online === true && d.screen && d.screen.width === 1170;
@@ -106,14 +106,14 @@ try {
   const tcpDev = (await getDevices()).find((d) => d.id === 'dev-tcp');
   check('TCP 注册 ACK 返回', c1.lines.some((l) => l.type === 'ack' && l.deviceId === 'dev-tcp'));
   check('TCP 设备以 register 登记', tcpDev && tcpDev.source === 'register' && tcpDev.name === 'dev-tcp-name');
-  check('能力清单不再上报（去除上报）', tcpDev && tcpDev.capabilities === undefined && tcpDev.capMetadata === undefined && tcpDev.configSchema === undefined);
+  check('能力字段被网关剥离（不入库）', tcpDev && tcpDev.capabilities === undefined && tcpDev.capMetadata === undefined && tcpDev.configSchema === undefined);
   check('清单已入库：configs', tcpDev && tcpDev.configs && tcpDev.configs.httpPort === 5801 && tcpDev.configs.scale === 1.0);
   check('清单已入库：screen(1170x2532)', tcpDev && tcpDev.screen && tcpDev.screen.width === 1170 && tcpDev.screen.height === 2532);
   check('清单已入库：httpPort', tcpDev && tcpDev.httpPort === 5801);
 
   // GET /api/devices/:id 完整详情
   const detail = await (await fetch(`http://127.0.0.1:${PORT}/api/devices/dev-tcp`, { headers: auth })).json();
-  check('GET /api/devices/:id 返回连接信息与 configs', detail.device && detail.device.id === 'dev-tcp' && detail.device.configs && typeof detail.device.configs === 'object');
+  check('GET /api/devices/:id 返回连接信息且能力字段剥离', detail.device && detail.device.id === 'dev-tcp' && detail.device.online === true && detail.device.capabilities === undefined && typeof detail.device.configs === 'object');
 
   // === 命令通道：invoke（网关等待设备 ack，ack 回传）===
   const cmdRes = await fetch(`http://127.0.0.1:${PORT}/api/devices/dev-tcp/invoke`, {
