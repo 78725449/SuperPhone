@@ -101,7 +101,7 @@ function makeMockDevices(n) {
   }
   return arr;
 }
-const MOCK_COUNT = 30;  // 虚拟预览设备数量，置 0 即关闭预览
+const MOCK_COUNT = 0;  // 虚拟预览设备数量，置 0 即关闭预览
 const MOCK_DEVICES = makeMockDevices(MOCK_COUNT);
 
 /**

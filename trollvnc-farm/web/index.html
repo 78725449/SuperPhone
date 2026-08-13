@@ -3,41 +3,33 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>TrollVNC 群控台</title>
+<title>SuperPhone 群控台</title>
+<link rel="icon" href="data:," />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 <header>
-  <h1>TrollVNC 群控台</h1>
+  <h1>SuperPhone 群控台</h1>
   <div id="meta" class="meta"></div>
   <div class="actions">
-    <label class="zoom" title="拖动统一缩放所有设备卡片">
-      墙屏缩放
-      <input type="range" id="zoomRange" min="50" max="220" value="100" />
-      <span id="zoomVal">100%</span>
+    <label class="zoom" title="拖动调整设备卡片宽度（像素）：最小值=每行15列，最大值=每行5列，卡片从左到右逐行自适应平铺填满">
+      卡片
+      <input type="range" id="cardwRange" min="160" max="400" step="5" value="280" />
+      <span id="cardwVal">280px</span>
     </label>
-    <!-- 布局切换：横屏1-6列 / 竖屏1-6列（手机端布局按钮，PC 端尺寸调节阀的另一态） -->
+    <!-- 布局切换：卡片（宫格）/ 列表 两档（借鉴 IPA 控制端布局按钮；PC 端隐藏，移动端主用） -->
     <div class="layout-switch">
-      <button id="layoutBtn" class="layout-btn" title="布局切换">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg>
+      <button id="layoutBtn" class="layout-btn" title="布局切换（卡片/列表）">
+        <svg id="layoutIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg>
       </button>
       <div id="layoutMenu" class="layout-menu hidden">
-        <div class="lopt" data-l="h1">横屏 1<span class="chk">✓</span></div>
-        <div class="lopt" data-l="h2">横屏 2<span class="chk">✓</span></div>
-        <div class="lopt" data-l="h3">横屏 3<span class="chk">✓</span></div>
-        <div class="lopt" data-l="h4">横屏 4<span class="chk">✓</span></div>
-        <div class="lopt" data-l="h5">横屏 5<span class="chk">✓</span></div>
-        <div class="lopt" data-l="h6">横屏 6<span class="chk">✓</span></div>
-        <div class="lopt sel" data-l="v2">竖屏 2<span class="chk">✓</span></div>
-        <div class="lopt" data-l="v1">竖屏 1<span class="chk">✓</span></div>
-        <div class="lopt" data-l="v3">竖屏 3<span class="chk">✓</span></div>
-        <div class="lopt" data-l="v4">竖屏 4<span class="chk">✓</span></div>
-        <div class="lopt" data-l="v5">竖屏 5<span class="chk">✓</span></div>
-        <div class="lopt" data-l="v6">竖屏 6<span class="chk">✓</span></div>
+        <div class="lopt sel" data-l="grid">卡片<span class="chk">✓</span></div>
+        <div class="lopt" data-l="list">列表<span class="chk">✓</span></div>
       </div>
     </div>
     <button id="btnRefresh" title="刷新设备状态">刷新</button>
-    <button id="batchBtn" class="batch-bar hidden" title="对勾选设备批量操作">批量操作 (<span id="batchCount">0</span>)</button>
+    <button id="directBtn" class="direct-bar" title="直控模式：所有设备开启推流，卡片上直接点击控制">直控</button>
+    <button id="batchBtn" class="batch-bar" title="批量操作：点击进入多选模式（卡片出现复选框），勾选后再次点击弹出批量菜单">批量操作</button>
     <button id="btnAdd" class="primary" title="手动添加设备">+ 添加设备</button>
   </div>
 </header>
@@ -47,21 +39,21 @@
     <!-- 左：放大后的设备画面（点击卡片后出现，此区域才可操作） -->
     <section id="focusPanel" class="focus-panel hidden">
       <div class="focus-head">
-        <button id="btnBack">← 返回设备墙</button>
+        <span id="focusStatusDot" class="focus-status off" title="连接状态（蓝=已连接 / 红=已断开）"></span>
         <span id="focusTitle"></span>
-        <span id="focusStatus" class="muted"></span>
       </div>
       <div id="focusScreen" class="screen"><div id="focusStage" class="focus-stage"></div></div>
     </section>
 
     <!-- 中：操作列，紧贴设备屏幕右侧 -->
     <aside id="focusOps" class="focus-ops hidden">
+      <button id="btnBack" class="op" title="返回设备墙">←</button>
+      <button id="btnSync" class="op sync-btn" title="同步控制：点击选择设备与主控同步">🔗</button>
       <div id="focusOpsCap" class="focus-ops-cap"></div>
       <hr />
       <button data-op="fit" class="op" title="适配画面">⛶</button>
       <button data-op="full" class="op" title="全屏">🖥️</button>
       <button data-op="disc" class="op danger" title="断开">⏹</button>
-      <label class="chk" title="作为群控主屏，操作广播到其它设备"><input type="checkbox" id="chkFocusBroadcast" /> 群控主屏</label>
     </aside>
 
     <!-- 右：其它设备的屏幕墙 -->
@@ -69,13 +61,16 @@
   </div>
 
   <div id="empty" class="empty hidden">
-    没有在线设备。内网 iOS 设备开启 TrollVNC 并配置网关后会自动出现。
+    没有在线设备。内网 iOS 设备开启 SuperPhone 并配置网关后会自动出现。
   </div>
 
-  <!-- 移动端：可拖动/缩放的悬浮菜单按钮 -->
-  <div id="fab" class="fab hidden">
-    <div class="fab-head" id="fabHead" title="拖动调整位置，双指捏合缩放">≡</div>
-    <button class="fab-main" id="fabMenuBtn" title="设备操作菜单">⚙</button>
+  <!-- 移动端：圆形白色 WiFi 信号悬浮按钮（可拖动调整位置，点击展开操作菜单；WiFi 按设备延迟显示强度颜色） -->
+  <div id="fab" class="fab hidden" title="设备延迟状态（拖动调整位置，点击展开操作）">
+    <svg class="wifi" id="fabSig" viewBox="0 0 24 24" aria-hidden="true">
+      <path class="arc a1" d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9z" fill="currentColor"/>
+      <path class="arc a2" d="M5 13l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z" fill="currentColor"/>
+      <path class="arc a3" d="M9 17l3 3 3-3c-1.65-1.66-4.34-1.66-6 0z" fill="currentColor"/>
+    </svg>
   </div>
 
   <!-- 移动端操作菜单（悬浮按钮点击展开，含退出控制） -->
@@ -90,15 +85,6 @@
     <button id="opsExit" class="ops-exit danger">← 退出控制</button>
   </div>
 </main>
-
-<!-- 设备详情（能力清单只读，宪法 4.2/7.3） -->
-<div id="detailModal" class="modal hidden">
-  <div class="modal-card">
-    <h3 id="detailTitle">设备详情</h3>
-    <div id="detailBody" class="detail-body"></div>
-    <div class="modal-btns"><button id="btnDetailClose">关闭</button></div>
-  </div>
-</div>
 
 <!-- 添加/编辑设备 -->
 <div id="addModal" class="modal hidden">
@@ -119,6 +105,6 @@
 <!-- 设备卡片小菜单 -->
 <div id="tileMenu" class="tile-menu hidden"></div>
 
-<script type="module" src="app.js?v=31"></script>
+<script type="module" src="app.js?v=32"></script>
 </body>
 </html>
