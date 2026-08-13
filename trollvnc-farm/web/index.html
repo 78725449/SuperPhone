@@ -47,13 +47,13 @@
 
     <!-- 中：操作列，紧贴设备屏幕右侧 -->
     <aside id="focusOps" class="focus-ops hidden">
-      <button id="btnBack" class="op" title="返回设备墙">←</button>
-      <button id="btnSync" class="op sync-btn" title="同步控制：点击选择设备与主控同步">🔗</button>
+      <button id="btnBack" class="op" title="返回设备墙"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <button id="btnSync" class="op sync-btn" title="同步控制：点击选择设备与主控同步"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7.07-7.07L11.3 5.6"/><path d="M14 10a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7.07 7.07l.63-.6"/></svg></button>
       <div id="focusOpsCap" class="focus-ops-cap"></div>
       <hr />
-      <button data-op="fit" class="op" title="适配画面">⛶</button>
-      <button data-op="full" class="op" title="全屏">🖥️</button>
-      <button data-op="disc" class="op danger" title="断开">⏹</button>
+      <button data-op="fit" class="op" title="适配画面"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/><path d="M8 8l6 6M8 14l6-6"/></svg></button>
+      <button data-op="full" class="op" title="全屏"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg></button>
+      <button data-op="disc" class="op danger" title="断开"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg></button>
     </aside>
 
     <!-- 右：其它设备的屏幕墙 -->
@@ -78,11 +78,11 @@
     <div class="ops-menu-title">设备操作</div>
     <div id="opsMenuCap" class="ops-menu-grid"></div>
     <div class="ops-menu-grid" style="margin-top:6px">
-      <button data-op="fit" title="适配"><span class="cap-icon">⛶</span><span class="cap-name">适配</span></button>
-      <button data-op="full" title="全屏"><span class="cap-icon">🖥️</span><span class="cap-name">全屏</span></button>
-      <button data-op="disc" title="断开"><span class="cap-icon">⏹</span><span class="cap-name">断开</span></button>
+      <button data-op="fit" title="适配"><span class="cap-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/><path d="M8 8l6 6M8 14l6-6"/></svg></span><span class="cap-name">适配</span></button>
+      <button data-op="full" title="全屏"><span class="cap-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg></span><span class="cap-name">全屏</span></button>
+      <button data-op="disc" title="断开"><span class="cap-icon"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg></span><span class="cap-name">断开</span></button>
     </div>
-    <button id="opsExit" class="ops-exit danger">← 退出控制</button>
+    <button id="opsExit" class="ops-exit danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg> 退出控制</button>
   </div>
 </main>
 
@@ -105,6 +105,6 @@
 <!-- 设备卡片小菜单 -->
 <div id="tileMenu" class="tile-menu hidden"></div>
 
-<script type="module" src="app.js?v=33"></script>
+<script type="module" src="app.js?v=34"></script>
 </body>
 </html>

@@ -1028,7 +1028,7 @@ function toggleSync(deviceId) {
 }
 
 /**
- * 更新同步按钮状态（竞态二态）：图标恒为 🔗；进入同步选择模式后按钮变红，
+ * 更新同步按钮状态（竞态二态）：图标恒为链路 SVG；进入同步选择模式后按钮变红，
  * 再次点击断开并恢复原色。
  * @returns {void}
  */
@@ -1037,7 +1037,6 @@ function updateSyncBtn() {
   if (!btn) return;
   const n = syncRfbs.size;
   const active = syncMode;
-  btn.textContent = '🔗';
   btn.classList.toggle('sync-active', active);
   btn.title = active
     ? (n > 0 ? `同步中（${n} 台设备），点击断开并恢复` : '同步选择中，点击断开')

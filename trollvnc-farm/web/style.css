@@ -78,6 +78,7 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 .focus-ops.hidden { display: none; }
 .focus-ops h3 { margin: 0 0 4px; font-size: 14px; }
 .focus-ops .op { width: 100%; text-align: center; font-size: 18px; padding: 8px 0; }
+.focus-ops .op svg { width: 20px; height: 20px; vertical-align: middle; }
 .focus-ops hr { border: none; border-top: 1px solid var(--line); margin: 4px 0; }
 .focus-ops .chk { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-top: 4px; cursor: pointer; }
 /* 操作列滚动条主题化：深色细滑块 + hover 高亮为主题色（替代浏览器默认白/灰） */
@@ -262,6 +263,7 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 .ops-menu-grid button .cap-icon svg, .focus-ops-cap .cap-icon svg, .batch-cap-btn .cap-icon svg, .tile-menu .cap-icon svg, .detail-body .cap-icon svg { width: 1.1em; height: 1.1em; vertical-align: -0.22em; flex: 0 0 auto; }
 .ops-menu-grid button .cap-name { font-size: 14px; }
 .ops-exit { width: 100%; margin-top: 8px; color: #ff9d9d; }
+.ops-exit svg { width: 16px; height: 16px; vertical-align: -2px; margin-right: 2px; }
 
 .tile-menu {
   position: fixed; z-index: 70; background: var(--panel2);
