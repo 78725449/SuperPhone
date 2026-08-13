@@ -41,7 +41,6 @@ async function getDevices() {
 }
 
 const MANIFEST = {
-  capabilities: ['home', 'power', 'volup', 'voldn', 'mute', 'briup', 'bridn', 'keyboard', 'clipboard'],
   configs: {
     scale: 1.0, frameRateSpec: '60', port: 5901, httpPort: 5801,
     bonjourEnabled: true, orientationSync: true, naturalScroll: true, keepAliveSec: 0,
@@ -86,7 +85,7 @@ let c1 = null;
 let c2 = null;
 try {
   await waitFor(async () => (await fetch(`http://127.0.0.1:${PORT}/api/state`, { headers: auth })).ok);
-  check('网关启动 + mDNS 发布不报错', childOut.includes('publishing _trollvnc-farm'));
+  check('网关启动 + mDNS 发布不报错', childOut.includes('publishing _superphone-farm'));
   check('TCP 注册监听已启动', childOut.includes('registration TCP listener'));
 
   // === 单通道：/ws/register 不再可用（非 /ws/vnc 路径被拒）===
@@ -102,60 +101,60 @@ try {
   c1 = await openReg('dev-tcp', MANIFEST);
   await waitFor(async () => {
     const d = (await getDevices()).find((x) => x.id === 'dev-tcp');
-    return d && d.online === true && Array.isArray(d.capabilities) && d.screen && d.screen.width === 1170;
+    return d && d.online === true && d.screen && d.screen.width === 1170;
   });
   const tcpDev = (await getDevices()).find((d) => d.id === 'dev-tcp');
   check('TCP 注册 ACK 返回', c1.lines.some((l) => l.type === 'ack' && l.deviceId === 'dev-tcp'));
   check('TCP 设备以 register 登记', tcpDev && tcpDev.source === 'register' && tcpDev.name === 'dev-tcp-name');
-  check('清单已入库：capabilities(9 项)', tcpDev && Array.isArray(tcpDev.capabilities) && tcpDev.capabilities.length === 9 && tcpDev.capabilities.includes('home'));
+  check('能力清单不再上报（去除上报）', tcpDev && tcpDev.capabilities === undefined && tcpDev.capMetadata === undefined && tcpDev.configSchema === undefined);
   check('清单已入库：configs', tcpDev && tcpDev.configs && tcpDev.configs.httpPort === 5801 && tcpDev.configs.scale === 1.0);
   check('清单已入库：screen(1170x2532)', tcpDev && tcpDev.screen && tcpDev.screen.width === 1170 && tcpDev.screen.height === 2532);
   check('清单已入库：httpPort', tcpDev && tcpDev.httpPort === 5801);
 
   // GET /api/devices/:id 完整详情
   const detail = await (await fetch(`http://127.0.0.1:${PORT}/api/devices/dev-tcp`, { headers: auth })).json();
-  check('GET /api/devices/:id 返回完整详情', detail.device && detail.device.id === 'dev-tcp' && Array.isArray(detail.device.capabilities));
+  check('GET /api/devices/:id 返回连接信息与 configs', detail.device && detail.device.id === 'dev-tcp' && detail.device.configs && typeof detail.device.configs === 'object');
 
-  // === 命令通道：ping（v1 仅 ping，网关等待手机 ack）===
-  const cmdRes = await fetch(`http://127.0.0.1:${PORT}/api/devices/dev-tcp/command`, {
+  // === 命令通道：invoke（网关等待设备 ack，ack 回传）===
+  const cmdRes = await fetch(`http://127.0.0.1:${PORT}/api/devices/dev-tcp/invoke`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...auth },
-    body: JSON.stringify({ cmd: 'ping' }),
+    body: JSON.stringify({ cap: 'home' }),
   });
-  check('POST command ping -> 200（等 ack）', cmdRes.status === 200);
+  check('POST invoke home -> 200（等 ack）', cmdRes.status === 200);
   const cmdJson = await cmdRes.json();
   check('ack 回传 ok=true', cmdJson && cmdJson.ack && cmdJson.ack.ok === true);
-  check('设备收到 {"type":"cmd","cmd":"ping"}', c1.lines.some((l) => l.type === 'cmd' && l.cmd === 'ping'));
+  check('设备收到 {"type":"cmd","cmd":"invoke","cap":"home"}', c1.lines.some((l) => l.type === 'cmd' && l.cmd === 'invoke' && l.cap === 'home'));
 
   // 不 ack 的手机 → 超时 504
   const silentSock = net.connect(REG_PORT, '127.0.0.1', () => {
     silentSock.write(JSON.stringify({ type: 'register', deviceId: 'dev-silent', name: 'SilentPhone', vncPort: 5902 }) + '\n');
   });
   await waitFor(async () => (await getDevices()).some((d) => d.id === 'dev-silent' && d.online === true));
-  const toRes = await fetch(`http://127.0.0.1:${PORT}/api/devices/dev-silent/command`, {
+  const toRes = await fetch(`http://127.0.0.1:${PORT}/api/devices/dev-silent/invoke`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...auth },
-    body: JSON.stringify({ cmd: 'ping', timeout: 1000 }),
+    body: JSON.stringify({ cap: 'home', timeout: 1000 }),
   });
-  check('不 ack 设备 command -> 504（超时）', toRes.status === 504);
+  check('不 ack 设备 invoke -> 504（超时）', toRes.status === 504);
   try { silentSock.destroy(); } catch (e) {}
 
-  const setRes = await fetch(`http://127.0.0.1:${PORT}/api/devices/dev-tcp/command`, {
+  const setRes = await fetch(`http://127.0.0.1:${PORT}/api/devices/dev-tcp/configs`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...auth },
-    body: JSON.stringify({ cmd: 'set', key: 'Scale', value: 0.8 }),
+    body: JSON.stringify({ Scale: 0.8 }),
   });
-  check('command set（宪法 7.4 已支持）-> 200', setRes.status === 200);
+  check('configs set（宪法 7.4 已支持）-> 200', setRes.status === 200);
   const setJson = await setRes.json();
-  check('set ack ok=true', setJson && setJson.ack && setJson.ack.ok === true);
+  check('set ack ok=true', setJson && setJson.results && setJson.results.Scale && setJson.results.Scale.ok === true);
   check('设备收到 {"type":"cmd","cmd":"set","key":"Scale"}', c1.lines.some((l) => l.type === 'cmd' && l.cmd === 'set' && l.key === 'Scale'));
 
-  // 断开 -> 离线；离线后 command -> 409
+  // 断开 -> 离线；离线后 invoke -> 504
   c1.sock.destroy();
   await waitFor(async () => (await getDevices()).some((d) => d.id === 'dev-tcp' && d.online === false));
   check('TCP 断开后判离线', true);
-  const offCmd = await fetch(`http://127.0.0.1:${PORT}/api/devices/dev-tcp/command`, {
+  const offCmd = await fetch(`http://127.0.0.1:${PORT}/api/devices/dev-tcp/invoke`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...auth },
-    body: JSON.stringify({ cmd: 'ping', timeout: 1000 }),
+    body: JSON.stringify({ cap: 'home', timeout: 1000 }),
   });
-  check('离线设备 command -> 504（发送失败/ack 超时）', offCmd.status === 504);
+  check('离线设备 invoke -> 504（发送失败/ack 超时）', offCmd.status === 504);
 
   // === TCP hello 保活 ===
   c2 = await openReg('dev-tcp2', {});
