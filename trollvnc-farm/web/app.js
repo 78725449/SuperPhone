@@ -96,7 +96,7 @@ function makeMockDevices(n) {
       source: 'register',
       mock: true,
       screen: { width: s.w, height: s.h },
-      caps: [], configSchema: [], lastSeen: Date.now(),
+      lastSeen: Date.now(),
     });
   }
   return arr;
@@ -509,7 +509,7 @@ function showBatchMenu() {
   }
   menu.appendChild(capList);
 
-  // 3) 批量调整配置（从选中设备 configSchema 并集渲染表单）
+  // 3) 批量调整配置（CONFIG_DEFS 静态表单定义）
   const cfgBtn = document.createElement('button');
   cfgBtn.className = 'batch-menu-row-item';
   cfgBtn.innerHTML = '<span class="cap-icon">⚙</span><span class="cap-name">批量调整配置</span>';
