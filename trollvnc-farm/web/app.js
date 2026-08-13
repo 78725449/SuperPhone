@@ -724,7 +724,7 @@ function renderCapOps(container, device) {
     b.type = 'button';
     b.className = 'op key-op';
     b.title = k.title;
-    b.innerHTML = '<span class="cap-icon">' + escapeHtml(k.icon || '?') + '</span><span class="cap-name">' + escapeHtml(k.title) + '</span>';
+    b.innerHTML = '<span class="cap-icon">' + (k.svg || escapeHtml(k.icon || '?')) + '</span><span class="cap-name">' + escapeHtml(k.title) + '</span>';
     container.__pressCleanups.push(attachPress(b, k, { invoke: (capId) => {
       const rfb = focus && focus.rfb;
       if (rfb && rfb._farmConnected) rfbPressKey(rfb, k, capId);

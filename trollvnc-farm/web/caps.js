@@ -3,20 +3,45 @@
 // 新增能力/参数 = 设备端注册 executor + 前端定义数组加一条（两端约定对齐，不做运行时发现）。
 // 传输通道：按键走 RFB 直发（KEY_DEFS ks/code/ptr）；其余走 invoke API（网关隧道直达设备 executor）。
 
-/** 右侧按键直发映射（RFB 通道，07 §4.1）：ks/code 为 X11 keysym 直发，ptr 为指针掩码（仅 power 用中键） */
+/** 右侧按键直发映射（RFB 通道，07 §4.1）：ks/code 为 X11 keysym 直发，ptr 为指针掩码（仅 power 用中键）
+ *  图标：内联 SVG（苹果 SF Symbols 风格，stroke=currentColor 跟随主题色），无 SVG 时回退 emoji */
 export const KEY_DEFS = [
-  { key: 'home',    title: 'Home 键',  icon: '🏠', ks: 0xff50,       code: 'Home',            events: { click: 'home',           double: 'home.double',   long: 'home.long' } },
-  { key: 'power',   title: '电源',     icon: '⏻',  ptr: 2,                                   events: { click: 'power',          double: 'power.double',  triple: 'power.triple', long: 'power.long' } },
-  { key: 'volup',   title: '音量 +',   icon: '🔊', ks: 0x1008ff13,   code: 'AudioVolumeUp',   events: { click: 'volup',          down: 'volup.down',      up: 'volup.up' } },
-  { key: 'voldn',   title: '音量 −',   icon: '🔉', ks: 0x1008ff11,   code: 'AudioVolumeDown', events: { click: 'voldn',          down: 'voldn.down',      up: 'voldn.up' } },
-  { key: 'mute',    title: '静音',     icon: '🔇', ks: 0x1008ff12,   code: 'AudioVolumeMute', events: { click: 'mute',           down: 'mute.down',       up: 'mute.up' } },
-  { key: 'briup',   title: '亮度 +',   icon: '☀️', ks: 0x1008ff03,   code: 'BrightnessUp',    events: { click: 'briup',          down: 'briup.down',      up: 'briup.up' } },
-  { key: 'bridn',   title: '亮度 −',   icon: '🌙', ks: 0x1008ff02,   code: 'BrightnessDown',  events: { click: 'bridn',          down: 'bridn.down',      up: 'bridn.up' } },
-  { key: 'keyboard',title: '键盘',     icon: '⌨️', ks: 0x1008ff2e, code: 'XF86Keyboard', events: { click: 'keyboard' } },
-  { key: 'spotlight',title: '搜索',    icon: '🔍', ks: 0x1008ff1d, code: 'XF86Search',   events: { click: 'spotlight' } },
-  { key: 'snapshot',title: 'Home+Power截屏', icon: '📸', ks: 0x1008ff80, code: 'CustomSnapshot', events: { click: 'snapshot' } },
-  { key: 'hwlock',  title: '键盘锁/解锁', icon: '🔒', ks: 0x1008ff81, code: 'CustomHwLock',   events: { click: 'hwlock' } },
-  { key: 'releasekeys', title: '释放按键', icon: '🙊', ks: 0x1008ff82, code: 'CustomReleaseKeys', events: { click: 'releasekeys' } },
+  { key: 'home', title: 'Home 键', icon: '🏠',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V20h14V9.5"/><path d="M9.5 20v-5.5h5V20"/></svg>',
+    ks: 0xff50, code: 'Home', events: { click: 'home', double: 'home.double', long: 'home.long' } },
+  { key: 'power', title: '电源', icon: '⏻',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v8"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>',
+    ptr: 2, events: { click: 'power', double: 'power.double', triple: 'power.triple', long: 'power.long' } },
+  { key: 'volup', title: '音量 +', icon: '🔊',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h3l5 4V5L7 9H4z"/><path d="M15.5 8.5a4.5 4.5 0 0 1 0 7"/><path d="M19 4v6M16 7h6"/></svg>',
+    ks: 0x1008ff13, code: 'AudioVolumeUp', events: { click: 'volup', down: 'volup.down', up: 'volup.up' } },
+  { key: 'voldn', title: '音量 −', icon: '🔉',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h3l5 4V5L7 9H4z"/><path d="M15.5 8.5a4.5 4.5 0 0 1 0 7"/><path d="M16 7h6"/></svg>',
+    ks: 0x1008ff11, code: 'AudioVolumeDown', events: { click: 'voldn', down: 'voldn.down', up: 'voldn.up' } },
+  { key: 'mute', title: '静音', icon: '🔇',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h3l5 4V5L7 9H4z"/><path d="M22 4L4 20"/></svg>',
+    ks: 0x1008ff12, code: 'AudioVolumeMute', events: { click: 'mute', down: 'mute.down', up: 'mute.up' } },
+  { key: 'briup', title: '亮度 +', icon: '☀️',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+    ks: 0x1008ff03, code: 'BrightnessUp', events: { click: 'briup', down: 'briup.down', up: 'briup.up' } },
+  { key: 'bridn', title: '亮度 −', icon: '🌙',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>',
+    ks: 0x1008ff02, code: 'BrightnessDown', events: { click: 'bridn', down: 'bridn.down', up: 'bridn.up' } },
+  { key: 'keyboard', title: '键盘', icon: '⌨️',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6.5" width="19" height="11" rx="2"/><path d="M6 11h1M10 11h1M14 11h1M18 11h1M6 14.5h1M10 14.5h1M14 14.5h1M18 14.5h1"/></svg>',
+    ks: 0x1008ff2e, code: 'XF86Keyboard', events: { click: 'keyboard' } },
+  { key: 'spotlight', title: '搜索', icon: '🔍',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.5-4.5"/></svg>',
+    ks: 0x1008ff1d, code: 'XF86Search', events: { click: 'spotlight' } },
+  { key: 'snapshot', title: 'Home+Power截屏', icon: '📸',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h2.5L8 5.5h8L17.5 8H20a1.5 1.5 0 0 1 1.5 1.5V18A1.5 1.5 0 0 1 20 19.5H4A1.5 1.5 0 0 1 2.5 18V9.5A1.5 1.5 0 0 1 4 8z"/><circle cx="12" cy="13.5" r="3.5"/></svg>',
+    ks: 0x1008ff80, code: 'CustomSnapshot', events: { click: 'snapshot' } },
+  { key: 'hwlock', title: '键盘锁/解锁', icon: '🔒',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5v-3a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15" r="1.5" fill="currentColor" stroke="none"/></svg>',
+    ks: 0x1008ff81, code: 'CustomHwLock', events: { click: 'hwlock' } },
+  { key: 'releasekeys', title: '释放按键', icon: '🙊',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="9" width="18" height="9" rx="2"/><path d="M6.5 13h1M10 13h1M13.5 13h1M17 13h1M7 16h10"/><path d="M12 2v5M9.5 4.5L12 2l2.5 2.5"/></svg>',
+    ks: 0x1008ff82, code: 'CustomReleaseKeys', events: { click: 'releasekeys' } },
 ];
 
 /** 动作区能力（控制台，点击 invoke 直达设备 executor）——自包含定义 */

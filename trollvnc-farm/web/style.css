@@ -39,7 +39,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button.danger { color: #ff9d9d; }
 .zoom { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
 .zoom input[type="range"] { width: 110px; accent-color: var(--accent); cursor: pointer; }
-.zoom #zoomVal { min-width: 42px; text-align: right; }
+.zoom #cardwVal { min-width: 46px; text-align: right; }
 
 main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 
@@ -55,11 +55,14 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 }
 .focus-panel.hidden { display: none; }
 .focus-head {
-  display: flex; align-items: center; gap: 12px; padding: 8px 12px;
+  display: flex; align-items: center; gap: 10px; padding: 3px 10px; /* 紧凑头部：标签高度最小化 */
   background: var(--panel2); border-bottom: 1px solid var(--line); flex: 0 0 auto;
 }
-.focus-head span { font-weight: 600; }
-.focus-head .muted { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: auto; }
+.focus-head span { font-weight: 600; font-size: 13px; }
+/* 连接状态圆点：蓝=已连接，红=已断开（替代原文字状态） */
+.focus-status { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+.focus-status.on  { background: #1e90ff; box-shadow: 0 0 6px rgba(30, 144, 255, .6); }
+.focus-status.off { background: #ff3b30; box-shadow: 0 0 6px rgba(255, 59, 48, .6); }
 .screen { flex: 1; position: relative; min-height: 0; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .focus-stage { position: relative; }
 .focus-stage canvas { position: absolute; left: 0; top: 0; }
@@ -77,33 +80,72 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 .focus-ops .op { width: 100%; text-align: center; font-size: 18px; padding: 8px 0; }
 .focus-ops hr { border: none; border-top: 1px solid var(--line); margin: 4px 0; }
 .focus-ops .chk { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-top: 4px; cursor: pointer; }
+/* 操作列滚动条主题化：深色细滑块 + hover 高亮为主题色（替代浏览器默认白/灰） */
+.focus-ops { scrollbar-width: thin; scrollbar-color: var(--line) transparent; } /* Firefox */
+.focus-ops::-webkit-scrollbar { width: 6px; }
+.focus-ops::-webkit-scrollbar-track { background: transparent; }
+.focus-ops::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+.focus-ops::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+/* 同步按钮激活态：红色警示（进入同步选择模式后点亮，再次点击断开恢复原色） */
+.focus-ops .sync-btn.sync-active { background: var(--bad); color: #fff; }
 
 /* 右：设备墙（默认全宽；聚焦时收为右侧竖条） */
 #wall {
   flex: 1 1 auto; min-width: 0;
   display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;
   align-content: flex-start;
-  --zoom: 1; --card-w: 280px;
+  --card-w: 280px;
   overflow: auto; height: 100%;
+  /* 隐藏滚动条外观但保留滚动逻辑（卡片墙内滚动条干扰画面浏览，滚动能力不变） */
+  scrollbar-width: none;            /* Firefox */
+  -ms-overflow-style: none;         /* 旧版 Edge/IE */
 }
+#wall::-webkit-scrollbar { display: none; } /* Chrome / Safari / 新版 Edge */
 #workspace.focus-open #wall {
-  flex: 0 0 auto; width: calc(var(--card-w) * var(--zoom) + 12px);
-  margin-left: 12px; overflow-y: auto; overflow-x: hidden;
-  display: flex; flex-wrap: wrap;
+  flex: 1 1 auto; min-width: 0;
+  margin-left: 12px;
+  overflow: auto; /* 滚动条外观已隐藏（见 #wall 基础规则），滚动逻辑保留 */
 }
+/* 聚焦态墙沿用原 grid 平铺格式（PC auto-fill 多列、从左到右逐行），不再收为单列竖条 */
 
 /* 设备卡片 */
 .tile {
   position: relative; border: 1px solid var(--line); border-radius: 12px;
   overflow: hidden; background: #000; cursor: pointer;
-  width: calc(var(--card-w) * var(--zoom));
-  aspect-ratio: var(--tile-ratio, 9 / 16);
-  display: flex; align-items: stretch;
-  transition: width .12s ease;
+  width: var(--card-w);
+  /* 高度用 padding-bottom 百分比撑起（相对自身宽度）：
+     比例由 --tile-pb 驱动（自适应=多数设备屏幕比例，或横/竖屏手动切换），
+     默认 177.7778%（9:16 竖屏）。CSS aspect-ratio 计算的高度不贡献给 grid 行高，
+     会导致卡片溢出、下一行盖住上一行 */
+  height: 0; padding-bottom: var(--tile-pb, 177.7778%);
+  display: block;
+  transition: width .12s ease, transform .15s ease; /* 悬停轻微放大过渡 */
 }
+/* 悬停引导提示：中央"点击进入控制"覆盖层（非直控、非聚焦、在线真实设备悬停时显示） */
+.tile::after {
+  content: '点击进入控制';
+  position: absolute; inset: 0; z-index: 5;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(5, 8, 14, .42); color: #dfe8f8;
+  font-size: 12px; letter-spacing: .5px;
+  opacity: 0; transition: opacity .15s ease;
+  pointer-events: none;
+}
+.tile:not(.tile-offline):not(.tile-mock):hover::after { opacity: 1; }
+/* 聚焦态（主控已在大屏）与直控态（直接控制）不显示引导提示 */
+#workspace.focus-open .tile::after,
+#wall.direct-mode .tile::after { display: none; }
 
 /* 布局切换按钮 + 下拉菜单 */
 .layout-switch { position: relative; display: inline-flex; }
+/* 电脑端控制台：去除宫格布局切换按钮（移动端保留），设备墙固定平铺、从左到右逐行显示 */
+@media (min-width: 901px) {
+  .layout-switch { display: none; }
+  /* 无线列：按容器宽度自适应列数（auto-fill），1fr 拉伸填满整行、从左到右逐行平铺，
+     第一行排满自动换到第二行；卡片拉伸填满列（width:auto）保证紧挨无空隙 */
+  #wall { grid-template-columns: repeat(auto-fill, minmax(var(--card-w), 1fr)) !important; }
+  .wall-grid .tile { width: auto; }
+}
 .layout-btn {
   background: var(--panel); border: 1px solid var(--line); color: var(--text);
   border-radius: 8px; width: 36px; height: 36px; padding: 6px;
@@ -129,15 +171,25 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 .layout-menu .lopt.sel { color: var(--accent); }
 .layout-menu .lopt.sel .chk { visibility: visible; }
 
-/* 布局应用到设备墙：横屏模式卡片宽高比 16:9，竖屏模式保持原始比例 */
-#wall.layout-h .tile { aspect-ratio: 16 / 9; }
-#wall.layout-v .tile { aspect-ratio: var(--tile-ratio, 9 / 16); }
-.tile:hover { border-color: var(--accent); }
-.tile .tv { position: relative; flex: 1; min-width: 0; }
-.tile canvas { position: absolute; left: 0; top: 0; pointer-events: none; }
+/* 布局应用到设备墙：横屏模式卡片宽高比 16:9，竖屏模式保持原始比例（padding 撑高与 tile 基础一致） */
+/* 卡片比例不再由 layout-h/v 直接改 padding-bottom，统一由 JS 设置 --tile-pb
+   （applyLayout 横/竖屏 = 56.25% / 177.7778%；自适应 = 多数设备屏幕比例） */
+.tile:hover { border-color: var(--accent); transform: scale(1.03); } /* 悬停轻微放大 */
+/* 直控模式：禁用悬停放大（点击直达控制），放开卡片 canvas 接收鼠标/触控输入 */
+#wall.direct-mode .tile:hover { transform: none; }
+#wall.direct-mode .tile canvas { pointer-events: auto; cursor: crosshair; }
+.tile .tv { position: absolute; inset: 0; }
+/* 直控/同步推流 canvas：noVNC scaleViewport 等比缩放后可能窄于/矮于卡片（设备比例 ≠ 卡片 9:16），
+   居中放置实现与截图缩略图一致的 contain 效果（四周留黑边）；点击坐标经 getBoundingClientRect 正确映射 */
+.tile canvas {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
 .tile .thumb {
   position: absolute; left: 0; top: 0; width: 100%; height: 100%;
-  object-fit: cover; pointer-events: none; background: #000;
+  object-fit: contain;              /* 完整显示画面（不同比例设备留黑边），保证卡片统一规格 */
+  pointer-events: none; background: #000;
 }
 .tile .tile-bar {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 4;
@@ -151,6 +203,17 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 .tile .tname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tile .tmore { background: none; border: none; color: #ccc; font-size: 16px; padding: 0 4px; }
 .tile .tstate { color: #bbb; font-size: 11px; }
+/* 同步中徽标：卡片中央覆盖层，不影响推流画面，不可点击 */
+.tile .sync-badge {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  z-index: 5;
+  background: rgba(15, 20, 32, .72);
+  border: 1px solid var(--accent); color: var(--accent);
+  border-radius: 8px; padding: 4px 10px;
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .4);
+}
 .tile.focused-tile { display: none; }
 .tile.tile-offline { opacity: .55; }
 .tile.tile-offline .tv { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; }
@@ -162,34 +225,41 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
   line-height: 1.4;
 }
 
-/* 移动端悬浮操作簇 */
+/* 移动端悬浮信号按钮（白色圆底 WiFi 图标，可拖动；点击展开操作菜单） */
 .fab {
-  position: fixed; z-index: 60; left: 16px; bottom: 24px;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 14px;
-  box-shadow: 0 6px 24px rgba(0,0,0,.5);
-  transform-origin: bottom left;
-  touch-action: none;
+  position: fixed; z-index: 60;
+  right: 16px; top: 25%; /* 默认：靠右边，垂直在屏幕高度 1/4 处 */
+  width: 56px; height: 56px; border-radius: 50%;
+  background: #fff; border: 1px solid rgba(0,0,0,.12);
+  box-shadow: 0 6px 24px rgba(0,0,0,.45);
+  display: flex; align-items: center; justify-content: center;
+  touch-action: none; user-select: none; cursor: grab;
 }
-.fab .fab-head {
-  cursor: move; text-align: center; color: var(--muted);
-  padding: 2px 10px; font-size: 14px; user-select: none; touch-action: none;
-}
-.fab .fab-main {
-  display: block; margin: 0 auto 6px; width: 52px; height: 52px;
-  border-radius: 50%; font-size: 22px; border: 1px solid var(--line);
-  background: var(--accent); color: #fff; cursor: pointer;
-}
+.fab:active { cursor: grabbing; }
+/* WiFi 信号图标：三段弧（a1 外 / a2 中 / a3 内+点），按延迟状态亮起 */
+.fab .wifi { width: 30px; height: 30px; display: block; }
+.fab .wifi .arc { fill: #cbd5e1; transition: fill .2s; } /* 未亮：浅灰 */
+/* 满格（<150ms）：全绿 */
+.fab[data-sig="sig-high"] .wifi .arc { fill: #22c55e; }
+/* 中格（<400ms）：中弧+点 黄，外弧灰 */
+.fab[data-sig="sig-mid"] .wifi .arc.a2,
+.fab[data-sig="sig-mid"] .wifi .arc.a3 { fill: #eab308; }
+/* 低格（更差/失败）：点 红，外/中弧灰 */
+.fab[data-sig="sig-low"] .wifi .arc.a3 { fill: #ef4444; }
 .ops-menu {
   position: fixed; z-index: 65; right: 12px; bottom: 96px;
   width: min(300px, 88vw);
   background: var(--panel2); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: 0 8px 28px rgba(0,0,0,.55); padding: 10px;
+  overflow-y: auto;                       /* 定位时按可用空间裁剪 max-height，超出滚动 */
+  -webkit-overflow-scrolling: touch;
 }
 .ops-menu-title { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
 /* 移动端 opsMenu：垂直列表（与 5801 直连一致），按钮内“图标+名称”横向布局 */
 .ops-menu-grid { display: flex; flex-direction: column; gap: 2px; }
 .ops-menu-grid button { min-height: 44px; font-size: 16px; padding: 8px 12px; display: flex; flex-direction: row; align-items: center; gap: 10px; justify-content: flex-start; text-align: left; }
 .ops-menu-grid button .cap-icon { font-size: 20px; }
+.ops-menu-grid button .cap-icon svg, .focus-ops-cap .cap-icon svg, .batch-cap-btn .cap-icon svg, .tile-menu .cap-icon svg, .detail-body .cap-icon svg { width: 1.1em; height: 1.1em; vertical-align: -0.22em; flex: 0 0 auto; }
 .ops-menu-grid button .cap-name { font-size: 14px; }
 .ops-exit { width: 100%; margin-top: 8px; color: #ff9d9d; }
 
@@ -197,8 +267,29 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
   position: fixed; z-index: 70; background: var(--panel2);
   border: 1px solid var(--line); border-radius: 10px; padding: 6px;
   display: flex; flex-direction: column; gap: 4px; min-width: 120px;
+  max-height: 80vh; overflow-y: auto;
 }
 .tile-menu button { text-align: left; }
+
+/* 卡片 ⋯ 菜单「有意义参数」快捷项（悬停/点击展开编辑） */
+.qp-item { position: relative; }
+.qp-item > button { width: 100%; display: flex; align-items: center; gap: 6px; }
+.qp-item .qp-val { margin-left: auto; font-size: 12px; color: var(--muted); }
+.qp-editor {
+  margin-top: 4px; padding: 6px 8px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.qp-editor input, .qp-editor select {
+  width: 100%; box-sizing: border-box;
+  background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 6px; padding: 6px 9px; font-size: 14px;
+}
+.qp-editor input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+.qp-save {
+  align-self: flex-end; background: var(--accent); color: #fff;
+  border: none; border-radius: 6px; padding: 5px 14px; font-size: 13px; cursor: pointer;
+}
 
 .empty { color: var(--muted); text-align: center; padding: 60px 0; }
 .modal { position: fixed; inset: 0; z-index: 80; background: rgba(5,8,14,.85); display: flex; }
@@ -236,23 +327,57 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 
 /* 移动端：三栏改上下布局 */
 @media (max-width: 900px) {
-  #workspace { flex-direction: column; }
+  #workspace { flex-direction: column; align-items: stretch; } /* stretch 修复 #wall 宽度收缩为内容宽（此前 242px → 卡片被压小） */
+  /* 移动端 header 精简：仅保留布局切换 + 批量操作（与 IPA 控制端顶部导航一致），PC 端组件全部隐藏 */
+  .zoom, #btnRefresh, #directBtn, #btnAdd, .meta { display: none; }
+  header { gap: 8px; }
   .focus-ops { display: none; }          /* 操作移到悬浮菜单 */
-  .fab { display: block; }
+  .fab { display: flex; }
   /* 移动端聚焦 = 全屏画面 */
   #workspace.focus-open .focus-panel {
     position: fixed; inset: 0; z-index: 45; width: 100%; height: 100%; flex: none;
     border-radius: 0; border: none;
   }
+  /* 移动端移除顶部条：连接状态由 FAB 信号图标表示，退出由 FAB 菜单"退出控制"提供（PC 端保留） */
+  #workspace.focus-open .focus-head { display: none; }
+  /* 聚焦 stage 撑满屏幕：noVNC scaleViewport 以此为适配基准，否则高度 0 → 黑屏 */
+  .focus-stage { width: 100%; height: 100%; }
   #workspace.focus-open #wall { display: none; }
-  #wall { height: auto; }
-  .wall-grid .tile { width: calc(min(var(--card-w), 46vw) * var(--zoom)); }
+  #wall { height: auto; width: 100%; }
+  /* 移动端卡片填满 grid 列（2 列 1fr → 每卡片约半屏宽，grid item 默认 stretch）。
+     不再用 min(var(--card-w),46vw)——--card-w 是 PC 滑杆值（移动端已隐藏滑杆），
+     若沿用会被 computeCardWBounds 按 390 视口算成 115px 小卡片 */
+  .wall-grid .tile { width: auto; }
 }
+
+/* ========== 列表视图（布局切换器·列表档，借鉴 IPA 控制端列表 cell：单列行 = 缩略图 + 信息） ========== */
+#wall.wall-list { grid-template-columns: 1fr; gap: 8px; }
+#wall.wall-list .tile {
+  height: 64px; padding: 0 10px; /* 固定行高（48px 缩略图 + 上下 padding），grid item 高度可靠撑起 */
+  width: 100%; /* 覆盖 .tile 基础 width:var(--card-w)，行式填满单列 */
+  display: flex; align-items: center; gap: 10px;
+  border-radius: 10px;
+  background: var(--panel);
+}
+#wall.wall-list .tile:hover { transform: none; }
+#wall.wall-list .tile::after { display: none; } /* 列表行不显示悬停引导提示 */
+#wall.wall-list .tile .tv {
+  position: static; width: 48px; height: 48px; flex: 0 0 48px;
+  border-radius: 8px; overflow: hidden; background: #000;
+  display: flex; align-items: center; justify-content: center;
+}
+#wall.wall-list .tile .tv img, #wall.wall-list .tile canvas { max-width: 100%; max-height: 100%; }
+#wall.wall-list .tile .tile-bar {
+  position: static; flex: 1; min-width: 0; background: none; padding: 0;
+  display: flex; align-items: center; gap: 6px;
+}
+#wall.wall-list .tile .tile-checkbox { top: 6px; left: 6px; }
 
 /* 能力清单动态操作列（PC 端图标列：与移动端 ops-menu-grid 分离，只显示图标） */
 .focus-ops-cap { display: flex; flex-direction: column; gap: 6px; }
 .focus-ops-cap .cap-name { display: none; }
 .focus-ops-cap .cap-icon { font-size: 18px; }
+.focus-ops-cap .cap-group-title { display: none; } /* 操作列去除分组标题（移动端菜单标题保留） */
 
 /* 设备详情（能力清单只读） */
 .detail-body {
@@ -270,6 +395,18 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 .detail-body table.dcfg td:first-child { color: var(--muted); width: 42%; }
 
 /* ========== Phase 10.2：批量操作栏 / 卡片 checkbox / 批量菜单 ========== */
+/* 直控按钮：点击进入直控模式（所有设备推流、卡片直达控制），激活态主题色高亮 */
+.direct-bar {
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.direct-bar:hover { border-color: var(--accent); }
+.direct-bar.direct-active { background: var(--accent); color: #fff; }
 /* 批量操作按钮：嵌在顶部 actions 区域，勾选≥1 台时显示 */
 .batch-bar {
   background: var(--panel2);
@@ -281,10 +418,13 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
   cursor: pointer;
 }
 .batch-bar:hover { background: var(--accent); color: #fff; }
+/* 批量模式激活态（按钮显示"取消"/"批量操作 (N)"） */
+.batch-bar.batch-mode-active { background: var(--accent); color: #fff; }
 .batch-bar.hidden { display: none !important; }
 
-/* 卡片左上角 checkbox：不遮挡缩略图，半透明背景圆角 */
+/* 卡片左上角 checkbox：默认隐藏，仅批量模式（.batch-mode）下显示，半透明背景圆角 */
 .tile-checkbox {
+  display: none;
   position: absolute;
   top: 6px;
   left: 6px;
@@ -297,6 +437,8 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
   background: rgba(0, 0, 0, .45);
   border-radius: 4px;
 }
+.wall-grid.batch-mode .tile-checkbox,
+.wall-list.batch-mode .tile-checkbox { display: block; }
 .tile.tile-selected {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
