@@ -1,6 +1,6 @@
 // SuperPhone 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
 import RFB from '/novnc/core/rfb.js';
-import { deviceCaps, configSchemaByReload, invokeCap, setConfigs, RELOAD_LABELS, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, ACTION_CAPS, menuCaps } from './caps.js';
+import { configSchemaByReload, invokeCap, setConfigs, RELOAD_LABELS, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, ACT_DEFS, QUICK_CONFIG_GROUPS, QUICK_ACTIONS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js';
 import { attachPress } from './press.js';
 
 const $ = (id) => document.getElementById(id);
@@ -489,22 +489,11 @@ function showBatchMenu() {
   selectRow.appendChild(deselAll);
   menu.appendChild(selectRow);
 
-  // 2) 批量调用能力（取所有选中设备能力元数据的并集，按 category 分组渲染）
+  // 2) 批量调用能力（2026-08-13：BATCH_CAPS 静态定义，按 category 分组渲染）
   const capList = document.createElement('div');
   capList.className = 'batch-menu-section';
   capList.innerHTML = '<div class="batch-menu-sec-title">批量调用能力</div>';
-  // 合并选中设备的能力清单（用 id 去重）
-  const capMap = new Map();
-  for (const id of ids) {
-    const inst = wallInstances.get(id);
-    const dev = inst ? inst.device : devices.find((d) => d.id === id);
-    if (!dev) continue;
-    for (const meta of menuCaps(dev, 'batch')) {
-      if (meta && meta.id && !capMap.has(meta.id)) capMap.set(meta.id, meta);
-    }
-  }
-  // 按 category 分组
-  const grouped = groupByCategory(Array.from(capMap.values()));
+  const grouped = groupByCategory(BATCH_CAPS);
   for (const [cat, metas] of grouped) {
     const grpTitle = document.createElement('div');
     grpTitle.className = 'cap-group-title';
@@ -588,20 +577,15 @@ async function doBatchInvoke(ids, meta) {
 }
 
 /**
- * 弹出批量配置面板：从选中设备 configSchema 取并集，渲染表单，保存后调用 batchSetConfigs
+ * 弹出批量配置面板：按 CONFIG_DEFS 静态定义渲染表单，保存后调用 batchSetConfigs
  * @param {string[]} ids 设备 ID 数组
  * @returns {Promise<void>}
  */
 async function showBatchConfigPanel(ids) {
-  // 合并选中设备的 configSchema（按 key 去重，取首个 schema 定义）
+  // 2026-08-13：配置表单定义静态化（CONFIG_DEFS），不再从设备 configSchema 并集
   const schemaMap = new Map();
-  for (const id of ids) {
-    const inst = wallInstances.get(id);
-    const dev = inst ? inst.device : devices.find((d) => d.id === id);
-    if (!dev || !Array.isArray(dev.configSchema)) continue;
-    for (const s of dev.configSchema) {
-      if (s && s.key && !schemaMap.has(s.key)) schemaMap.set(s.key, s);
-    }
+  for (const s of CONFIG_DEFS) {
+    if (s && s.key && !schemaMap.has(s.key)) schemaMap.set(s.key, s);
   }
   const modal = document.createElement('div');
   modal.className = 'modal';
@@ -676,7 +660,7 @@ async function showBatchConfigPanel(ids) {
   document.body.appendChild(modal);
 }
 
-// ---------- 控制台操作菜单（07 §4.1：按键区 KEY_DEFS + 动作区 ACTION_CAPS） ----------
+// ---------- 控制台操作菜单（07 §4.1：按键区 KEY_DEFS + 动作区 ACT_DEFS） ----------
 // 适配/全屏/断开为控制台本地操作，不在能力清单内，由静态按钮提供
 /**
  * 按键区 RFB 直发：与画布同通道（noVNC sendKey/_sendMouse），低延迟、时序保证、纳入广播。
@@ -714,7 +698,7 @@ function rfbPressKey(rfb, keyDef, capId) {
 }
 
 /**
- * 渲染控制台操作菜单（07 §4.1）：按键区（KEY_DEFS 按键对象+按压识别）+ 动作区（ACTION_CAPS）
+ * 渲染控制台操作菜单（07 §4.1）：按键区（KEY_DEFS 按键对象+按压识别）+ 动作区（ACT_DEFS）
  * 按键区按钮挂 attachPress 按压识别（click/double/triple/long/down/up），动作区按钮单击直执行
  * @param {HTMLElement} container 容器（focusOpsCap / opsMenuCap）
  * @param {object} device 当前聚焦设备
@@ -729,23 +713,18 @@ function renderCapOps(container, device) {
   container.__pressCleanups = [];
   container.innerHTML = '';
   const frag = document.createDocumentFragment();
-  const caps = menuCaps(device, 'console');
-  const byId = new Map(caps.map((c) => [c.id, c]));
-
-  // 按键区：分组标题 + 按键对象按钮（按压识别，07 §3.2）
+  // 按键区：分组标题 + 按键对象按钮（按压识别，07 §3.2；KEY_DEFS 自包含契约，直发 RFB）
   // 按键按钮先构建进临时数组，存在按键才追加分组标题，避免渲染孤立空标题
   const keyTitle = document.createElement('div');
   keyTitle.className = 'cap-group-title';
   keyTitle.textContent = '按键';
   const keyBtns = [];
   for (const k of KEY_DEFS) {
-    const meta = byId.get(k.events.click) || byId.get(k.events.down);
-    if (!meta) continue; // 设备不支持该按键能力则跳过
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'op key-op';
     b.title = k.title;
-    b.innerHTML = '<span class="cap-icon">' + escapeHtml(k.icon || meta.icon || '?') + '</span><span class="cap-name">' + escapeHtml(k.title) + '</span>';
+    b.innerHTML = '<span class="cap-icon">' + escapeHtml(k.icon || '?') + '</span><span class="cap-name">' + escapeHtml(k.title) + '</span>';
     container.__pressCleanups.push(attachPress(b, k, { invoke: (capId) => {
       const rfb = focus && focus.rfb;
       if (rfb && rfb._farmConnected) rfbPressKey(rfb, k, capId);
@@ -758,14 +737,13 @@ function renderCapOps(container, device) {
     keyBtns.forEach((b) => frag.appendChild(b));
   }
 
-  // 动作区：ACTION_CAPS 单击直执行
-  const actMeta = ACTION_CAPS.map((id) => byId.get(id)).filter(Boolean);
-  if (actMeta.length > 0) {
+  // 动作区：ACT_DEFS 自包含定义，单击直执行（2026-08-13：直接遍历定义数组，无元数据查询）
+  if (ACT_DEFS.length > 0) {
     const actTitle = document.createElement('div');
     actTitle.className = 'cap-group-title';
     actTitle.textContent = '动作';
     frag.appendChild(actTitle);
-    for (const meta of actMeta) {
+    for (const meta of ACT_DEFS) {
       const b = document.createElement('button');
       b.type = 'button'; b.className = 'op';
       b.dataset.cap = meta.id; b.title = meta.title;
@@ -907,10 +885,8 @@ function enterFocus(d) {
   // 保证勾选同步设备时无需重建主控连接 → 主控画面不跳动、不改变。
   const grp = wallSession;
   const broadcast = '1';
-  // 先初始化 focus 再挂载元数据，避免在 null 上赋值抛错（修复点击卡片黑屏）
+  // 先初始化 focus 再建立连接，避免在 null 上赋值抛错（修复点击卡片黑屏）
   focus = { device: d, rfb: null };
-  focus.capMetadata = deviceCaps(d);
-  focus.configSchema = d.configSchema || [];
   focus.rfb = createRfb(stage, d, { grp, broadcast, ctrl: true }, $('focusStatusDot'));
   focus.rfb.addEventListener('connect', () => setTimeout(fitFocusPanel, 300));
   setTimeout(fitFocusPanel, 400);
@@ -1295,8 +1271,8 @@ async function showConfigPanel(device) {
     if (resp.ok) configs = (await resp.json()).configs || {};
   } catch (e) { /* ignore */ }
 
-  // 按 reload 分区渲染表单
-  const groups = configSchemaByReload({ configSchema: dev.configSchema || [] });
+  // 按 reload 分区渲染表单（2026-08-13：静态 CONFIG_DEFS，不再依赖设备上报）
+  const groups = configSchemaByReload();
   const inputs = {};
   for (const [reload, items] of Object.entries(groups)) {
     if (items.length === 0) continue;
@@ -1348,6 +1324,22 @@ async function showConfigPanel(device) {
       alert(`保存失败：${e.message}`);
     }
   };
+}
+
+/**
+ * 格式化配置值用于菜单显示（bool→是/否，enum→枚举标题，其余原样）
+ * @param schema 配置 schema
+ * @param val 当前值
+ * @returns 展示字符串
+ */
+function formatConfigVal(schema, val) {
+  if (val === undefined || val === null) return '—';
+  if (schema.type === 'bool') return val ? '开' : '关';
+  if (schema.type === 'enum' && Array.isArray(schema.enumValues)) {
+    const i = schema.enumValues.findIndex((v) => String(v) === String(val));
+    if (i >= 0 && Array.isArray(schema.enumTitles) && schema.enumTitles[i] !== undefined) return String(schema.enumTitles[i]);
+  }
+  return String(val);
 }
 
 /**
@@ -1477,52 +1469,14 @@ function openAdd() {
     await refreshDevices();
   };
 }
-function openEdit(d) {
-  $('addTitle').textContent = '编辑设备';
-  $('fName').value = d.name || '';
-  $('fHost').value = d.host || '';
-  $('fPort').value = d.port || 5901;
-  $('fGroup').value = d.group || '';
-  $('fNote').value = d.note || '';
-  $('addModal').classList.remove('hidden');
-  $('btnSaveDevice').onclick = async () => {
-    await api(`/api/devices/${encodeURIComponent(d.id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        name: $('fName').value, host: $('fHost').value, port: Number($('fPort').value),
-        group: $('fGroup').value, note: $('fNote').value,
-      }),
-    });
-    $('addModal').classList.add('hidden');
-    await refreshDevices();
-  };
-}
-// 设备详情（能力清单只读：能力/配置/屏幕/httpPort/上次在线）
-function openDetail(d) {
-  // deviceCaps 返回元数据对象数组，取 title（无则 id）作为展示名
-  const caps = deviceCaps(d).map((c) => (c && (c.title || c.id)) || '?').join('、') || '—';
-  const cfg = (d.configs && typeof d.configs === 'object') ? d.configs : {};
-  const cfgRows = Object.entries(cfg).map(([k, v]) => '<tr><td>' + escapeHtml(k) + '</td><td>' + escapeHtml(String(v)) + '</td></tr>').join('') || '<tr><td colspan="2">未上报</td></tr>';
-  $('detailTitle').textContent = d.name || d.id;
-  $('detailBody').innerHTML = [
-    '<div class="drow"><span>设备 ID</span><code>' + escapeHtml(d.id) + '</code></div>',
-    '<div class="drow"><span>地址</span><span>' + escapeHtml(d.host) + ':' + escapeHtml(String(d.port)) + '</span></div>',
-    '<div class="drow"><span>来源</span><span>' + escapeHtml(d.source || '—') + '</span></div>',
-    '<div class="drow"><span>状态</span><span class="' + (d.online ? 'ok' : 'bad') + '">' + (d.online ? '在线' : '离线') + '</span></div>',
-    '<div class="drow"><span>上次在线</span><span>' + (d.lastSeen ? fmtTime(d.lastSeen) : '—') + '</span></div>',
-    (d.screen && d.screen.width && d.screen.height) ? '<div class="drow"><span>屏幕</span><span>' + d.screen.width + '×' + d.screen.height + '</span></div>' : '',
-    d.httpPort ? '<div class="drow"><span>HTTP 端口</span><span>' + d.httpPort + '（http://' + escapeHtml(d.host) + ':' + d.httpPort + '）</span></div>' : '',
-    '<div class="drow"><span>操作能力</span><span>' + escapeHtml(caps) + '</span></div>',
-    '<div class="dsec">配置上报（只读）</div>',
-    '<table class="dcfg"><tbody>' + cfgRows + '</tbody></table>',
-  ].join('');
-  $('detailModal').classList.remove('hidden');
-}
-
 /**
- * 显示卡片右下角⋯菜单（Phase 10.3：按 category 分组，能力+管理操作合并）
- * 菜单分两段：上半段为设备能力（menuCaps('tile') 按 category 分组渲染，点击调用 doInvoke）；
- * 下半段为管理操作（查看/控制、详情、编辑、测试在线、⚙ 设备配置、删除）。
+ * 显示卡片右下角⋯菜单（2026-08-13：自包含定义数组驱动，无元数据查询）
+ * 原则：每个条目都是前端自包含的能力/配置定义（CONFIG_DEFS / QUICK_ACTIONS），
+ * 点击即直接调用设备（setConfigs / invoke），不搞运行时发现。
+ * 结构：
+ *   0) 常用参数（QUICK_CONFIG_GROUPS，直接可调，保存即 setConfigs 同步）
+ *   1) 常用能力（QUICK_ACTIONS，如 service.restart，点击 invoke 直达设备）
+ *   2) 更多参数入口（→ 完整配置面板，其余参数按 reload 分区）
  * @param {HTMLElement} tile 卡片元素（用于定位菜单）
  * @param {object} d 设备对象
  * @param {number} x 点击位置 clientX
@@ -1533,21 +1487,90 @@ function showTileMenu(tile, d, x, y) {
   const m = $('tileMenu');
   m.innerHTML = '';
 
-  // 1) 能力分组（menuCaps('tile') 排除 internal 原语，Phase 1 任务 6）
-  const grouped = groupByCategory(menuCaps(d, 'tile'));
-  let groupIdx = 0;
-  for (const [cat, metas] of grouped) {
-    if (groupIdx > 0) {
+  // 0) 参数段：QUICK_CONFIG_GROUPS 有意义参数清单（悬停/点击展开该项编辑，保存即 setConfigs 同步）
+  // 2026-08-13：schema 静态契约（CONFIG_BY_KEY），不再依赖设备上报 configSchema
+  const schemaByKey = CONFIG_BY_KEY;
+  const cfgVals = (d.configs && typeof d.configs === 'object') ? d.configs : {};
+  let paramGroupIdx = 0;
+  for (const grp of QUICK_CONFIG_GROUPS) {
+    const items = grp.keys.map((k) => schemaByKey.get(k)).filter(Boolean);
+    if (items.length === 0) continue;
+    if (paramGroupIdx > 0) {
       const divider = document.createElement('hr');
       divider.className = 'cap-group-divider';
       m.appendChild(divider);
     }
-    groupIdx++;
+    paramGroupIdx++;
     const title = document.createElement('div');
     title.className = 'cap-group-title';
-    title.textContent = CATEGORY_LABELS[cat] || cat || '其它';
+    title.textContent = grp.title;
     m.appendChild(title);
-    for (const meta of metas) {
+    for (const schema of items) {
+      const wrap = document.createElement('div');
+      wrap.className = 'qp-item';
+      const head = document.createElement('button');
+      head.type = 'button';
+      head.innerHTML = '<span class="cap-icon">⚙</span><span class="cap-name">' + escapeHtml(schema.title || schema.key) + '</span><span class="qp-val">' + escapeHtml(formatConfigVal(schema, cfgVals[schema.key])) + '</span>';
+      const editor = document.createElement('div');
+      editor.className = 'qp-editor hidden';
+      const inp = buildConfigInput(schema, cfgVals[schema.key]);
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.className = 'qp-save';
+      save.textContent = '保存';
+      save.onclick = async () => {
+        try {
+          const r = await setConfigs('', d.id, { [schema.key]: readConfigValue(inp) });
+          const res = r.results && r.results[schema.key];
+          if (res && res.ok) {
+            toast(`✓ ${schema.title || schema.key} 已保存`);
+            const newVal = formatConfigVal(schema, readConfigValue(inp));
+            const vEl = head.querySelector('.qp-val');
+            if (vEl) vEl.textContent = newVal;
+            editor.classList.add('hidden');
+          } else {
+            toast(`✗ ${schema.title || schema.key} 保存失败：${(res && res.error) || '未知错误'}`);
+          }
+        } catch (e) {
+          toast(`✗ ${schema.title || schema.key} 保存失败：${e.message}`);
+        }
+      };
+      editor.appendChild(inp);
+      editor.appendChild(save);
+      wrap.appendChild(head);
+      wrap.appendChild(editor);
+      // 交互：hover 展开（PC），点击标题锁定/解锁（触屏无 hover）。锁定状态下移出不收起。
+      wrap.__qpManual = false;
+      const qpOpen = () => editor.classList.remove('hidden');
+      const qpClose = () => editor.classList.add('hidden');
+      wrap.addEventListener('mouseenter', qpOpen);
+      wrap.addEventListener('mouseleave', () => { if (!wrap.__qpManual) qpClose(); });
+      head.addEventListener('click', () => {
+        wrap.__qpManual = !wrap.__qpManual;
+        if (wrap.__qpManual) qpOpen(); else qpClose();
+      });
+      // 保存成功后解除锁定并收起
+      const origSave = save.onclick;
+      save.onclick = async () => {
+        await origSave();
+        wrap.__qpManual = false;
+        qpClose();
+      };
+      m.appendChild(wrap);
+    }
+  }
+
+  // 1) 常用能力段：QUICK_ACTIONS 自包含定义（点击直接 invoke 直达设备）
+  const actMetas = QUICK_ACTIONS;
+  if (actMetas.length > 0) {
+    const actDivider = document.createElement('hr');
+    actDivider.className = 'cap-group-divider';
+    m.appendChild(actDivider);
+    const actTitle = document.createElement('div');
+    actTitle.className = 'cap-group-title';
+    actTitle.textContent = '能力';
+    m.appendChild(actTitle);
+    for (const meta of actMetas) {
       const b = document.createElement('button');
       b.dataset.cap = meta.id;
       b.innerHTML = '<span class="cap-icon">' + escapeHtml(meta.icon || '?') + '</span><span class="cap-name">' + escapeHtml(meta.title || meta.id) + '</span>';
@@ -1559,55 +1582,22 @@ function showTileMenu(tile, d, x, y) {
     }
   }
 
-  // 2) 管理操作（分段分隔线 + 纵向列表）
-  const mgmtDivider = document.createElement('hr');
-  mgmtDivider.className = 'cap-group-divider';
-  m.appendChild(mgmtDivider);
-  const mgmtTitle = document.createElement('div');
-  mgmtTitle.className = 'cap-group-title';
-  mgmtTitle.textContent = '设备管理';
-  m.appendChild(mgmtTitle);
-  for (const [a, label] of [
-    ['view', '查看/控制'],
-    ['detail', '详情'],
-    ['edit', '编辑'],
-    ['ping', '测试在线'],
-    ['config', '⚙ 设备配置'],
-    ['del', '删除'],
-  ]) {
-    const b = document.createElement('button');
-    b.dataset.a = a;
-    b.textContent = label;
-    m.appendChild(b);
-  }
+  // 2) 更多参数入口 → 完整配置面板（其余参数按 reload 分区）
+  const moreDivider = document.createElement('hr');
+  moreDivider.className = 'cap-group-divider';
+  m.appendChild(moreDivider);
+  const moreBtn = document.createElement('button');
+  moreBtn.innerHTML = '<span class="cap-icon">⚙</span><span class="cap-name">更多参数</span>';
+  moreBtn.addEventListener('click', () => {
+    m.classList.add('hidden');
+    showConfigPanel(d);
+  });
+  m.appendChild(moreBtn);
 
   m.classList.remove('hidden');
   const rect = tile.getBoundingClientRect();
   m.style.left = Math.min(x, window.innerWidth - 140) + 'px';
   m.style.top = Math.min(y, window.innerHeight - 160) + 'px';
-  m.onclick = async (e) => {
-    const a = e.target.dataset.a;
-    if (!a) return;
-    m.classList.add('hidden');
-    if (a === 'view') enterFocus(d);
-    else if (a === 'detail') openDetail(d);
-    else if (a === 'edit') openEdit(d);
-    else if (a === 'ping') {
-      try {
-        const r = await api(`/api/devices/${encodeURIComponent(d.id)}/ping`, { method: 'POST' });
-        alert(`${d.name}: ${r.online ? '在线' : '离线'}`);
-        await refreshDevices();
-      } catch (err) { alert('测试失败: ' + err.message); }
-    } else if (a === 'config') showConfigPanel(d);
-    else if (a === 'del') {
-      if (confirm(`删除设备 ${d.name}？`)) {
-        await api(`/api/devices/${encodeURIComponent(d.id)}`, { method: 'DELETE' });
-        const inst = wallInstances.get(d.id);
-        if (inst) { stopWallRfb(inst); inst.tile.remove(); wallInstances.delete(d.id); }
-        await refreshDevices();
-      }
-    }
-  };
 }
 
 // ---------- 移动端悬浮信号按钮（圆形可拖动 + 点击展开操作菜单 + 延迟信号状态） ----------
@@ -1827,7 +1817,6 @@ $('batchBtn').addEventListener('click', (e) => {
 });
 $('btnBack').onclick = exitFocus;
 $('btnCancelAdd').onclick = () => $('addModal').classList.add('hidden');
-$('btnDetailClose').onclick = () => $('detailModal').classList.add('hidden');
 document.addEventListener('click', (e) => {
   if (!e.target.closest('#tileMenu')) $('tileMenu').classList.add('hidden');
 });
