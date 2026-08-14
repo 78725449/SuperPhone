@@ -83,7 +83,10 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
 .focus-status.on  { background: #1e90ff; box-shadow: 0 0 6px rgba(30, 144, 255, .6); }
 .focus-status.off { background: #ff3b30; box-shadow: 0 0 6px rgba(255, 59, 48, .6); }
 .screen { flex: 1; position: relative; min-height: 0; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-.focus-stage { position: relative; }
+/* 2026-08-15：.focus-stage 恒定撑满 #focusScreen（.screen flex:1 高度），画布垂直位置稳定——
+   此前 PC 端 stage 无显式高度，connect 前塌缩导致 noVNC autoscale 用错容器尺寸、画布贴顶；
+   fitFocusPanel 300ms 后才动态设高度 → 画布位置跳变（先贴顶后贴底）。高度交给 CSS 后恒居中。 */
+.focus-stage { position: relative; width: 100%; height: 100%; min-height: 0; }
 /* 2026-08-14 修复：不再设置 .focus-stage canvas 定位规则——noVNC 内部 _screen(flex)+canvas margin:auto
    负责等比缩放画面的水平垂直居中（与设备端 5801 页一致）。原 position:absolute;left:0;top:0 覆盖了
    noVNC 的 flex 居中，导致移动端全屏（stage 100%x100%）时画面靠左上（比例不匹配留黑边时明显）。 */

@@ -877,8 +877,19 @@ function toast(msg) {
   if (!el) {
     el = document.createElement('div');
     el.id = 'farmToast';
-    el.style.cssText = 'position:fixed;top:14px;right:14px;z-index:999;background:rgba(20,26,40,.92);color:#fff;padding:10px 14px;border-radius:10px;font:13px/1.4 system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.4);max-width:70vw;pointer-events:none;transition:opacity .25s;';
     document.body.appendChild(el);
+  }
+  // 2026-08-15 修复"复制提示浮层超出画面不便于查看"：聚焦画布打开时 toast 挂到画布容器
+  // #focusScreen 内（absolute 顶部居中，始终在画布范围内可见）；无画布场景保持 fixed 右上角。
+  const screenEl = document.getElementById('focusScreen');
+  const inCanvas = !!(focus && focus.device && screenEl);
+  if (el.parentElement !== (inCanvas ? screenEl : document.body)) {
+    (inCanvas ? screenEl : document.body).appendChild(el);
+  }
+  if (inCanvas) {
+    el.style.cssText = 'position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:60;background:rgba(20,26,40,.92);color:#fff;padding:10px 14px;border-radius:10px;font:13px/1.4 system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.4);max-width:calc(100% - 24px);pointer-events:none;transition:opacity .25s;';
+  } else {
+    el.style.cssText = 'position:fixed;top:14px;right:14px;z-index:999;background:rgba(20,26,40,.92);color:#fff;padding:10px 14px;border-radius:10px;font:13px/1.4 system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.4);max-width:70vw;pointer-events:none;transition:opacity .25s;';
   }
   el.textContent = msg;
   el.style.opacity = '1';
@@ -1640,8 +1651,11 @@ function fitFocusPanel() {
   if (pw < 160) pw = 160;
   panel.style.flex = '0 0 ' + Math.floor(pw) + 'px';
   panel.style.width = Math.floor(pw) + 'px';
+  // 2026-08-15 修复画布位置漂移（先贴顶后贴底）：stage 高度统一由 CSS height:100% 恒定撑满
+  // focusScreen（.screen flex:1）——此前 connect 前 stage 无高度塌缩 → noVNC autoscale 用错容器
+  // 尺寸 → 画布贴顶；fitFocusPanel 在 connect 后 300/400ms 才设置 stage 高度 → 画布位置跳变。
+  // 删除 stage.style.height 动态赋值，只保留宽度 100%（高度由 .focus-stage {height:100%} 承担）。
   stage.style.width = '100%';
-  stage.style.height = availH + 'px';
 }
 
 // ---------- 本地操作（全屏/断开，控制台本地能力，不通过设备 API） ----------
@@ -1861,8 +1875,12 @@ function farmWriteClipboardToControl(text, devName) {
     const text = e && e.detail && e.detail.text;
     if (!text) return;
     const now = Date.now();
-    if (rfb._farmClipLastAt && now - rfb._farmClipLastAt < 1000) return; // 1s 节流防抖动
+    // 2026-08-15 修复"被控设备复制后不是每次都能同步"：绝对 1s 节流会吞掉连续复制——
+    // 用户复制 A 后 1s 内再复制 B，B 的剪贴板事件被直接丢弃。改为"同文本短窗口去重"：
+    // 仅当文本与上次相同且 500ms 内重复（协议/系统抖动）才过滤；不同文本立即放行。
+    if (rfb._farmClipLastText === text && rfb._farmClipLastAt && now - rfb._farmClipLastAt < 500) return;
     rfb._farmClipLastAt = now;
+    rfb._farmClipLastText = text;
     // 2026-08-14：记录"该文本来自设备 device.id"——控制端剪贴板被下方写入后，原生监听
     // 推回同文本时按来源排除（"从谁复制的不推送给谁"），避免把设备内容原样回发设备；
     // 配合原生侧 clipboardLastPushed 双保险防循环。多设备场景仍可同步给其他设备。

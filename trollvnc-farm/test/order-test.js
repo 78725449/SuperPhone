@@ -26,7 +26,7 @@ async function waitFor(fn, timeoutMs = 6000, interval = 80) {
 }
 
 const child = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
-  env: { ...process.env, FARM_PORT: String(PORT), FARM_REG_PORT: String(REG_PORT), FARM_TUNNEL_PORT: String(TUN_PORT), FARM_TOKEN: TOKEN, FARM_DATA_DIR: tmpData, FARM_TLS: '0', FARM_HOST: '127.0.0.1' },
+  env: { ...process.env, FARM_PORT: String(PORT), FARM_REG_PORT: String(REG_PORT), FARM_TUNNEL_PORT: String(TUN_PORT), FARM_TOKEN: TOKEN, FARM_DATA_DIR: tmpData, FARM_TLS: '0', FARM_HOST: '127.0.0.1', FARM_MDNS: '0' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let childOut = '';

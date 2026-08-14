@@ -145,8 +145,14 @@ function sortDevices() {
 }
 
 // ---------- mDNS 发现（TrollVNC 会广播 _rfb._tcp） ----------
+// 2026-08-15：支持 FARM_MDNS=0 关闭（测试隔离用——局域网真实设备广播会干扰 order 等
+// 全量排序断言；生产默认开启，行为不变）
 let bonjour = null;
 function startDiscovery() {
+  if (process.env.FARM_MDNS === '0') {
+    console.log('[mdns] discovery disabled (FARM_MDNS=0)');
+    return;
+  }
   try {
     bonjour = new Bonjour();
     const browser = bonjour.find({ type: 'rfb' });
