@@ -42,18 +42,23 @@
         <span id="focusStatusDot" class="focus-status off" title="连接状态（蓝=已连接 / 红=已断开）"></span>
         <span id="focusTitle"></span>
       </div>
-      <div id="focusScreen" class="screen"><div id="focusStage" class="focus-stage"></div></div>
+      <div id="focusScreen" class="screen">
+        <div id="focusStage" class="focus-stage"></div>
+        <!-- 聚焦画面中央状态浮层（与 5801 直连页一致）：连接中加载动画 / 断开重连提示 -->
+        <div id="focusStatusOv" class="focus-status-ov hidden">
+          <div class="spin"></div>
+          <div id="focusStatusText">连接中…</div>
+        </div>
+      </div>
     </section>
 
     <!-- 中：操作列，紧贴设备屏幕右侧 -->
     <aside id="focusOps" class="focus-ops hidden">
-      <button id="btnBack" class="op" title="返回设备墙"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>
-      <button id="btnSync" class="op sync-btn" title="同步控制：点击选择设备与主控同步"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7.07-7.07L11.3 5.6"/><path d="M14 10a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7.07 7.07l.63-.6"/></svg></button>
       <div id="focusOpsCap" class="focus-ops-cap"></div>
       <hr />
-      <button data-op="fit" class="op" title="适配画面"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/><path d="M8 8l6 6M8 14l6-6"/></svg></button>
+      <button id="btnSync" class="op sync-btn" title="同步控制：点击选择设备与主控同步"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3.5" width="9.5" height="17" rx="2"/><rect x="14" y="7" width="8" height="13" rx="1.8"/><path d="M12.1 10.3l1.8 1.4-1.8 1.4" fill="currentColor" stroke="none"/><path d="M13.9 10.3l-1.8 1.4 1.8 1.4" fill="currentColor" stroke="none"/></svg></button>
       <button data-op="full" class="op" title="全屏"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg></button>
-      <button data-op="disc" class="op danger" title="断开"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg></button>
+      <button data-op="disc" class="op danger" title="断开"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/><path d="M9.5 14.5l5-5"/></svg></button>
     </aside>
 
     <!-- 右：其它设备的屏幕墙 -->
@@ -75,16 +80,19 @@
 
   <!-- 移动端操作菜单（悬浮按钮点击展开，含退出控制） -->
   <div id="opsMenu" class="ops-menu hidden">
-    <div class="ops-menu-title">设备操作</div>
     <div id="opsMenuCap" class="ops-menu-grid"></div>
     <div class="ops-menu-grid" style="margin-top:6px">
-      <button data-op="fit" title="适配"><span class="cap-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/><path d="M8 8l6 6M8 14l6-6"/></svg></span><span class="cap-name">适配</span></button>
       <button data-op="full" title="全屏"><span class="cap-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg></span><span class="cap-name">全屏</span></button>
-      <button data-op="disc" title="断开"><span class="cap-icon"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg></span><span class="cap-name">断开</span></button>
+      <button data-op="disc" class="danger" title="断开（退出控制并返回设备墙）"><span class="cap-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/><path d="M9.5 14.5l5-5"/></svg></span><span class="cap-name">断开</span></button>
     </div>
-    <button id="opsExit" class="ops-exit danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg> 退出控制</button>
   </div>
 </main>
+
+<!-- 控制端软键盘输入源：触屏端「键盘」能力键聚焦此隐藏 input 唤起 iOS 软键盘，
+     app.js 中 Keyboard 实例绑定它抓取 keydown/keyup 直发当前聚焦设备（noVNC 官方 touch 键盘方案） -->
+<input id="kbdInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+       tabindex="-1" aria-label="键盘输入（控制被控设备）"
+       style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0;border:0;pointer-events:none;" />
 
 <!-- 添加/编辑设备 -->
 <div id="addModal" class="modal hidden">
@@ -105,6 +113,6 @@
 <!-- 设备卡片小菜单 -->
 <div id="tileMenu" class="tile-menu hidden"></div>
 
-<script type="module" src="app.js?v=37"></script>
+<script type="module" src="app.js?v=91"></script>
 </body>
 </html>

@@ -1,6 +1,9 @@
 // SuperPhone 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
-import RFB from '/novnc/core/rfb.js';
-import { configSchemaByReload, invokeCap, setConfigs, RELOAD_LABELS, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, ACT_DEFS, QUICK_CONFIG_GROUPS, QUICK_ACTIONS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js';
+// rfb.js?v=2：noVNC 核心为 server 内存 patch（dot 圆点/TLS 屏蔽等），URL 带版本号强制浏览器
+// 重新拉取 patch 后的内容，避免旧版缓存（同 gesturehandler.js?v=3 方案）
+import RFB from '/novnc/core/rfb.js?v=2';
+import Keyboard from '/novnc/core/input/keyboard.js?v=2';
+import { configSchemaByReload, invokeCap, setConfigs, RELOAD_LABELS, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, ACT_DEFS, QUICK_CONFIG_GROUPS, QUICK_ACTIONS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=4';
 import { attachPress } from './press.js';
 
 const $ = (id) => document.getElementById(id);
@@ -66,7 +69,7 @@ function showLogin() {
   $('btnLogin').onclick = async () => {
     setToken($('loginToken').value.trim());
     wrap.remove();
-    try { await refreshDevices(); } catch { showLogin(); }
+    try { await refreshDevices(); restoreFocusFromUrl(); } catch { showLogin(); }
   };
 }
 
@@ -697,6 +700,104 @@ function rfbPressKey(rfb, keyDef, capId) {
   }
 }
 
+// ---------- 键盘按钮（2026-08-14 对齐上游原生 noVNC「Show Keyboard」语义） ----------
+// 「键盘」键 = 显示/隐藏控制端软键盘（noVNC 原生 toggleVirtualKeyboard：聚焦/失焦隐藏 input）。
+// 控制端软键盘按键经 Keyboard 实例捕获 → rfb.sendKey(keysym) → 被控端 kbdEvent 注入 HID（远程打字）。
+// 被控端键盘完全由被控端系统管理（点被控画面输入框才弹），控制端不注入 attach/detach、无输入源切换。
+// 演进回滚：删除输入源切换两态（kbdControl）+ HID attach 自定义 keysym（XF86KeyboardHide/Show）全部逻辑。
+let kbdSoft = false;          // 控制端软键盘当前是否显示（kbdInput 是否聚焦，focus/blur 事件驱动）
+let kbdBtns = [];             // 键盘键按钮引用（focusOps + opsMenu，软键盘激活时加 .kbd-on 高亮）
+/** 触屏能力判定：仅用于"自动弹控制端软键盘"（PC 无系统软键盘）；按钮开关行为本身无判定 */
+const isTouchable = () => 'ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0;
+
+/** 聚焦隐藏 input 唤起控制端软键盘（iOS 对文本输入元素 focus 才弹键盘） */
+function focusKbdInput() {
+  const kbi = document.getElementById('kbdInput');
+  if (!kbi) return;
+  try {
+    kbi.focus();
+    if (kbi.setSelectionRange) kbi.setSelectionRange(kbi.value.length, kbi.value.length);
+  } catch (e) { /* 忽略 */ }
+}
+
+/**
+ * 收起控制端软键盘（blur 触发系统收起）。
+ * iOS Safari 对隐藏 input 直接 blur() 常不收起系统软键盘（焦点行为差异、收起异步），
+ * 是"控制端软键盘残留 + 被控键盘弹出 = 两个键盘同时显示"的根因之一。
+ * 组合手段确保收起：activeElement.blur + readonly 切换（iOS 经典 trick，延时恢复 readonly）。
+ * @returns {void}
+ */
+function blurKbdInput() {
+  const kbi = document.getElementById('kbdInput');
+  if (!kbi) return;
+  try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) { /* 忽略 */ }
+  try {
+    kbi.setAttribute('readonly', 'readonly');
+    kbi.blur();
+  } catch (e) { /* 忽略 */ }
+  setTimeout(() => { try { kbi.removeAttribute('readonly'); } catch (e) {} }, 120);
+}
+
+/**
+ * 更新键盘键按钮的高亮与提示（PC 操作列 + 移动端菜单同步）：
+ * 控制端软键盘激活（kbdSoft=true）加 .kbd-on 高亮（原生 noVNC selected 风格），收起则无高亮。
+ * @returns {void}
+ */
+function updateKbdBtns() {
+  for (const b of kbdBtns) {
+    b.classList.toggle('kbd-on', kbdSoft);
+    b.title = kbdSoft ? '收起控制端键盘' : '弹出控制端键盘';
+  }
+}
+
+/**
+ * 键盘键点击 = 显示/隐藏控制端软键盘（对齐上游原生 noVNC「Show Keyboard」）。
+ * 聚焦 kbdInput 弹控制端软键盘（iOS 对文本输入元素 focus 才弹键盘），再次点击失焦收起。
+ * 按键经 Keyboard 实例转发 sendKey 直达被控设备；被控端键盘由被控端系统自行管理。
+ * @returns {void}
+ */
+function toggleKbd() {
+  if (kbdSoft) {
+    blurKbdInput();
+  } else {
+    focusKbdInput();
+  }
+}
+
+/**
+ * 初始化控制端软键盘（触屏端输入，2026-08-14）：Keyboard 实例绑定隐藏 input #kbdInput，
+ * 抓取软键盘 keydown/keyup 直发当前聚焦设备（noVNC 官方 touch 键盘方案，与 5801 直连页一致）。
+ * 仅存在 #kbdInput 时生效；软键盘在「键盘」键点击后弹出（见 toggleKbd）。
+ * @returns {void}
+ */
+function initTouchKeyboard() {
+  const kbi = document.getElementById('kbdInput');
+  if (!kbi) return;
+  const touchKb = new Keyboard(kbi);
+  touchKb.onkeyevent = (keysym, code, down) => {
+    const rfb = focus && focus.rfb;
+    if (rfb && rfb._farmConnected) {
+      try { rfb.sendKey(keysym, code, down); } catch (e) { /* noVNC API 异常静默忽略 */ }
+    }
+  };
+  touchKb.grab();
+  // 控制端软键盘被系统收起（点击别处/滚动/切后台）：复位 kbdSoft 与按钮高亮
+  kbi.addEventListener('blur', () => {
+    kbdSoft = false;
+    updateKbdBtns();
+  });
+  // 页面可见性变化时兜底重挂（Keyboard 内部 window blur 已释放按键，双保险）
+  document.addEventListener('visibilitychange', () => {
+    try { touchKb.ungrab(); } catch (e) {}
+    try { touchKb.grab(); } catch (e) {}
+  });
+  // 2026-08-14 审查结论（用户实测确认）：iOS 键盘上方「粘贴」按钮不出现（QuickType 栏无此按钮），
+  // 长按也无法触达 kbdInput（隐藏元素不可交互，长按画面会转发被控设备弹出被控端菜单）——
+  // iOS 上无横幅自动取剪贴板路径不存在。用户拍板：iOS 不提供正向粘贴，
+  // 控制端→设备方向仅保留 copy 事件（用户主动复制即同步）；原 paste 事件监听已删除。
+}
+initTouchKeyboard();
+
 /**
  * 渲染控制台操作菜单（07 §4.1）：按键区（KEY_DEFS 按键对象+按压识别）+ 动作区（ACT_DEFS）
  * 按键区按钮挂 attachPress 按压识别（click/double/triple/long/down/up），动作区按钮单击直执行
@@ -713,6 +814,8 @@ function renderCapOps(container, device) {
   container.__pressCleanups = [];
   container.innerHTML = '';
   const frag = document.createDocumentFragment();
+  // 悬浮菜单（opsMenuCap）：不显示分组标题，按钮保留图标+文字（窄菜单参考 5801 面板宽度）
+  const isOpsMenu = container.id === 'opsMenuCap';
   // 按键区：分组标题 + 按键对象按钮（按压识别，07 §3.2；KEY_DEFS 自包含契约，直发 RFB）
   // 按键按钮先构建进临时数组，存在按键才追加分组标题，避免渲染孤立空标题
   const keyTitle = document.createElement('div');
@@ -726,15 +829,36 @@ function renderCapOps(container, device) {
     b.title = k.title;
     b.innerHTML = '<span class="cap-icon">' + (k.svg || escapeHtml(k.icon || '?')) + '</span><span class="cap-name">' + escapeHtml(k.title) + '</span>';
     container.__pressCleanups.push(attachPress(b, k, { invoke: (capId) => {
+      // 键盘键 = 显示/隐藏控制端软键盘（对齐原生 noVNC「Show Keyboard」，详见 toggleKbd）
+      if (k.key === 'keyboard') { toggleKbd(); return; }
       const rfb = focus && focus.rfb;
       if (rfb && rfb._farmConnected) rfbPressKey(rfb, k, capId);
       // 控制台直连模式：按键仅在有活跃 RFB 连接时可用，无连接不发送
     } }));
     keyBtns.push(b);
+    if (k.key === 'keyboard') kbdBtns.push(b);   // 键盘键按钮引用（输入源切换高亮）
   }
   if (keyBtns.length > 0) {
-    frag.appendChild(keyTitle);
+    if (!isOpsMenu) frag.appendChild(keyTitle);   // 悬浮菜单不显示「按键」分组标题
     keyBtns.forEach((b) => frag.appendChild(b));
+  }
+
+  // 移动端悬浮菜单本地动作：粘贴到设备（2026-08-14 用户拍板恢复）
+  // 读取控制端剪贴板 → type.paste 原子注入被控设备聚焦输入框（与电脑 Ctrl+V 同链路）。
+  // 仅挂 opsMenu（移动端 FAB 菜单）：电脑端已有 Ctrl+V，不重复加按钮。
+  if (isOpsMenu) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'op';
+    b.title = '粘贴：读取控制端剪贴板并粘贴到被控设备聚焦输入框';
+    b.innerHTML = '<span class="cap-icon">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M15 2H9a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1Z"/>' +
+      '<path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2"/>' +
+      '<rect x="9" y="11" width="6" height="4" rx="1"/>' +
+      '</svg></span><span class="cap-name">粘贴</span>';
+    b.addEventListener('click', pasteToFocusedDevice);
+    frag.appendChild(b);
   }
 
   // 动作区：ACT_DEFS 自包含定义，单击直执行（2026-08-13：直接遍历定义数组，无元数据查询）
@@ -751,6 +875,8 @@ function renderCapOps(container, device) {
       b.addEventListener('click', () => doInvoke(meta));
       frag.appendChild(b);
     }
+    // 本地动作：无（2026-08-14 审查删除「粘贴到设备」弹窗——iOS 键盘粘贴按钮实测不存在，
+    // 弹窗多步体验差且用户拍板 iOS 不提供正向粘贴；控制端→设备剪贴板仅走 copy 事件协议通道）
   }
   container.appendChild(frag);
 }
@@ -863,13 +989,156 @@ function promptParams(paramDefs, title) {
   });
 }
 
+/**
+ * 读取控制端剪贴板文本（2026-08-14 移除静默降级：剪贴板 API 不可用/读取失败直接抛错，调用方显式处理）。
+ * 需 https 安全上下文 + 用户手势激活内调用（iOS WebKit 限制，visibilitychange/pageshow 非手势会被拒）。
+ * @returns {Promise<string>} 剪贴板文本（可为空字符串）
+ * @throws {Error} 剪贴板 API 不可用（非 https）或系统拒绝读取
+ */
+async function readClipboardText() {
+  if (!window.isSecureContext || !navigator.clipboard || !navigator.clipboard.readText) {
+    throw new Error('剪贴板 API 不可用（需 https 安全上下文）');
+  }
+  return await navigator.clipboard.readText();
+}
+
+// 剪贴板同步去重状态：
+// farmLastClipText = 最近一次"已成功同步/刚来自设备"的剪贴板文本（去重：同文本不再重复同步/回发）
+// 2026-08-14 审查收敛：删除 farmPendingClip/consumePendingClip/trySyncClipboardOnResume/isIOSDevice——
+// 控制端→设备写剪贴板仅保留 copy 事件（用户主动复制即同步）；点卡片/切前台隐式同步已去除。
+let farmLastClipText = null;
+
+// 控制端→受控设备剪贴板同步核心（2026-08-14 抽出共用）：
+// 把控制端剪贴板文本经 RFB clipboardPasteFrom（Extended Clipboard 协议通道，UTF-8）写入
+// 当前连接会话（聚焦 focus.rfb + 直控 directRfbs），受设备 ClipboardEnabled 门控；
+// 无连接会话静默（不做任何同步、不提示）；成功发给任一会话则记录 farmLastClipText 供去重。
+// @param {string} txt 控制端剪贴板文本
+function farmPushClipboardToSessions(txt) {
+  if (!txt) return;
+  const clipOn = (d) => !(d && d.configs && d.configs.ClipboardEnabled === false);
+  const sent = new Set();
+  if (focus && focus.device && focus.rfb && focus.rfb._farmConnected && clipOn(focus.device)) {
+    sent.add(focus.rfb);
+  }
+  for (const [id, rfb] of directRfbs) {
+    if (!rfb._farmConnected) continue;
+    const wi = wallInstances.get(id);
+    if (wi && !clipOn(wi.device)) continue;
+    sent.add(rfb);
+  }
+  sent.forEach((rfb) => { try { rfb.clipboardPasteFrom(txt); } catch (_) { /* 静默 */ } });
+  // 已同步给连接会话 → 视为已消费（同文本不再重复同步）
+  if (sent.size > 0) farmLastClipText = txt;
+}
+
+// IPA 容器原生桥（2026-08-14）：控制端设备装 IPA 时，App 原生层监听本机剪贴板
+// （TVNCConsoleWebViewController → evaluateJavaScript）推文本至此。无桥环境（浏览器/电脑）
+// 该函数永不触发。与 copy 事件同一条发送路径，防循环由两层保证：
+//   1) 原生侧 clipboardLastPushed 同文本跳过（RFB 写入 writeText 的回显）；
+//   2) 此处 farmLastClipText 同文本跳过（被控端 RFB 刚写入的文本不回发）。
+window.__farmNativeClipboard = (text) => {
+  if (!text) return;
+  if (farmLastClipText && text === farmLastClipText) return; // RFB 写入回显/已同步文本
+  farmPushClipboardToSessions(text);
+};
+
+// 控制端复制（Ctrl+C / 菜单复制）→ 协议通道同步到"当前连接会话"（2026-08-14 统一协议通道）。
+// 注：所有设备统一安装新版 IPA（enableExtendedClipboard），不做旧包兼容/降级检测（2026-08-14 用户决策）。
+document.addEventListener('copy', async () => {
+  let txt = null;
+  try {
+    txt = await readClipboardText();
+  } catch (_) {
+    return; // 复制动作本身已成功；同步失败不阻断复制（非降级路径，仅跳过同步）
+  }
+  if (!txt) return;
+  farmPushClipboardToSessions(txt);
+});
+
+/**
+ * 提交粘贴文本：调用 type.paste 能力注入被控设备（携带控制端文本 → 写设备剪贴板 + 模拟 Cmd+V，原子）。
+ * @param {string|null} devId 目标设备 ID（可能为空：keydown 直达路径用 focus.device.id）
+ * @param {string} text 要注入的文本
+ * @returns {Promise<void>}
+ */
+async function submitPasteText(devId, text) {
+  if (!devId || !text) return;
+  try {
+    const r = await invokeCap('', devId, 'type.paste', { text });
+    if (r && r.ok) toast(`✓ 已粘贴 ${text.length} 字符到设备`);
+    else toast(`✗ 粘贴失败：${(r && r.ack && r.ack.error) || '未知错误'}`);
+  } catch (e) {
+    toast(`✗ 粘贴调用失败：${e.message}`);
+  }
+}
+
+// 移动端 FAB 菜单「粘贴」：读取控制端剪贴板 → type.paste 原子注入被控设备聚焦输入框。
+// 与电脑端 Ctrl+V 完全同链路（readClipboardText → submitPasteText）：
+//   - readClipboardText 必须在用户手势内同步调用（本函数由按钮 click 触发，激活窗口有效）；
+//   - iOS 控制端 readText 会弹一次系统「允许粘贴」横幅（iOS 隐私，无法绕过）；
+//   - 设备端 type.paste 写剪贴板 + releaseEveryKeys + 异步模拟 Cmd+V，被控端再弹一次
+//     「想从 superphone 粘贴」隐私确认（iOS 14+ UIPasteboard 读取确认）→ 用户确认后落入聚焦输入框。
+// 2026-08-14 用户拍板恢复此显式按钮（此前弹窗/隐式同步因"多步/易塞旧文本"被删，
+// 一键直读直贴为显式用户手势，一次点击即可走完整时序）。
+async function pasteToFocusedDevice() {
+  if (!focus || !focus.device) {
+    toast('请先进入设备控制');
+    return;
+  }
+  let txt = null;
+  try {
+    txt = await readClipboardText(); // 同步发起（手势激活内），勿在调用前 await 其它操作
+  } catch (err) {
+    toast(err.message); // 非 https/API 不可用/被拒：明确报错，不降级弹浮层
+    return;
+  }
+  if (!txt) {
+    toast('控制端剪贴板为空，请先复制文本');
+    return;
+  }
+  await submitPasteText(focus.device.id, txt);
+}
+
+// 电脑端 Ctrl+V 拦截：focus 画布聚焦时按 Ctrl+V，禁止 noVNC 把 Ctrl+V 发到被控设备。
+// 2026-08-14 决策：type.paste 带 text（原子"写剪贴板+模拟 Cmd+V"）——协议通道（clipboardPasteFrom）
+// 是异步无确认的，先同步再粘贴会有"粘旧内容"竞态，故粘贴输入走能力通道原子完成；
+// 剪贴板纯同步（copy 事件）才走协议通道。设备端已加 releaseEveryKeys 清残留修饰键。
+document.addEventListener('keydown', async (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'v') return;
+  if (e.target.closest && e.target.closest('input, textarea')) return; // 已在输入框：原生粘贴
+  if (!focus || !focus.device) return;
+  e.preventDefault();
+  e.stopPropagation();
+  let txt = null;
+  try {
+    txt = await readClipboardText();
+  } catch (err) {
+    toast(err.message); // 剪贴板不可读：明确报错，不降级弹浮层
+    return;
+  }
+  if (!txt) { toast('控制端剪贴板为空，请先复制文本'); return; }
+  await submitPasteText(focus.device.id, txt);
+}, true);
+
+// 触控长按 = 传达被控设备长按（2026-08-14）：控制端→设备剪贴板仅保留 copy 事件（用户主动复制
+// 即经协议通道同步）；长按被控画面不再作为粘贴手势，改为左键按下保持传达设备长按（rfb.js patch
+// 0x1/0x0），与电脑端鼠标按住一致。原 __farmPasteLongPress 已删除。
+
 // ---------- 聚焦视图 ----------
-function enterFocus(d) {
+async function enterFocus(d) {
   if (focus && focus.device.id === d.id) return;
   if (focus) exitFocus();
   if (d.online === false) { alert(`设备「${d.name}」离线，请唤醒手机后重试`); return; }
   // 只走隧道：未注册设备不可控制
   if (d.source !== 'register') { alert('设备未注册（无隧道），请先在手机 App 配置网关完成注册'); return; }
+  // 2026-08-14 审查删除：点卡片不再作为控制端→设备写剪贴板事件（隐式同步易造成控制端旧文本
+  // 被塞入设备，用户拍板去除；控制端→设备方向仅保留 copy 事件用户主动复制同步）
+  // 聚焦状态写入 URL（2026-08-14）：刷新页面后仍停留当前设备画面，不再回退主页（见 restoreFocusFromUrl）
+  try {
+    const u = new URL(location.href);
+    u.searchParams.set('focus', d.id);
+    history.replaceState(null, '', u.toString());
+  } catch (e) { /* 忽略：URL 更新失败不影响控制 */ }
 
   // 预置面板宽度（用墙卡片已知的设备比例），避免“先宽后窄”闪烁
   const wallInst = wallInstances.get(d.id);
@@ -892,9 +1161,15 @@ function enterFocus(d) {
   stage.className = 'focus-stage';
   $('focusScreen').innerHTML = '';
   $('focusScreen').appendChild(stage);
+  // 中央连接浮层：与 5801 直连页一致的连接中加载动画（必须在此处重建——
+  // 上方 innerHTML='' 已清空 focusScreen，浮层由 setFocusOverlay 内部 ensure 重新挂载）
+  setFocusOverlay(true, '连接中…');
   $('focusPanel').classList.remove('hidden');
   $('focusOps').classList.remove('hidden');
   $('workspace').classList.add('focus-open');
+  // 键盘软键盘状态复位（默认收起；用户需要输入时点「键盘」能力键才弹出，避免误弹系统粘贴条）
+  kbdSoft = false; kbdBtns = [];
+  updateKbdBtns();
   renderCapOps($('focusOpsCap'), d);
   renderCapOps($('opsMenuCap'), d);
   if (window.matchMedia('(max-width: 900px)').matches) $('fab').classList.remove('hidden');
@@ -904,18 +1179,148 @@ function enterFocus(d) {
   const broadcast = '1';
   // 先初始化 focus 再建立连接，避免在 null 上赋值抛错（修复点击卡片黑屏）
   focus = { device: d, rfb: null };
-  focus.rfb = createRfb(stage, d, { grp, broadcast, ctrl: true }, $('focusStatusDot'));
-  focus.rfb.addEventListener('connect', () => setTimeout(fitFocusPanel, 300));
+  const fRfb = createRfb(stage, d, { grp, broadcast, ctrl: true }, $('focusStatusDot'));
+  focus.rfb = fRfb;
+  fRfb.addEventListener('connect', () => {
+    focusReconnectAttempts = 0; // 重连成功：复位重试计数
+    setFocusOverlay(false, null); // 隐藏连接浮层
+    setTimeout(fitFocusPanel, 300);
+  });
+  // 聚焦主控画面断线自动重连（2026-08-14）：iOS 后台挂起/切应用导致 WS 断开（1006）后画面黑屏，
+  // 断开即调度重建（网关按新连接重建 ctrl 会话、设备端 rfb.start 无条件重连）；见 scheduleFocusReconnect。
+  fRfb.addEventListener('disconnect', (e) => {
+    if (!focus || focus.rfb !== fRfb) return;
+    const code = e && e.detail ? e.detail.code : null;
+    if (code === 1000 || code === 1001 || code === 4001) return; // 主动断开/被接管不重连
+    setFocusOverlay(false, '画面已断开，正在重连…');
+    scheduleFocusReconnect(); // 首次立即重连
+  });
   setTimeout(fitFocusPanel, 400);
   startFabSignalPoll(); // 移动端悬浮按钮延迟信号轮询（仅在 focus 建立后）
+  // 移动端进入大屏默认系统级全屏（Fullscreen API 隐藏浏览器地址栏/状态栏），
+  // 而非仅在页面内固定定位占满视口。iOS Safari 对非视频元素不支持 requestFullscreen 时静默降级为区域全屏。
+  if (isMobile() && document.documentElement.requestFullscreen) {
+    try { document.documentElement.requestFullscreen().catch(() => {}); } catch (e) { /* 忽略：降级区域全屏 */ }
+  }
 }
+
+// ---------- 聚焦画面中央状态浮层（与 5801 直连页一致） ----------
+/**
+ * 显示/隐藏聚焦画面中央状态浮层：loading=true 显示旋转加载动画（连接中）；
+ * text 非空显示状态文字（断开/重连提示）。
+ * 浮层挂在 #focusScreen 内（enterFocus 的 innerHTML='' 会清空它，此处 ensure 自动重建/重新挂载）。
+ * @param {boolean} loading 是否显示加载动画
+ * @param {string|null} text 状态文字（null=保持当前文字）
+ * @returns {void}
+ */
+function setFocusOverlay(loading, text) {
+  const fs = $('focusScreen');
+  if (!fs) return;
+  let ov = $('focusStatusOv');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'focusStatusOv';
+    ov.className = 'focus-status-ov hidden';
+    ov.innerHTML = '<div class="spin"></div><div id="focusStatusText">连接中…</div>';
+  }
+  if (ov.parentElement !== fs) fs.appendChild(ov); // innerHTML='' 清空后重新挂载
+  ov.classList.toggle('loading', !!loading);
+  ov.classList.toggle('show', !!loading || text != null);
+  if (text != null) {
+    const t = $('focusStatusText');
+    if (t) t.textContent = text;
+  }
+}
+
+// ---------- 聚焦画面自动重连（2026-08-14） ----------
+// iOS 后台挂起/切应用或网络抖动导致控制端 WebSocket 断开（1006 等）后画面黑屏：
+// 断开时或页面回到前台时自动重建 RFB —— 网关按新连接重建 ctrl 会话，
+// 设备端 rfb.start 无条件重连（见设备端协议），画面无需退出重进即可恢复。
+// 主动断开（1000/1001）与被其他端接管（4001）不自动重连。
+let focusReconnectTimer = null;
+let focusReconnectAttempts = 0;
+const FOCUS_RECONNECT_MAX = 8;
+const FOCUS_RECONNECT_DELAY = 2000; // 重连失败后的防抖间隔（2026-08-14 用户要求：首次断开立即重连）
+
+/**
+ * 调度聚焦画面重连：断开立即重连（不做退避等待）；仅当立即重连失败（设备未恢复）时
+ * 以固定 2s 间隔重试，达到上限后停止，避免设备真离线时无限快速重试刷屏。
+ * @returns {void}
+ */
+function scheduleFocusReconnect() {
+  if (!focus) return;
+  if (focusReconnectAttempts >= FOCUS_RECONNECT_MAX) return;
+  focusReconnectAttempts++;
+  if (focusReconnectAttempts === 1) {
+    reconnectFocusRfb(); // 首次：立即重连
+  } else {
+    clearTimeout(focusReconnectTimer);
+    focusReconnectTimer = setTimeout(reconnectFocusRfb, FOCUS_RECONNECT_DELAY);
+  }
+}
+
+/**
+ * 重建聚焦 RFB（网关按新连接重建 ctrl 会话，设备端重连 5901）
+ * @returns {void}
+ */
+function reconnectFocusRfb() {
+  focusReconnectTimer = null;
+  if (!focus || !focus.rfb) return;
+  if (focus.rfb._rfbConnectionState === 'connected') return; // 已自行恢复
+  setFocusOverlay(true, '连接中…'); // 重连过程显示加载动画（与 5801 一致）
+  const d = focus.device;
+  const stage = $('focusStage');
+  closeRfb(focus.rfb);
+  stage.innerHTML = '';
+  const rfb = createRfb(stage, d, { grp: wallSession, broadcast: '1', ctrl: true }, $('focusStatusDot'));
+  rfb.addEventListener('connect', () => {
+    focusReconnectAttempts = 0;
+    setFocusOverlay(false, null);
+    setTimeout(fitFocusPanel, 300);
+  });
+  rfb.addEventListener('disconnect', (e) => {
+    if (!focus || focus.rfb !== rfb) return;
+    const code = e && e.detail ? e.detail.code : null;
+    if (code === 1000 || code === 1001 || code === 4001) return;
+    setFocusOverlay(false, '画面已断开，正在重连…');
+    scheduleFocusReconnect();
+  });
+  focus.rfb = rfb;
+  setTimeout(fitFocusPanel, 400);
+}
+
+// 回到前台：若聚焦连接已断开立即触发重连（后台挂起期间 WS 被系统断开，回前台直接恢复）
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && focus && focus.rfb) {
+    if (focus.rfb._rfbConnectionState !== 'connected') {
+      focusReconnectAttempts = 0;
+      scheduleFocusReconnect();
+    }
+  }
+});
 
 function exitFocus() {
   if (!focus) return;
   const devId = focus.device.id;
+  clearTimeout(focusReconnectTimer);
+  focusReconnectTimer = null;
+  focusReconnectAttempts = 0;
+  setFocusOverlay(false, null); // 退出隐藏连接浮层
+  // 清除 URL 聚焦参数（2026-08-14）：退出控制后刷新不再自动进入该设备
+  try {
+    const u = new URL(location.href);
+    if (u.searchParams.has('focus')) {
+      u.searchParams.delete('focus');
+      history.replaceState(null, '', u.toString());
+    }
+  } catch (e) { /* 忽略 */ }
   closeRfb(focus.rfb);
   stopFabSignalPoll();
   focus = null;
+  // 退出：收起控制端软键盘、复位键盘按钮高亮
+  kbdSoft = false; kbdBtns = [];
+  blurKbdInput();
+  updateKbdBtns();
   exitSyncMode(); // 关闭同步订阅与选择模式
   $('focusPanel').classList.add('hidden');
   $('focusOps').classList.add('hidden');
@@ -923,6 +1328,32 @@ function exitFocus() {
   $('opsMenu').classList.add('hidden');
   $('fab').classList.add('hidden');
   restoreWallTile(devId);
+  // 退出大屏同步退出系统全屏（若处于全屏态）
+  if (document.fullscreenElement) {
+    try { document.exitFullscreen().catch(() => {}); } catch (e) { /* 忽略 */ }
+  }
+}
+
+/**
+ * 刷新后恢复聚焦设备（2026-08-14）：URL ?focus=<id> 记录的设备画面，
+ * 页面加载且设备列表就绪后自动重新进入控制——刷新落地页 = 当前操作的设备屏幕，不回退主页。
+ * 设备离线/不存在/虚拟预览设备（mock）则清除参数回主页。
+ * @returns {void}
+ */
+function restoreFocusFromUrl() {
+  try {
+    const u = new URL(location.href);
+    const fid = u.searchParams.get('focus');
+    if (!fid) return;
+    if (focus) return; // 已有聚焦
+    const dev = devices.find((d) => d.id === fid);
+    if (!dev || dev.mock || dev.online !== true || dev.source !== 'register') {
+      u.searchParams.delete('focus');
+      history.replaceState(null, '', u.toString());
+      return;
+    }
+    enterFocus(dev);
+  } catch (e) { /* 忽略：URL 解析失败不影响页面 */ }
 }
 
 function restoreWallTile(id) {
@@ -964,7 +1395,11 @@ function exitSyncMode() {
     if (inst.tile) inst.tile.classList.remove('tile-selected');
   }
   // 关闭全部同步 RFB 订阅并置空，随后恢复卡片墙截图轮询
+  // 必须显式 closeRfb：syncRfb 的 RFB 实例存在 syncRfbs Map 中（未赋给 inst.rfb），
+  // stopWallRfb 只清 inst.rfb 不会关闭它 → noVNC 不监听 container DOM 变更 → WS 残留为孤儿会话
   for (const id of syncRfbs.keys()) {
+    const rfb = syncRfbs.get(id);
+    if (rfb) closeRfb(rfb);
     const inst = wallInstances.get(id);
     if (inst) stopWallRfb(inst);
   }
@@ -1012,7 +1447,9 @@ function toggleSync(deviceId) {
   const inst = wallInstances.get(deviceId);
   if (!inst) { alert('设备卡片未就绪，请稍后重试'); return; }
   if (syncRfbs.has(deviceId)) {
-    // 取消同步：关闭 RFB 订阅并置空，移除选中态，恢复卡片墙截图轮询
+    // 取消同步：显式 closeRfb 关闭 WS 订阅，移除选中态，恢复卡片墙截图轮询
+    const rfb = syncRfbs.get(deviceId);
+    if (rfb) closeRfb(rfb);
     stopWallRfb(inst);
     syncRfbs.delete(deviceId);
     setSyncBadge(inst, false);
@@ -1243,18 +1680,18 @@ function fitFocusPanel() {
   stage.style.height = availH + 'px';
 }
 
-// ---------- 本地操作（适配/全屏/断开，控制台本地能力，不通过设备 API） ----------
+// ---------- 本地操作（全屏/断开，控制台本地能力，不通过设备 API） ----------
+// 适配画面为自动行为：createRfb 统一 rfb.scaleViewport = true（等比缩放 contain），无独立按钮
 function currentRfb() { return focus ? focus.rfb : null; }
 
 /**
- * 本地操作：适配画面/全屏/断开
+ * 本地操作：全屏/断开
  * 控制型按键（Home/电源/音量/系统动作等）走 RFB 直发（rfbPressKey，见 renderCapOps）
  */
 function doOp(op) {
   const rfb = currentRfb();
   if (!rfb && op !== 'disc') return;
   switch (op) {
-    case 'fit': rfb.scaleViewport = true; break;
     case 'full':
       if (document.fullscreenElement) document.exitFullscreen();
       else document.documentElement.requestFullscreen().catch(() => {});
@@ -1432,6 +1869,61 @@ function createRfb(container, device, opts = {}, statusEl = null) {
   rfb.resizeSession = false;
   rfb.showDotCursor = true;
   if (opts.viewOnly) rfb.viewOnly = true;   // 墙缩略图只读：点击卡片=切入大屏控制，不直接操控
+  // 光标策略（2026-08-14 用户需求）：
+  // - 墙缩略图（viewOnly）：无光标（消除多 RFB 覆盖层光标串扰——PC"屏幕中原有的 X"即来自
+  //   墙缩略图/直控卡片的独立覆盖层）
+  // - 手机端控制画面：尊重服务端光标——ServerCursor 开 → 触屏点击/移动显示服务端圆点，
+  //   空闲 1.5s 自动隐藏；ServerCursor 关 → 服务端无光标 → 无光标。不使用 dot（showDotCursor=false）
+  // - PC 端聚焦/直控画面：保持 dot 圆点（showDotCursor=true），鼠标移入仅一个圆点
+  if (opts.viewOnly) {
+    rfb.showDotCursor = false;
+    // 覆盖 _refreshCursor：无论服务端光标/dot 一律渲染为空（clear → cursor:none + 覆盖层清空）
+    rfb._refreshCursor = () => { if (rfb._cursor) rfb._cursor.clear(); };
+  } else if (isMobile()) {
+    rfb.showDotCursor = false;
+    let cursorTimer = null;
+    const CURSOR_IDLE_MS = 1500;
+    const cursorHide = () => { if (rfb._cursor && rfb._cursor._canvas) rfb._cursor._hideCursor(); };
+    // 苹果风格触控光标（2026-08-14）：iOS 系统触摸指示器样式——半透明灰圆，
+    // 触屏点击/移动时显示、空闲 1.5s 自动隐藏。不显示服务端光标图像（白点黑边不合苹果风格）。
+    const APPLE_CURSOR_SIZE = 24;
+    const APPLE_CURSOR_R = 9;
+    const appleCursorRgba = (() => {
+      const S = APPLE_CURSOR_SIZE, cx = (S - 1) / 2, cy = (S - 1) / 2, R = APPLE_CURSOR_R;
+      const rgba = new Uint8Array(S * S * 4);
+      for (let y = 0; y < S; y++) {
+        for (let x = 0; x < S; x++) {
+          const d = Math.hypot(x - cx, y - cy);
+          const i = (y * S + x) * 4;
+          if (d <= R) {
+            rgba[i] = 128; rgba[i + 1] = 128; rgba[i + 2] = 128; // 深灰（2026-08-14 加深）
+            rgba[i + 3] = Math.round(217 * (1.0 - 0.6 * (d / R))); // 中心≈0.85 边缘渐隐
+          }
+        }
+      }
+      return rgba;
+    })();
+    const cursorShow = () => {
+      rfb._cursor.change(appleCursorRgba, Math.round((APPLE_CURSOR_SIZE - 1) / 2),
+                         Math.round((APPLE_CURSOR_SIZE - 1) / 2), APPLE_CURSOR_SIZE, APPLE_CURSOR_SIZE);
+    };
+    const cursorPoke = () => {
+      cursorShow();
+      clearTimeout(cursorTimer);
+      cursorTimer = setTimeout(cursorHide, CURSOR_IDLE_MS);
+    };
+    const cv = rfb._canvas;
+    const opt = { capture: true, passive: true };
+    cv.addEventListener('touchstart', cursorPoke, opt);
+    cv.addEventListener('touchmove', cursorPoke, opt);
+    cv.addEventListener('mousemove', cursorPoke, opt);
+    cv.addEventListener('mousedown', cursorPoke, opt);
+    cv.addEventListener('wheel', cursorPoke, { capture: true, passive: false });
+    rfb.addEventListener('disconnect', () => clearTimeout(cursorTimer));
+  }
+  // PC 端聚焦/直控画面：保持 noVNC 默认（showDotCursor=true）——服务端光标优先，
+  // PC 上显示的是设备端真实发送的光标（可验证 IPA 圆点图案是否编译生效）；
+  // ServerCursor 关闭时回落 dot 圆点。
   // 状态用红/蓝圆点表示（蓝=已连接，红=已断开/失败），不再显示文字
   const setStatus = (s) => {
     if (!statusEl) return;
@@ -1445,9 +1937,48 @@ function createRfb(container, device, opts = {}, statusEl = null) {
   rfb.addEventListener('disconnect', (e) => {
     rfb._farmConnected = false;  // 通道断开：按键区回退能力链路
     setStatus('已断开');
-    const code = e && e.detail && e.detail.code;
+    const d = e && e.detail ? e.detail : {};
+    const code = d.code;
     if (code === 4001) alert('设备已被其它端接管，已中断控制');
     else if (code === 4003) alert('设备隧道未建立（可能刚注册或正在重连），请稍候重试');
+    else if (code === 4005) {
+      // 设备隧道在线但 5901 画面服务不可用（设备端 VNC 服务未运行）：
+      // 与"设备离线"区分开，明确提示画面服务问题而非误导为设备掉线
+      toast('设备在线但画面服务不可用（设备端 VNC 服务未运行），请检查设备');
+    } else if (code && code !== 1000) {
+      // 非正常关闭（1006 等）：显示断开码便于定位（1000=正常断开不提示）
+      toast(`画面断开 (${code})${d.reason ? '：' + d.reason : ''}`);
+    }
+  });
+  // 设备 → 控制端剪贴板同步（方案 B 双向，2026-08-14）：
+  // 设备端剪贴板变化 → ClipboardManager.onChange → ClientCutText → 网关 FT_DATA 广播 wsSet
+  // → noVNC RFB 'clipboard' 事件（noVNC 内部已过滤 viewOnly，仅控制/直控会话触发）。
+  // 写入控制端剪贴板（"最后变化者胜"语义）+ toast 标注来源设备；设备端 setStringFromRemote
+  // 有抑制回调不回发，writeText 不触发 copy 事件，双向均无回环。
+  rfb.addEventListener('clipboard', (e) => {
+    const text = e && e.detail && e.detail.text;
+    if (!text) return;
+    const now = Date.now();
+    if (rfb._farmClipLastAt && now - rfb._farmClipLastAt < 1000) return; // 1s 节流防抖动
+    rfb._farmClipLastAt = now;
+    // 2026-08-14：同步标记"该文本刚来自设备"——IPA 容器原生剪贴板监听会因下方
+    // writeText 写入触发 Darwin 通知并推回本函数；farmLastClipText 同文本即跳过，
+    // 防止把设备内容原样回发设备（配合原生侧 clipboardLastPushed 双保险防循环）。
+    farmLastClipText = text;
+    // 2026-08-14 审查：writeText 失败不再静默吞错——显式 console.error + toast 便于定位
+    //（如非 https 安全上下文 navigator.clipboard 不可用、浏览器拒绝写入等）
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        console.debug(`[clip] 已写入控制端剪贴板（${text.length} 字符）`);
+      }).catch((err) => {
+        console.error('[clip] 写入控制端剪贴板失败：', err);
+        toast(`✗ 设备「${device.name}」剪贴板已同步但写入控制端失败：${(err && err.message) || err}`);
+      });
+    } else {
+      console.error('[clip] navigator.clipboard 不可用（需 https 安全上下文）');
+      toast(`✗ navigator.clipboard 不可用（需 https 安全上下文），设备「${device.name}」剪贴板无法写入控制端`);
+    }
+    toast(`已同步设备「${device.name}」剪贴板（${text.length} 字符）`);
   });
   rfb.addEventListener('credentialsrequired', () => {
     const p = prompt(`请输入 ${device.name} 的 VNC 密码：`);
@@ -1613,8 +2144,9 @@ function showTileMenu(tile, d, x, y) {
 // ---------- 移动端悬浮信号按钮（圆形可拖动 + 点击展开操作菜单 + 延迟信号状态） ----------
 
 /**
- * 将悬浮操作菜单定位到 FAB 附近且避开按钮区域。
- * 优先放在 FAB 下方，空间不足则上方；按可用空间裁剪 max-height，
+ * 将悬浮操作菜单定位到 FAB 附近且避开按钮区域（2026-08-14：改为水平展开）。
+ * 按 FAB 所在半屏决定方向——左半屏向右展开、右半屏向左展开（该侧空间不足自动换侧）；
+ * 水平方向完全避开 FAB 区域，垂直与 FAB 顶部对齐并按视口裁剪 max-height，
  * 保证菜单任何情况下都不覆盖悬浮按钮（修复"点穿"到菜单项的问题）。
  * 菜单必须已可见（调用前 remove hidden）以便测量真实尺寸。
  * @returns {void}
@@ -1625,20 +2157,24 @@ function positionOpsMenu() {
   const fr = fab.getBoundingClientRect();
   const vw = window.innerWidth, vh = window.innerHeight;
   const pad = 8, gap = 10;
-  const mw = menu.offsetWidth || 200;
+  const mw = menu.offsetWidth || 160;
   const rawH = menu.offsetHeight || 300;
-  const below = vh - fr.bottom - gap - pad;   // FAB 下方可用空间
-  const above = fr.top - gap - pad;           // FAB 上方可用空间
-  const placeBelow = below >= 120 && below >= above;
-  const maxH = Math.max(80, Math.min(rawH, placeBelow ? below : above));
+  const maxH = Math.max(80, Math.min(rawH, vh - pad * 2));
   menu.style.maxHeight = maxH + 'px';
   const mh = Math.min(rawH, maxH);
-  let top = placeBelow ? fr.bottom + gap : fr.top - gap - mh;
-  if (top < pad) top = pad;
-  if (top + mh > vh - pad) top = Math.max(pad, vh - mh - pad);
-  let left = fr.right - mw;                   // 与 FAB 右对齐，越界左移
+  // 水平：FAB 在左半屏 → 右侧展开；右半屏 → 左侧展开；空间不足自动换侧，钳制在视口内
+  const fabCenter = fr.left + fr.width / 2;
+  const spaceRight = vw - (fr.right + gap) - pad;
+  const spaceLeft = fr.left - gap - pad;
+  let left;
+  if (fabCenter < vw / 2) left = spaceRight >= mw ? fr.right + gap : fr.left - gap - mw;
+  else left = spaceLeft >= mw ? fr.left - gap - mw : fr.right + gap;
   if (left < pad) left = pad;
   if (left + mw > vw - pad) left = vw - mw - pad;
+  // 垂直：与 FAB 顶部对齐，约束在视口内（水平已避开 FAB，垂直重叠不遮按钮）
+  let top = fr.top;
+  if (top + mh > vh - pad) top = vh - mh - pad;
+  if (top < pad) top = pad;
   menu.style.left = left + 'px';
   menu.style.top = top + 'px';
   menu.style.right = 'auto';
@@ -1825,7 +2361,6 @@ $('batchBtn').addEventListener('click', (e) => {
   if (selectedDevices.size === 0) { exitBatchMode(); return; }
   showBatchMenu();
 });
-$('btnBack').onclick = exitFocus;
 $('btnCancelAdd').onclick = () => $('addModal').classList.add('hidden');
 document.addEventListener('click', (e) => {
   if (!e.target.closest('#tileMenu')) $('tileMenu').classList.add('hidden');
@@ -1840,12 +2375,18 @@ $('btnSync').addEventListener('click', (e) => {
   toggleSyncMode();
 });
 
-initFab();
-// 移动端悬浮菜单：展开/收起由 FAB 的 pointerup（未拖动=点击）处理；退出按钮独立绑定
-$('opsExit').addEventListener('click', () => {
-  $('opsMenu').classList.add('hidden');
-  exitFocus();
+// 2026-08-14：控制台 UI 屏蔽浏览器原生右键菜单——PC 右键 / 长按卡片、按钮、操作菜单
+// 不再弹出系统菜单；输入类元素（input/textarea/contenteditable）保留原生菜单（编辑/粘贴）。
+// 触控端 iOS 长按系统菜单已由 style.css 的 -webkit-touch-callout:none 禁用。
+document.addEventListener('contextmenu', (e) => {
+  const t = e.target;
+  if (t && (t.closest('input, textarea') || t.isContentEditable)) return;
+  e.preventDefault();
 });
+
+initFab();
+// 移动端悬浮菜单：展开/收起由 FAB 的 pointerup（未拖动=点击）处理；
+// 退出控制统一走「断开」（disc → doOp → disconnect + exitFocus），无独立退出按钮
 // 点击空白处收起悬浮菜单：用 pointerdown 而非 click —— noVNC canvas 的 gesturehandler
 // 在 touchstart 里 preventDefault/stopPropagation，会阻止合成 click 冒泡，导致点画面关不掉菜单；
 // pointerdown 先于 touch 事件派发且不受其 preventDefault 影响
@@ -1953,6 +2494,7 @@ window.addEventListener('resize', fitFocusPanel);
 (async () => {
   try {
     await refreshDevices();
+    restoreFocusFromUrl(); // 2026-08-14：刷新后自动恢复当前操作的设备画面（URL ?focus=）
     setInterval(() => { if (document.visibilityState === 'visible') refreshDevices().catch(() => {}); }, 6000);
   } catch (e) {
     if (e.message === 'unauthorized') showLogin();
