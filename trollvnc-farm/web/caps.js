@@ -6,61 +6,44 @@
 /** 右侧按键直发映射（RFB 通道，07 §4.1）：ks/code 为 X11 keysym 直发，ptr 为指针掩码（仅 power 用中键）
  *  图标：内联 SVG（苹果 SF Symbols 风格，stroke=currentColor 跟随主题色），无 SVG 时回退 emoji */
 export const KEY_DEFS = [
-  { key: 'home', title: 'Home 键', icon: '🏠',
-    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V20h14V9.5"/><path d="M9.5 20v-5.5h5V20"/></svg>',
-    ks: 0xff50, code: 'Home', events: { click: 'home', double: 'home.double', long: 'home.long' } },
+  // 按压语义统一为 5801 方案（2026-08-14）：单击立即发送 + 长按 800ms，双击/三击=自然连点
+  // （每次点击独立立即发送，iOS 系统层识别双击/三击，无 300ms 判定延迟；批量「调用能力」入口的
+  //  home.double/power.triple 等显式能力保留，不受影响）
   { key: 'power', title: '电源', icon: '⏻',
     svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v8"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>',
-    ptr: 2, events: { click: 'power', double: 'power.double', triple: 'power.triple', long: 'power.long' } },
+    ptr: 2, events: { click: 'power', long: 'power.long' } },
+  { key: 'home', title: 'Home', icon: '🏠',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V20h14V9.5"/><path d="M9.5 20v-5.5h5V20"/></svg>',
+    ks: 0xff50, code: 'Home', events: { click: 'home', long: 'home.long' } },
   { key: 'volup', title: '音量 +', icon: '🔊',
     svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h3l5 4V5L7 9H4z"/><path d="M15.5 8.5a4.5 4.5 0 0 1 0 7"/><path d="M19 4v6M16 7h6"/></svg>',
     ks: 0x1008ff13, code: 'AudioVolumeUp', events: { click: 'volup', down: 'volup.down', up: 'volup.up' } },
-  { key: 'voldn', title: '音量 −', icon: '🔉',
-    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h3l5 4V5L7 9H4z"/><path d="M15.5 8.5a4.5 4.5 0 0 1 0 7"/><path d="M16 7h6"/></svg>',
-    ks: 0x1008ff11, code: 'AudioVolumeDown', events: { click: 'voldn', down: 'voldn.down', up: 'voldn.up' } },
   { key: 'mute', title: '静音', icon: '🔇',
     svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h3l5 4V5L7 9H4z"/><path d="M22 4L4 20"/></svg>',
     ks: 0x1008ff12, code: 'AudioVolumeMute', events: { click: 'mute', down: 'mute.down', up: 'mute.up' } },
+  { key: 'voldn', title: '音量 −', icon: '🔉',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h3l5 4V5L7 9H4z"/><path d="M15.5 8.5a4.5 4.5 0 0 1 0 7"/><path d="M16 7h6"/></svg>',
+    ks: 0x1008ff11, code: 'AudioVolumeDown', events: { click: 'voldn', down: 'voldn.down', up: 'voldn.up' } },
   { key: 'briup', title: '亮度 +', icon: '☀️',
     svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
     ks: 0x1008ff03, code: 'BrightnessUp', events: { click: 'briup', down: 'briup.down', up: 'briup.up' } },
   { key: 'bridn', title: '亮度 −', icon: '🌙',
     svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>',
     ks: 0x1008ff02, code: 'BrightnessDown', events: { click: 'bridn', down: 'bridn.down', up: 'bridn.up' } },
-  { key: 'keyboard', title: '键盘', icon: '⌨️',
-    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6.5" width="19" height="11" rx="2"/><path d="M6 11h1M10 11h1M14 11h1M18 11h1M6 14.5h1M10 14.5h1M14 14.5h1M18 14.5h1"/></svg>',
-    ks: 0x1008ff2e, code: 'XF86Keyboard', events: { click: 'keyboard' } },
+  { key: 'snapshot', title: '截屏', icon: '✂️',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 5H5V1"/><path d="M23 19H19V23"/><path d="M5 19h14V5H5z" fill="currentColor" fill-opacity=".15" stroke="currentColor"/></svg>',
+    ks: 0x1008ff80, code: 'CustomSnapshot', events: { click: 'snapshot' } },
   { key: 'spotlight', title: '搜索', icon: '🔍',
     svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.5-4.5"/></svg>',
     ks: 0x1008ff1d, code: 'XF86Search', events: { click: 'spotlight' } },
-  { key: 'snapshot', title: 'Home+Power截屏', icon: '📸',
-    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h2.5L8 5.5h8L17.5 8H20a1.5 1.5 0 0 1 1.5 1.5V18A1.5 1.5 0 0 1 20 19.5H4A1.5 1.5 0 0 1 2.5 18V9.5A1.5 1.5 0 0 1 4 8z"/><circle cx="12" cy="13.5" r="3.5"/></svg>',
-    ks: 0x1008ff80, code: 'CustomSnapshot', events: { click: 'snapshot' } },
-  { key: 'hwlock', title: '键盘锁/解锁', icon: '🔒',
-    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5v-3a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15" r="1.5" fill="currentColor" stroke="none"/></svg>',
-    ks: 0x1008ff81, code: 'CustomHwLock', events: { click: 'hwlock' } },
-  { key: 'releasekeys', title: '释放按键', icon: '🙊',
-    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="9" width="18" height="9" rx="2"/><path d="M6.5 13h1M10 13h1M13.5 13h1M17 13h1M7 16h10"/><path d="M12 2v5M9.5 4.5L12 2l2.5 2.5"/></svg>',
-    ks: 0x1008ff82, code: 'CustomReleaseKeys', events: { click: 'releasekeys' } },
-];
-
-/** 动作区能力（控制台，点击 invoke 直达设备 executor）——自包含定义
- *  2026-08-13 精简：删 type.text（屏幕直接打字，仅 ASCII 无场景）、clipboard.set（并入 type.paste 内部流程）、
- *  screenshot 按钮（能力保留供卡片墙内部拉图，动作区无需手动截图）；保留 type.paste（跨设备粘贴，弹窗自动捕获
- *  控制端剪贴板 Ctrl+V/长按粘贴）+ clipboard.get（远程读设备剪贴板窄场景） */
-export const ACT_DEFS = [
-  { id: 'type.paste',  title: '粘贴输入',   icon: '📋', params: [{ name: 'text', type: 'string', required: true }] },
-  { id: 'clipboard.get', title: '获取剪贴板', icon: '📋', params: [] },
-];
-
-/** 卡片 ⋯ 菜单「常用能力」（点击 invoke 直达设备）——自包含定义 */
-export const QUICK_ACTIONS = [
-  { id: 'service.restart', title: '重启服务', icon: '🔄', params: [] },
+  { key: 'keyboard', title: '键盘', icon: '⌨️',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6.5" width="19" height="11" rx="2"/><path d="M6 11h1M10 11h1M14 11h1M18 11h1M6 14.5h1M10 14.5h1M14 14.5h1M18 14.5h1"/></svg>',
+    ks: 0x1008ff2e, code: 'XF86Keyboard', events: { click: 'keyboard' } },
 ];
 
 /** 批量「调用能力」清单（含 category 供分组渲染；点击 batchInvoke）——自包含定义，固化现状批量菜单能力 */
 export const BATCH_CAPS = [
-  { id: 'home',          title: 'Home 键',   icon: '🏠', category: 'hid', params: [] },
+  { id: 'home',          title: 'Home',      icon: '🏠', category: 'hid', params: [] },
   { id: 'power',         title: '电源',      icon: '⏻',  category: 'hid', params: [] },
   { id: 'volup',         title: '音量 +',    icon: '🔊', category: 'hid', params: [] },
   { id: 'voldn',         title: '音量 −',    icon: '🔉', category: 'hid', params: [] },
@@ -80,18 +63,6 @@ export const BATCH_CAPS = [
   { id: 'service.restart', title: '重启服务', icon: '🔄', category: 'service', params: [] },
   { id: 'settings.generateKeys', title: '生成证书', icon: '🔐', category: 'native', params: [] },
   { id: 'settings.searchGateway', title: '搜索网关', icon: '🔍', category: 'native', params: [] },
-  { id: 'clients.count',  title: '客户端数量', icon: '🔢', category: 'system', params: [] },
-  { id: 'clients.list',   title: '客户端列表', icon: '📋', category: 'system', params: [] },
-  { id: 'clients.disconnect', title: '断开客户端', icon: '🔌', category: 'system', params: [{ name: 'clientId', type: 'string', required: true }] },
-  { id: 'clients.block',  title: '阻止客户端', icon: '🚫', category: 'system', params: [{ name: 'clientId', type: 'string', required: true }] },
-  { id: 'clients.unblock',title: '解除阻止', icon: '✅', category: 'system', params: [{ name: 'host', type: 'string', required: true }] },
-  { id: 'clients.blocked.list', title: '黑名单列表', icon: '📜', category: 'system', params: [] },
-  { id: 'sys.version',    title: '版本信息', icon: '🏷️', category: 'native', params: [] },
-  { id: 'sys.resolution', title: '屏幕分辨率', icon: '📐', category: 'native', params: [] },
-  { id: 'sys.rotation',   title: '当前旋转', icon: '🔄', category: 'native', params: [] },
-  { id: 'sys.bonjour.txt',title: 'Bonjour TXT', icon: '📡', category: 'native', params: [] },
-  { id: 'gateway.isConnected', title: '网关状态', icon: '🟢', category: 'gateway', params: [] },
-  { id: 'gateway.reconnect',   title: '手动重连', icon: '🔌', category: 'gateway', params: [] },
 ];
 
 /** 配置表单定义（契约）：与设备端 _registerConfigSchemas 对齐（37 项全量保留——均有真实实现） */
@@ -136,11 +107,6 @@ export const CONFIG_DEFS = [
 ];
 export const CONFIG_BY_KEY = new Map(CONFIG_DEFS.map((s) => [s.key, s]));
 
-/** reload 分区标签（配置面板按此分区显示） */
-export const RELOAD_LABELS = {
-  instant: '立即生效', hot: '热重载', gateway: '网关刷新', restart: '需重启服务',
-};
-
 /** 能力 category 中文分组标题（批量菜单按 category 分组显示） */
 export const CATEGORY_LABELS = {
   hid: '硬件按键', touch: '触控操作', stylus: '触控笔', system: '系统管理',
@@ -162,19 +128,6 @@ export function groupByCategory(caps) {
     map.get(cat).push(meta);
   }
   return map;
-}
-
-/**
- * 按 reload 分区静态配置表单定义
- * @returns { instant: [], hot: [], gateway: [], restart: [] }
- */
-export function configSchemaByReload() {
-  const groups = { instant: [], hot: [], gateway: [], restart: [] };
-  for (const item of CONFIG_DEFS) {
-    const r = item.reload || 'instant';
-    if (groups[r]) groups[r].push(item);
-  }
-  return groups;
 }
 
 /**
@@ -263,8 +216,3 @@ export async function batchRestart(apiBase, deviceIds) {
   return res.json();
 }
 
-/** 卡片 ⋯ 菜单「常用参数」编排清单（QUICK_CONFIG_GROUPS：分组 + 键名，schema 从 CONFIG_DEFS 取） */
-export const QUICK_CONFIG_GROUPS = [
-  { title: '画面与性能', keys: ['Scale', 'FrameRateSpec', 'PerformanceMode'] },
-  { title: '输入与交互', keys: ['ClipboardEnabled', 'ViewOnly', 'Notifications'] },
-];

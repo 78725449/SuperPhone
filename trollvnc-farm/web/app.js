@@ -3,7 +3,7 @@
 // 重新拉取 patch 后的内容，避免旧版缓存（同 gesturehandler.js?v=3 方案）
 import RFB from '/novnc/core/rfb.js?v=2';
 import Keyboard from '/novnc/core/input/keyboard.js?v=2';
-import { configSchemaByReload, invokeCap, setConfigs, RELOAD_LABELS, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, ACT_DEFS, QUICK_CONFIG_GROUPS, QUICK_ACTIONS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=4';
+import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=4';
 import { attachPress } from './press.js';
 
 const $ = (id) => document.getElementById(id);
@@ -861,23 +861,8 @@ function renderCapOps(container, device) {
     frag.appendChild(b);
   }
 
-  // 动作区：ACT_DEFS 自包含定义，单击直执行（2026-08-13：直接遍历定义数组，无元数据查询）
-  if (ACT_DEFS.length > 0) {
-    const actTitle = document.createElement('div');
-    actTitle.className = 'cap-group-title';
-    actTitle.textContent = '动作';
-    frag.appendChild(actTitle);
-    for (const meta of ACT_DEFS) {
-      const b = document.createElement('button');
-      b.type = 'button'; b.className = 'op';
-      b.dataset.cap = meta.id; b.title = meta.title;
-      b.innerHTML = '<span class="cap-icon">' + escapeHtml(meta.icon || '?') + '</span><span class="cap-name">' + escapeHtml(meta.title || meta.id) + '</span>';
-      b.addEventListener('click', () => doInvoke(meta));
-      frag.appendChild(b);
-    }
-    // 本地动作：无（2026-08-14 审查删除「粘贴到设备」弹窗——iOS 键盘粘贴按钮实测不存在，
-    // 弹窗多步体验差且用户拍板 iOS 不提供正向粘贴；控制端→设备剪贴板仅走 copy 事件协议通道）
-  }
+  // 动作区已移除（2026-08-15：ACT_DEFS 清空——type.paste 走 Ctrl+V 原子链路、clipboard.get 走
+  // 设备→控制端自动同步；capabilities 架构精简后该区不再渲染任何能力按钮）
   container.appendChild(frag);
 }
 
@@ -899,31 +884,6 @@ function toast(msg) {
   el.style.opacity = '1';
   if (farmToastTimer) clearTimeout(farmToastTimer);
   farmToastTimer = setTimeout(() => { el.style.opacity = '0'; }, 2000);
-}
-
-/**
- * 调用设备能力（通过网关 invoke API，Phase 4.7）
- * 无参能力直接调用；有参能力弹出参数输入；成功/失败均有 toast 反馈
- * @param {object} meta 能力元数据（{id, title, params, ...}）
- * @param {string} [deviceId] 显式指定目标设备 id；缺省时回退到全局 focus 设备
- * @returns {Promise<void>}
- */
-async function doInvoke(meta, deviceId) {
-  const devId = deviceId || (focus && focus.device && focus.device.id);
-  if (!devId) return;
-  // 有参数的能力：弹出简易表单（string 输入框自动聚焦 + 捕获控制端剪贴板 paste，便于跨设备粘贴）
-  let params = {};
-  if (Array.isArray(meta.params) && meta.params.length > 0) {
-    params = await promptParams(meta.params, meta.title);
-    if (params === null) return; // 用户取消
-  }
-  try {
-    const r = await invokeCap('', devId, meta.id, params);
-    if (r && r.ok) toast(`✓ 已执行：${meta.title}`);
-    else toast(`✗ 能力「${meta.title}」执行失败：${r?.ack?.error || '未知错误'}`);
-  } catch (e) {
-    toast(`✗ 能力「${meta.title}」调用失败：${e.message}`);
-  }
 }
 
 /**
@@ -1702,101 +1662,6 @@ function doOp(op) {
       break;
     case 'disc': try { rfb.disconnect(); } catch (e) {} exitFocus(); break;
   }
-}
-
-// ---------- 配置面板（二级菜单，按 reload 分区显示，Phase 4.7） ----------
-
-/**
- * 显示设备配置面板：拉取当前配置值 + 按 schema 渲染表单 + 按 reload 分区
- * @param {object} [device] 目标设备对象；缺省时回退到全局 focus 设备（控制台场景）
- */
-async function showConfigPanel(device) {
-  const dev = device || (focus && focus.device);
-  if (!dev) return;
-  const modal = document.createElement('div');
-  modal.className = 'modal';
-  const card = document.createElement('div');
-  card.className = 'modal-card';
-  card.innerHTML = `<h3>${escapeHtml(dev.name)} - 设备配置</h3>`;
-
-  // 拉取当前配置值
-  let configs = {};
-  try {
-    const resp = await fetch(`/api/devices/${encodeURIComponent(dev.id)}/configs`, {
-      headers: window._farmAuthHeader || {},
-    });
-    if (resp.ok) configs = (await resp.json()).configs || {};
-  } catch (e) { /* ignore */ }
-
-  // 按 reload 分区渲染表单（2026-08-13：静态 CONFIG_DEFS，不再依赖设备上报）
-  const groups = configSchemaByReload();
-  const inputs = {};
-  for (const [reload, items] of Object.entries(groups)) {
-    if (items.length === 0) continue;
-    const sec = document.createElement('div');
-    sec.className = 'cfg-section';
-    sec.innerHTML = `<div class="cfg-sec-title">${RELOAD_LABELS[reload] || reload}</div>`;
-    for (const schema of items) {
-      const val = configs[schema.key];
-      const row = document.createElement('label');
-      row.className = 'cfg-row';
-      row.textContent = schema.title || schema.key;
-      const inp = buildConfigInput(schema, val);
-      inputs[schema.key] = inp;
-      row.appendChild(inp);
-      sec.appendChild(row);
-    }
-    card.appendChild(sec);
-  }
-
-  // 保存按钮
-  const btns = document.createElement('div');
-  btns.className = 'modal-btns';
-  const cancel = document.createElement('button');
-  cancel.textContent = '取消';
-  const save = document.createElement('button');
-  save.className = 'primary'; save.textContent = '保存';
-  btns.appendChild(cancel); btns.appendChild(save);
-  card.appendChild(btns);
-  modal.appendChild(card);
-  document.body.appendChild(modal);
-
-  cancel.onclick = () => modal.remove();
-  save.onclick = async () => {
-    const cfg = {};
-    for (const [key, inp] of Object.entries(inputs)) {
-      cfg[key] = readConfigValue(inp);
-    }
-    try {
-      const r = await setConfigs('', dev.id, cfg);
-      const fails = Object.entries(r.results || {}).filter(([, v]) => !v.ok);
-      if (fails.length === 0) {
-        modal.remove();
-        alert('配置已保存');
-      } else {
-        const msg = fails.map(([k, v]) => `${k}: ${v.error || v.reload}`).join('\n');
-        alert(`部分配置失败：\n${msg}`);
-      }
-    } catch (e) {
-      alert(`保存失败：${e.message}`);
-    }
-  };
-}
-
-/**
- * 格式化配置值用于菜单显示（bool→是/否，enum→枚举标题，其余原样）
- * @param schema 配置 schema
- * @param val 当前值
- * @returns 展示字符串
- */
-function formatConfigVal(schema, val) {
-  if (val === undefined || val === null) return '—';
-  if (schema.type === 'bool') return val ? '开' : '关';
-  if (schema.type === 'enum' && Array.isArray(schema.enumValues)) {
-    const i = schema.enumValues.findIndex((v) => String(v) === String(val));
-    if (i >= 0 && Array.isArray(schema.enumTitles) && schema.enumTitles[i] !== undefined) return String(schema.enumTitles[i]);
-  }
-  return String(val);
 }
 
 /**
