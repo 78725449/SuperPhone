@@ -1002,48 +1002,45 @@ async function readClipboardText() {
   return await navigator.clipboard.readText();
 }
 
-// 剪贴板同步去重状态：
-// farmLastClipText = 最近一次"已成功同步/刚来自设备"的剪贴板文本（去重：同文本不再重复同步/回发）
-// 2026-08-14 审查收敛：删除 farmPendingClip/consumePendingClip/trySyncClipboardOnResume/isIOSDevice——
-// 控制端→设备写剪贴板仅保留 copy 事件（用户主动复制即同步）；点卡片/切前台隐式同步已去除。
-let farmLastClipText = null;
+// 剪贴板"来源"记录（2026-08-14 按用户思路重构：从谁复制的不推送给谁）：
+// RFB 收到某设备剪贴板文本时记录 {text, deviceId}；控制端剪贴板变化推同文本时
+// 排除来源设备（避免回发循环），仍可发给其他设备（保留多设备群控语义）。
+// 替代原全局 farmLastClipText 同文本去重（后者会误伤多设备：B1 复制的文本不再同步给 B2）。
+let farmClipSource = { text: null, deviceId: null };
 
 // 控制端→受控设备剪贴板同步核心（2026-08-14 抽出共用）：
 // 把控制端剪贴板文本经 RFB clipboardPasteFrom（Extended Clipboard 协议通道，UTF-8）写入
 // 当前连接会话（聚焦 focus.rfb + 直控 directRfbs），受设备 ClipboardEnabled 门控；
-// 无连接会话静默（不做任何同步、不提示）；成功发给任一会话则记录 farmLastClipText 供去重。
+// 无连接会话静默（不做任何同步、不提示）。
 // @param {string} txt 控制端剪贴板文本
-function farmPushClipboardToSessions(txt) {
+// @param {string|null} excludeDeviceId 排除回发的来源设备（"从谁复制的不推送给谁"）
+function farmPushClipboardToSessions(txt, excludeDeviceId) {
   if (!txt) return;
-  // 2026-08-14：同文本去重——copy 事件与 IPA 原生监听（__farmNativeClipboard）可能双触发同一文本，
-  // 重复 clipboardPasteFrom 会让被控端多次 setStringFromRemote（抑制计数叠加、误吞后续真实复制），
-  // 且同文本重复下发无意义。已同步过的文本直接跳过。
-  if (farmLastClipText && txt === farmLastClipText) return;
   const clipOn = (d) => !(d && d.configs && d.configs.ClipboardEnabled === false);
   const sent = new Set();
-  if (focus && focus.device && focus.rfb && focus.rfb._farmConnected && clipOn(focus.device)) {
+  if (focus && focus.device && focus.rfb && focus.rfb._farmConnected && clipOn(focus.device) &&
+      focus.device.id !== excludeDeviceId) {
     sent.add(focus.rfb);
   }
   for (const [id, rfb] of directRfbs) {
     if (!rfb._farmConnected) continue;
+    if (id === excludeDeviceId) continue;
     const wi = wallInstances.get(id);
     if (wi && !clipOn(wi.device)) continue;
     sent.add(rfb);
   }
   sent.forEach((rfb) => { try { rfb.clipboardPasteFrom(txt); } catch (_) { /* 静默 */ } });
-  // 已同步给连接会话 → 视为已消费（同文本不再重复同步）
-  if (sent.size > 0) farmLastClipText = txt;
 }
 
 // IPA 容器原生桥（2026-08-14）：控制端设备装 IPA 时，App 原生层监听本机剪贴板
 // （TVNCConsoleWebViewController → evaluateJavaScript）推文本至此。无桥环境（浏览器/电脑）
-// 该函数永不触发。与 copy 事件同一条发送路径，防循环由两层保证：
-//   1) 原生侧 clipboardLastPushed 同文本跳过（RFB 写入 writeText 的回显）；
-//   2) 此处 farmLastClipText 同文本跳过（被控端 RFB 刚写入的文本不回发）。
+// 该函数永不触发。与 copy 事件同一条发送路径；防循环：若文本恰为最近 RFB 收到的
+// （控制端剪贴板被 RFB 写入的回显），则排除来源设备回发（"从谁复制的不推送给谁"），
+// 配合设备端回显抑制（setStringFromRemote 文本对比）双保险。
 window.__farmNativeClipboard = (text) => {
   if (!text) return;
-  if (farmLastClipText && text === farmLastClipText) return; // RFB 写入回显/已同步文本
-  farmPushClipboardToSessions(text);
+  const isEcho = farmClipSource.text !== null && text === farmClipSource.text;
+  farmPushClipboardToSessions(text, isEcho ? farmClipSource.deviceId : null);
 };
 
 // 控制端复制（Ctrl+C / 菜单复制）→ 协议通道同步到"当前连接会话"（2026-08-14 统一协议通道）。
@@ -1056,7 +1053,10 @@ document.addEventListener('copy', async () => {
     return; // 复制动作本身已成功；同步失败不阻断复制（非降级路径，仅跳过同步）
   }
   if (!txt) return;
-  farmPushClipboardToSessions(txt);
+  // 与 __farmNativeClipboard 一致：若复制的恰是"刚从被控端同步来的内容"（如全选再复制），
+  // 排除来源设备回发，避免把同一文本送回来源设备（"从谁复制的不推送给谁"）。
+  const isFromDevice = farmClipSource.text !== null && txt === farmClipSource.text;
+  farmPushClipboardToSessions(txt, isFromDevice ? farmClipSource.deviceId : null);
 });
 
 /**
@@ -1998,10 +1998,10 @@ function farmWriteClipboardToControl(text, devName) {
     const now = Date.now();
     if (rfb._farmClipLastAt && now - rfb._farmClipLastAt < 1000) return; // 1s 节流防抖动
     rfb._farmClipLastAt = now;
-    // 2026-08-14：同步标记"该文本刚来自设备"——IPA 容器原生剪贴板监听会因下方
-    // 写入触发 Darwin 通知并推回本函数；farmLastClipText 同文本即跳过，
-    // 防止把设备内容原样回发设备（配合原生侧 clipboardLastPushed 双保险防循环）。
-    farmLastClipText = text;
+    // 2026-08-14：记录"该文本来自设备 device.id"——控制端剪贴板被下方写入后，原生监听
+    // 推回同文本时按来源排除（"从谁复制的不推送给谁"），避免把设备内容原样回发设备；
+    // 配合原生侧 clipboardLastPushed 双保险防循环。多设备场景仍可同步给其他设备。
+    farmClipSource = { text, deviceId: device.id };
     farmWriteClipboardToControl(text, device.name);
   });
   rfb.addEventListener('credentialsrequired', () => {
