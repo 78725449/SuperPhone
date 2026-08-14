@@ -2041,13 +2041,8 @@ function openAdd() {
   };
 }
 /**
- * 显示卡片右下角⋯菜单（2026-08-13：自包含定义数组驱动，无元数据查询）
- * 原则：每个条目都是前端自包含的能力/配置定义（CONFIG_DEFS / QUICK_ACTIONS），
- * 点击即直接调用设备（setConfigs / invoke），不搞运行时发现。
- * 结构：
- *   0) 常用参数（QUICK_CONFIG_GROUPS，直接可调，保存即 setConfigs 同步）
- *   1) 常用能力（QUICK_ACTIONS，如 service.restart，点击 invoke 直达设备）
- *   2) 更多参数入口（→ 完整配置面板，其余参数按 reload 分区）
+ * 显示卡片右下角⋯菜单（2026-08-15：仅保留「编辑」「删除」——用户拍板去除全部参数/能力/更多参数设置）
+ * 编辑：改名（设备名）+ 改 ID（排序号）；删除：清除设备记录并移除卡片（直接删除无确认）。
  * @param {HTMLElement} tile 卡片元素（用于定位菜单）
  * @param {object} d 设备对象
  * @param {number} x 点击位置 clientX
@@ -2058,118 +2053,18 @@ function showTileMenu(tile, d, x, y) {
   const m = $('tileMenu');
   m.innerHTML = '';
 
-  // 0) 参数段：QUICK_CONFIG_GROUPS 有意义参数清单（悬停/点击展开该项编辑，保存即 setConfigs 同步）
-  // 2026-08-13：schema 静态契约（CONFIG_BY_KEY），不再依赖设备上报 configSchema
-  const schemaByKey = CONFIG_BY_KEY;
-  const cfgVals = (d.configs && typeof d.configs === 'object') ? d.configs : {};
-  let paramGroupIdx = 0;
-  for (const grp of QUICK_CONFIG_GROUPS) {
-    const items = grp.keys.map((k) => schemaByKey.get(k)).filter(Boolean);
-    if (items.length === 0) continue;
-    if (paramGroupIdx > 0) {
-      const divider = document.createElement('hr');
-      divider.className = 'cap-group-divider';
-      m.appendChild(divider);
-    }
-    paramGroupIdx++;
-    const title = document.createElement('div');
-    title.className = 'cap-group-title';
-    title.textContent = grp.title;
-    m.appendChild(title);
-    for (const schema of items) {
-      const wrap = document.createElement('div');
-      wrap.className = 'qp-item';
-      const head = document.createElement('button');
-      head.type = 'button';
-      head.innerHTML = '<span class="cap-icon">⚙</span><span class="cap-name">' + escapeHtml(schema.title || schema.key) + '</span><span class="qp-val">' + escapeHtml(formatConfigVal(schema, cfgVals[schema.key])) + '</span>';
-      const editor = document.createElement('div');
-      editor.className = 'qp-editor hidden';
-      const inp = buildConfigInput(schema, cfgVals[schema.key]);
-      const save = document.createElement('button');
-      save.type = 'button';
-      save.className = 'qp-save';
-      save.textContent = '保存';
-      save.onclick = async () => {
-        try {
-          const r = await setConfigs('', d.id, { [schema.key]: readConfigValue(inp) });
-          const res = r.results && r.results[schema.key];
-          if (res && res.ok) {
-            toast(`✓ ${schema.title || schema.key} 已保存`);
-            const newVal = formatConfigVal(schema, readConfigValue(inp));
-            const vEl = head.querySelector('.qp-val');
-            if (vEl) vEl.textContent = newVal;
-            editor.classList.add('hidden');
-            wrap.__qpManual = false; // 仅成功时解锁（qpClose 与此收起重复，此处已收起）
-          } else {
-            toast(`✗ ${schema.title || schema.key} 保存失败：${(res && res.error) || '未知错误'}`);
-          }
-        } catch (e) {
-          toast(`✗ ${schema.title || schema.key} 保存失败：${e.message}`);
-        }
-      };
-      editor.appendChild(inp);
-      editor.appendChild(save);
-      wrap.appendChild(head);
-      wrap.appendChild(editor);
-      // 交互：hover 展开（PC），点击标题锁定/解锁（触屏无 hover）。锁定状态下移出不收起。
-      wrap.__qpManual = false;
-      const qpOpen = () => editor.classList.remove('hidden');
-      const qpClose = () => editor.classList.add('hidden');
-      wrap.addEventListener('mouseenter', qpOpen);
-      wrap.addEventListener('mouseleave', () => { if (!wrap.__qpManual) qpClose(); });
-      head.addEventListener('click', () => {
-        wrap.__qpManual = !wrap.__qpManual;
-        if (wrap.__qpManual) qpOpen(); else qpClose();
-      });
-      m.appendChild(wrap);
-    }
-  }
+  // 编辑：改名（设备名）+ 改 ID（排序号）——ID 不显示，仅决定卡片排列位置
+  const editBtn = document.createElement('button');
+  editBtn.innerHTML = '<span class="cap-icon">✏️</span><span class="cap-name">编辑</span>';
+  editBtn.addEventListener('click', () => { m.classList.add('hidden'); openEditModal(d); });
+  m.appendChild(editBtn);
 
-  // 1) 常用能力段：QUICK_ACTIONS 自包含定义（点击直接 invoke 直达设备）
-  const actMetas = QUICK_ACTIONS;
-  if (actMetas.length > 0) {
-    const actDivider = document.createElement('hr');
-    actDivider.className = 'cap-group-divider';
-    m.appendChild(actDivider);
-    const actTitle = document.createElement('div');
-    actTitle.className = 'cap-group-title';
-    actTitle.textContent = '能力';
-    m.appendChild(actTitle);
-    for (const meta of actMetas) {
-      const b = document.createElement('button');
-      b.dataset.cap = meta.id;
-      b.innerHTML = '<span class="cap-icon">' + escapeHtml(meta.icon || '?') + '</span><span class="cap-name">' + escapeHtml(meta.title || meta.id) + '</span>';
-      b.addEventListener('click', () => {
-        m.classList.add('hidden');
-        doInvoke(meta, d.id);
-      });
-      m.appendChild(b);
-    }
-  }
-
-  // 2) 更多参数入口 → 完整配置面板（其余参数按 reload 分区）
-  const moreDivider = document.createElement('hr');
-  moreDivider.className = 'cap-group-divider';
-  m.appendChild(moreDivider);
-  const moreBtn = document.createElement('button');
-  moreBtn.innerHTML = '<span class="cap-icon">⚙</span><span class="cap-name">更多参数</span>';
-  moreBtn.addEventListener('click', () => {
-    m.classList.add('hidden');
-    showConfigPanel(d);
-  });
-  m.appendChild(moreBtn);
-
-  // 3) 设置排序号（2026-08-15）：决定卡片墙从左到右、从上到下的排列位置；排序号不显示
-  const sortDivider = document.createElement('hr');
-  sortDivider.className = 'cap-group-divider';
-  m.appendChild(sortDivider);
-  const sortBtn = document.createElement('button');
-  sortBtn.innerHTML = '<span class="cap-icon">↕</span><span class="cap-name">设置排序号</span>';
-  sortBtn.addEventListener('click', () => {
-    m.classList.add('hidden');
-    openOrderModal(d);
-  });
-  m.appendChild(sortBtn);
+  // 删除：清除该设备记录并移除卡片（2026-08-15：直接删除，无二次确认——用户拍板）
+  const delBtn = document.createElement('button');
+  delBtn.style.color = 'var(--bad)';
+  delBtn.innerHTML = '<span class="cap-icon">🗑️</span><span class="cap-name">删除</span>';
+  delBtn.addEventListener('click', () => { m.classList.add('hidden'); deleteDeviceCard(d); });
+  m.appendChild(delBtn);
 
   m.classList.remove('hidden');
   const rect = tile.getBoundingClientRect();
@@ -2177,50 +2072,67 @@ function showTileMenu(tile, d, x, y) {
   m.style.top = Math.min(y, window.innerHeight - 160) + 'px';
 }
 
-// ---------- 设置排序号（2026-08-15） ----------
-let orderModalDevice = null; // 当前打开排序号弹窗对应的设备
+// ---------- 编辑设备（改名 + 改 ID 排序号，2026-08-15） ----------
+let editModalDevice = null; // 当前打开编辑弹窗对应的设备
 
 /**
- * 打开「设置排序号」弹窗（复用 .modal 样式；不用 window.prompt——IPA 容器 WKWebView 不支持）。
- * 排序号仅决定卡片墙从左到右、从上到下的排列位置，不显示在卡片上。
+ * 打开「编辑设备」弹窗：第一行 ID（排序号，决定卡片排列位置，不显示）、第二行名称（设备名/卡片标签）。
+ * 不用 window.prompt——IPA 容器 WKWebView 不支持。
  * @param {object} d 设备对象
  */
-function openOrderModal(d) {
-  orderModalDevice = d;
-  $('orderTitle').textContent = `设置排序号 · ${d.name}`;
-  const cur = typeof d.order === 'number' ? String(d.order) : '';
-  $('fOrder').value = cur;
-  $('orderModal').classList.remove('hidden');
-  setTimeout(() => $('fOrder').focus(), 50);
+function openEditModal(d) {
+  editModalDevice = d;
+  $('editTitle').textContent = `编辑设备 · ${d.name}`;
+  $('fEditOrder').value = typeof d.order === 'number' ? String(d.order) : '';
+  $('fEditName').value = d.name || '';
+  $('editModal').classList.remove('hidden');
+  setTimeout(() => $('fEditName').focus(), 50);
 }
 
 /**
- * 保存排序号：校验 0-99999 整数 → PATCH 网关 → 刷新设备墙。
- * 留空 = 清除排序号（回退按注册时间排序）。
+ * 保存编辑：ID（0-99999 整数或空=清除）+ 名称（非空）→ PATCH 网关 → 刷新设备墙。
  * @returns {Promise<void>}
  */
-async function saveOrderModal() {
-  if (!orderModalDevice) return;
-  const raw = $('fOrder').value.trim();
-  const val = raw === '' ? null : Number(raw);
-  if (val !== null && (!Number.isInteger(val) || val < 0 || val > 99999)) {
-    toast('✗ 排序号须为 0-99999 的整数，或留空清除');
+async function saveEditModal() {
+  if (!editModalDevice) return;
+  const rawOrder = $('fEditOrder').value.trim();
+  const order = rawOrder === '' ? null : Number(rawOrder);
+  if (order !== null && (!Number.isInteger(order) || order < 0 || order > 99999)) {
+    toast('✗ ID 须为 0-99999 的整数，或留空清除');
     return;
   }
-  const devId = orderModalDevice.id;
+  const name = $('fEditName').value.trim();
+  if (!name) { toast('✗ 名称不能为空'); return; }
+  const devId = editModalDevice.id;
   try {
-    await api(`/api/devices/${encodeURIComponent(devId)}`, { method: 'PATCH', body: JSON.stringify({ order: val }) });
-    $('orderModal').classList.add('hidden');
-    toast(val === null ? `已清除「${orderModalDevice.name}」排序号` : `已设置「${orderModalDevice.name}」排序号 ${val}`);
-    orderModalDevice = null;
+    await api(`/api/devices/${encodeURIComponent(devId)}`, { method: 'PATCH', body: JSON.stringify({ name, order }) });
+    $('editModal').classList.add('hidden');
+    toast(`已更新「${name}」`);
+    editModalDevice = null;
     await refreshDevices();
   } catch (e) {
-    toast(`✗ 设置排序号失败：${e.message}`);
+    toast(`✗ 保存失败：${e.message}`);
   }
 }
-$('btnSaveOrder').onclick = () => saveOrderModal();
-$('btnCancelOrder').onclick = () => { $('orderModal').classList.add('hidden'); orderModalDevice = null; };
-$('fOrder').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveOrderModal(); });
+
+/**
+ * 删除设备卡片：DELETE 网关记录 → 刷新设备墙（离线卡片/直控连接/批量选中由 refreshDevices 清理）。
+ * @param {object} d 设备对象
+ * @returns {Promise<void>}
+ */
+async function deleteDeviceCard(d) {
+  try {
+    await api(`/api/devices/${encodeURIComponent(d.id)}`, { method: 'DELETE' });
+    toast(`已删除「${d.name}」`);
+    await refreshDevices();
+  } catch (e) {
+    toast(`✗ 删除失败：${e.message}`);
+  }
+}
+$('btnSaveEdit').onclick = () => saveEditModal();
+$('btnCancelEdit').onclick = () => { $('editModal').classList.add('hidden'); editModalDevice = null; };
+$('fEditName').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveEditModal(); });
+
 
 // ---------- 移动端悬浮信号按钮（圆形可拖动 + 点击展开操作菜单 + 延迟信号状态） ----------
 
