@@ -14,6 +14,13 @@
   --safe-bottom: env(safe-area-inset-bottom);
   --safe-left: env(safe-area-inset-left);
 }
+/* 2026-08-15：页面背景跟随系统主题——画面边界（#focusScreen 透出 body 背景）随系统明暗变化；
+   其余 UI 面板仍用固定深色变量，避免大面积改动破坏布局观感 */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #eef1f6;
+  }
+}
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 /* 2026-08-15：禁止横向滚动（元素超宽不再撑出左右拖动）——配合 viewport 禁缩放，
@@ -82,7 +89,7 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
 .focus-status { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
 .focus-status.on  { background: #1e90ff; box-shadow: 0 0 6px rgba(30, 144, 255, .6); }
 .focus-status.off { background: #ff3b30; box-shadow: 0 0 6px rgba(255, 59, 48, .6); }
-.screen { flex: 1; position: relative; min-height: 0; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.screen { flex: 1; position: relative; min-height: 0; background: transparent; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 /* 2026-08-15：.focus-stage 恒定撑满 #focusScreen（.screen flex:1 高度），画布垂直位置稳定——
    此前 PC 端 stage 无显式高度，connect 前塌缩导致 noVNC autoscale 用错容器尺寸、画布贴顶；
    fitFocusPanel 300ms 后才动态设高度 → 画布位置跳变（先贴顶后贴底）。高度交给 CSS 后恒居中。 */
@@ -400,6 +407,7 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
   #workspace.focus-open .focus-panel {
     position: fixed; inset: 0; z-index: 45; width: 100%; height: 100%; flex: none;
     border-radius: 0; border: none;
+    background: transparent; /* 2026-08-15：画面边界透出 body 背景，随系统主题（浅色/深色） */
   }
   /* 移动端移除顶部条：连接状态由 FAB 信号图标表示；退出控制统一走「断开」（2026-08-14 返回/退出按钮已移除） */
   #workspace.focus-open .focus-head { display: none; }
