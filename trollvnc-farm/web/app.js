@@ -1955,6 +1955,39 @@ function createRfb(container, device, opts = {}, statusEl = null) {
   // → noVNC RFB 'clipboard' 事件（noVNC 内部已过滤 viewOnly，仅控制/直控会话触发）。
   // 写入控制端剪贴板（"最后变化者胜"语义）+ toast 标注来源设备；设备端 setStringFromRemote
   // 有抑制回调不回发，writeText 不触发 copy 事件，双向均无回环。
+// 设备→控制端剪贴板写入（2026-08-14）：iOS WebKit 在【非用户手势】下 navigator.clipboard.writeText
+// 会被拒（NotAllowedError）——手机 Safari 与 IPA 容器 WKWebView 同受限，电脑 Chrome 无此限制。
+// 容器模式（IPA）：优先走原生桥 writeClipboard（farmBridge → 原生写 UIPasteboard，无手势/安全上下文限制）；
+// 无桥环境（浏览器）：writeText 尽力而为，失败明确提示。
+// @param {string} text 设备剪贴板文本
+// @param {string} devName 来源设备名（toast 标注用）
+function farmWriteClipboardToControl(text, devName) {
+  const bridge = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.farmBridge;
+  if (bridge) {
+    try {
+      bridge.postMessage({ type: 'writeClipboard', text });
+      toast(`已同步设备「${devName}」剪贴板（${text.length} 字符）`);
+      return;
+    } catch (e) {
+      console.error('[clip] native writeClipboard 桥调用失败，降级 writeText：', e);
+    }
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      console.debug(`[clip] 已写入控制端剪贴板（${text.length} 字符）`);
+      toast(`已同步设备「${devName}」剪贴板（${text.length} 字符）`);
+    }).catch((err) => {
+      console.error('[clip] 写入控制端剪贴板失败：', err);
+      toast(`✗ 设备「${devName}」剪贴板已同步但写入控制端失败（iOS 非手势限制，建议使用 SuperPhone App 内控制台）`);
+    });
+    return;
+  }
+  console.error('[clip] navigator.clipboard 不可用（需 https 安全上下文）');
+  toast(`✗ navigator.clipboard 不可用（需 https 安全上下文），设备「${devName}」剪贴板无法写入控制端`);
+}
+
+// 设备→控制端剪贴板同步（RFB ServerCutText 负长度 Extended Clipboard，2.3u 修复）：
+// 被控端复制 → 网关透传 → noVNC 'clipboard' 事件 → 写控制端剪贴板（原生桥优先）。
   rfb.addEventListener('clipboard', (e) => {
     const text = e && e.detail && e.detail.text;
     if (!text) return;
@@ -1962,23 +1995,10 @@ function createRfb(container, device, opts = {}, statusEl = null) {
     if (rfb._farmClipLastAt && now - rfb._farmClipLastAt < 1000) return; // 1s 节流防抖动
     rfb._farmClipLastAt = now;
     // 2026-08-14：同步标记"该文本刚来自设备"——IPA 容器原生剪贴板监听会因下方
-    // writeText 写入触发 Darwin 通知并推回本函数；farmLastClipText 同文本即跳过，
+    // 写入触发 Darwin 通知并推回本函数；farmLastClipText 同文本即跳过，
     // 防止把设备内容原样回发设备（配合原生侧 clipboardLastPushed 双保险防循环）。
     farmLastClipText = text;
-    // 2026-08-14 审查：writeText 失败不再静默吞错——显式 console.error + toast 便于定位
-    //（如非 https 安全上下文 navigator.clipboard 不可用、浏览器拒绝写入等）
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(() => {
-        console.debug(`[clip] 已写入控制端剪贴板（${text.length} 字符）`);
-      }).catch((err) => {
-        console.error('[clip] 写入控制端剪贴板失败：', err);
-        toast(`✗ 设备「${device.name}」剪贴板已同步但写入控制端失败：${(err && err.message) || err}`);
-      });
-    } else {
-      console.error('[clip] navigator.clipboard 不可用（需 https 安全上下文）');
-      toast(`✗ navigator.clipboard 不可用（需 https 安全上下文），设备「${device.name}」剪贴板无法写入控制端`);
-    }
-    toast(`已同步设备「${device.name}」剪贴板（${text.length} 字符）`);
+    farmWriteClipboardToControl(text, device.name);
   });
   rfb.addEventListener('credentialsrequired', () => {
     const p = prompt(`请输入 ${device.name} 的 VNC 密码：`);
