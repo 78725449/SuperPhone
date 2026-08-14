@@ -1015,6 +1015,10 @@ let farmLastClipText = null;
 // @param {string} txt 控制端剪贴板文本
 function farmPushClipboardToSessions(txt) {
   if (!txt) return;
+  // 2026-08-14：同文本去重——copy 事件与 IPA 原生监听（__farmNativeClipboard）可能双触发同一文本，
+  // 重复 clipboardPasteFrom 会让被控端多次 setStringFromRemote（抑制计数叠加、误吞后续真实复制），
+  // 且同文本重复下发无意义。已同步过的文本直接跳过。
+  if (farmLastClipText && txt === farmLastClipText) return;
   const clipOn = (d) => !(d && d.configs && d.configs.ClipboardEnabled === false);
   const sent = new Set();
   if (focus && focus.device && focus.rfb && focus.rfb._farmConnected && clipOn(focus.device)) {
