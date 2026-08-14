@@ -2020,8 +2020,9 @@ $('fEditName').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveE
 /**
  * 将悬浮操作菜单定位到 FAB 附近且避开按钮区域（2026-08-14：改为水平展开）。
  * 按 FAB 所在半屏决定水平方向——左半屏向右展开、右半屏向左展开（该侧空间不足自动换侧）。
- * 垂直方向（2026-08-15 用户拍板）：菜单顶部不限制贴哪里，垂直位置由「菜单底部」决定——
- * 底部贴屏幕下边界向上展开，与 FAB 垂直位置无关，任何情况下菜单都完整可见、永不越界。
+ * 垂直方向（2026-08-15 用户拍板）：菜单从 FAB 底部下方开始向下展开（与 FAB 保持关联，
+ * 不固定贴屏幕底部）；若向下展开会触碰屏幕下边界 → 整体上移，使菜单底部贴下边界，
+ * 任何情况下菜单都完整可见、永不越界。
  * 菜单必须已可见（调用前 remove hidden）以便测量真实尺寸。
  * @returns {void}
  */
@@ -2035,7 +2036,7 @@ function positionOpsMenu() {
   menu.style.maxHeight = '';
   const mw = menu.offsetWidth || 160;
   const rawH = menu.offsetHeight || 300;
-  // maxHeight 按视口高度裁剪（底部贴边时保证菜单不超出上边界）
+  // maxHeight 按视口高度裁剪（下边界适配时保证菜单不超出上边界）
   const maxH = Math.max(80, Math.min(rawH, vh - pad * 2));
   menu.style.maxHeight = maxH + 'px';
   const mh = Math.min(rawH, maxH);
@@ -2048,8 +2049,10 @@ function positionOpsMenu() {
   else left = spaceLeft >= mw ? fr.left - gap - mw : fr.right + gap;
   if (left < pad) left = pad;
   if (left + mw > vw - pad) left = vw - mw - pad;
-  // 垂直：菜单底部贴屏幕下边界向上展开（与 FAB 垂直位置无关），末次钳制保证永不越界
-  let top = vh - mh - pad;
+  // 垂直：菜单从 FAB 底部下方开始向下展开（与 FAB 保持关联）；
+  // 若菜单底部触碰屏幕下边界 → 整体上移，底部贴下边界，永不越界
+  let top = fr.bottom + gap;
+  if (top + mh > vh - pad) top = vh - mh - pad;
   if (top < pad) top = pad;
   menu.style.left = left + 'px';
   menu.style.top = top + 'px';
