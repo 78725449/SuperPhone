@@ -2159,11 +2159,68 @@ function showTileMenu(tile, d, x, y) {
   });
   m.appendChild(moreBtn);
 
+  // 3) 设置排序号（2026-08-15）：决定卡片墙从左到右、从上到下的排列位置；排序号不显示
+  const sortDivider = document.createElement('hr');
+  sortDivider.className = 'cap-group-divider';
+  m.appendChild(sortDivider);
+  const sortBtn = document.createElement('button');
+  sortBtn.innerHTML = '<span class="cap-icon">↕</span><span class="cap-name">设置排序号</span>';
+  sortBtn.addEventListener('click', () => {
+    m.classList.add('hidden');
+    openOrderModal(d);
+  });
+  m.appendChild(sortBtn);
+
   m.classList.remove('hidden');
   const rect = tile.getBoundingClientRect();
   m.style.left = Math.min(x, window.innerWidth - 140) + 'px';
   m.style.top = Math.min(y, window.innerHeight - 160) + 'px';
 }
+
+// ---------- 设置排序号（2026-08-15） ----------
+let orderModalDevice = null; // 当前打开排序号弹窗对应的设备
+
+/**
+ * 打开「设置排序号」弹窗（复用 .modal 样式；不用 window.prompt——IPA 容器 WKWebView 不支持）。
+ * 排序号仅决定卡片墙从左到右、从上到下的排列位置，不显示在卡片上。
+ * @param {object} d 设备对象
+ */
+function openOrderModal(d) {
+  orderModalDevice = d;
+  $('orderTitle').textContent = `设置排序号 · ${d.name}`;
+  const cur = typeof d.order === 'number' ? String(d.order) : '';
+  $('fOrder').value = cur;
+  $('orderModal').classList.remove('hidden');
+  setTimeout(() => $('fOrder').focus(), 50);
+}
+
+/**
+ * 保存排序号：校验 0-99999 整数 → PATCH 网关 → 刷新设备墙。
+ * 留空 = 清除排序号（回退按注册时间排序）。
+ * @returns {Promise<void>}
+ */
+async function saveOrderModal() {
+  if (!orderModalDevice) return;
+  const raw = $('fOrder').value.trim();
+  const val = raw === '' ? null : Number(raw);
+  if (val !== null && (!Number.isInteger(val) || val < 0 || val > 99999)) {
+    toast('✗ 排序号须为 0-99999 的整数，或留空清除');
+    return;
+  }
+  const devId = orderModalDevice.id;
+  try {
+    await api(`/api/devices/${encodeURIComponent(devId)}`, { method: 'PATCH', body: JSON.stringify({ order: val }) });
+    $('orderModal').classList.add('hidden');
+    toast(val === null ? `已清除「${orderModalDevice.name}」排序号` : `已设置「${orderModalDevice.name}」排序号 ${val}`);
+    orderModalDevice = null;
+    await refreshDevices();
+  } catch (e) {
+    toast(`✗ 设置排序号失败：${e.message}`);
+  }
+}
+$('btnSaveOrder').onclick = () => saveOrderModal();
+$('btnCancelOrder').onclick = () => { $('orderModal').classList.add('hidden'); orderModalDevice = null; };
+$('fOrder').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveOrderModal(); });
 
 // ---------- 移动端悬浮信号按钮（圆形可拖动 + 点击展开操作菜单 + 延迟信号状态） ----------
 

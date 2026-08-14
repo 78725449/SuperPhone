@@ -110,9 +110,21 @@
   </div>
 </div>
 
+<!-- 设置排序号（2026-08-15：决定卡片墙从左到右、从上到下排列位置；排序号不显示） -->
+<div id="orderModal" class="modal hidden">
+  <div class="modal-card">
+    <h3 id="orderTitle">设置排序号</h3>
+    <label>排序号（0-99999，越小越靠前） <input id="fOrder" type="number" min="0" max="99999" placeholder="留空 = 清除，按注册时间排序" /></label>
+    <div class="modal-btns">
+      <button id="btnSaveOrder" class="primary">保存</button>
+      <button id="btnCancelOrder">取消</button>
+    </div>
+  </div>
+</div>
+
 <!-- 设备卡片小菜单 -->
 <div id="tileMenu" class="tile-menu hidden"></div>
 
-<script type="module" src="app.js?v=95"></script>
+<script type="module" src="app.js?v=96"></script>
 </body>
 </html>

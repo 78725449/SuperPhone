@@ -3,6 +3,8 @@
  * 软路由部署的 SuperPhone 群控网关：REST API + WebSocket<->VNC 桥接 + mDNS 发现 + 广播输入
  */
 import http from 'node:http';
+import https from 'node:https';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
@@ -76,6 +78,7 @@ function upsertDevice(input) {
     source: input.source || 'manual',
     group: input.group || '',
     note: input.note || '',
+    order: null, // 2026-08-15：卡片墙排序号（0-99999 整数，null=按注册时间排序）
     online: null,
     lastSeen: null,
     addedAt: Date.now(),
@@ -104,6 +107,7 @@ function upsertRegistered(input) {
       source: 'register',
       group: '',
       note: '',
+      order: null, // 2026-08-15：卡片墙排序号（0-99999 整数，null=按注册时间排序）
       online: null,
       lastSeen: null,
       addedAt: Date.now(),
@@ -122,6 +126,22 @@ function removeDevice(id) {
   const before = devices.length;
   devices = devices.filter((d) => d.id !== id);
   if (devices.length !== before) saveDb();
+}
+
+/**
+ * 卡片墙排序（2026-08-15）：有排序号（order）的设备按升序排前；
+ * 无排序号按注册时间（addedAt）排后；order 或 addedAt 相同时按 id 字典序兜底，保证稳定排序。
+ * @returns {Array} 排序后的设备副本（不修改原数组）
+ */
+function sortDevices() {
+  return devices.slice().sort((a, b) => {
+    const ao = typeof a.order === 'number' ? a.order : null;
+    const bo = typeof b.order === 'number' ? b.order : null;
+    if (ao !== null && bo !== null) return (ao - bo) || String(a.id).localeCompare(String(b.id));
+    if (ao !== null) return -1;
+    if (bo !== null) return 1;
+    return ((a.addedAt || 0) - (b.addedAt || 0)) || String(a.id).localeCompare(String(b.id));
+  });
 }
 
 // ---------- mDNS 发现（TrollVNC 会广播 _rfb._tcp） ----------
@@ -264,6 +284,7 @@ const pendingCmds = new Map();
  * @returns ack 对象，超时返回 null
  */
 function sendDeviceCmd(deviceId, cmdObj, timeoutMs = 5000) {
+  console.log(`[cmd] -> ${deviceId} cmd=${cmdObj.cmd}${cmdObj.cap ? ' cap=' + cmdObj.cap : ''}${cmdObj.key ? ' key=' + cmdObj.key : ''}${cmdObj.target ? ' target=' + cmdObj.target : ''}`);
   return new Promise((resolve) => {
     const cid = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     const payload = { type: 'cmd', id: cid, ts: Date.now(), ...cmdObj };
@@ -330,7 +351,17 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
   // 握手/输入字节相互串扰 → noVNC 在消息循环收到非法字节 "Unexpected server message (type N)" 断开。
   // 顶掉旧会话后按"首会话"语义触发 5901 重建，新会话拿到干净握手；ctrl 间抢占由下方分支处理。
   for (const other of [...tun.wsSet]) {
-    if (other === ws || other.readyState !== other.OPEN || other.isController) continue;
+    if (other === ws || other.isController) continue;
+    // 已关闭的 ws（readyState !== OPEN）也需从 wsSet/sessions 中剔除：
+    // 否则 wsSet.size 虚高 → isFirstSession 误判为 false → viewOnly 会话不触发 rfb.start 重建 → 黑屏
+    if (other.readyState !== other.OPEN) {
+      tun.wsSet.delete(other);
+      sessions.delete(other);
+      sessionGroup.delete(other);
+      sessionBroadcaster.delete(other);
+      if (tun.controller === other) tun.controller = null;
+      continue;
+    }
     tun.wsSet.delete(other);
     sessions.delete(other);
     sessionGroup.delete(other);
@@ -410,7 +441,7 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
     // 否则 noVNC 握手被卡死导致黑屏。noVNC 的 viewOnly 模式本身不会发送输入事件，
     // 因此允许所有会话上行转发是安全的；输入转发仅广播主控触发。
     const ok = writeTunnelFrame(tun.sock, FT_DATA, buf);
-    console.log(`[vnc] ws->tunnel ${deviceId} bytes=${buf.length} wrote=${ok}`);
+    console.log(`[vnc] ws->tunnel ${deviceId} bytes=${buf.length} hex=${buf.toString('hex')} wrote=${ok}`);
     if (isBroadcast && grp) broadcastInput(ws, grp, buf);
   });
 
@@ -446,8 +477,14 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
       }
     }
   };
-  ws.on('close', cleanup);
-  ws.on('error', cleanup);
+  ws.on('close', (code, reason) => {
+    console.log(`[vnc] ws closed device=${deviceId} code=${code} reason=${reason ? reason.toString() : ''}`);
+    cleanup();
+  });
+  ws.on('error', (err) => {
+    console.log(`[vnc] ws error device=${deviceId}: ${err && err.message}`);
+    cleanup();
+  });
 }
 
 function handleControlSocket(ws, req, deviceId) {
@@ -625,7 +662,8 @@ async function handleApi(req, res, url) {
 
   if (resource === 'devices') {
     if (req.method === 'GET' && !id) {
-      sendJson(res, 200, { devices });
+      // 2026-08-15：按排序号（order）返回，前端卡片墙据此排列
+      sendJson(res, 200, { devices: sortDevices() });
       return true;
     }
     if (req.method === 'POST' && !id) {
@@ -677,7 +715,7 @@ async function handleApi(req, res, url) {
       // 批量重启（前端需二次确认）
       if (sub === 'restart') {
         const results = await Promise.all(deviceIds.map(async (did) => {
-          const ack = await sendDeviceCmd(did, { cmd: 'restart' }, 8000);
+          const ack = await sendDeviceCmd(did, { cmd: 'restart' }, 15000);
           return ack ? { deviceId: did, ok: ack.ok !== false, error: ack.error } : { deviceId: did, ok: false, error: 'timeout' };
         }));
         sendJson(res, 200, { results });
@@ -703,6 +741,19 @@ async function handleApi(req, res, url) {
         if ('note' in body) dev.note = String(body.note).trim();
         if ('host' in body && validHost(body.host)) dev.host = body.host.trim();
         if ('port' in body && validPort(body.port)) dev.port = Number(body.port);
+        // 2026-08-15：排序号（0-99999 整数；null/空串 = 清除，回到按注册时间排序）
+        if ('order' in body) {
+          if (body.order === null || body.order === '' || body.order === undefined) {
+            dev.order = null;
+          } else {
+            const n = Number(body.order);
+            if (!Number.isInteger(n) || n < 0 || n > 99999) {
+              sendJson(res, 400, { error: 'invalid order: expect integer 0-99999 or null' });
+              return true;
+            }
+            dev.order = n;
+          }
+        }
         saveDb();
         probeDevice(dev).then(() => saveDb());
         sendJson(res, 200, { device: dev });
@@ -744,7 +795,7 @@ async function handleApi(req, res, url) {
       }
       // Phase 4.6：重启设备服务（单台）
       if (req.method === 'POST' && sub === 'restart') {
-        const ack = await sendDeviceCmd(id, { cmd: 'restart' }, 8000);
+        const ack = await sendDeviceCmd(id, { cmd: 'restart' }, 15000);
         if (!ack) { sendJson(res, 504, { error: 'ack timeout' }); return true; }
         sendJson(res, 200, { ok: ack.ok !== false, deviceId: dev.id, ack });
         return true;
@@ -761,8 +812,39 @@ async function handleApi(req, res, url) {
   return false;
 }
 
+// ---------- TLS（自签证书，https 无感剪贴板依赖；FARM_TLS=0 回退 http） ----------
+const TLS_ENABLED = process.env.FARM_TLS !== '0';
+
+/**
+ * 加载自签 TLS 证书；缺失时自动调用 scripts/gen-cert.mjs 生成。
+ * @returns {{key: Buffer, cert: Buffer}|null} TLS 选项；回退 http 返回 null
+ */
+function loadTlsOptions() {
+  if (!TLS_ENABLED) {
+    console.log('[tls] FARM_TLS=0 — running plain HTTP (paste falls back to overlay)');
+    return null;
+  }
+  const certDir = process.env.FARM_CERT_DIR || path.join(DATA_DIR, 'cert');
+  const certFile = path.join(certDir, 'cert.pem');
+  const keyFile = path.join(certDir, 'key.pem');
+  if (!fs.existsSync(certFile) || !fs.existsSync(keyFile)) {
+    console.log('[tls] cert missing, auto-generating…');
+    const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'scripts', 'gen-cert.mjs')], { encoding: 'utf8' });
+    if (r.status !== 0) {
+      console.error('[tls] auto-generate failed — falling back to plain HTTP');
+      return null;
+    }
+  }
+  try {
+    return { key: fs.readFileSync(keyFile), cert: fs.readFileSync(certFile) };
+  } catch (e) {
+    console.error(`[tls] load failed: ${e.message} — falling back to plain HTTP`);
+    return null;
+  }
+}
+
 // ---------- Server ----------
-const server = http.createServer(async (req, res) => {
+const requestHandler = async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
   if (await handleApi(req, res, url)) return;
@@ -789,12 +871,46 @@ const server = http.createServer(async (req, res) => {
             'this._canvas.addEventListener("wheel", this._eventHandlers.handleWheel);',
             'this._canvas.addEventListener("wheel", this._eventHandlers.handleWheel, { passive: false });'
           );
+          // dot 光标改为 7×7 白色圆点（黑描边保证深色/浅色画面都可见）：
+          // noVNC 默认 dot 是 3×3 十字（白底黑边中间透明），渲染出来像 ✖️，视觉不佳。
+          rfbSrc = rfbSrc.replace(
+            /    dot: \{[\s\S]*?\n    \}\n\};/,
+            `    dot: {
+        /* eslint-disable indent */
+        // 7×7 圆点：白色填充 + 黑色描边，hotx/hoty = 中心 (3,3)
+        rgbaPixels: new Uint8Array([
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0, 0,
+            0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 255,
+            0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 255,
+            0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 255,
+            0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]),
+        /* eslint-enable indent */
+        w: 7, h: 7,
+        hotx: 3, hoty: 3,
+    }
+};`
+          );
           // touchstart 聚焦监听不调用 preventDefault（focus 用 preventScroll），
           // 显式 passive:true 消除 Chrome「scroll-blocking touchstart」Violation 警告
           rfbSrc = rfbSrc.replace(
             'this._canvas.addEventListener("touchstart", this._eventHandlers.focusCanvas);',
             'this._canvas.addEventListener("touchstart", this._eventHandlers.focusCanvas, { passive: true });'
           );
+          // 给 gesturehandler import 加版本参数：gesturehandler.js 是 ES module 内部 import，
+          // URL 无版本号会导致浏览器（尤其 iOS WKWebView）缓存旧版（长按=右键），patch 不生效。
+          // bump 此参数即强制浏览器重新拉取 patch 后的 gesturehandler.js。
+          rfbSrc = rfbSrc.replace(
+            'import GestureHandler from "./input/gesturehandler.js";',
+            'import GestureHandler from "./input/gesturehandler.js?v=4";'
+          );
+          // 触控长按 = 传达被控设备长按（2026-08-14）：noVNC 原生长按=右键点击(0x4)，
+          // 设备端右键又映射 Home/Menu；改为左键按下保持(0x1)→松手释放(0x0)，
+          // 与电脑端鼠标按住一致，被控设备识别为长按（长按图标弹菜单/拖拽等）。
+          rfbSrc = rfbSrc.replace(/this\._handleMouseButton\(pos\.x, pos\.y, 0x4\);/g,
+                                  'this._handleMouseButton(pos.x, pos.y, 0x1);');
           const after = rfbSrc.includes('secure context (TLS)');
           console.log(`[novnc] rfb.js patch: before=${before} after=${after}`);
           res.writeHead(200, {
@@ -821,12 +937,96 @@ const server = http.createServer(async (req, res) => {
             /addEventListener\('touchmove',\n(\s*)this\._boundEventHandler\);/,
             "addEventListener('touchmove',\n$1this._boundEventHandler, { passive: false });"
           );
-          const after = gSrc.includes('passive: false');
+          // 触控灵敏度提升（2026-08-14）：
+          // 1) GH_MOVE_THRESHOLD 50→12：noVNC 默认触摸移动 <50px 不发送任何鼠标事件
+          //    （起始死区 + 精细移动丢失），PC 鼠标任意移动都发送——这是触控不如鼠标精准的根因；
+          //    降至 12px 大幅提升精细操控。
+          // 2) iOS 16+ coalesced touchmove：浏览器把连续 touchmove 合并成一个事件，默认只处理
+          //    最后一个导致移动不平滑；逐个处理 getCoalescedEvents() 的合并前事件，提升流畅度。
+          gSrc = gSrc.replace(
+            'const GH_MOVE_THRESHOLD = 50;',
+            '// [farm patch] 触控灵敏度：50px→12px\nconst GH_MOVE_THRESHOLD = 12;'
+          );
+          gSrc = gSrc.replace(
+            `        for (let i = 0; i < e.changedTouches.length; i++) {
+            let touch = e.changedTouches[i];
+            fn.call(this, touch.identifier, touch.clientX, touch.clientY);
+        }
+    }`,
+            `        // [farm patch] iOS 16+ 触摸事件合并：逐个处理合并前事件，移动更平滑
+        if (e.type === 'touchmove' && typeof e.getCoalescedEvents === 'function') {
+            const evts = e.getCoalescedEvents();
+            if (evts.length > 0) {
+                for (const ce of evts) {
+                    for (let i = 0; i < ce.changedTouches.length; i++) {
+                        let touch = ce.changedTouches[i];
+                        fn.call(this, touch.identifier, touch.clientX, touch.clientY);
+                    }
+                }
+                return;
+            }
+        }
+        for (let i = 0; i < e.changedTouches.length; i++) {
+            let touch = e.changedTouches[i];
+            fn.call(this, touch.identifier, touch.clientX, touch.clientY);
+        }
+    }`
+          );
+          // 3) touchend 记录松手坐标：gestureend 的释放位置取自 avg.last（tracked.lastX/lastY），
+          //    原实现 touchend 不更新 lastX/lastY → 释放点停留在最后一次 touchmove，
+          //    长按拖动快速松手会偏差/无效（用户反馈"长按拖动松手释放位置不对"）。
+          gSrc = gSrc.replace(
+            `    _touchEnd(id, x, y) {
+        // Check if this is an ignored touch`,
+            `    _touchEnd(id, x, y) {
+        // [farm patch] 记录松手坐标，让 gestureend 释放位置 = 实际松手点
+        let endTouch = this._tracked.find(t => t.id === id);
+        if (endTouch !== undefined) {
+            endTouch.lastX = x;
+            endTouch.lastY = y;
+        }
+        // Check if this is an ignored touch`
+          );
+          // 4) 触控直通（2026-08-14）：单指按下即发送左键按下，按住多久传多久，长按/双击/拖拽由
+          //    被控设备识别——与 PC 鼠标完全一致。noVNC 原实现按下后最长等 1s 才传达（长按）、
+          //    点击要到松手才合成按下+抬起（按住时长≈0）、拖动要移动超阈值后才按下（起点偏移）。
+          gSrc = gSrc.replace(
+            `        switch (this._tracked.length) {
+            case 1:
+                this._startLongpressTimeout();
+                break;
+
+            case 2:
+                this._state &= ~(GH_ONETAP | GH_DRAG | GH_LONGPRESS);
+                this._stopLongpressTimeout();
+                break;`,
+            `        switch (this._tracked.length) {
+            case 1:
+                // [farm patch] 触控直通：单指按下即发送左键按下（不等待 1s 长按识别），
+                // 长按语义交给被控设备，与 PC 鼠标「按下即传、按多久传多久」一致
+                this._state = GH_DRAG;
+                this._pushEvent('gesturestart');
+                break;
+
+            case 2:
+                // [farm patch] 第二指落下：第一指已直通按下（DRAG）则先发送释放，
+                // 避免双指滚动（twodrag）/缩放（pinch）期间左键残留按住
+                if (this._state === GH_DRAG) {
+                    this._pushEvent('gestureend');
+                }
+                this._state &= ~(GH_ONETAP | GH_DRAG | GH_LONGPRESS);
+                this._stopLongpressTimeout();
+                break;`
+          );
+          // 触控长按 = 传达被控设备长按（2026-08-14）：恢复 noVNC 原生长按手势（gesturestart），
+          // 由 rfb.js patch 把长按按钮改为左键按下保持(0x1)→释放(0x0)，被控设备识别为长按。
+          // 原"长按=粘贴"(__farmPasteLongPress) 已随剪贴板协议通道移除，不再拦截长按。
+          const after = gSrc.includes('passive: false') && !gSrc.includes('__farmPasteLongPress');
           console.log(`[novnc] gesturehandler.js patch: before=${before} after=${after}`);
           res.writeHead(200, {
             'Content-Type': 'text/javascript',
             'Content-Length': Buffer.byteLength(gSrc),
-            'Cache-Control': 'no-cache',
+            'Cache-Control': 'no-store', // 手势层 patch 必须每次取最新：iOS 长按=右键 bug 即缓存旧版所致
           });
           res.end(gSrc);
           return;
@@ -844,7 +1044,23 @@ const server = http.createServer(async (req, res) => {
   }
 
   res.writeHead(405).end('method not allowed');
-});
+};
+
+const tlsOptions = loadTlsOptions();
+
+// http→https 自动跳转：http 明文请求 301 到同 host:port 的 https（保留路径与查询串）
+const httpRedirectHandler = (req, res) => {
+  const host = req.headers.host || 'localhost';
+  const u = new URL(req.url, `http://${host}`);
+  const target = `https://${host}${u.pathname}${u.search}`;
+  res.writeHead(301, { Location: target });
+  res.end();
+};
+
+// TLS 启用：server 为 https server（TLS 握手由自身处理），httpRedirect 处理明文 301；
+// 两者均不自行 listen，由 bootstrap 按首字节协议分发（pause→unshift→emit→nextTick resume）。
+const server = tlsOptions ? https.createServer(tlsOptions, requestHandler) : http.createServer(requestHandler);
+const httpRedirect = tlsOptions ? http.createServer(httpRedirectHandler) : null;
 
 const wss = new WebSocketServer({ server, path: undefined });
 
@@ -1175,8 +1391,31 @@ tunnelServer.listen(TUNNEL_PORT, HOST, () => {
   console.log(`[farm] tunnel TCP listener on ${HOST}:${TUNNEL_PORT}`);
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`[farm] superphone-farm gateway listening on http://${HOST}:${PORT}`);
-  console.log(`[farm] data dir: ${DATA_DIR}`);
-  console.log(`[farm] token auth: ${TOKEN ? 'enabled' : 'disabled (LAN only!)'}`);
-});
+if (tlsOptions && httpRedirect) {
+  // 同端口协议自适应：TLS ClientHello（0x16 0x03）→ server（https 自身握手）；
+  // 其余明文 → httpRedirect 301（浏览器直接输 http://IP:8080 或 IP:8080 也能进入）。
+  // 交接顺序必须 pause→unshift→emit→nextTick(resume)：emit 后延迟 resume 让 TLS 监听器先就绪，
+  // 否则握手数据流动错位导致 TLS 握手失败（实测 verified）。
+  const bootstrap = net.createServer((socket) => {
+    socket.once('data', (buf) => {
+      socket.pause();
+      socket.unshift(buf);
+      const isTLS = buf.length >= 3 && buf[0] === 0x16 && buf[1] === 0x03;
+      (isTLS ? server : httpRedirect).emit('connection', socket);
+      process.nextTick(() => socket.resume());
+    });
+    socket.on('error', () => { /* noop */ });
+  });
+  bootstrap.listen(PORT, HOST, () => {
+    console.log(`[farm] superphone-farm gateway listening on https://${HOST}:${PORT} (self-signed cert)`);
+    console.log(`[farm] http:// same port auto-redirects to https (browser can omit https://)`);
+    console.log(`[farm] data dir: ${DATA_DIR}`);
+    console.log(`[farm] token auth: ${TOKEN ? 'enabled' : 'disabled (LAN only!)'}`);
+  });
+} else {
+  server.listen(PORT, HOST, () => {
+    console.log(`[farm] superphone-farm gateway listening on http://${HOST}:${PORT} (FARM_TLS=0)`);
+    console.log(`[farm] data dir: ${DATA_DIR}`);
+    console.log(`[farm] token auth: ${TOKEN ? 'enabled' : 'disabled (LAN only!)'}`);
+  });
+}
