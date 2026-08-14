@@ -2019,10 +2019,9 @@ $('fEditName').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveE
 
 /**
  * 将悬浮操作菜单定位到 FAB 附近且避开按钮区域（2026-08-14：改为水平展开）。
- * 按 FAB 所在半屏决定方向——左半屏向右展开、右半屏向左展开（该侧空间不足自动换侧）；
- * 水平方向完全避开 FAB 区域。垂直方向（2026-08-15 用户拍板）不再与 FAB 顶部对齐，
- * 改为智能上下展开：优先向 FAB 下方展开，下方空间不足自动翻到上方，
- * 两侧都不足则取空间较大一侧并按可用空间裁剪 max-height，始终不出屏。
+ * 按 FAB 所在半屏决定水平方向——左半屏向右展开、右半屏向左展开（该侧空间不足自动换侧）。
+ * 垂直方向（2026-08-15 用户拍板）：菜单顶部不限制贴哪里，垂直位置由「菜单底部」决定——
+ * 底部贴屏幕下边界向上展开，与 FAB 垂直位置无关，任何情况下菜单都完整可见、永不越界。
  * 菜单必须已可见（调用前 remove hidden）以便测量真实尺寸。
  * @returns {void}
  */
@@ -2036,11 +2035,8 @@ function positionOpsMenu() {
   menu.style.maxHeight = '';
   const mw = menu.offsetWidth || 160;
   const rawH = menu.offsetHeight || 300;
-  // 垂直：FAB 上下两侧可用空间（含 gap + pad）
-  const spaceDown = vh - fr.bottom - gap - pad;
-  const spaceUp = fr.top - gap - pad;
-  // maxHeight 按空间较大一侧裁剪（菜单高度不超可用空间，从根上避免越界）
-  const maxH = Math.max(80, Math.min(rawH, Math.max(spaceUp, spaceDown, 80)));
+  // maxHeight 按视口高度裁剪（底部贴边时保证菜单不超出上边界）
+  const maxH = Math.max(80, Math.min(rawH, vh - pad * 2));
   menu.style.maxHeight = maxH + 'px';
   const mh = Math.min(rawH, maxH);
   // 水平：FAB 在左半屏 → 右侧展开；右半屏 → 左侧展开；空间不足自动换侧，钳制在视口内
@@ -2052,16 +2048,9 @@ function positionOpsMenu() {
   else left = spaceLeft >= mw ? fr.left - gap - mw : fr.right + gap;
   if (left < pad) left = pad;
   if (left + mw > vw - pad) left = vw - mw - pad;
-  // 垂直：优先向下（FAB 底部下方空间足够则菜单顶部贴 FAB 底部），
-  // 向下不足自动向上（菜单底部贴 FAB 顶部）；两侧都不足取空间较大一侧，
-  // 末次钳制到视口内保证永不越界。
-  let top;
-  if (spaceDown >= mh) top = fr.bottom + gap;
-  else if (spaceUp >= mh) top = fr.top - gap - mh;
-  else if (spaceDown >= spaceUp) top = fr.bottom + gap;
-  else top = fr.top - gap - mh;
+  // 垂直：菜单底部贴屏幕下边界向上展开（与 FAB 垂直位置无关），末次钳制保证永不越界
+  let top = vh - mh - pad;
   if (top < pad) top = pad;
-  if (top + mh > vh - pad) top = vh - mh - pad;
   menu.style.left = left + 'px';
   menu.style.top = top + 'px';
   menu.style.right = 'auto';
