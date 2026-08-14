@@ -16,14 +16,33 @@
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
+/* 2026-08-15：禁止横向滚动（元素超宽不再撑出左右拖动）——配合 viewport 禁缩放，
+   容器（IPA WKWebView）与手机浏览器内布局固定；overscroll-behavior 阻断滚动链式传导。 */
+html { overflow-x: hidden; }
 body {
   margin: 0; display: flex; flex-direction: column;
+  overflow-x: hidden;
+  overscroll-behavior: none;
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   background: var(--bg); color: var(--text);
+  /* 2026-08-14：控制台 UI 禁止文本选中与 iOS 长按系统菜单——
+     （1）长按悬浮按钮/操作菜单/卡片不再触发文本选中（放大镜/选择菜单）；
+     （2）iOS 长按不再弹出系统 callout 菜单（拷贝/粘贴/查找）。 */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+/* 输入类元素保留原生文本选择与编辑能力（输入框内复制/粘贴不受影响） */
+input, textarea, [contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
 }
 header {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-  padding: 10px 16px; background: var(--panel);
+  /* 2026-08-15：顶部安全区——IPA 控制 Tab 已隐藏原生导航栏，webView 顶到刘海/状态栏，
+     须以 env(safe-area-inset-top) 避让（viewport-fit=cover 下有效；桌面端恒为 0 无影响） */
+  padding: calc(10px + env(safe-area-inset-top)) 16px 10px 16px;
+  background: var(--panel);
   border-bottom: 1px solid var(--line); flex: 0 0 auto;
 }
 header h1 { font-size: 17px; margin: 0; }
@@ -41,7 +60,7 @@ button.danger { color: #ff9d9d; }
 .zoom input[type="range"] { width: 110px; accent-color: var(--accent); cursor: pointer; }
 .zoom #cardwVal { min-width: 46px; text-align: right; }
 
-main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
+main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(safe-area-inset-bottom)); overflow: hidden; }
 
 /* 工作区：三栏（放大画面 | 操作列 | 其它设备墙） */
 #workspace { display: flex; align-items: flex-start; gap: 0; height: 100%; }
@@ -65,7 +84,31 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 .focus-status.off { background: #ff3b30; box-shadow: 0 0 6px rgba(255, 59, 48, .6); }
 .screen { flex: 1; position: relative; min-height: 0; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .focus-stage { position: relative; }
-.focus-stage canvas { position: absolute; left: 0; top: 0; }
+/* 2026-08-14 修复：不再设置 .focus-stage canvas 定位规则——noVNC 内部 _screen(flex)+canvas margin:auto
+   负责等比缩放画面的水平垂直居中（与设备端 5801 页一致）。原 position:absolute;left:0;top:0 覆盖了
+   noVNC 的 flex 居中，导致移动端全屏（stage 100%x100%）时画面靠左上（比例不匹配留黑边时明显）。 */
+/* 聚焦画面中央状态浮层（与 5801 直连页一致）：连接中加载动画 / 断开重连提示 */
+.focus-status-ov {
+  position: absolute; inset: 0; z-index: 30;
+  display: none;
+  flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+  background: rgba(0, 0, 0, .5);
+  pointer-events: none; user-select: none; -webkit-user-select: none;
+}
+.focus-status-ov.show { display: flex; }
+.focus-status-ov .spin {
+  display: none;
+  width: 38px; height: 38px; border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, .18); border-top-color: #7C5CFF;
+  animation: spin .8s linear infinite;
+}
+.focus-status-ov.loading .spin { display: block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.focus-status-ov #focusStatusText {
+  color: #eee; font: 14px/1.5 system-ui, sans-serif;
+  text-align: center; max-width: 86%;
+  word-break: break-all; text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
+}
 
 /* 中：操作列，紧贴设备屏幕右侧 */
 .focus-ops {
@@ -79,6 +122,10 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 .focus-ops h3 { margin: 0 0 4px; font-size: 14px; }
 .focus-ops .op { width: 100%; text-align: center; font-size: 18px; padding: 8px 0; }
 .focus-ops .op svg { width: 20px; height: 20px; vertical-align: middle; }
+/* 「键盘」键激活高亮（2026-08-14 对齐原生 noVNC「Show Keyboard」：软键盘显示时点亮） */
+.focus-ops .op.kbd-on, .ops-menu-grid button.kbd-on {
+  background: #2196f3; color: #fff; border-color: #2196f3;
+}
 .focus-ops hr { border: none; border-top: 1px solid var(--line); margin: 4px 0; }
 .focus-ops .chk { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-top: 4px; cursor: pointer; }
 /* 操作列滚动条主题化：深色细滑块 + hover 高亮为主题色（替代浏览器默认白/灰） */
@@ -178,7 +225,7 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 .tile:hover { border-color: var(--accent); transform: scale(1.03); } /* 悬停轻微放大 */
 /* 直控模式：禁用悬停放大（点击直达控制），放开卡片 canvas 接收鼠标/触控输入 */
 #wall.direct-mode .tile:hover { transform: none; }
-#wall.direct-mode .tile canvas { pointer-events: auto; cursor: crosshair; }
+#wall.direct-mode .tile canvas { pointer-events: auto; cursor: none; }
 .tile .tv { position: absolute; inset: 0; }
 /* 直控/同步推流 canvas：noVNC scaleViewport 等比缩放后可能窄于/矮于卡片（设备比例 ≠ 卡片 9:16），
    居中放置实现与截图缩略图一致的 contain 效果（四周留黑边）；点击坐标经 getBoundingClientRect 正确映射 */
@@ -249,20 +296,31 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
 .fab[data-sig="sig-low"] .wifi .arc.a3 { fill: #ef4444; }
 .ops-menu {
   position: fixed; z-index: 65; right: 12px; bottom: 96px;
-  width: min(300px, 88vw);
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 14px;
-  box-shadow: 0 8px 28px rgba(0,0,0,.55); padding: 10px;
+  /* 5801 悬浮面板宽度参考（#panel min-width 152px）：窄菜单 + 图标按钮 */
+  width: min(160px, 88vw);
+  /* 5801 悬浮面板风格：白色卡片背景（原深色 var(--panel2) 改为白底） */
+  background: #ffffff; border: 1px solid rgba(0,0,0,.12); border-radius: 14px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.28); padding: 8px;
   overflow-y: auto;                       /* 定位时按可用空间裁剪 max-height，超出滚动 */
   -webkit-overflow-scrolling: touch;
 }
-.ops-menu-title { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
-/* 移动端 opsMenu：垂直列表（与 5801 直连一致），按钮内“图标+名称”横向布局 */
+/* 移动端 opsMenu：垂直列表（与 5801 直连一致），按钮"图标+名称"横向布局（白底、窄菜单） */
 .ops-menu-grid { display: flex; flex-direction: column; gap: 2px; }
-.ops-menu-grid button { min-height: 44px; font-size: 16px; padding: 8px 12px; display: flex; flex-direction: row; align-items: center; gap: 10px; justify-content: flex-start; text-align: left; }
-.ops-menu-grid button .cap-icon { font-size: 20px; }
+.ops-menu-grid button {
+  min-height: 44px; min-width: 0; width: 100%;
+  font-size: 16px; padding: 8px 10px;
+  display: flex; flex-direction: row; align-items: center; justify-content: flex-start; gap: 10px; text-align: left;
+  background: #f5f6f8; border: 1px solid rgba(0,0,0,.08); border-radius: 10px;
+  color: #1c1c1e;
+}
+.ops-menu-grid button:hover { border-color: rgba(0,0,0,.2); }
+.ops-menu-grid button:active { background: #e9eaee; }
+.ops-menu-grid button .cap-icon { font-size: 20px; line-height: 1; flex: 0 0 auto; }
 .ops-menu-grid button .cap-icon svg, .focus-ops-cap .cap-icon svg, .batch-cap-btn .cap-icon svg, .tile-menu .cap-icon svg, .detail-body .cap-icon svg { width: 1.1em; height: 1.1em; vertical-align: -0.22em; flex: 0 0 auto; }
-.ops-menu-grid button .cap-name { font-size: 14px; }
-.ops-exit { width: 100%; margin-top: 8px; color: #ff9d9d; }
+.ops-menu-grid button .cap-name { font-size: 14px; white-space: nowrap; }
+/* 白底上的「断开」危险按钮：深红文字（原 #ff9d9d 为深色主题浅红） */
+.ops-menu-grid button.danger { color: #e8463a; }
+.ops-exit { width: 100%; margin-top: 8px; color: #e8463a; }
 .ops-exit svg { width: 16px; height: 16px; vertical-align: -2px; margin-right: 2px; }
 
 .tile-menu {
@@ -340,7 +398,7 @@ main { flex: 1; min-height: 0; padding: 14px; overflow: hidden; }
     position: fixed; inset: 0; z-index: 45; width: 100%; height: 100%; flex: none;
     border-radius: 0; border: none;
   }
-  /* 移动端移除顶部条：连接状态由 FAB 信号图标表示，退出由 FAB 菜单"退出控制"提供（PC 端保留） */
+  /* 移动端移除顶部条：连接状态由 FAB 信号图标表示；退出控制统一走「断开」（2026-08-14 返回/退出按钮已移除） */
   #workspace.focus-open .focus-head { display: none; }
   /* 聚焦 stage 撑满屏幕：noVNC scaleViewport 以此为适配基准，否则高度 0 → 黑屏 */
   .focus-stage { width: 100%; height: 100%; }
