@@ -2,7 +2,6 @@
 // rfb.js?v=2：noVNC 核心为 server 内存 patch（dot 圆点/TLS 屏蔽等），URL 带版本号强制浏览器
 // 重新拉取 patch 后的内容，避免旧版缓存（同 gesturehandler.js?v=3 方案）
 import RFB from '/novnc/core/rfb.js?v=2';
-import Keyboard from '/novnc/core/input/keyboard.js?v=2';
 import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=4';
 import { attachPress } from './press.js';
 
@@ -62,7 +61,7 @@ function showLogin() {
   wrap.id = 'loginBox';
   wrap.className = 'login';
   wrap.innerHTML = `
-    <h3>SuperPhone 群控台</h3>
+    <h3>控制台</h3>
     <input id="loginToken" type="password" placeholder="访问令牌 (FARM_TOKEN)" />
     <button id="btnLogin" class="primary">进入</button>`;
   document.body.prepend(wrap);
@@ -700,13 +699,22 @@ function rfbPressKey(rfb, keyDef, capId) {
   }
 }
 
-// ---------- 键盘按钮（2026-08-14 对齐上游原生 noVNC「Show Keyboard」语义） ----------
-// 「键盘」键 = 显示/隐藏控制端软键盘（noVNC 原生 toggleVirtualKeyboard：聚焦/失焦隐藏 input）。
-// 控制端软键盘按键经 Keyboard 实例捕获 → rfb.sendKey(keysym) → 被控端 kbdEvent 注入 HID（远程打字）。
-// 被控端键盘完全由被控端系统管理（点被控画面输入框才弹），控制端不注入 attach/detach、无输入源切换。
-// 演进回滚：删除输入源切换两态（kbdControl）+ HID attach 自定义 keysym（XF86KeyboardHide/Show）全部逻辑。
+// ---------- 键盘按钮（2026-08-15 实时打字方案：iOS 软键盘 input 事件驱动） ----------
+// 「键盘」键 = 显示/隐藏控制端软键盘。iOS 系统软键盘不产生 keydown/keyup（WebKit 只派发
+// input/composition 事件），noVNC Keyboard(keydown) 方案在 iOS 上失效（§2.3w 研究结论），
+// 改为监听 #kbdInput 的 input/composition 事件实时转发：
+//   - 单个 ASCII 字符（非 composition）：逐键 keysym 实时注入（无弹窗，大写/符号补 Shift 组合）
+//   - 中文/emoji/多字符（compositionend / 多字符插入）：整段走 type.paste（写被控端剪贴板 +
+//     模拟 Cmd+V，被控端弹一次系统隐私确认后落入聚焦输入框）
+//   - Backspace / Enter：keysym 实时注入
+// 被控端键盘完全由被控端系统管理（点被控画面输入框才弹），控制端不注入 attach/detach。
+// 演进记录：2026-08-14 对齐上游 noVNC「Show Keyboard」（Keyboard keydown）→ 2026-08-15 因 iOS
+// 无 keydown 改 input/composition 驱动（xterm/wterm 移动端范式）。
 let kbdSoft = false;          // 控制端软键盘当前是否显示（kbdInput 是否聚焦，focus/blur 事件驱动）
 let kbdBtns = [];             // 键盘键按钮引用（focusOps + opsMenu，软键盘激活时加 .kbd-on 高亮）
+let kbdComposing = false;     // 中文拼音组合中：暂停实时转发，compositionend 一次性注入
+let kbdJustComposed = false;  // Safari 在 compositionend 后补发 input（isComposing 乱序），短窗口忽略
+let kbdJustComposedTimer = null;
 /** 触屏能力判定：仅用于"自动弹控制端软键盘"（PC 无系统软键盘）；按钮开关行为本身无判定 */
 const isTouchable = () => 'ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0;
 
@@ -765,31 +773,113 @@ function toggleKbd() {
 }
 
 /**
- * 初始化控制端软键盘（触屏端输入，2026-08-14）：Keyboard 实例绑定隐藏 input #kbdInput，
- * 抓取软键盘 keydown/keyup 直发当前聚焦设备（noVNC 官方 touch 键盘方案，与 5801 直连页一致）。
- * 仅存在 #kbdInput 时生效；软键盘在「键盘」键点击后弹出（见 toggleKbd）。
+ * 实时注入单个 ASCII 字符到当前聚焦设备（2026-08-15）：
+ * keysym = X11 keysym，对可打印 ASCII（0x20-0x7E）等于码点；设备端 keysymToString 直接返回字符。
+ * 大写字母与上排符号键的 shift 形态需补 Shift 组合（设备端 keyDown 不自动加 Shift，STHIDEventGenerator）。
+ * @param {string} ch 单个 ASCII 字符
+ * @returns {void}
+ */
+function kbdSendChar(ch) {
+  const rfb = focus && focus.rfb;
+  if (!rfb || !rfb._farmConnected) return;
+  const cp = ch.codePointAt(0);
+  if (cp < 0x20 || cp > 0x7E) return; // 非 ASCII 不逐键（中文/emoji 走 type.paste）
+  try {
+    const needShift = /[A-Z~!@#$%^&*()_+{}|:"<>?]/.test(ch);
+    if (needShift) rfb.sendKey(0xffe1, 'ShiftLeft', true); // XK_Shift_L
+    rfb.sendKey(cp, null, true);
+    rfb.sendKey(cp, null, false);
+    if (needShift) rfb.sendKey(0xffe1, 'ShiftLeft', false);
+  } catch (e) { /* noVNC API 异常静默忽略 */ }
+}
+
+/**
+ * 发送特殊键（退格/回车等）到当前聚焦设备（down+up）。
+ * @param {number} keysym X11 keysym
+ * @param {string} code   DOM code（用于 noVNC qemu 扩展 scancode 路径，可为 null）
+ * @returns {void}
+ */
+function kbdSendSpecial(keysym, code) {
+  const rfb = focus && focus.rfb;
+  if (!rfb || !rfb._farmConnected) return;
+  try {
+    rfb.sendKey(keysym, code || null, true);
+    rfb.sendKey(keysym, code || null, false);
+  } catch (e) { /* noVNC API 异常静默忽略 */ }
+}
+
+/**
+ * 转发一段软键盘文本到当前聚焦设备：
+ * 纯 ASCII → 逐键实时注入（无隐私弹窗）；含中文/emoji/多字符 → type.paste 原子注入
+ * （写被控端剪贴板 + releaseEveryKeys + 异步模拟 Cmd+V，被控端弹一次系统隐私确认）。
+ * @param {string} text 要注入的文本
+ * @returns {void}
+ */
+function kbdForwardText(text) {
+  if (!text) return;
+  if (/^[\x20-\x7E]+$/.test(text)) {
+    for (const ch of text) kbdSendChar(ch);
+  } else if (focus && focus.device) {
+    submitPasteText(focus.device.id, text);
+  }
+}
+
+/**
+ * 初始化控制端软键盘实时转发（2026-08-15 重写）：
+ * 绑定 #kbdInput 的 input/composition 事件（iOS 软键盘唯一可靠的事件源），
+ * 逐键/整段转发到当前聚焦设备（详见模块头注释）。不再使用 noVNC Keyboard(keydown) 实例。
+ * 软键盘在「键盘」键点击后弹出（见 toggleKbd）。
  * @returns {void}
  */
 function initTouchKeyboard() {
   const kbi = document.getElementById('kbdInput');
   if (!kbi) return;
-  const touchKb = new Keyboard(kbi);
-  touchKb.onkeyevent = (keysym, code, down) => {
-    const rfb = focus && focus.rfb;
-    if (rfb && rfb._farmConnected) {
-      try { rfb.sendKey(keysym, code, down); } catch (e) { /* noVNC API 异常静默忽略 */ }
+
+  // 中文拼音组合开始：暂停实时转发（拼音过程不逐键，避免把拼音字母打进被控端）
+  kbi.addEventListener('compositionstart', () => { kbdComposing = true; });
+  // 组合结束：拿最终文本（中文/emoji）整段注入
+  kbi.addEventListener('compositionend', (e) => {
+    kbdComposing = false;
+    const text = e.data || kbi.value;
+    kbi.value = '';
+    // Safari 在 compositionend 后可能补发一个 input（isComposing 乱序 bug）：短窗口忽略
+    kbdJustComposed = true;
+    if (kbdJustComposedTimer) clearTimeout(kbdJustComposedTimer);
+    kbdJustComposedTimer = setTimeout(() => { kbdJustComposed = false; }, 60);
+    kbdForwardText(text);
+  });
+  // 实时输入事件：ASCII 逐键 / Backspace / Enter / 多字符整段
+  kbi.addEventListener('input', (e) => {
+    if (kbdComposing || kbdJustComposed) { kbi.value = ''; return; }
+    const dt = e.inputType || '';
+    const data = e.data || '';
+    if (dt === 'deleteContentBackward') { // iOS 退格（长按删除为重复 deleteContentBackward）
+      kbdSendSpecial(0xff08, 'Backspace'); // XK_BackSpace
+      kbi.value = '';
+      return;
     }
-  };
-  touchKb.grab();
+    if (dt === 'insertLineBreak') { // 回车
+      kbdSendSpecial(0xff0d, 'Enter'); // XK_Return
+      kbi.value = '';
+      return;
+    }
+    if (dt === 'insertText' && /^[\x20-\x7E]$/.test(data)) { // 单个 ASCII：实时逐键
+      kbdSendChar(data);
+      kbi.value = '';
+      return;
+    }
+    // 多字符插入（粘贴/预测/emoji 等）：整段注入后清空
+    const v = kbi.value;
+    if (v) {
+      kbdForwardText(v);
+      kbi.value = '';
+    }
+  });
+
   // 控制端软键盘被系统收起（点击别处/滚动/切后台）：复位 kbdSoft 与按钮高亮
   kbi.addEventListener('blur', () => {
     kbdSoft = false;
     updateKbdBtns();
-  });
-  // 页面可见性变化时兜底重挂（Keyboard 内部 window blur 已释放按键，双保险）
-  document.addEventListener('visibilitychange', () => {
-    try { touchKb.ungrab(); } catch (e) {}
-    try { touchKb.grab(); } catch (e) {}
   });
   // 2026-08-14 审查结论（用户实测确认）：iOS 键盘上方「粘贴」按钮不出现（QuickType 栏无此按钮），
   // 长按也无法触达 kbdInput（隐藏元素不可交互，长按画面会转发被控设备弹出被控端菜单）——
@@ -973,11 +1063,8 @@ async function readClipboardText() {
   return await navigator.clipboard.readText();
 }
 
-// 剪贴板"来源"记录（2026-08-14 按用户思路重构：从谁复制的不推送给谁）：
-// RFB 收到某设备剪贴板文本时记录 {text, deviceId}；控制端剪贴板变化推同文本时
-// 排除来源设备（避免回发循环），仍可发给其他设备（保留多设备群控语义）。
-// 替代原全局 farmLastClipText 同文本去重（后者会误伤多设备：B1 复制的文本不再同步给 B2）。
-let farmClipSource = { text: null, deviceId: null };
+// 2026-08-15 基建：回环防护由原生端 changeCount 锚点抑制承担（writeClipboard 写入触发的一次
+// 通知被吞、setStringFromRemote 同理），此处不再做来源排除/文本去重——相同文本每次复制都同步。
 
 // 控制端→受控设备剪贴板同步核心（2026-08-14 抽出共用）：
 // 把控制端剪贴板文本经 RFB clipboardPasteFrom（Extended Clipboard 协议通道，UTF-8）写入
@@ -1010,8 +1097,9 @@ function farmPushClipboardToSessions(txt, excludeDeviceId) {
 // 配合设备端回显抑制（setStringFromRemote 文本对比）双保险。
 window.__farmNativeClipboard = (text) => {
   if (!text) return;
-  const isEcho = farmClipSource.text !== null && text === farmClipSource.text;
-  farmPushClipboardToSessions(text, isEcho ? farmClipSource.deviceId : null);
+  // 2026-08-15 基建：回环由原生端 changeCount 锚点抑制断环，此处直接同步给全部同步目标
+  //（focus 主控 + 直控设备）；相同文本每次复制都同步（不再文本去重/来源排除）。
+  farmPushClipboardToSessions(text, null);
 };
 
 // 控制端复制（Ctrl+C / 菜单复制）→ 协议通道同步到"当前连接会话"（2026-08-14 统一协议通道）。
@@ -1024,10 +1112,8 @@ document.addEventListener('copy', async () => {
     return; // 复制动作本身已成功；同步失败不阻断复制（非降级路径，仅跳过同步）
   }
   if (!txt) return;
-  // 与 __farmNativeClipboard 一致：若复制的恰是"刚从被控端同步来的内容"（如全选再复制），
-  // 排除来源设备回发，避免把同一文本送回来源设备（"从谁复制的不推送给谁"）。
-  const isFromDevice = farmClipSource.text !== null && txt === farmClipSource.text;
-  farmPushClipboardToSessions(txt, isFromDevice ? farmClipSource.deviceId : null);
+  // 2026-08-15 基建：回环由原生端 changeCount 锚点抑制断环，此处直接同步给全部同步目标。
+  farmPushClipboardToSessions(txt, null);
 });
 
 /**
@@ -1136,12 +1222,24 @@ async function enterFocus(d) {
   stage.className = 'focus-stage';
   $('focusScreen').innerHTML = '';
   $('focusScreen').appendChild(stage);
+  // 2026-08-15 移动端：创建 stage 即用 JS 像素值撑满视口（不等 connect 后的 fitFocusPanel）。
+  // WKWebView 首帧布局未稳定时 CSS height:100% 高度链测量错误 → noVNC autoscale 用错
+  // 容器尺寸 → canvas 尺寸/锚点错 → 画布贴顶；重排后跳底。像素值不依赖高度链，恒正确。
+  if (window.matchMedia('(max-width: 900px)').matches) {
+    stage.style.width = window.innerWidth + 'px';
+    stage.style.height = window.innerHeight + 'px';
+  }
   // 中央连接浮层：与 5801 直连页一致的连接中加载动画（必须在此处重建——
   // 上方 innerHTML='' 已清空 focusScreen，浮层由 setFocusOverlay 内部 ensure 重新挂载）
   setFocusOverlay(true, '连接中…');
   $('focusPanel').classList.remove('hidden');
   $('focusOps').classList.remove('hidden');
   $('workspace').classList.add('focus-open');
+  // 2026-08-15：IPA 容器隐藏底部 TabBar——点开卡片后画面占满整个屏幕（"整个画面即显示容器"）。
+  // 仅 WKWebView 容器存在 farmBridge 时发送（Safari/PC 无桥自动跳过）；退出控制时恢复（见 exitFocus）。
+  if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.farmBridge) {
+    window.webkit.messageHandlers.farmBridge.postMessage({ type: 'setTabBarHidden', hidden: true });
+  }
   // 键盘软键盘状态复位（默认收起；用户需要输入时点「键盘」能力键才弹出，避免误弹系统粘贴条）
   kbdSoft = false; kbdBtns = [];
   updateKbdBtns();
@@ -1290,6 +1388,10 @@ function exitFocus() {
   closeRfb(focus.rfb);
   stopFabSignalPoll();
   focus = null;
+  // 2026-08-15：退出控制恢复 IPA 底部 TabBar（与 enterFocus 隐藏配对；无桥环境自动跳过）
+  if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.farmBridge) {
+    window.webkit.messageHandlers.farmBridge.postMessage({ type: 'setTabBarHidden', hidden: false });
+  }
   // 退出：收起控制端软键盘、复位键盘按钮高亮
   kbdSoft = false; kbdBtns = [];
   blurKbdInput();
@@ -1629,10 +1731,14 @@ function fitFocusPanel() {
   const stage = $('focusStage');
   if (!panel || !screenEl || !stage) return;
   if (window.matchMedia('(max-width: 900px)').matches) {
-    // 移动端全屏：stage 必须撑满 focusScreen（noVNC scaleViewport 以此为适配基准，
-    // 否则容器高度 0 → 画面被缩放到 0 → 黑屏）。CSS 兜底 100%，此处显式再设一次。
-    stage.style.width = '100%';
-    stage.style.height = '100%';
+    // 移动端全屏：stage 用 JS 像素值撑满视口（noVNC scaleViewport 以此为适配基准）。
+    // 2026-08-15 根因修复（画布"先贴顶后贴底"漂移，IPA WKWebView）：此前 height:100%
+    // 依赖 CSS 高度链（focusPanel fixed inset:0 → focusScreen flex:1 → stage 100%），
+    // WKWebView 首帧布局时 safe-area-inset-top 从 0 注入真实值 → header 高度跳变 →
+    // 该链测量未稳定 → noVNC autoscale 用错容器尺寸 → 画布贴顶；重排后跳底。
+    // 改用 window.innerHeight 像素值：不依赖 CSS 高度链，尺寸恒定，画布不再漂移。
+    stage.style.width = window.innerWidth + 'px';
+    stage.style.height = window.innerHeight + 'px';
     return;
   }
   const disp = focus.rfb._display;
@@ -1749,6 +1855,9 @@ function createRfb(container, device, opts = {}, statusEl = null) {
   rfb.scaleViewport = true;
   rfb.resizeSession = false;
   rfb.showDotCursor = true;
+  // 2026-08-15：画面余白透明跟随系统主题——noVNC 内部 _screen 默认硬编码 rgb(40,40,40) 深灰，
+  // 覆盖外层 .screen 的 transparent 无效；此处显式置透明，露出 body 背景（--bg 随 prefers-color-scheme）。
+  rfb.background = 'transparent';
   if (opts.viewOnly) rfb.viewOnly = true;   // 墙缩略图只读：点击卡片=切入大屏控制，不直接操控
   // 光标策略（2026-08-14 用户需求）：
   // - 墙缩略图（viewOnly）：无光标（消除多 RFB 覆盖层光标串扰——PC"屏幕中原有的 X"即来自
@@ -1879,10 +1988,8 @@ function farmWriteClipboardToControl(text, devName) {
     if (rfb._farmClipLastText === text && rfb._farmClipLastAt && now - rfb._farmClipLastAt < 500) return;
     rfb._farmClipLastAt = now;
     rfb._farmClipLastText = text;
-    // 2026-08-14：记录"该文本来自设备 device.id"——控制端剪贴板被下方写入后，原生监听
-    // 推回同文本时按来源排除（"从谁复制的不推送给谁"），避免把设备内容原样回发设备；
-    // 配合原生侧 clipboardLastPushed 双保险防循环。多设备场景仍可同步给其他设备。
-    farmClipSource = { text, deviceId: device.id };
+    // 2026-08-15 基建：回环由原生端 changeCount 锚点抑制断环（writeClipboard 写入触发的一次
+    // 通知被吞），不再记录来源/做文本排除——相同文本每次复制都同步（用户要求）。
     farmWriteClipboardToControl(text, device.name);
   });
   rfb.addEventListener('credentialsrequired', () => {
@@ -2031,29 +2138,40 @@ function positionOpsMenu() {
   if (!menu || !fab) return;
   const fr = fab.getBoundingClientRect();
   const vw = window.innerWidth, vh = window.innerHeight;
+  // 2026-08-15：钳制纳入安全区（iOS 刘海/Home 条）——此前只用固定 pad=8，菜单触底时
+  // 底部落入 --safe-bottom 区域，Home 条遮挡最后一行按钮（视觉上"超出屏幕"）。
+  // 与 getSafeBounds 同源取值（CSS 变量），保证 FAB 可拖动区域与菜单展开区域一致。
+  const cs = getComputedStyle(document.documentElement);
+  const safeT = parseInt(cs.getPropertyValue('--safe-top')) || 0;
+  const safeB = parseInt(cs.getPropertyValue('--safe-bottom')) || 0;
+  const safeL = parseInt(cs.getPropertyValue('--safe-left')) || 0;
+  const safeR = parseInt(cs.getPropertyValue('--safe-right')) || 0;
   const pad = 8, gap = 10;
+  // 可用区域（视口扣除安全区），同时限制菜单宽度不超出可用区
+  const availW = Math.max(120, vw - safeL - safeR - pad * 2);
+  const availH = Math.max(120, vh - safeT - safeB - pad * 2);
   // 先重置 maxHeight 再测量真实尺寸（上次调用设置的 maxHeight 会压缩 offsetHeight）
   menu.style.maxHeight = '';
-  const mw = menu.offsetWidth || 160;
+  const mw = Math.min(menu.offsetWidth || 160, availW);
   const rawH = menu.offsetHeight || 300;
-  // maxHeight 按视口高度裁剪（下边界适配时保证菜单不超出上边界）
-  const maxH = Math.max(80, Math.min(rawH, vh - pad * 2));
+  // maxHeight 按可用高度裁剪（触底上移时保证菜单不超出安全区上边界）
+  const maxH = Math.max(80, Math.min(rawH, availH));
   menu.style.maxHeight = maxH + 'px';
   const mh = Math.min(rawH, maxH);
-  // 水平：FAB 在左半屏 → 右侧展开；右半屏 → 左侧展开；空间不足自动换侧，钳制在视口内
+  // 水平：FAB 在左半屏 → 右侧展开；右半屏 → 左侧展开；空间不足自动换侧，钳制在安全区内
   const fabCenter = fr.left + fr.width / 2;
-  const spaceRight = vw - (fr.right + gap) - pad;
-  const spaceLeft = fr.left - gap - pad;
+  const spaceRight = vw - safeR - (fr.right + gap) - pad;
+  const spaceLeft = fr.left - safeL - gap - pad;
   let left;
   if (fabCenter < vw / 2) left = spaceRight >= mw ? fr.right + gap : fr.left - gap - mw;
   else left = spaceLeft >= mw ? fr.left - gap - mw : fr.right + gap;
-  if (left < pad) left = pad;
-  if (left + mw > vw - pad) left = vw - mw - pad;
+  if (left < safeL + pad) left = safeL + pad;
+  if (left + mw > vw - safeR - pad) left = vw - safeR - mw - pad;
   // 垂直：菜单从 FAB 底部下方开始向下展开（与 FAB 保持关联）；
-  // 若菜单底部触碰屏幕下边界 → 整体上移，底部贴下边界，永不越界
+  // 若菜单底部触碰安全区下边界 → 整体上移，底部贴安全区上沿，永不越界/被遮挡
   let top = fr.bottom + gap;
-  if (top + mh > vh - pad) top = vh - mh - pad;
-  if (top < pad) top = pad;
+  if (top + mh > vh - safeB - pad) top = vh - safeB - mh - pad;
+  if (top < safeT + pad) top = safeT + pad;
   menu.style.left = left + 'px';
   menu.style.top = top + 'px';
   menu.style.right = 'auto';

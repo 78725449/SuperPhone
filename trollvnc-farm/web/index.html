@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-<title>SuperPhone 群控台</title>
+<title>控制台</title>
 <link rel="icon" href="data:," />
-<link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="style.css?v=9" />
 </head>
 <body>
 <header>
-  <h1>SuperPhone 群控台</h1>
+  <h1>控制台</h1>
   <div id="meta" class="meta"></div>
   <div class="actions">
     <label class="zoom" title="拖动调整设备卡片宽度（像素）：最小值=每行15列，最大值=每行5列，卡片从左到右逐行自适应平铺填满">
@@ -88,11 +88,13 @@
   </div>
 </main>
 
-<!-- 控制端软键盘输入源：触屏端「键盘」能力键聚焦此隐藏 input 唤起 iOS 软键盘，
-     app.js 中 Keyboard 实例绑定它抓取 keydown/keyup 直发当前聚焦设备（noVNC 官方 touch 键盘方案） -->
+<!-- 控制端软键盘输入源（2026-08-15 实时打字方案）：触屏端「键盘」能力键聚焦此 input 唤起 iOS 软键盘。
+     必须位于可视视口内（wterm #32 结论：left:-9999px 时 iOS 不弹键盘）——故为 fixed 全屏透明层，
+     color/caret 透明无光标、pointer-events:none 不挡画布触控；app.js 监听 input/composition 事件实时转发：
+     ASCII 逐键 sendKey、中文/emoji 走 type.paste。不再使用 noVNC Keyboard(keydown)（iOS 软键盘无 keydown）。 -->
 <input id="kbdInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
        tabindex="-1" aria-label="键盘输入（控制被控设备）"
-       style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0;border:0;pointer-events:none;" />
+       style="position:fixed;left:0;top:0;width:100%;height:100%;opacity:0.01;color:transparent;background:transparent;border:0;caret-color:transparent;z-index:1;pointer-events:none;" />
 
 <!-- 添加/编辑设备 -->
 <div id="addModal" class="modal hidden">
@@ -126,6 +128,6 @@
 <!-- 设备卡片小菜单 -->
 <div id="tileMenu" class="tile-menu hidden"></div>
 
-<script type="module" src="app.js?v=99"></script>
+<script type="module" src="app.js?v=104"></script>
 </body>
 </html>

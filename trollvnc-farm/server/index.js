@@ -917,6 +917,67 @@ const requestHandler = async (req, res) => {
           // 与电脑端鼠标按住一致，被控设备识别为长按（长按图标弹菜单/拖拽等）。
           rfbSrc = rfbSrc.replace(/this\._handleMouseButton\(pos\.x, pos\.y, 0x4\);/g,
                                   'this._handleMouseButton(pos.x, pos.y, 0x1);');
+          // 2026-08-15 修复"控制端复制 → 被控端粘贴不成功"：设备端 libvncserver 0.9.15
+          // （rfbProcessClientCutText）只处理扩展剪贴板的 Caps/Request/Peek/Provide 四种动作，
+          // noVNC clipboardPasteFrom 发送的 Notify 被静默丢弃 → 服务器从不回 Request →
+          // noVNC 也永远不发 Provide → setXCutTextUTF8 从未被调用 → 设备剪贴板从不更新。
+          // 修复：整体替换 clipboardPasteFrom，直接发送无请求的 Provide（UTF-8 + deflate，
+          // noVNC 内置 extendedClipboardProvide 与 libvncserver Provide 分支字节格式完全一致，
+          // 解压后回调 setXCutTextUTF8 写剪贴板；载荷尾部 \0 由设备端 setXCutTextUTF8 剔除）。
+          {
+            const oldMethod = `    clipboardPasteFrom(text) {
+        if (this._rfbConnectionState !== 'connected' || this._viewOnly) { return; }
+
+        if (this._clipboardServerCapabilitiesFormats[extendedClipboardFormatText] &&
+            this._clipboardServerCapabilitiesActions[extendedClipboardActionNotify]) {
+
+            this._clipboardText = text;
+            RFB.messages.extendedClipboardNotify(this._sock, [extendedClipboardFormatText]);
+        } else {
+            let length, i;
+            let data;
+
+            length = 0;
+            // eslint-disable-next-line no-unused-vars
+            for (let codePoint of text) {
+                length++;
+            }
+
+            data = new Uint8Array(length);
+
+            i = 0;
+            for (let codePoint of text) {
+                let code = codePoint.codePointAt(0);
+
+                /* Only ISO 8859-1 is supported */
+                if (code > 0xff) {
+                    code = 0x3f; // '?'
+                }
+
+                data[i++] = code;
+            }
+
+            RFB.messages.clientCutText(this._sock, data);
+        }
+    }`;
+            const newMethod = `    clipboardPasteFrom(text) {
+        if (this._rfbConnectionState !== 'connected' || this._viewOnly) { return; }
+
+        // [farm patch 2026-08-15] 设备端 libvncserver 0.9.15（rfbProcessClientCutText）只处理
+        // Caps/Request/Peek/Provide 四种动作，Notify 被静默丢弃 → 服务器从不回 Request → 文本
+        // 到不了设备。改为直接发无请求的 Provide（UTF-8 + deflate），服务端 Provide 分支解压后
+        // 调用 setXCutTextUTF8 → 设备剪贴板立即更新（载荷尾部 \\0 由设备端 setXCutTextUTF8 剔除）。
+        this._clipboardText = text;
+        RFB.messages.extendedClipboardProvide(this._sock, [extendedClipboardFormatText], [text]);
+    }`;
+            const clipBefore = rfbSrc.includes(oldMethod);
+            rfbSrc = rfbSrc.replace(oldMethod, newMethod);
+            const clipAfter = rfbSrc.includes('extendedClipboardProvide(this._sock, [extendedClipboardFormatText], [text])');
+            console.log(`[novnc] rfb.js clipboard patch: matched=${clipBefore} applied=${clipAfter}`);
+            if (!clipBefore) {
+              console.log(`[novnc] WARN: clipboardPasteFrom 未命中，noVNC 版本可能已变更，需人工核对！`);
+            }
+          }
           const after = rfbSrc.includes('secure context (TLS)');
           console.log(`[novnc] rfb.js patch: before=${before} after=${after}`);
           res.writeHead(200, {

@@ -31,7 +31,7 @@ const child = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
   env: {
     ...process.env,
     FARM_PORT: String(PORT), FARM_REG_PORT: String(REG_PORT), FARM_TUNNEL_PORT: String(TUN_PORT),
-    FARM_TOKEN: TOKEN, FARM_DATA_DIR: tmpData, FARM_HOST: '127.0.0.1',
+    FARM_TOKEN: TOKEN, FARM_DATA_DIR: tmpData, FARM_TLS: '0', FARM_HOST: '127.0.0.1',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -115,6 +115,14 @@ class FakeDevice {
       this.frames.push(frame);
       this.frameBuf = this.frameBuf.subarray(5 + len);
       for (const w of [...this._waiters]) w(frame);
+      // 模拟设备：FT_CMD(rfb.start/stop) 自动回 ack（echo id），网关 ack 驱动据此精确放行握手字节
+      if (type === FT_CMD) {
+        let cmd = '', id = null;
+        try { const j = JSON.parse(frame.payload.toString('utf8')); cmd = j.cmd; id = j.id; } catch { /* noop */ }
+        if (cmd === 'rfb.start' || cmd === 'rfb.stop') {
+          this.tunSock.write(encodeFrame(FT_CMDACK, Buffer.from(JSON.stringify({ type: 'ack', cmd, id, ok: true }))));
+        }
+      }
     }
   }
   sendData(data) { this.tunSock.write(encodeFrame(FT_DATA, data)); }
@@ -190,18 +198,20 @@ try {
   await waitFor(() => subGot.some((b) => b.equals(Buffer.from([0x01, 0x02, 0x03]))));
   check('viewOnly subscriber receives tunnel DATA', true);
 
-  // ????? -> ?? FT_DATA
+  // viewOnly 会话上行可转发（握手必需字节；只读由 noVNC 客户端保证）。
+  // 注意：须在 ctrl 加入前验证——同设备仅 1 个活跃会话，ctrl 加入会顶掉 viewOnly（4001）
+  d1.frames = [];
+  sub.send(Buffer.from([0x99]));
+  await new Promise((r) => setTimeout(r, 400));
+  check('viewOnly subscriber upstream forwarded to tunnel', d1.frames.filter((f) => f.type === FT_DATA).length === 1);
+
+  // ???? -> ?? FT_DATA
+  d1.frames = []; // 清空 viewOnly 上行验证的旧 FT_DATA 帧（nextFrame 不消费匹配帧）
   const ctrl = await wsConnect(`${baseWs}&ctrl=1`);
   const ctrlFrameP = d1.nextFrame(FT_DATA);
   ctrl.send(Buffer.from([0x10, 0x20]));
   const got = await ctrlFrameP;
   check('controller input -> tunnel FT_DATA', got.payload.equals(Buffer.from([0x10, 0x20])));
-
-  // viewOnly ??????????????
-  d1.frames = [];
-  sub.send(Buffer.from([0x99]));
-  await new Promise((r) => setTimeout(r, 400));
-  check('viewOnly subscriber input ignored', d1.frames.length === 0);
 
   // ???????????????4001?
   const ctrl2 = await wsConnect(`${baseWs}&ctrl=1`);
@@ -215,6 +225,9 @@ try {
   // ???????? WS ??????????viewOnly ?????
   const d2sub = await wsConnect(`ws://127.0.0.1:${PORT}/ws/vnc/${encodeURIComponent(d2.deviceId)}?token=${TOKEN}&grp=wall1`);
   const master = await wsConnect(`${baseWs}&grp=wall1&broadcast=1&ctrl=1`);
+  // 等 ack 驱动重建完成（设备 5901 就绪、重建窗口结束）：窗口内首个上行字节会被缓冲为握手字节，
+  // 不执行广播；真实 noVNC 在握手完成前不会发输入，故此处需等待重建完成再发广播输入
+  await new Promise((r) => setTimeout(r, 300));
   const d2FrameP = d2.nextFrame(FT_DATA);
   master.send(Buffer.from([0xaa, 0xbb]));
   const bcast = await d2FrameP;

@@ -8,3 +8,13 @@ dist/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 依赖与运行时数据（不入库）
+trollvnc-farm/node_modules/
+trollvnc-farm/data/
+trollvnc-farm/frp/
+
+# 上游对照副本 / 打包产物 / 截图
+TrollVNC-upstream/
+*.zip
+*.png

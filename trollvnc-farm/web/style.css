@@ -14,11 +14,16 @@
   --safe-bottom: env(safe-area-inset-bottom);
   --safe-left: env(safe-area-inset-left);
 }
-/* 2026-08-15：页面背景跟随系统主题——画面边界（#focusScreen 透出 body 背景）随系统明暗变化；
-   其余 UI 面板仍用固定深色变量，避免大面积改动破坏布局观感 */
+/* 2026-08-15：整体主题跟随系统——浅色模式下页面/面板/文字/边框全套切换
+   （画面余白、顶部标题栏、按钮、弹窗均随系统明暗）；accent/ok/bad 语义色两模式通用 */
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #eef1f6;
+    --panel: #ffffff;
+    --panel2: #e8ecf3;
+    --line: #d3dae6;
+    --text: #1c2333;
+    --muted: #66708a;
   }
 }
 * { box-sizing: border-box; }
@@ -46,8 +51,9 @@ input, textarea, [contenteditable="true"] {
 }
 header {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-  /* 2026-08-15：顶部安全区——IPA 控制 Tab 已隐藏原生导航栏，webView 顶到刘海/状态栏，
-     须以 env(safe-area-inset-top) 避让（viewport-fit=cover 下有效；桌面端恒为 0 无影响） */
+  /* 2026-08-15 规范化改造：IPA 容器 webView 已对齐 safeAreaLayoutGuide（不顶到状态栏），
+     H5 内 env(safe-area-inset-top) 恒为 0 → padding 自然退化为 10px，无尺寸信号；
+     保留 env() 兜底：普通浏览器（全屏 Safari）仍能正确避让刘海/状态栏 */
   padding: calc(10px + env(safe-area-inset-top)) 16px 10px 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--line); flex: 0 0 auto;
@@ -94,9 +100,31 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
    此前 PC 端 stage 无显式高度，connect 前塌缩导致 noVNC autoscale 用错容器尺寸、画布贴顶；
    fitFocusPanel 300ms 后才动态设高度 → 画布位置跳变（先贴顶后贴底）。高度交给 CSS 后恒居中。 */
 .focus-stage { position: relative; width: 100%; height: 100%; min-height: 0; }
-/* 2026-08-14 修复：不再设置 .focus-stage canvas 定位规则——noVNC 内部 _screen(flex)+canvas margin:auto
-   负责等比缩放画面的水平垂直居中（与设备端 5801 页一致）。原 position:absolute;left:0;top:0 覆盖了
-   noVNC 的 flex 居中，导致移动端全屏（stage 100%x100%）时画面靠左上（比例不匹配留黑边时明显）。 */
+/* 2026-08-15 根因修复（聚焦画布"先贴顶后贴底"漂移，IPA WKWebView 内复发）：
+   不再依赖 noVNC 的 flex + canvas margin:auto 居中——WKWebView 首次布局时容器尺寸
+   未稳定（safe-area-inset-top 首帧为 0 后注入真实值 → header 高度跳变 → 页面收到尺寸
+   信号 → .focus-stage 高度链未稳定），flex 主轴解析偏差 + _screen overflow:auto
+   使 auto margin 归零 → 画布贴顶；重排被 ResizeObserver 纠正 → 画布跳到另一端。
+   改为经典绝对居中：canvas 相对 .focus-stage（position:relative）四边对齐 + margin:auto，
+   位置与容器测量时序完全解耦——无论 stage 高度首帧多少，canvas 恒居中；
+   !important 覆盖 noVNC 内联 margin:auto；autoscale 只负责尺寸，锚点由 CSS 恒定。
+   点击映射经 getBoundingClientRect（含 transform）不受影响。
+   （PC 端聚焦面板为页面内面板，非全屏，此处 absolute 居中于面板即可）
+   （移动端全屏聚焦画布见下方 @media (max-width:900px) 覆盖为视口锚定） */
+.focus-stage canvas {
+  position: absolute !important;
+  left: 50% !important;
+  top: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  margin: 0 !important;
+}
+/* noVNC _screen（stage 直接子元素）默认 overflow:auto——canvas 尺寸瞬变（首帧测量偏差）
+   会让滚动条出现并自动滚动，把画布推走（贴顶/贴底）。聚焦视图禁用滚动：
+   画布位置由外部绝对居中保证，滚动条不再参与。此规则仅作用于 web 控制台聚焦画布，
+   不影响 5801 直连页（其无 .focus-stage，仍用 noVNC 默认 flex+margin:auto 居中）。 */
+.focus-stage > div {
+  overflow: hidden !important;
+}
 /* 聚焦画面中央状态浮层（与 5801 直连页一致）：连接中加载动画 / 断开重连提示 */
 .focus-status-ov {
   position: absolute; inset: 0; z-index: 30;
@@ -407,12 +435,20 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
   #workspace.focus-open .focus-panel {
     position: fixed; inset: 0; z-index: 45; width: 100%; height: 100%; flex: none;
     border-radius: 0; border: none;
-    background: transparent; /* 2026-08-15：画面边界透出 body 背景，随系统主题（浅色/深色） */
+    /* 2026-08-15：不透明主题背景——此前 transparent 会让底下 header 透出（标题栏残影），
+       改为主背景色 var(--bg)：画面余白仍随系统主题（浅色/深色），同时遮住上层 header */
+    background: var(--bg);
   }
   /* 移动端移除顶部条：连接状态由 FAB 信号图标表示；退出控制统一走「断开」（2026-08-14 返回/退出按钮已移除） */
   #workspace.focus-open .focus-head { display: none; }
-  /* 聚焦 stage 撑满屏幕：noVNC scaleViewport 以此为适配基准，否则高度 0 → 黑屏 */
-  .focus-stage { width: 100%; height: 100%; }
+  /* 2026-08-15 纯化聚焦大屏：整个画面即显示容器——stage 固定锚定视口（fixed inset:0），
+     砍掉 focusPanel→focusScreen 的 CSS 高度链（WKWebView 首帧 safe-area 注入/重排不再
+     传导到画布），canvas absolute 居中即相对视口，画布位置与任何测量时序彻底解耦。
+     z-index:1 低于连接浮层(30)，浮层仍显示在画布之上 */
+  #workspace.focus-open .focus-stage {
+    position: fixed; inset: 0; z-index: 1;
+    width: 100%; height: 100%;
+  }
   #workspace.focus-open #wall { display: none; }
   #wall { height: auto; width: 100%; }
   /* 移动端卡片填满 grid 列（2 列 1fr → 每卡片约半屏宽，grid item 默认 stretch）。
