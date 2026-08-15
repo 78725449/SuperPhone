@@ -2,10 +2,11 @@
 // 用法：GHTOK=<token> node push-via-api.mjs <本地commit> <本地base commit> <远程base commit>
 import { execSync } from 'node:child_process';
 
-const REPO = '78725449/TrollVNC';
+const REPO = process.env.REPO || '78725449/TrollVNC';
 const TOKEN = process.env.GHTOK;
 const API = 'https://api.github.com';
-const CWD = 'C:\\Users\\Administrator\\Documents\\ChatGPT\\New project\\TrollVNC';
+const CWD = process.env.CWD || 'C:\\Users\\Administrator\\Documents\\ChatGPT\\New project\\TrollVNC';
+const BRANCH = process.env.BRANCH || 'main';
 const LOCAL = process.argv[2];
 const LOCAL_BASE = process.argv[3];
 const REMOTE_BASE = process.argv[4];
@@ -24,7 +25,7 @@ async function api(method, url, body) {
 }
 
 // 1. 远程 HEAD 与 base tree
-const ref = await api('GET', `${API}/repos/${REPO}/git/ref/heads/main`);
+const ref = await api('GET', `${API}/repos/${REPO}/git/ref/heads/${BRANCH}`);
 if (ref.object.sha !== REMOTE_BASE) {
   console.error(`远程 main 已变化: 期望 ${REMOTE_BASE}, 实际 ${ref.object.sha}`);
   process.exit(1);
@@ -70,7 +71,7 @@ const msg = execSync(`git log -1 --format=%B ${LOCAL}`, { encoding: 'utf8', cwd:
 const commit = await api('POST', `${API}/repos/${REPO}/git/commits`, { message: msg, tree: tree.sha, parents: [REMOTE_BASE] });
 console.log('new commit:', commit.sha);
 
-// 5. 更新 main 引用
-await api('PATCH', `${API}/repos/${REPO}/git/refs/heads/main`, { sha: commit.sha, force: false });
-console.log('main updated ->', commit.sha);
+// 5. 更新分支引用
+await api('PATCH', `${API}/repos/${REPO}/git/refs/heads/${BRANCH}`, { sha: commit.sha, force: false });
+console.log(`${BRANCH} updated ->`, commit.sha);
 console.log('DONE');
