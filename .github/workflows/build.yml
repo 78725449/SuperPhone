@@ -1,5 +1,9 @@
 name: Build SuperPhone
 
+# 迁移自旧 fork 78725449/TrollVNC .github/workflows/build.yml（2026-08-15 单仓库化）
+# 适配：TrollVNC 由仓库根降级为子目录，所有 run 步骤 working-directory=TrollVNC；
+#       artifact 路径 / body_path 加 TrollVNC/ 前缀（action 参数相对 workspace 根）。
+
 on:
   push:
     branches: [release]
@@ -52,6 +56,9 @@ env:
 jobs:
   build:
     runs-on: macos-14
+    defaults:
+      run:
+        working-directory: TrollVNC
 
     strategy:
       matrix:
@@ -78,7 +85,7 @@ jobs:
       - name: Install iOS SDKs
         run: |
           export THEOS=$GITHUB_WORKSPACE/theos-roothide
-          cd theos-roothide
+          cd "$GITHUB_WORKSPACE/theos-roothide"
           ./bin/install-sdk iPhoneOS16.5
           ./bin/install-sdk iPhoneOS14.5
         env:
@@ -175,14 +182,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dsym-${{ matrix.scheme }}
-          path: artifacts/dsym-${{ matrix.scheme }}
+          path: TrollVNC/artifacts/dsym-${{ matrix.scheme }}
           if-no-files-found: warn
 
       - name: Upload package artifacts
         uses: actions/upload-artifact@v4
         with:
           name: packages-${{ matrix.scheme }}
-          path: artifacts/packages-${{ matrix.scheme }}
+          path: TrollVNC/artifacts/packages-${{ matrix.scheme }}
           if-no-files-found: warn
 
   release:
@@ -205,6 +212,7 @@ jobs:
 
       - name: Create release tag
         id: tag
+        working-directory: TrollVNC
         run: |
           # Read PACKAGE_VERSION from Makefile
           PACKAGE_VERSION=$(grep 'PACKAGE_VERSION' Makefile | cut -d' ' -f4)
@@ -216,7 +224,7 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.tag_name }}
           name: Release ${{ steps.tag.outputs.tag_name }}
-          body_path: CHANGELOG.md
+          body_path: TrollVNC/CHANGELOG.md
           files: release-packages/**/*
           draft: false
           prerelease: false

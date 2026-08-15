@@ -14,12 +14,12 @@ const r = spawnSync(process.execPath, ['--check', tmp], { encoding: 'utf8' });
 fs.unlinkSync(tmp);
 console.log('app.js syntax check:', r.status === 0 ? 'PASS' : 'FAIL\n' + r.stderr);
 
-// 软键盘基座（Keyboard 实例绑定隐藏 input）
-console.log('Keyboard import:', a.includes("import Keyboard from '/novnc/core/input/keyboard.js?v=2'"));
+// 软键盘基座（2026-08-15 实时打字：input/composition 事件驱动，无 Keyboard 实例）
+console.log('no Keyboard import:', !a.includes("import Keyboard"));
 console.log('kbdInput element in html:', h.includes('id="kbdInput"'));
 console.log('initTouchKeyboard present:', a.includes('function initTouchKeyboard') && a.includes('initTouchKeyboard()'));
-console.log('touchKb binding:', a.includes('new Keyboard(kbi)') && a.includes('touchKb.onkeyevent') && a.includes('touchKb.grab()'));
-console.log('touchKb forwards to focus.rfb:', a.includes('rfb.sendKey(keysym, code, down)'));
+console.log('input-event kbd present:', a.includes('function kbdSendChar') && a.includes('function kbdForwardText') && a.includes('kbdComposing'));
+console.log('no touchKb / new Keyboard:', !a.includes('touchKb') && !a.includes('new Keyboard'));
 
 // 「键盘」键 = 显示/隐藏控制端软键盘（2026-08-14 对齐原生 noVNC「Show Keyboard」，无输入源切换/无 attach hack）
 console.log('kbdSoft default false:', a.includes('let kbdSoft = false'));

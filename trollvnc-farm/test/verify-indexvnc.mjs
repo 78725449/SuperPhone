@@ -33,10 +33,11 @@ console.log('home label aligned:', s.includes("label: 'Home'"));
 console.log('snapshot label aligned:', s.includes("label: '截屏'"));
 // 收起菜单按钮移除（2026-08-14）
 console.log('panel-close removed:', !s.includes('panel-close'));
-// 软键盘（noVNC 官方 touch 键盘方案，Keyboard 实例绑定隐藏 input）
+// 软键盘（2026-08-15 实时打字方案：input/composition 事件驱动，无 Keyboard 实例/无 touchKb）
 console.log('kbInput element present:', s.includes('id="kbInput"'));
-console.log('Keyboard import present:', s.includes("import Keyboard from './novnc/core/input/keyboard.js'"));
-console.log('touchKb Keyboard binding present:', s.includes('new Keyboard(kbInput)') && s.includes('touchKb.onkeyevent') && s.includes('touchKb.grab()'));
+console.log('Keyboard import removed:', !s.includes("import Keyboard"));
+console.log('no touchKb / new Keyboard:', !s.includes('touchKb') && !s.includes('new Keyboard'));
+console.log('input-event kbd present:', s.includes('function kbdSendChar') && s.includes('function kbdForwardText') && s.includes('kbdComposing'));
 console.log('no legacy keyInput diff:', !s.includes('kbOnInput') && !s.includes('kbReset') && !s.includes('keysyms.lookup'));
 // 「键盘」键 = 显示/隐藏控制端软键盘（2026-08-14 对齐原生 noVNC「Show Keyboard」，无输入源切换/无 attach hack）
 console.log('kbdSoft default false:', s.includes('var kbdSoft = false'));
@@ -51,7 +52,7 @@ console.log('iOS reliable dismiss (readonly trick):', s.includes("kbi.setAttribu
 console.log('connect resets kbdSoft:', s.includes('kbdSoft = false;'));
 console.log('kbd-on highlight (no kbd-control/device):', s.includes('.kbd-on') && !s.includes('.kbd-control') && !s.includes('.kbd-device'));
 console.log('no pagehide attach restore:', !s.includes('XF86KeyboardShow'));
-console.log('clip kept:', s.includes("case 'clip'") && s.includes('tryClipboardPaste()'));
+console.log('paste overlay kept:', s.includes('id="clipOverlay"') && s.includes('function pasteToDevice') && s.includes("case 'clip'"));
 
 // down/up 连发断言
 console.log('DOWNUP_KEYS present:', s.includes('var DOWNUP_KEYS'));
