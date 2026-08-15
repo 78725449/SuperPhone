@@ -18,3 +18,6 @@ trollvnc-farm/frp/
 TrollVNC-upstream/
 *.zip
 *.png
+
+# TrollVNC 旧 git 对象库（已归档，不入库）
+TrollVNC/.git.bak/

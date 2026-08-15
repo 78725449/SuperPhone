@@ -1,0 +1,217 @@
+"/absolute/path" = "/absolute/path";
+
+"/path/to/cert.pem" = "/path/to/cert.pem";
+
+"/path/to/key.pem" = "/path/to/key.pem";
+
+"0.1–1.0. Lower scale reduces bandwidth/CPU; 1.0 is pixel-perfect. Balance quality, latency and battery." = "0.1–1.0。缩小可降低带宽/CPU 占用；1.0 保持像素级清晰。请在画质、延迟与电量之间取得平衡。";
+
+"180°" = "180°";
+
+"270° Clockwise" = "逆时针 90°";
+
+"8 characters max." = "最多 8 个字符";
+
+"90° Clockwise" = "顺时针 90°";
+
+"Absolute path to static web client files. Leave empty to use built-in assets." = "静态 Web 客户端文件的绝对路径。留空使用内置资源。";
+
+"Advanced wheel options: comma-separated key=value (e.g. step=48,coalesce=0.03,accel=1.0). Leave empty to use defaults." = "高级滚轮选项：以逗号分隔的 key=value（例如 step=48,coalesce=0.03,accel=1.0）。留空使用默认值。";
+
+"Advertises the VNC service over Bonjour (_rfb._tcp) for clients that support auto-discovery. When the built-in HTTP server is enabled, also publishes _http._tcp. Turn off to disable broadcasting." = "通过 Bonjour 在局域网发布 VNC 服务（_rfb._tcp），便于兼容客户端自动发现；启用内置 HTTP 时也会发布 _http._tcp。关闭以禁用广播。";
+
+"Alt as Command" = "Alt 作为 Command";
+
+"Alt→Cmd" = "Alt→Cmd";
+
+"Apply a fixed rotation offset to the captured display. Useful for iPad models with non-standard default orientations." = "对捕获的显示画面施加固定旋转偏移。适用于默认方向不常见的 iPad 型号。";
+
+"Are you sure you want to respring your device?" = "你确定要注销设备吗？";
+
+"Assistive Touch Auto-Activation" = "Assistive Touch 自动激活";
+
+"Attempts to avoid blocking when swapping buffers; may cause tearing. Can reduce stalls when encoders are slow." = "尝试在交换缓冲时避免阻塞；可能导致撕裂。在编码器较慢时可减少停顿。";
+
+"Authentication" = "认证";
+
+"Automatically enables iOS AssistiveTouch while clients are connected to improve input support." = "连接期间自动启用 iOS AssistiveTouch，以改善输入支持。";
+
+"Balance quality, latency and battery." = "平衡画质、延迟与电量消耗。";
+
+"Bind Address" = "绑定地址";
+
+"Bind to a specific local IP address. Leave empty to listen on all interfaces." = "绑定到指定本地 IP 地址，可选。留空则监听所有网卡。";
+
+"Cancel" = "取消";
+
+"Choose how remote Alt/Super map to iOS Option/Command." = "选择远端 Alt/Super 映射为 iOS 的 Option/Command。";
+
+"Clipboard Sync" = "剪贴板同步";
+
+"Coalesces updates to reduce overhead. Higher values add latency; typical range 0.005–0.030." = "合并刷新以降低开销。数值越大延迟越高；一般范围 0.005–0.030。";
+
+"Configure basic server options." = "配置基础服务器选项。";
+
+"Configure the built-in web client server." = "配置内置 Web 客户端服务器。";
+
+"Connect/Disconnect Notifications" = "连接/断开连接通知";
+
+"Cursor & Orientation" = "光标与方向";
+
+"Defer Window (sec)" = "合并窗口（秒）";
+
+"Desktop Name" = "桌面名称";
+
+"Dirty Detection" = "脏区检测";
+
+"Dirty-detection tile size in pixels. Smaller captures finer changes but increases CPU cost." = "脏区检测的瓦片大小（像素）。越小越精细，但更耗 CPU。";
+
+"Disabled" = "关闭";
+
+"Display & Performance" = "显示与性能";
+
+"e.g. 60 or 30-60 or 30:60:120" = "例如 60、30-60 或 30:60:120";
+
+"Enable Auto-Discovery" = "启用自动发现";
+
+"Enabled" = "启用";
+
+"Export Certificate…" = "导出证书…";
+
+"Frame Rate" = "帧率";
+
+"Full-access Password" = "完全访问密码";
+
+"Fullscreen Threshold (%)" = "全屏阈值（%）";
+
+"General" = "通用";
+
+"Generate CA…" = "生成根证书…";
+
+"HTTP / WebSockets" = "HTTP / WebSockets";
+
+"HTTP Document Root" = "HTTP 文档根目录";
+
+"HTTP Port" = "HTTP 端口";
+
+"If changed tiles exceed this percent, send a full-screen update. 0 disables dirty detection (always fullscreen)." = "当变化瓦片比例超过该百分比时，发送全屏更新。设为 0 关闭脏区检测（总是全屏）。";
+
+"Ignore all input from clients. Overrides per-client view-only password if set." = "忽略来自客户端的所有输入。如设置了仅查看密码，则此开关全局覆盖它。";
+
+"Keep-Alive (sec)" = "保活（秒）";
+
+"Keeps device awake only while at least one client is connected. 0 disables. Range 15–300 sec; shorter intervals may increase battery usage." = "仅在至少有一个客户端连接时保持设备唤醒。0 表示禁用。范围 15–300 秒。";
+
+"Leave empty for all interfaces" = "留空则监听所有网卡";
+
+"Log Keyboard Events" = "记录键盘事件";
+
+"Logs key events to syslog for debugging. Do not leave enabled in normal use." = "将按键事件记录到系统日志用于调试。正常使用时不建议长期开启。";
+
+"Match iOS natural scroll direction for mouse wheel/trackpad; disable for traditional desktop direction." = "使鼠标滚轮/触控板滚动方向与 iOS 的 “自然滚动” 保持一致；关闭则使用传统桌面方向。";
+
+"Max concurrent client encodes before dropping new frames. 0 = never drop (may increase latency under load)." = "丢弃新帧前允许的最大并发编码数。0 表示不丢弃（在高负载下可能增加延迟）。";
+
+"Max In-flight" = "最大并发帧";
+
+"Max Rects" = "最大矩形数";
+
+"Mode" = "模式";
+
+"Modifier Mapping" = "修饰键映射";
+
+"Name shown to VNC clients." = "在 VNC 客户端中显示的名称。";
+
+"Natural Scroll Direction" = "自然滚动方向";
+
+"Non-blocking Swap" = "非阻塞交换";
+
+"None" = "无";
+
+"Orientation Offset" = "方向校正";
+
+"Output Scale" = "输出缩放";
+
+"PEM-encoded private key path matching the certificate." = "与证书匹配的 PEM 编码私钥路径。";
+
+"PEM-encoded X.509 certificate path for TLS. Used by HTTP/WebSocket if both cert and key are set." = "用于 TLS 的 PEM 编码 X.509 证书路径。若同时设置证书与私钥，将使用安全 WebSockets。";
+
+"Pixels per wheel tick sent to clients. Higher = faster scroll." = "每次滚轮事件向客户端发送的像素数。数值越大滚动越快。";
+
+"Render a cursor on the server for clients that lack a hardware cursor. May slightly reduce performance." = "为缺少硬件光标的客户端在服务器端绘制光标。可能略微影响性能。";
+
+"Reset to Defaults" = "还原为默认值";
+
+"Respring" = "注销";
+
+"Respring to Apply Changes" = "注销以应用更改";
+
+"Rotate the shared display to follow device orientation changes. “Orientation Offset” applies a fixed rotation for iPad models with non-standard default orientations." = "跟随设备方向变化旋转共享画面。“方向校正” 可对某些默认方向不常见的 iPad 型号施加固定旋转补偿。";
+
+"Scroll & Input" = "滚动与输入";
+
+"Serve the built-in web VNC client on this port. 0 disables." = "在该端口提供内置 noVNC 客户端。设为 0 关闭。";
+
+"Server" = "服务器";
+
+"Server-Side Cursor" = "服务器端光标";
+
+"server:port" = "服务器:端口";
+
+"Set a password for view-only access (no input)." = "设置仅查看访问的密码（无控制权限）。";
+
+"Set a password for view-only access (no input). Classic VNC authentication uses only the first 8 characters." = "设置仅查看访问的密码（无控制权限）。经典 VNC 认证方式仅使用前 8 个字符。";
+
+"Set a VNC password for full control. Leaving empty disables authentication (not recommended)." = "设置具有完全控制权限的 VNC 密码。留空将关闭认证（不推荐）。";
+
+"Set a VNC password for full control. Leaving empty disables authentication (not recommended). Classic VNC authentication uses only the first 8 characters." = "设置具有完全控制权限的 VNC 密码。留空将关闭认证（不推荐）。经典 VNC 认证方式仅使用前 8 个字符。";
+
+"Show notifications when clients connect or disconnect." = "当客户端连接或断开连接时显示通知。";
+
+"Shown to VNC clients" = "在客户端显示";
+
+"Silence Notifications" = "静默通知";
+
+"Single fps (e.g. 60), range min-max (e.g. 30-60), or full spec min:pref:max (e.g. 30:60:120). iOS 15+ uses range; iOS 14 uses preferred/max." = "单一帧率（如 60），范围 min-max（如 30-60），或完整规格 min:pref:max（如 30:60:120）。iOS 15+ 使用范围；iOS 14 使用偏好/最大。";
+
+"SSL Certificate File" = "SSL 证书文件";
+
+"SSL Private Key File" = "SSL 私钥文件";
+
+"Standard" = "标准";
+
+"Standard (Alt→Option, Super→Command)" = "标准（Alt→Option，Super→Command）";
+
+"Standard: Alt as Option, Super as Command." = "标准：Alt 作为 Option，Super 作为 Command。";
+
+"Standard: Alt as Option, Super as Command. On macOS clients, Alt as Command (altcmd) is recommended." = "标准：Alt 对应 Option，Super 对应 Command。macOS 客户端建议选择 Alt 作为 Command（altcmd）。";
+
+"step=48,coalesce=0.03,..." = "step=48,coalesce=0.03,...";
+
+"Sync Interface Orientation" = "同步界面方向";
+
+"Syncs text clipboard with VNC clients while connected. Disable if you do not want remote clipboard access." = "连接期间与 VNC 客户端同步文本剪贴板。如不希望远程访问剪贴板，请关闭。";
+
+"TCP Port" = "TCP 端口";
+
+"This project is licensed under GPLv2. Author: Lessica." = "本项目使用 GPLv2 许可证发布。作者：Lessica。";
+
+"Tile Size (px)" = "瓦片大小（像素）";
+
+"To unblock previously blocked clients, restart the VNC service. The temporary block list is cleared on service restart." = "要解封之前被封禁的客户端，请重启 VNC 服务。临时封禁列表会在服务重启时清空。";
+
+"设置" = "设置";
+
+"View Logs" = "查看日志";
+
+"View-only" = "仅查看";
+
+"View-only Password" = "仅查看密码";
+
+"VNC TCP port. Default 5901. Valid range 1024–65535." = "VNC TCP 端口。默认 5901。有效范围 1024–65535。";
+
+"Wheel Step (px)" = "滚轮步进（像素）";
+
+"Wheel Tuning" = "滚轮调校";
+
+"When dirty rectangles exceed this count, collapse to a bounding box. Too high increases protocol overhead." = "当脏矩形数量超过此值时，合并为外接矩形。过高会增加协议开销。";

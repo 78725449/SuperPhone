@@ -1,0 +1,222 @@
+name: Build SuperPhone
+
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+    inputs:
+      is_managed:
+        type: boolean
+        description: Build with a bundled Managed.plist (managed configuration)
+        required: false
+        default: false
+      desktop_name:
+        type: string
+        description: Desktop name shown to clients
+        required: false
+        default: SuperPhone
+      port:
+        type: string
+        description: VNC TCP port (1024–65535; default 5901)
+        required: false
+        default: "5901"
+      view_only:
+        type: boolean
+        description: Global view-only (ignore input)
+        required: false
+        default: false
+      scale:
+        type: string
+        description: Output scale (0.1–1.0)
+        required: false
+        default: "1.0"
+      frame_rate_spec:
+        type: string
+        description: Frame rate spec (e.g. 60 | 30-60 | 30:60:120)
+        required: false
+        default: ""
+      modifier_map:
+        type: choice
+        description: Modifier mapping
+        required: false
+        default: std
+        options:
+          - std
+          - altcmd
+
+env:
+  FINALPACKAGE: 1
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    strategy:
+      matrix:
+        scheme: ["default", "rootless", "roothide", "bootstrap"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          # Install xcbeautify for build output formatting
+          # Install ldid for iOS code signing
+          # Install 7zip for compression
+          brew install xcbeautify ldid-procursus p7zip make
+
+      - name: Checkout roothide/theos
+        uses: actions/checkout@v4
+        with:
+          repository: roothide/theos
+          path: theos-roothide
+          submodules: recursive
+
+      - name: Install iOS SDKs
+        run: |
+          export THEOS=$GITHUB_WORKSPACE/theos-roothide
+          cd theos-roothide
+          ./bin/install-sdk iPhoneOS16.5
+          ./bin/install-sdk iPhoneOS14.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.2"
+
+      - name: Generate Managed.plist (managed build)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.is_managed == true }}
+        env:
+          # Inputs (kept up to 10)
+          TVNC_DESKTOP_NAME: ${{ inputs.desktop_name }}
+          TVNC_PORT: ${{ inputs.port }}
+          TVNC_VIEW_ONLY: ${{ inputs.view_only }}
+          TVNC_SCALE: ${{ inputs.scale }}
+          TVNC_FRAME_RATE_SPEC: ${{ inputs.frame_rate_spec }}
+          TVNC_MODIFIER_MAP: ${{ inputs.modifier_map }}
+          # Fixed values
+          TVNC_ENABLED: true
+          TVNC_CLIPBOARD_ENABLED: true
+          TVNC_SINGLE_NOTIF_ENABLED: true
+          TVNC_CLIENT_NOTIFS_ENABLED: true
+          TVNC_KEEPALIVE_SEC: 15
+          TVNC_ORIENTATION_SYNC: true
+          TVNC_NATURAL_SCROLL: false
+          TVNC_AUTO_ASSIST_ENABLED: false
+          TVNC_SERVER_CURSOR: false
+          TVNC_BONJOUR_ENABLED: false
+          TVNC_KEY_LOGGING: false
+          # Optional secrets (empty when not defined)
+          TVNC_FULL_PASSWORD: ${{ secrets.TVNC_FULL_PASSWORD }}
+          TVNC_VIEWONLY_PASSWORD: ${{ secrets.TVNC_VIEWONLY_PASSWORD }}
+          # Gateway pre-seed (internal farm; set in repo secrets to skip the in-app init page)
+          TVNC_GATEWAY_HOST: ${{ secrets.TVNC_GATEWAY_HOST }}
+          TVNC_GATEWAY_PORT: ${{ secrets.TVNC_GATEWAY_PORT }}
+          TVNC_GATEWAY_TOKEN: ${{ secrets.TVNC_GATEWAY_TOKEN }}
+        run: |
+          bash devkit/gen-managed-plist.sh
+
+      - name: Build package (${{ matrix.scheme }})
+        run: |
+          source devkit/${{ matrix.scheme }}.sh
+          FINALPACKAGE=1 gmake clean package
+
+      - name: Diagnose bootstrap app compile (raw xcodebuild)
+        if: ${{ failure() && matrix.scheme == 'bootstrap' }}
+        run: |
+          source devkit/bootstrap.sh
+          cd app/TrollVNC
+          set +e
+          xcodebuild -project TrollVNC.xcodeproj -scheme TrollVNC \
+            -destination 'generic/platform=iOS' -configuration Release \
+            SDKROOT="$THEOS/sdks/iPhoneOS16.5.sdk" \
+            -derivedDataPath /tmp/tvnc-diag \
+            ARCHS="arm64" ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
+            'GCC_PREPROCESSOR_DEFINITIONS=THEBOOTSTRAP=1 THEOS_PACKAGE_SCHEME="bootstrap" PACKAGE_VERSION="0.0.1"' \
+            "HEADER_SEARCH_PATHS=$(pwd)/../../include" \
+            "FRAMEWORK_SEARCH_PATHS=$THEOS/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" \
+            build 2>&1 | tee /tmp/tvnc-diag.log
+          RC=${PIPESTATUS[0]}
+          echo "===== diagnostic exit: $RC ====="
+          echo "----- TVNCConsoleWebViewController / error context -----"
+          grep -n -B2 -A25 -E "TVNCConsoleWebViewController|error:|fatal error" /tmp/tvnc-diag.log | tail -n 200
+          echo "----- last 40 lines -----"
+          tail -n 40 /tmp/tvnc-diag.log
+          echo "----- crash reports -----"
+          ls -t ~/Library/Logs/DiagnosticReports 2>/dev/null | head -n 5
+          exit 0
+
+      - name: Prepare artifacts
+        run: |
+          # Create directories for artifacts
+          mkdir -p artifacts/dsym-${{ matrix.scheme }}
+          mkdir -p artifacts/packages-${{ matrix.scheme }}
+
+          # Copy dSYM files
+          if [ -d ".theos/obj" ]; then
+            find .theos/obj -name "*.dSYM" -exec cp -r {} artifacts/dsym-${{ matrix.scheme }}/ \;
+          fi
+
+          # Copy packages
+          if [ -d "packages" ]; then
+            if [ "${{ matrix.scheme }}" == "bootstrap" ]; then
+              cp -r packages/*.tipa artifacts/packages-${{ matrix.scheme }}/
+            else
+              cp -r packages/*.deb artifacts/packages-${{ matrix.scheme }}/
+            fi
+          fi
+
+      - name: Upload dSYM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsym-${{ matrix.scheme }}
+          path: artifacts/dsym-${{ matrix.scheme }}
+          if-no-files-found: warn
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.scheme }}
+          path: artifacts/packages-${{ matrix.scheme }}
+          if-no-files-found: warn
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/release'
+    needs: build
+    runs-on: macos-14
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          path: release-packages
+          merge-multiple: true
+
+      - name: Create release tag
+        id: tag
+        run: |
+          # Read PACKAGE_VERSION from Makefile
+          PACKAGE_VERSION=$(grep 'PACKAGE_VERSION' Makefile | cut -d' ' -f4)
+          TAG_NAME="v$PACKAGE_VERSION"
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.tag_name }}
+          name: Release ${{ steps.tag.outputs.tag_name }}
+          body_path: CHANGELOG.md
+          files: release-packages/**/*
+          draft: false
+          prerelease: false

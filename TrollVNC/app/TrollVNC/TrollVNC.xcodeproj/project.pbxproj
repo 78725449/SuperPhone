@@ -1,0 +1,892 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		615360AA2E65BEFD00643E64 /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 615360A92E65BEFD00643E64 /* Main.storyboard */; };
+		615401B02EB1180C009FDD6F /* TVNCClientCell.m in Sources */ = {isa = PBXBuildFile; fileRef = CC91EF922E6CA6C5002F5B2A /* TVNCClientCell.m */; };
+		615401B12EB1180C009FDD6F /* AppDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C7569A2E65BDAC00B2B371 /* AppDelegate.m */; };
+		615401B22EB1180C009FDD6F /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756A22E65BDAC00B2B371 /* main.m */; };
+		615401B32EB1180C009FDD6F /* SceneDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756AA2E65BDAC00B2B371 /* SceneDelegate.m */; };
+		615401B62EB1180C009FDD6F /* StripedTextTableViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756AC2E65BDAC00B2B371 /* StripedTextTableViewController.m */; };
+		0A1B2C3D4E5F60718293A4C4 /* TRTask.m in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60718293A4C2 /* TRTask.m */; };
+		615401B82EB1180C009FDD6F /* TVNCHotspotManager.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756B02E65BDAC00B2B371 /* TVNCHotspotManager.m */; };
+		615401B92EB1180C009FDD6F /* TVNCRootListController.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756B22E65BDAC00B2B371 /* TVNCRootListController.m */; };
+		615401BA2EB1180C009FDD6F /* TVNCClientListController.m in Sources */ = {isa = PBXBuildFile; fileRef = CC91EF8F2E6C2208002F5B2A /* TVNCClientListController.m */; };
+		615401BB2EB1180C009FDD6F /* TVNCListItemsController.m in Sources */ = {isa = PBXBuildFile; fileRef = CC91EF962E6EF165002F5B2A /* TVNCListItemsController.m */; };
+		615401BC2EB1180C009FDD6F /* TVNCServiceCoordinator.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756B42E65BDAC00B2B371 /* TVNCServiceCoordinator.m */; };
+		615401BF2EB1180C009FDD6F /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 61C756662E65B72E00B2B371 /* NetworkExtension.framework */; };
+		615401C12EB1180C009FDD6F /* Preferences.Sim.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 615401AC2EB117FC009FDD6F /* Preferences.Sim.tbd */; };
+		615401C32EB1180C009FDD6F /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 615360A92E65BEFD00643E64 /* Main.storyboard */; };
+		615401C42EB1180C009FDD6F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 61C756CD2E65BE6F00B2B371 /* LaunchScreen.storyboard */; };
+		615401C52EB1180C009FDD6F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 61C7569B2E65BDAC00B2B371 /* Assets.xcassets */; };
+		615EFE9F2F1602D700187EAF /* CoreServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 615EFE9E2F1602D700187EAF /* CoreServices.framework */; };
+		61B0DD082EB13BEF004CC42B /* TVNCSliderCell.m in Sources */ = {isa = PBXBuildFile; fileRef = 61B0DD072EB13BEF004CC42B /* TVNCSliderCell.m */; };
+		61B0DD092EB13BEF004CC42B /* TVNCSliderCell.m in Sources */ = {isa = PBXBuildFile; fileRef = 61B0DD072EB13BEF004CC42B /* TVNCSliderCell.m */; };
+		61C756672E65B72E00B2B371 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 61C756662E65B72E00B2B371 /* NetworkExtension.framework */; };
+		61C756B82E65BDAC00B2B371 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 61C7569B2E65BDAC00B2B371 /* Assets.xcassets */; };
+		61C756BE2E65BDAC00B2B371 /* Preferences.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 61C756A82E65BDAC00B2B371 /* Preferences.tbd */; };
+		61C756BF2E65BDAC00B2B371 /* AppDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C7569A2E65BDAC00B2B371 /* AppDelegate.m */; };
+		61C756C02E65BDAC00B2B371 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756A22E65BDAC00B2B371 /* main.m */; };
+		61C756C12E65BDAC00B2B371 /* SceneDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756AA2E65BDAC00B2B371 /* SceneDelegate.m */; };
+		61C756C22E65BDAC00B2B371 /* StripedTextTableViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756AC2E65BDAC00B2B371 /* StripedTextTableViewController.m */; };
+		0A1B2C3D4E5F60718293A4C3 /* TRTask.m in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60718293A4C2 /* TRTask.m */; };
+		0A1B2C3D4E5F60718293A4C6 /* SASLPluginStubs.c in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60718293A4C5 /* SASLPluginStubs.c */; };
+		0A1B2C3D4E5F60718293A4C7 /* SASLPluginStubs.c in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60718293A4C5 /* SASLPluginStubs.c */; };
+		61C756C42E65BDAC00B2B371 /* TVNCHotspotManager.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756B02E65BDAC00B2B371 /* TVNCHotspotManager.m */; };
+		61C756C52E65BDAC00B2B371 /* TVNCRootListController.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756B22E65BDAC00B2B371 /* TVNCRootListController.m */; };
+		61C756C62E65BDAC00B2B371 /* TVNCServiceCoordinator.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756B42E65BDAC00B2B371 /* TVNCServiceCoordinator.m */; };
+		61C756CE2E65BE6F00B2B371 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 61C756CD2E65BE6F00B2B371 /* LaunchScreen.storyboard */; };
+		CC17D9BA2EC79DA1005C275A /* ZTSelfSignedCertificate.m in Sources */ = {isa = PBXBuildFile; fileRef = CC17D9B92EC79DA1005C275A /* ZTSelfSignedCertificate.m */; };
+		CC17D9BB2EC79DA1005C275A /* ZTSelfSignedCertificate.m in Sources */ = {isa = PBXBuildFile; fileRef = CC17D9B92EC79DA1005C275A /* ZTSelfSignedCertificate.m */; };
+		CC1BF93E2F101B2F00111D96 /* SpringBoardServices.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = CC1BF93D2F101B2F00111D96 /* SpringBoardServices.tbd */; };
+		CC91EF902E6C2208002F5B2A /* TVNCClientListController.m in Sources */ = {isa = PBXBuildFile; fileRef = CC91EF8F2E6C2208002F5B2A /* TVNCClientListController.m */; };
+		3F51D099F730BA38987C1300 /* TVNCConnectViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = D848AFF7B581F040AA4D4DDE /* TVNCConnectViewController.m */; };
+		CC91EF932E6CA6C5002F5B2A /* TVNCClientCell.m in Sources */ = {isa = PBXBuildFile; fileRef = CC91EF922E6CA6C5002F5B2A /* TVNCClientCell.m */; };
+		CC91EF972E6EF165002F5B2A /* TVNCListItemsController.m in Sources */ = {isa = PBXBuildFile; fileRef = CC91EF962E6EF165002F5B2A /* TVNCListItemsController.m */; };
+		7A1B2C3D4E5F60718293A4B7 /* TRMainTabBarController.m in Sources */ = {isa = PBXBuildFile; fileRef = 7A1B2C3D4E5F60718293A4B6 /* TRMainTabBarController.m */; };
+		AA01000000000000000000C3 /* TVNCConsoleWebViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000C2 /* TVNCConsoleWebViewController.m */; };
+		AA01000000000000000000A1 /* TVNCAppStore.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A6 /* TVNCAppStore.m */; };
+		AA01000000000000000000A2 /* TVNCAppStore.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A6 /* TVNCAppStore.m */; };
+		AA01000000000000000000A3 /* TVNCGatewayClient.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A8 /* TVNCGatewayClient.m */; };
+		AA01000000000000000000A4 /* TVNCGatewayClient.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A8 /* TVNCGatewayClient.m */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		61535F572E6590A100643E64 /* TrollVNC.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TrollVNC.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		615360A82E65BEFD00643E64 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
+		615360AC2E65BF0000643E64 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Main.strings; sourceTree = "<group>"; };
+		615360AE2E65BF0000643E64 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Main.strings"; sourceTree = "<group>"; };
+		615401AC2EB117FC009FDD6F /* Preferences.Sim.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; path = Preferences.Sim.tbd; sourceTree = "<group>"; };
+		615401CA2EB1180C009FDD6F /* TrollVNC.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TrollVNC.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		615EFE9E2F1602D700187EAF /* CoreServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreServices.framework; path = System/Library/Frameworks/CoreServices.framework; sourceTree = SDKROOT; };
+		61B0DD062EB13BEF004CC42B /* TVNCSliderCell.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCSliderCell.h; sourceTree = "<group>"; };
+		61B0DD072EB13BEF004CC42B /* TVNCSliderCell.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCSliderCell.m; sourceTree = "<group>"; };
+		61C756662E65B72E00B2B371 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
+		61C756992E65BDAC00B2B371 /* AppDelegate.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AppDelegate.h; sourceTree = "<group>"; };
+		61C7569A2E65BDAC00B2B371 /* AppDelegate.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = AppDelegate.m; sourceTree = "<group>"; };
+		61C7569B2E65BDAC00B2B371 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		61C7569C2E65BDAC00B2B371 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		61C756A22E65BDAC00B2B371 /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
+		61C756A82E65BDAC00B2B371 /* Preferences.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; path = Preferences.tbd; sourceTree = "<group>"; };
+		61C756A92E65BDAC00B2B371 /* SceneDelegate.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SceneDelegate.h; sourceTree = "<group>"; };
+		61C756AA2E65BDAC00B2B371 /* SceneDelegate.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = SceneDelegate.m; sourceTree = "<group>"; };
+		61C756AB2E65BDAC00B2B371 /* StripedTextTableViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = StripedTextTableViewController.h; sourceTree = "<group>"; };
+		61C756AC2E65BDAC00B2B371 /* StripedTextTableViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = StripedTextTableViewController.m; sourceTree = "<group>"; };
+		0A1B2C3D4E5F60718293A4C1 /* TRTask.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TRTask.h; sourceTree = "<group>"; };
+		0A1B2C3D4E5F60718293A4C2 /* TRTask.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TRTask.m; sourceTree = "<group>"; };
+		0A1B2C3D4E5F60718293A4C5 /* SASLPluginStubs.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = SASLPluginStubs.c; sourceTree = "<group>"; };
+		61C756AE2E65BDAC00B2B371 /* TrollVNC.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TrollVNC.entitlements; sourceTree = "<group>"; };
+		61C756AF2E65BDAC00B2B371 /* TVNCHotspotManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCHotspotManager.h; sourceTree = "<group>"; };
+		61C756B02E65BDAC00B2B371 /* TVNCHotspotManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCHotspotManager.m; sourceTree = "<group>"; };
+		61C756B12E65BDAC00B2B371 /* TVNCRootListController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCRootListController.h; sourceTree = "<group>"; };
+		61C756B22E65BDAC00B2B371 /* TVNCRootListController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCRootListController.m; sourceTree = "<group>"; };
+		61C756B32E65BDAC00B2B371 /* TVNCServiceCoordinator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCServiceCoordinator.h; sourceTree = "<group>"; };
+		61C756B42E65BDAC00B2B371 /* TVNCServiceCoordinator.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCServiceCoordinator.m; sourceTree = "<group>"; };
+		61C756D42E65BE9100B2B371 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		61C756D62E65BEA900B2B371 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/LaunchScreen.strings; sourceTree = "<group>"; };
+		61C756D82E65BEA900B2B371 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/LaunchScreen.strings"; sourceTree = "<group>"; };
+		CC17D9B82EC79DA1005C275A /* ZTSelfSignedCertificate.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ZTSelfSignedCertificate.h; sourceTree = "<group>"; };
+		CC17D9B92EC79DA1005C275A /* ZTSelfSignedCertificate.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ZTSelfSignedCertificate.m; sourceTree = "<group>"; };
+		CC1BF93D2F101B2F00111D96 /* SpringBoardServices.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; path = SpringBoardServices.tbd; sourceTree = "<group>"; };
+		CC91EF8E2E6C2208002F5B2A /* TVNCClientListController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCClientListController.h; sourceTree = "<group>"; };
+		CC91EF8F2E6C2208002F5B2A /* TVNCClientListController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCClientListController.m; sourceTree = "<group>"; };
+		9B4C2EC419B458E5117B3D1E /* TVNCConnectViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCConnectViewController.h; sourceTree = "<group>"; };
+		D848AFF7B581F040AA4D4DDE /* TVNCConnectViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCConnectViewController.m; sourceTree = "<group>"; };
+		AA01000000000000000000C1 /* TVNCConsoleWebViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCConsoleWebViewController.h; sourceTree = "<group>"; };
+		AA01000000000000000000C2 /* TVNCConsoleWebViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCConsoleWebViewController.m; sourceTree = "<group>"; };
+		CC91EF912E6CA6C5002F5B2A /* TVNCClientCell.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCClientCell.h; sourceTree = "<group>"; };
+		CC91EF922E6CA6C5002F5B2A /* TVNCClientCell.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCClientCell.m; sourceTree = "<group>"; };
+		CC91EF942E6E03BD002F5B2A /* Control.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Control.h; sourceTree = "<group>"; };
+		CC91EF952E6EF165002F5B2A /* TVNCListItemsController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCListItemsController.h; sourceTree = "<group>"; };
+		CC91EF962E6EF165002F5B2A /* TVNCListItemsController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCListItemsController.m; sourceTree = "<group>"; };
+		7A1B2C3D4E5F60718293A4B5 /* TRMainTabBarController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TRMainTabBarController.h; sourceTree = "<group>"; };
+		7A1B2C3D4E5F60718293A4B6 /* TRMainTabBarController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TRMainTabBarController.m; sourceTree = "<group>"; };
+		AA01000000000000000000A5 /* TVNCAppStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCAppStore.h; sourceTree = "<group>"; };
+		AA01000000000000000000A6 /* TVNCAppStore.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCAppStore.m; sourceTree = "<group>"; };
+		AA01000000000000000000A7 /* TVNCGatewayClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCGatewayClient.h; sourceTree = "<group>"; };
+		AA01000000000000000000A8 /* TVNCGatewayClient.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCGatewayClient.m; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		61535F542E6590A100643E64 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				61C756672E65B72E00B2B371 /* NetworkExtension.framework in Frameworks */,
+				CC1BF93E2F101B2F00111D96 /* SpringBoardServices.tbd in Frameworks */,
+				61C756BE2E65BDAC00B2B371 /* Preferences.tbd in Frameworks */,
+				615EFE9F2F1602D700187EAF /* CoreServices.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		615401BE2EB1180C009FDD6F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				615401BF2EB1180C009FDD6F /* NetworkExtension.framework in Frameworks */,
+				615401C12EB1180C009FDD6F /* Preferences.Sim.tbd in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		61535F4E2E6590A100643E64 = {
+			isa = PBXGroup;
+			children = (
+				61C756B72E65BDAC00B2B371 /* TrollVNC */,
+				61C756652E65B72E00B2B371 /* Frameworks */,
+				61535F582E6590A100643E64 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		61535F582E6590A100643E64 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				61535F572E6590A100643E64 /* TrollVNC.app */,
+				615401CA2EB1180C009FDD6F /* TrollVNC.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		615401CC2EB11943009FDD6F /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				61C7569B2E65BDAC00B2B371 /* Assets.xcassets */,
+				61C7569C2E65BDAC00B2B371 /* Info.plist */,
+				61C756CD2E65BE6F00B2B371 /* LaunchScreen.storyboard */,
+				615360A92E65BEFD00643E64 /* Main.storyboard */,
+				61C756AE2E65BDAC00B2B371 /* TrollVNC.entitlements */,
+			);
+			name = Resources;
+			sourceTree = "<group>";
+		};
+		615401CD2EB11954009FDD6F /* Libraries */ = {
+			isa = PBXGroup;
+			children = (
+				61C756A82E65BDAC00B2B371 /* Preferences.tbd */,
+				615401AC2EB117FC009FDD6F /* Preferences.Sim.tbd */,
+				CC1BF93D2F101B2F00111D96 /* SpringBoardServices.tbd */,
+			);
+			name = Libraries;
+			sourceTree = "<group>";
+		};
+		61C756652E65B72E00B2B371 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				615EFE9E2F1602D700187EAF /* CoreServices.framework */,
+				61C756662E65B72E00B2B371 /* NetworkExtension.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		61C756B72E65BDAC00B2B371 /* TrollVNC */ = {
+			isa = PBXGroup;
+			children = (
+				615401CD2EB11954009FDD6F /* Libraries */,
+				615401CC2EB11943009FDD6F /* Resources */,
+				61C756992E65BDAC00B2B371 /* AppDelegate.h */,
+				61C7569A2E65BDAC00B2B371 /* AppDelegate.m */,
+				CC91EF942E6E03BD002F5B2A /* Control.h */,
+				61C756A22E65BDAC00B2B371 /* main.m */,
+				61C756A92E65BDAC00B2B371 /* SceneDelegate.h */,
+				61C756AA2E65BDAC00B2B371 /* SceneDelegate.m */,
+				61C756AB2E65BDAC00B2B371 /* StripedTextTableViewController.h */,
+				61C756AC2E65BDAC00B2B371 /* StripedTextTableViewController.m */,
+				0A1B2C3D4E5F60718293A4C1 /* TRTask.h */,
+				0A1B2C3D4E5F60718293A4C2 /* TRTask.m */,
+				0A1B2C3D4E5F60718293A4C5 /* SASLPluginStubs.c */,
+				CC91EF912E6CA6C5002F5B2A /* TVNCClientCell.h */,
+				CC91EF922E6CA6C5002F5B2A /* TVNCClientCell.m */,
+				CC91EF8E2E6C2208002F5B2A /* TVNCClientListController.h */,
+				CC91EF8F2E6C2208002F5B2A /* TVNCClientListController.m */,
+				9B4C2EC419B458E5117B3D1E /* TVNCConnectViewController.h */,
+				D848AFF7B581F040AA4D4DDE /* TVNCConnectViewController.m */,
+				AA01000000000000000000C1 /* TVNCConsoleWebViewController.h */,
+				AA01000000000000000000C2 /* TVNCConsoleWebViewController.m */,
+				7A1B2C3D4E5F60718293A4B5 /* TRMainTabBarController.h */,
+				7A1B2C3D4E5F60718293A4B6 /* TRMainTabBarController.m */,
+				61C756AF2E65BDAC00B2B371 /* TVNCHotspotManager.h */,
+				61C756B02E65BDAC00B2B371 /* TVNCHotspotManager.m */,
+				CC91EF952E6EF165002F5B2A /* TVNCListItemsController.h */,
+				CC91EF962E6EF165002F5B2A /* TVNCListItemsController.m */,
+				61C756B12E65BDAC00B2B371 /* TVNCRootListController.h */,
+				61C756B22E65BDAC00B2B371 /* TVNCRootListController.m */,
+				61C756B32E65BDAC00B2B371 /* TVNCServiceCoordinator.h */,
+				61C756B42E65BDAC00B2B371 /* TVNCServiceCoordinator.m */,
+				61B0DD062EB13BEF004CC42B /* TVNCSliderCell.h */,
+				61B0DD072EB13BEF004CC42B /* TVNCSliderCell.m */,
+				CC17D9B82EC79DA1005C275A /* ZTSelfSignedCertificate.h */,
+				CC17D9B92EC79DA1005C275A /* ZTSelfSignedCertificate.m */,
+				AA01000000000000000000A5 /* TVNCAppStore.h */,
+				AA01000000000000000000A6 /* TVNCAppStore.m */,
+				AA01000000000000000000A7 /* TVNCGatewayClient.h */,
+				AA01000000000000000000A8 /* TVNCGatewayClient.m */,
+			);
+			path = TrollVNC;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		61535F562E6590A100643E64 /* TrollVNC */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 61535F6F2E6590A100643E64 /* Build configuration list for PBXNativeTarget "TrollVNC" */;
+			buildPhases = (
+				61535F532E6590A100643E64 /* Sources */,
+				61535F542E6590A100643E64 /* Frameworks */,
+				61535F552E6590A100643E64 /* Resources */,
+				61535F7E2E6591FF00643E64 /* Pseudo Sign */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TrollVNC;
+			packageProductDependencies = (
+			);
+			productName = TrollVNC;
+			productReference = 61535F572E6590A100643E64 /* TrollVNC.app */;
+			productType = "com.apple.product-type.application";
+		};
+		615401AE2EB1180C009FDD6F /* TrollVNC.Sim */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 615401C72EB1180C009FDD6F /* Build configuration list for PBXNativeTarget "TrollVNC.Sim" */;
+			buildPhases = (
+				615401AF2EB1180C009FDD6F /* Sources */,
+				615401BE2EB1180C009FDD6F /* Frameworks */,
+				615401C22EB1180C009FDD6F /* Resources */,
+				61C2EE6E2EB12CD500CCB3B5 /* Copy External Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TrollVNC.Sim;
+			packageProductDependencies = (
+			);
+			productName = TrollVNC;
+			productReference = 615401CA2EB1180C009FDD6F /* TrollVNC.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		61535F4F2E6590A100643E64 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					61535F562E6590A100643E64 = {
+						CreatedOnToolsVersion = 16.4;
+					};
+				};
+			};
+			buildConfigurationList = 61535F522E6590A100643E64 /* Build configuration list for PBXProject "TrollVNC" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				"zh-Hans",
+				Base,
+			);
+			mainGroup = 61535F4E2E6590A100643E64;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 61535F582E6590A100643E64 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				61535F562E6590A100643E64 /* TrollVNC */,
+				615401AE2EB1180C009FDD6F /* TrollVNC.Sim */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		61535F552E6590A100643E64 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				615360AA2E65BEFD00643E64 /* Main.storyboard in Resources */,
+				61C756CE2E65BE6F00B2B371 /* LaunchScreen.storyboard in Resources */,
+				61C756B82E65BDAC00B2B371 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		615401C22EB1180C009FDD6F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				615401C32EB1180C009FDD6F /* Main.storyboard in Resources */,
+				615401C42EB1180C009FDD6F /* LaunchScreen.storyboard in Resources */,
+				615401C52EB1180C009FDD6F /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		61535F7E2E6591FF00643E64 /* Pseudo Sign */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Pseudo Sign";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/zsh;
+			shellScript = "PATH=\"/opt/homebrew/bin:$THEOS/bin:$PATH\"\nif ! command -v ldid &>/dev/null; then\n    echo \"[!] ldid not found, run: brew install ldid-procursus\"\n    exit 1\nfi\nif [ \"$CODE_SIGNING_ALLOWED\" = \"NO\" ]; then\n    ldid -S${CODE_SIGN_ENTITLEMENTS} ${CODESIGNING_FOLDER_PATH}\nfi\n";
+		};
+		61C2EE6E2EB12CD500CCB3B5 /* Copy External Resources */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Copy External Resources";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/zsh;
+			shellScript = "PATH=\"/opt/homebrew/bin:$THEOS/bin:$PATH\"\nPROJECT_BASE=\"$PROJECT_DIR/../..\"\nPACKAGE_VERSION=$(grep 'PACKAGE_VERSION' \"$PROJECT_BASE/Makefile\" | cut -d' ' -f4)\nTHEOS_STAGING_DIR=\"$PROJECT_BASE/.theos/_\"\nPRODUCT_DIR=\"$BUILT_PRODUCTS_DIR/$FULL_PRODUCT_NAME\"\n\n# Set version information\nGIT_COMMIT_COUNT=$(git rev-list --count HEAD)\n/usr/libexec/PlistBuddy -c \"Set :CFBundleVersion $GIT_COMMIT_COUNT\" \"$PRODUCT_DIR/Info.plist\"\n/usr/libexec/PlistBuddy -c \"Set :CFBundleShortVersionString $PACKAGE_VERSION\" \"$PRODUCT_DIR/Info.plist\"\n\n# Collect executables\n# cp -rp \"$THEOS_STAGING_DIR/usr/bin/trollvncserver\" \"$PRODUCT_DIR\"\n# cp -rp \"$THEOS_STAGING_DIR/usr/bin/trollvncmanager\" \"$PRODUCT_DIR\"\n\n# Collect bundle resources\ncp -rp \"$THEOS_STAGING_DIR/Applications/TrollVNC.app/TrollVNCPrefs.bundle\" \"$PRODUCT_DIR\"\nrm -f \"$PRODUCT_DIR/TrollVNCPrefs.bundle/TrollVNCPrefs\"\ncp -rp \"$THEOS_STAGING_DIR/Applications/TrollVNC.app/webclients\" \"$PRODUCT_DIR\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		61535F532E6590A100643E64 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CC91EF932E6CA6C5002F5B2A /* TVNCClientCell.m in Sources */,
+				61C756BF2E65BDAC00B2B371 /* AppDelegate.m in Sources */,
+				61C756C02E65BDAC00B2B371 /* main.m in Sources */,
+				61C756C12E65BDAC00B2B371 /* SceneDelegate.m in Sources */,
+				61C756C22E65BDAC00B2B371 /* StripedTextTableViewController.m in Sources */,
+				0A1B2C3D4E5F60718293A4C3 /* TRTask.m in Sources */,
+				0A1B2C3D4E5F60718293A4C6 /* SASLPluginStubs.c in Sources */,
+				61C756C42E65BDAC00B2B371 /* TVNCHotspotManager.m in Sources */,
+				CC17D9BB2EC79DA1005C275A /* ZTSelfSignedCertificate.m in Sources */,
+				61C756C52E65BDAC00B2B371 /* TVNCRootListController.m in Sources */,
+				CC91EF902E6C2208002F5B2A /* TVNCClientListController.m in Sources */,
+				3F51D099F730BA38987C1300 /* TVNCConnectViewController.m in Sources */,
+				AA01000000000000000000C3 /* TVNCConsoleWebViewController.m in Sources */,
+				7A1B2C3D4E5F60718293A4B7 /* TRMainTabBarController.m in Sources */,
+				AA01000000000000000000A1 /* TVNCAppStore.m in Sources */,
+				AA01000000000000000000A3 /* TVNCGatewayClient.m in Sources */,
+				61B0DD092EB13BEF004CC42B /* TVNCSliderCell.m in Sources */,
+				CC91EF972E6EF165002F5B2A /* TVNCListItemsController.m in Sources */,
+				61C756C62E65BDAC00B2B371 /* TVNCServiceCoordinator.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		615401AF2EB1180C009FDD6F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				615401B02EB1180C009FDD6F /* TVNCClientCell.m in Sources */,
+				615401B12EB1180C009FDD6F /* AppDelegate.m in Sources */,
+				615401B22EB1180C009FDD6F /* main.m in Sources */,
+				615401B32EB1180C009FDD6F /* SceneDelegate.m in Sources */,
+				615401B62EB1180C009FDD6F /* StripedTextTableViewController.m in Sources */,
+				0A1B2C3D4E5F60718293A4C4 /* TRTask.m in Sources */,
+				0A1B2C3D4E5F60718293A4C7 /* SASLPluginStubs.c in Sources */,
+				615401B82EB1180C009FDD6F /* TVNCHotspotManager.m in Sources */,
+				CC17D9BA2EC79DA1005C275A /* ZTSelfSignedCertificate.m in Sources */,
+				615401B92EB1180C009FDD6F /* TVNCRootListController.m in Sources */,
+				615401BA2EB1180C009FDD6F /* TVNCClientListController.m in Sources */,
+				61B0DD082EB13BEF004CC42B /* TVNCSliderCell.m in Sources */,
+				615401BB2EB1180C009FDD6F /* TVNCListItemsController.m in Sources */,
+				615401BC2EB1180C009FDD6F /* TVNCServiceCoordinator.m in Sources */,
+				AA01000000000000000000A2 /* TVNCAppStore.m in Sources */,
+				AA01000000000000000000A4 /* TVNCGatewayClient.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXVariantGroup section */
+		615360A92E65BEFD00643E64 /* Main.storyboard */ = {
+			isa = PBXVariantGroup;
+			children = (
+				615360A82E65BEFD00643E64 /* Base */,
+				615360AC2E65BF0000643E64 /* en */,
+				615360AE2E65BF0000643E64 /* zh-Hans */,
+			);
+			name = Main.storyboard;
+			sourceTree = "<group>";
+		};
+		61C756CD2E65BE6F00B2B371 /* LaunchScreen.storyboard */ = {
+			isa = PBXVariantGroup;
+			children = (
+				61C756D42E65BE9100B2B371 /* Base */,
+				61C756D62E65BEA900B2B371 /* en */,
+				61C756D82E65BEA900B2B371 /* zh-Hans */,
+			);
+			name = LaunchScreen.storyboard;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
+
+/* Begin XCBuildConfiguration section */
+		61535F702E6590A100643E64 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_ENTITLEMENTS = TrollVNC/TrollVNC.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"THEBOOTSTRAP=1",
+					"THEOS_PACKAGE_SCHEME=\\\"bootstrap\\\"",
+					"PACKAGE_VERSION=\\\"1.0\\\"",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TrollVNC/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = SuperPhone;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UIMainStoryboardFile = Main;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/TrollVNC",
+					"$(PROJECT_DIR)/../../lib",
+				);
+				OTHER_LDFLAGS = (
+					"-framework",
+					BackgroundTasks,
+					"-lz",
+					"-lvncclient",
+					"-lssl",
+					"-lcrypto",
+					"-ljpeg",
+					"-lturbojpeg",
+					"-llzo2",
+					"-lsasl2",
+				);
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.82flex.TrollVNCApp;
+				PRODUCT_NAME = TrollVNC;
+				SUPPORTED_PLATFORMS = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				SYSTEM_HEADER_SEARCH_PATHS = (
+					$THEOS/include,
+					$THEOS/vendor/include,
+					"$(SRCROOT)/../../include",
+				);
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SDKROOT)/System/Library/PrivateFrameworks",
+				);
+				TARGETED_DEVICE_FAMILY = "1,2";
+				THEOS = $HOME/theos;
+			};
+			name = Debug;
+		};
+		61535F712E6590A100643E64 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_ENTITLEMENTS = TrollVNC/TrollVNC.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"THEBOOTSTRAP=1",
+					"THEOS_PACKAGE_SCHEME=\\\"bootstrap\\\"",
+					"PACKAGE_VERSION=\\\"1.0\\\"",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TrollVNC/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = SuperPhone;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UIMainStoryboardFile = Main;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/TrollVNC",
+					"$(PROJECT_DIR)/../../lib",
+				);
+				OTHER_LDFLAGS = (
+					"-framework",
+					BackgroundTasks,
+					"-lz",
+					"-lvncclient",
+					"-lssl",
+					"-lcrypto",
+					"-ljpeg",
+					"-lturbojpeg",
+					"-llzo2",
+					"-lsasl2",
+				);
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.82flex.TrollVNCApp;
+				PRODUCT_NAME = TrollVNC;
+				SUPPORTED_PLATFORMS = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				SYSTEM_HEADER_SEARCH_PATHS = (
+					$THEOS/include,
+					$THEOS/vendor/include,
+					"$(SRCROOT)/../../include",
+				);
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SDKROOT)/System/Library/PrivateFrameworks",
+				);
+				TARGETED_DEVICE_FAMILY = "1,2";
+				THEOS = $HOME/theos;
+			};
+			name = Release;
+		};
+		61535F722E6590A100643E64 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+			};
+			name = Debug;
+		};
+		61535F732E6590A100643E64 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		615401C82EB1180C009FDD6F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_ENTITLEMENTS = TrollVNC/TrollVNC.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"THEBOOTSTRAP=1",
+					"THEOS_PACKAGE_SCHEME=\\\"bootstrap\\\"",
+					"PACKAGE_VERSION=\\\"1.0\\\"",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TrollVNC/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = SuperPhone;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UIMainStoryboardFile = Main;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/TrollVNC",
+					"$(PROJECT_DIR)/../../lib",
+				);
+				OTHER_LDFLAGS = (
+					"-framework",
+					BackgroundTasks,
+					"-lz",
+					"-lvncclient",
+					"-lssl",
+					"-lcrypto",
+					"-ljpeg",
+					"-lturbojpeg",
+					"-llzo2",
+					"-lsasl2",
+				);
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.82flex.TrollVNCApp;
+				PRODUCT_NAME = TrollVNC;
+				SUPPORTED_PLATFORMS = iphonesimulator;
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				SYSTEM_HEADER_SEARCH_PATHS = (
+					$THEOS/include,
+					$THEOS/vendor/include,
+					"$(SRCROOT)/../../include",
+				);
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SDKROOT)/System/Library/PrivateFrameworks",
+				);
+				TARGETED_DEVICE_FAMILY = "1,2";
+				THEOS = $HOME/theos;
+			};
+			name = Debug;
+		};
+		615401C92EB1180C009FDD6F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_ENTITLEMENTS = TrollVNC/TrollVNC.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"THEBOOTSTRAP=1",
+					"THEOS_PACKAGE_SCHEME=\\\"bootstrap\\\"",
+					"PACKAGE_VERSION=\\\"1.0\\\"",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TrollVNC/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = SuperPhone;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UIMainStoryboardFile = Main;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/TrollVNC",
+					"$(PROJECT_DIR)/../../lib",
+				);
+				OTHER_LDFLAGS = (
+					"-framework",
+					BackgroundTasks,
+					"-lz",
+					"-lvncclient",
+					"-lssl",
+					"-lcrypto",
+					"-ljpeg",
+					"-lturbojpeg",
+					"-llzo2",
+					"-lsasl2",
+				);
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.82flex.TrollVNCApp;
+				PRODUCT_NAME = TrollVNC;
+				SUPPORTED_PLATFORMS = iphonesimulator;
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				SYSTEM_HEADER_SEARCH_PATHS = (
+					$THEOS/include,
+					$THEOS/vendor/include,
+					"$(SRCROOT)/../../include",
+				);
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SDKROOT)/System/Library/PrivateFrameworks",
+				);
+				TARGETED_DEVICE_FAMILY = "1,2";
+				THEOS = $HOME/theos;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		61535F522E6590A100643E64 /* Build configuration list for PBXProject "TrollVNC" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				61535F722E6590A100643E64 /* Debug */,
+				61535F732E6590A100643E64 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		61535F6F2E6590A100643E64 /* Build configuration list for PBXNativeTarget "TrollVNC" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				61535F702E6590A100643E64 /* Debug */,
+				61535F712E6590A100643E64 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		615401C72EB1180C009FDD6F /* Build configuration list for PBXNativeTarget "TrollVNC.Sim" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				615401C82EB1180C009FDD6F /* Debug */,
+				615401C92EB1180C009FDD6F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 61535F4F2E6590A100643E64 /* Project object */;
+}

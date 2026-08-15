@@ -1,0 +1,170 @@
+/* No comment provided by engineer. */
+"%@ rows not loaded" = "%@ 行未加载";
+
+/* No comment provided by engineer. */
+"A CA private key already exists. Generating new keys will overwrite the existing ones. Are you sure you want to continue?" = "CA 私钥已存在。生成新密钥将覆盖现有密钥。你确定要继续吗？";
+
+/* No comment provided by engineer. */
+"A new version %@ is available! You’re currently using v%@." = "有新版本 %@ 可用！你当前使用的是 v%@。";
+
+/* trollvncserver */
+"A VNC client connected from %@." = "来自 %@ 的 VNC 客户端已连接。";
+
+/* trollvncserver */
+"A VNC client disconnected from %@." = "来自 %@ 的 VNC 客户端已断开连接。";
+
+/* No comment provided by engineer. */
+"Apply" = "应用";
+
+/* No comment provided by engineer. */
+"Apply Changes" = "应用更改";
+
+/* No comment provided by engineer. */
+"Are you sure you want to reset all settings to their defaults?" = "你确定要将所有设置还原为默认值吗？";
+
+/* No comment provided by engineer. */
+"Are you sure you want to restart the VNC service?" = "确定要重启 VNC 服务吗？";
+
+/* No comment provided by engineer. */
+"Bind address must be a valid IPv4/IPv6 literal, or empty to listen on all interfaces." = "绑定地址必须是合法的 IPv4/IPv6 字面量，或留空以监听所有网卡。";
+
+/* No comment provided by engineer. */
+"Block" = "封禁";
+
+/* No comment provided by engineer. */
+"Block Client" = "封禁客户端";
+
+/* No comment provided by engineer. */
+"Cancel" = "取消";
+
+/* No comment provided by engineer. */
+"Cannot parse text with UTF-8 encoding: “%@”." = "无法解析 UTF-8 编码的文本：“%@”。";
+
+/* No comment provided by engineer. */
+"Certificate Not Found" = "未找到证书";
+
+/* No comment provided by engineer. */
+"Clients" = "客户端";
+
+/* No comment provided by engineer. */
+"Confirm" = "确认";
+
+/* No comment provided by engineer. */
+"Connected %@" = "已连接 %@";
+
+/* No comment provided by engineer. */
+"Copy" = "拷贝";
+
+/* No comment provided by engineer. */
+"Copy Host" = "拷贝主机名";
+
+/* No comment provided by engineer. */
+"Copy ID" = "拷贝标识符";
+
+/* No comment provided by engineer. */
+"Current IP Address: %@" = "当前 IP 地址：%@";
+
+/* No comment provided by engineer. */
+"Disconnect" = "断开";
+
+/* No comment provided by engineer. */
+"Disconnect All" = "断开所有连接";
+
+/* No comment provided by engineer. */
+"Disconnect Client" = "断开客户端";
+
+/* No comment provided by engineer. */
+"Do you want to clear this log file “%@”?" = "你想要清空此日志文件 “%@” 吗？";
+
+/* No comment provided by engineer. */
+"Export Certificate…" = "导出证书…";
+
+/* No comment provided by engineer. */
+"Failed to generate self-signed CA certificate." = "无法生成自签名 CA 证书。";
+
+/* No comment provided by engineer. */
+"Failed to save generated keys: %@" = "无法保存生成的密钥：%@";
+
+/* No comment provided by engineer. */
+"Generation Failed" = "创建失败";
+
+/* No comment provided by engineer. */
+"Generation Succeeded" = "创建成功";
+
+/* No comment provided by engineer. */
+"Invalid Bind Address" = "绑定地址无效";
+
+/* No comment provided by engineer. */
+"Invalid Port" = "端口无效";
+
+/* No comment provided by engineer. */
+"Later" = "以后再说";
+
+/* No comment provided by engineer. */
+"Launching" = "启动中";
+
+/* No comment provided by engineer. */
+"New Version Available" = "新版本可用";
+
+/* No comment provided by engineer. */
+"No clients connected" = "没有客户端连接";
+
+/* No comment provided by engineer. */
+"OK" = "好";
+
+/* No comment provided by engineer. */
+"Overwrite" = "覆盖";
+
+/* No comment provided by engineer. */
+"Overwrite Existing Keys" = "覆盖现有密钥";
+
+/* No comment provided by engineer. */
+"Pause Auto Update" = "暂停自动更新";
+
+/* No comment provided by engineer. */
+"Reset" = "还原";
+
+/* No comment provided by engineer. */
+"Reset to Defaults" = "还原为默认值";
+
+/* No comment provided by engineer. */
+"Restart" = "重启";
+
+/* No comment provided by engineer. */
+"Skip This Version" = "跳过此版本";
+
+/* No comment provided by engineer. */
+"TCP/HTTP ports must be 1024..65535 (HTTP can be 0 to disable). The server will fallback to defaults." = "TCP/HTTP 端口必须在 1024..65535（HTTP 也可为 0 表示禁用）。服务器将回退到默认端口。";
+
+/* No comment provided by engineer. */
+"The content of text file “%@” is empty." = "文本文件 “%@” 的内容为空。";
+
+/* No comment provided by engineer. */
+"The self-signed CA certificate and private key have been successfully generated. You need to trust this certificate in your client browser or operating system. Restart the service to apply the changes." = "自签名 CA 证书和私钥已成功生成。你需要在客户端浏览器或操作系统中信任此证书。重启服务以使更改生效。";
+
+/* trollvncserver */
+"There are %d active VNC clients." = "有 %d 个活动的 VNC 客户端。";
+
+/* trollvncserver */
+"There is %d active VNC client." = "有 %d 个活动的 VNC 客户端。";
+
+/* No comment provided by engineer. */
+"SuperPhone" = "SuperPhone";
+
+/* No comment provided by engineer. */
+"SuperPhone (%@) v%@" = "SuperPhone (%@) v%@";
+
+/* No comment provided by engineer. */
+"unavailable" = "不可用";
+
+/* No comment provided by engineer. */
+"Upgrade Now" = "立即升级";
+
+/* No comment provided by engineer. */
+"View Logs" = "查看日志";
+
+/* No comment provided by engineer. */
+"View-Only" = "仅查看";
+
+/* No comment provided by engineer. */
+"You need to generate a self-signed CA certificate first before exporting it." = "你需要先生成自签名 CA 证书，然后才能导出它。";

@@ -1,0 +1,27 @@
+[update]
+tasks = ["interfaces", "code", "normalize"]
+
+[update.interfaces]
+path = "app"
+defaultToBase = false
+ignoreEmptyStrings = false
+unstripped = false
+
+[update.code]
+codePath = "."
+localizablePath = "prefs"
+customFunction = "LocalizedStringResource"
+defaultToKeys = true
+additive = true
+unstripped = false
+
+[update.normalize]
+path = "."
+sourceLocale = "zh-Hans"
+harmonizeWithSource = true
+sortByKeys = true
+
+[lint]
+path = "."
+duplicateKeys = true
+emptyValues = true
