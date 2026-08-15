@@ -8,8 +8,8 @@ const API = 'https://api.github.com';
 const CWD = process.env.CWD || 'C:\\Users\\Administrator\\Documents\\ChatGPT\\New project\\TrollVNC';
 const BRANCH = process.env.BRANCH || 'main';
 const LOCAL = process.argv[2];
-const LOCAL_BASE = process.argv[3];
-const REMOTE_BASE = process.argv[4];
+const REMOTE_BASE = process.argv[3];
+const LOCAL_BASE = process.argv[4] || process.argv[3]; // 本地 diff 基准（可与远程 base 不同 sha，内容等价即可）
 
 if (!TOKEN || !LOCAL || !LOCAL_BASE || !REMOTE_BASE) {
   console.error('usage: GHTOK=<token> node push-via-api.mjs <localCommit> <localBaseCommit> <remoteBaseCommit>');
