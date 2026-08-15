@@ -4033,8 +4033,6 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
 
 #pragma mark - Clipboard Extension
 
-static std::atomic<int> gClipboardSuppressSend(0); // >0 means suppress sending clipboard to clients
-
 static void setXCutTextLatin1(char *str, int len, rfbClientPtr cl) {
     (void)cl;
     if (!str || len < 0)
@@ -4047,13 +4045,8 @@ static void setXCutTextLatin1(char *str, int len, rfbClientPtr cl) {
         s = @"";
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        gClipboardSuppressSend.fetch_add(1, std::memory_order_relaxed);
-
-        TVLog(@"Clipboard: applying client text to UIPasteboard (Latin-1), suppression now=%d",
-              gClipboardSuppressSend.load(std::memory_order_relaxed));
+        TVLog(@"Clipboard: applying client text to UIPasteboard (Latin-1)");
         [[ClipboardManager sharedManager] setStringFromRemote:s];
-
-        gClipboardSuppressSend.fetch_sub(1, std::memory_order_relaxed);
     });
 }
 
@@ -4082,13 +4075,8 @@ static void setXCutTextUTF8(char *str, int len, rfbClientPtr cl) {
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        gClipboardSuppressSend.fetch_add(1, std::memory_order_relaxed);
-
-        TVLog(@"Clipboard: applying client text to UIPasteboard (UTF-8), suppression now=%d",
-              gClipboardSuppressSend.load(std::memory_order_relaxed));
+        TVLog(@"Clipboard: applying client text to UIPasteboard (UTF-8)");
         [[ClipboardManager sharedManager] setStringFromRemote:s];
-
-        gClipboardSuppressSend.fetch_sub(1, std::memory_order_relaxed);
     });
 }
 
@@ -4170,11 +4158,6 @@ static void sendClipboardToClients(NSString *_Nullable text) {
     if (gClientCount <= 0) {
         TVLog(@"Clipboard: no connected clients; skipping send");
         return;
-    }
-
-    if (gClipboardSuppressSend.load(std::memory_order_relaxed) > 0) {
-        TVLog(@"Clipboard: send suppressed (local set echo avoidance)");
-        return; // suppressed (likely local set)
     }
 
     // 2026-08-14 移除 Latin-1 降级：统一走 Extended Clipboard UTF-8（设备端 enableExtendedClipboard 已启用），
@@ -4300,10 +4283,9 @@ NS_INLINE void setupAlphaCursor(rfbScreenInfoPtr screen, int mode) {
 static void prepareClipboardManager(void) {
     // server->client sync; start/stop tied to client presence
     if (gClipboardEnabled) {
+        // 回环抑制由 ClipboardManager 的 changeCount 锚点承担（远程写入触发的回显通知
+        // 在 handlePasteboardChangeFromSystem 内被吞），此处直接转发即可。
         [[ClipboardManager sharedManager] setOnChange:^(NSString *_Nullable text) {
-            // If we’re in suppression (coming from client->server), do nothing
-            if (gClipboardSuppressSend.load(std::memory_order_relaxed) > 0)
-                return;
             sendClipboardToClients(text);
         }];
     } else {

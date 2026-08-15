@@ -35,7 +35,7 @@ const baseTree = baseCommitObj.tree.sha;
 console.log('remote HEAD:', ref.object.sha, '| base tree:', baseTree);
 
 // 2. 变更文件 → blob
-const names = execSync(`git diff --name-status ${LOCAL_BASE} ${LOCAL}`, { encoding: 'utf8', cwd: CWD });
+const names = execSync(`git -c core.quotepath=false diff --name-status ${LOCAL_BASE} ${LOCAL}`, { encoding: 'utf8', cwd: CWD });
 const treeEntries = [];
 let uploaded = 0;
 for (const rawLine of names.trim().split('\n')) {
@@ -50,7 +50,7 @@ for (const rawLine of names.trim().split('\n')) {
     console.log('DEL', filePath);
     continue;
   }
-  const ls = execSync(`git ls-tree ${LOCAL} -- "${filePath}"`, { encoding: 'utf8', cwd: CWD }).trim();
+  const ls = execSync(`git -c core.quotepath=false ls-tree ${LOCAL} -- "${filePath}"`, { encoding: 'utf8', cwd: CWD }).trim();
   const parts = ls.split(/\s+/); // [mode, type, sha, path]
   const [mode, type, sha] = parts;
   const content = execSync(`git cat-file blob ${sha}`, { encoding: null, cwd: CWD });

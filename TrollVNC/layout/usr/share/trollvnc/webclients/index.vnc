@@ -250,16 +250,16 @@
 
 <script type="module">
 import RFB from './novnc/core/rfb.js';
-import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/keyup 抓取（noVNC 官方 touch 键盘方案）
 
 (function () {
   var host = location.hostname;
   var port = $PORT;
   var wsProto = location.protocol === 'https:' ? 'wss://' : 'ws://';
   var url = wsProto + host + ':' + port + '/websockify';
-  // 键盘按钮（2026-08-14 对齐上游原生 noVNC「Show Keyboard」语义）
-  // 「键盘」键 = 显示/隐藏控制端软键盘（noVNC 原生 toggleVirtualKeyboard：聚焦/失焦隐藏 input）。
-  // 控制端软键盘按键经 Keyboard 实例捕获 → rfb.sendKey(keysym) → 设备端 kbdEvent 注入 HID（远程打字）。
+  // 键盘按钮（2026-08-14 对齐上游原生 noVNC「Show Keyboard」语义；2026-08-15 升级实时打字方案）
+  // 「键盘」键 = 显示/隐藏控制端软键盘（聚焦/失焦隐藏 input）。
+  // 软键盘文字经 input/composition 事件转发（iOS 无 keydown，§2.3w）→ rfb.sendKey(keysym)
+  // → 设备端 kbdEvent 注入 HID（远程打字）；中文/emoji 回落 pasteToDevice（写剪贴板+模拟 Cmd+V）。
   // 被控端键盘完全由被控端系统管理（点被控画面输入框才弹），不注入 attach/detach、无输入源切换。
   // 演进回滚：删除输入源切换两态（kbdControl）+ HID attach 自定义 keysym（XF86KeyboardHide/Show）逻辑。
   var kbdSoft = false;        // 控制端软键盘当前是否显示（kbInput 是否聚焦，focus/blur 事件驱动）
@@ -400,9 +400,7 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
       if (!text) return;
       showCopyModal(text);
     });
-    // 断开/失败：释放软键盘（Keyboard 内部 window blur 已兜底，这里显式清理避免残留）
-    rfb.addEventListener('disconnect', function () { try { touchKb.ungrab(); } catch (e) {} });
-    rfb.addEventListener('error', function () { try { touchKb.ungrab(); } catch (e) {} });
+    // 断开/失败：软键盘由 kbInput blur 自动收起（input 事件驱动方案无 Keyboard 实例，无需 ungrab）
   }
 
   /**
@@ -703,7 +701,8 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
   /**
    * 键盘键点击 = 显示/隐藏控制端软键盘（对齐上游原生 noVNC「Show Keyboard」）。
    * 聚焦 kbInput 弹控制端软键盘（iOS 对文本输入元素 focus 才弹键盘），再次点击失焦收起。
-   * 按键经 Keyboard 实例转发 rfb.sendKey 直达设备；被控端键盘由被控端系统自行管理。
+   * 软键盘文字经 input/composition 事件转发 rfb.sendKey 直达设备（§2.3w，iOS 无 keydown）；
+   * 被控端键盘由被控端系统自行管理。
    * @returns {void}
    */
   function toggleKbd() {

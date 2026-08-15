@@ -30,9 +30,7 @@ static NSString *const kPasteboardDarwinNotification = @"com.apple.pasteboard.no
 @interface ClipboardManager ()
 @property(nonatomic, assign) int notifyToken;
 @property(nonatomic, assign, getter=isStarted) BOOL started;
-@property(nonatomic, copy) NSString *_Nullable lastSetValue;        // 最近一次本地/远程写入的文本（文本回显兜底）
 @property(nonatomic, assign) NSInteger lastObservedChangeCount;     // last seen changeCount from UIPasteboard
-@property(nonatomic, assign) NSInteger lastLocalSetBaselineCount;   // changeCount observed right before a local set
 @property(nonatomic, assign) NSInteger lastSetChangeCount;          // 远程写入后自身 set 造成的 changeCount 锚点（-1=无效）
 @end
 
@@ -52,7 +50,6 @@ static NSString *const kPasteboardDarwinNotification = @"com.apple.pasteboard.no
         _notifyToken = 0;
         _started = NO;
         _lastObservedChangeCount = -1;
-        _lastLocalSetBaselineCount = -1;
         _lastSetChangeCount = -1;
     }
     return self;
@@ -122,23 +119,6 @@ static NSString *const kPasteboardDarwinNotification = @"com.apple.pasteboard.no
     return text;
 }
 
-- (void)setString:(NSString *)text {
-    if (!text)
-        return;
-
-    UIPasteboard *pb = [UIPasteboard generalPasteboard];
-
-    // Record the baseline count before our local set; the system will bump it later in the loop.
-    self.lastLocalSetBaselineCount = pb.changeCount;
-    self.lastSetValue = [text copy];
-    TVLog("Local setString length=%lu, baseline=%ld", (unsigned long)text.length, (long)self.lastLocalSetBaselineCount);
-    pb.string = text;
-
-    // Proactively trigger a callback so upstream can sync to remote immediately
-    TVLog("Proactively dispatching local change to onChange callback");
-    [self dispatchChangeIfNeededFromLocal:YES];
-}
-
 - (void)setStringFromRemote:(NSString *)text {
     if (!text)
         return;
@@ -152,8 +132,7 @@ static NSString *const kPasteboardDarwinNotification = @"com.apple.pasteboard.no
     // 只能等第二次/第三次才同步。改为 changeCount 锚点判定：记录自身 set 后的 changeCount，
     // 仅当后续系统通知的 changeCount 恰好等于该锚点时判定为"自身回显"；任何越过锚点的
     // 变化（真实复制，changeCount 更大）立即放行。锚点无效（changeCount 未同步推进）时
-    // 回退到文本 echo 判断（lastSetValue 文本对比）。
-    self.lastSetValue = [text copy];
+    // 不设锚点，通知到达时按真实复制放行（最多回环一次，由控制端锚点兜底）。
     self.lastSetChangeCount = -1;
     [pb setString:text];
     NSInteger after = pb.changeCount;
@@ -185,66 +164,35 @@ static NSString *const kPasteboardDarwinNotification = @"com.apple.pasteboard.no
 
     // 2026-08-15 changeCount 锚点回显判定（替代原计数型抑制，防误吞真实复制）：
     // - currentCount <= lastSetChangeCount：未越过锚点 = 远程写入自身的回显
-    //   （含乱序的早期通知/中间计数）→ 跳过；仅在恰好等于锚点时清锚点与文本
+    //   （含乱序的早期通知/中间计数）→ 跳过；仅在恰好等于锚点时清锚点
     //   （两次远程写入紧邻时，第一条写入的乱序通知 count < 第二条锚点，锚点必须保留，
     //   否则第二条写入的回显会被误当真实复制回调）
     // - currentCount > lastSetChangeCount：真实复制发生在远程写入之后 → 放行并清锚点
     //   （通知延迟/合并时首条通知的 changeCount 可能直接越过锚点，此时用户复制绝不能被吞）
     if (self.lastSetChangeCount >= 0) {
-        if (currentCount <= self.lastSetChangeCount) {
-            if (currentCount == self.lastSetChangeCount) {
+        NSInteger anchor = self.lastSetChangeCount;
+        if (currentCount <= anchor) {
+            if (currentCount == anchor) {
                 self.lastSetChangeCount = -1;
-                self.lastSetValue = nil;
             }
             TVLog("Ignoring self-echo of remote set (count=%ld anchor=%ld)",
-                  (long)currentCount, (long)self.lastSetChangeCount);
+                  (long)currentCount, (long)anchor);
             return;
         }
         self.lastSetChangeCount = -1;
         TVLog("Change advanced past anchor (%ld) — real copy, dispatching", (long)currentCount);
     }
 
-    [self dispatchChangeIfNeededFromLocal:NO];
+    [self dispatchChangeIfNeeded];
 }
 
-- (void)dispatchChangeIfNeededFromLocal:(BOOL)local {
+- (void)dispatchChangeIfNeeded {
     NSString *current = [self currentString];
-
-    // 2026-08-15 移除计数型抑制（已由 handlePasteboardChangeFromSystem 的 changeCount 锚点替代，
-    // 计数型会在通知延迟/合并时误吞用户第一次真实复制）。
-    // 文本回显兜底（锚点失效场景，如 changeCount 未同步推进）：忽略与最近写入文本相同的
-    // 系统通知；不同文本（真实复制）立即放行。
-    if (!local && self.lastSetValue && current &&
-        [self.lastSetValue isEqualToString:current]) {
-        // Clear the flag once, but do not callback
-        self.lastSetValue = nil;
-        TVLog("Ignoring echo of locally set value from system notification");
-        return;
-    }
-
-    // Optional extra guard when called from system: if we just performed a local set and
-    // changeCount hasn’t advanced past the baseline, skip. This protects from edge cases
-    // where multiple notifications arrive in the same loop.
-    if (!local && self.lastLocalSetBaselineCount >= 0) {
-
-        UIPasteboard *pb = [UIPasteboard generalPasteboard];
-        if (pb.changeCount <= self.lastLocalSetBaselineCount) {
-            TVLog("Skipping due to unchanged changeCount <= baseline (%ld <= %ld)", (long)pb.changeCount,
-                  (long)self.lastLocalSetBaselineCount);
-            return;
-        }
-
-        // Once we’ve seen a changeCount advance, clear the baseline
-        self.lastLocalSetBaselineCount = -1;
-    }
-
-    // Clear lastSetValue to avoid holding references
-    self.lastSetValue = nil;
 
     void (^cb)(NSString *_Nullable) = self.onChange;
     if (cb) {
         // Ensure callback is invoked on the main thread
-        TVLog("Invoking onChange with %s string (len=%lu)", local ? "local" : "system", (unsigned long)current.length);
+        TVLog("Invoking onChange with system string (len=%lu)", (unsigned long)current.length);
         if ([NSThread isMainThread]) {
             cb(current);
         } else {

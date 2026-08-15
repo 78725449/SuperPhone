@@ -52,7 +52,7 @@ console.log('iOS reliable dismiss (readonly trick):', s.includes("kbi.setAttribu
 console.log('connect resets kbdSoft:', s.includes('kbdSoft = false;'));
 console.log('kbd-on highlight (no kbd-control/device):', s.includes('.kbd-on') && !s.includes('.kbd-control') && !s.includes('.kbd-device'));
 console.log('no pagehide attach restore:', !s.includes('XF86KeyboardShow'));
-console.log('paste overlay kept:', s.includes('id="clipOverlay"') && s.includes('function pasteToDevice') && s.includes("case 'clip'"));
+console.log('paste overlay kept:', s.includes('id="clipOverlay"') && s.includes('function pasteToDevice') && s.includes("pasteToDevice(t)"));
 
 // down/up 连发断言
 console.log('DOWNUP_KEYS present:', s.includes('var DOWNUP_KEYS'));
