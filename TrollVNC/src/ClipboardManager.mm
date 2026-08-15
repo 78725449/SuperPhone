@@ -68,6 +68,17 @@ static NSString *const kPasteboardDarwinNotification = @"com.apple.pasteboard.no
     self.started = YES;
     TVLog("Starting clipboard monitoring");
 
+    // 先同步初始化基线，再注册通知（2026-08-15 修复"首次复制不触发"）：
+    // 原实现 dispatch_async 异步初始化——block 排队期间若用户已复制，block 执行时读到的
+    // changeCount 已是复制后的值，随后通知回调因 lastObservedChangeCount == currentCount
+    // 判为"重复通知"吞掉首次真实复制（需复制第二次才触发）。
+    // 改为「同步读基线 + 后注册通知」：基线读取先于注册，任何触发通知的复制都发生在基线之后，
+    // 通知回调的 currentCount 必然 > 基线 → 首次复制即放行。changeCount 为对齐 NSInteger，
+    // 跨线程读取原子安全，读到旧值（基线偏小）反而更安全。
+    UIPasteboard *pb = [UIPasteboard generalPasteboard];
+    self.lastObservedChangeCount = pb.changeCount;
+    TVLog("Initial pasteboard changeCount=%ld", (long)self.lastObservedChangeCount);
+
     // Register Darwin notification for pasteboard changes
     __weak __typeof(self) weakSelf = self;
     int token = 0;
@@ -86,13 +97,6 @@ static NSString *const kPasteboardDarwinNotification = @"com.apple.pasteboard.no
         self.notifyToken = 0;
         TVLog("Failed to register pasteboard notifications (status=%u)", status);
     }
-
-    // Initialize baseline change count to avoid spurious first-time callbacks
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIPasteboard *pb = [UIPasteboard generalPasteboard];
-        self.lastObservedChangeCount = pb.changeCount;
-        TVLog("Initial pasteboard changeCount=%ld", (long)self.lastObservedChangeCount);
-    });
 }
 
 - (void)stop {
