@@ -1983,11 +1983,14 @@ function createRfb(container, device, opts = {}, statusEl = null) {
       toast(`画面断开 (${code})${d.reason ? '：' + d.reason : ''}`, 'error');
     }
   });
-  // 设备 → 控制端剪贴板同步（方案 B 双向，2026-08-14）：
-  // 设备端剪贴板变化 → ClipboardManager.onChange → ClientCutText → 网关 FT_DATA 广播 wsSet
-  // → noVNC RFB 'clipboard' 事件（noVNC 内部已过滤 viewOnly，仅控制/直控会话触发）。
-  // 写入控制端剪贴板（"最后变化者胜"语义）+ toast 标注来源设备；设备端 setStringFromRemote
-  // 有抑制回调不回发，writeText 不触发 copy 事件，双向均无回环。
+  rfb.addEventListener('credentialsrequired', () => {
+    const p = prompt(`请输入 ${device.name} 的 VNC 密码：`);
+    if (p) rfb.sendCredentials({ password: p });
+  });
+  // 2026-08-17 修复：剪贴板 listener 删除时误删了 createRfb 闭合（return rfb; }），
+  // 导致后续函数落入 createRfb 块内不可见（copyFromFocusedDevice undefined → 聚焦加载失败）
+  return rfb;
+}
 // 设备→控制端剪贴板写入（2026-08-14 基建）：IPA 容器走原生桥 writeClipboard（无手势/安全上下文限制）；
 // 无桥环境（浏览器）：writeText 尽力而为（https 瞬态激活窗口内），失败降级 execCommand（http 亦可）。
 // @param {string} text 设备剪贴板文本
@@ -2104,13 +2107,6 @@ function showPasteFallbackModal() {
   document.body.appendChild(overlay);
   _pasteFallbackModal = overlay;
   inp.focus();
-}
-
-  rfb.addEventListener('credentialsrequired', () => {
-    const p = prompt(`请输入 ${device.name} 的 VNC 密码：`);
-    if (p) rfb.sendCredentials({ password: p });
-  });
-  return rfb;
 }
 function closeRfb(rfb) {
   if (!rfb) return;
