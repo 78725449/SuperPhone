@@ -942,6 +942,15 @@ import { DESECBCipher } from './novnc/core/crypto/des.js';
         var dv = new DataView(mgmtBuf.buffer, mgmtBuf.byteOffset, 8);
         var type = dv.getUint8(0);
         var len = dv.getUint32(4);
+        // 2026-08-17 修复：扩展剪贴板帧（ServerCaps 等）长度为负数（0xFFFFFFF8 等），
+        // getUint32 解析为 42 亿 → 8+len 巨大 → 状态机永久等待/死循环 → 页面 JS 线程卡死
+        // → 主连接无法处理帧而断开（5801 连接反复断开重连）。负长度帧直接跳过整帧。
+        if (len > 0x7fffffff) {
+          var skipNeg = 8 + (0x100000000 - len); // 帧总长 = 8 + |len|（扩展剪贴板帧结构）
+          if (mgmtBuf.length < skipNeg) return;
+          mgmtBuf = mgmtBuf.slice(skipNeg);
+          continue; // 非响应帧（ServerCaps 协商），客户端无需处理
+        }
         if (mgmtBuf.length < 8 + len) return;
         var payload = mgmtBuf.slice(8, 8 + len);
         mgmtBuf = mgmtBuf.slice(8 + len);
