@@ -110,6 +110,9 @@ __used NS_INLINE void STAccurateSleep(NSTimeInterval seconds) {
 // Keep-Alive: interval in seconds. 0 disables the timer (default 0).
 @property (nonatomic) NSTimeInterval keepAliveInterval;
 
+// 触摸注入坐标空间（屏幕物理像素，竖屏语义，含 OrientationPadFix 交换；与捕获侧 gSrcWidth/gSrcHeight 同源）
+@property (nonatomic, readonly) CGSize physicalScreenSize;
+
 /* MARK: --- Touches --- */
 
 - (void)touchDown:(CGPoint)location;

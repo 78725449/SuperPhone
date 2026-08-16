@@ -186,6 +186,10 @@ NS_INLINE void _DTXCalcLinearPinchStartEndPoints(CGRect bounds, CGFloat pixelsSc
     return self;
 }
 
+- (CGSize)physicalScreenSize {
+    return _physicalScreenSize;
+}
+
 #pragma mark - Keep Alive Timer
 
 - (void)_invalidateKeepAliveTimer {

@@ -431,13 +431,306 @@ static NSDictionary *TRSearchGatewaySync(void) {
     }
 }
 
+#pragma mark - 触控坐标换算（0-1 归一化 ↔ 屏幕物理像素）
+
+/** 0-1 归一化坐标 → 屏幕物理像素（STHID 注入坐标空间，与 _physicalScreenSize 同源） */
+- (BOOL)_normToPixelX:(CGFloat)nx y:(CGFloat)ny outPoint:(CGPoint *)outPt error:(NSError **)e {
+    if (isnan(nx) || isnan(ny) || nx < 0.0 || nx > 1.0 || ny < 0.0 || ny > 1.0) {
+        if (e) *e = [NSError errorWithDomain:@"TRCap" code:1
+                    userInfo:@{NSLocalizedDescriptionKey:@"触控坐标须为 0-1 归一化（缺 x/y 或越界不执行）"}];
+        return NO;
+    }
+    CGSize sz = [STHIDEventGenerator sharedGenerator].physicalScreenSize;
+    if (outPt) {
+        *outPt = CGPointMake(MAX(0.0, MIN(sz.width - 1.0, round(nx * sz.width))),
+                             MAX(0.0, MIN(sz.height - 1.0, round(ny * sz.height))));
+    }
+    return YES;
+}
+
+/** 从参数字典解析 x/y（0-1）→ 像素点 */
+- (BOOL)_normPointFromParams:(NSDictionary *)p outPoint:(CGPoint *)outPt error:(NSError **)e {
+    NSNumber *nx = p[@"x"], *ny = p[@"y"];
+    if (![nx isKindOfClass:[NSNumber class]] || ![ny isKindOfClass:[NSNumber class]]) {
+        if (e) *e = [NSError errorWithDomain:@"TRCap" code:1
+                    userInfo:@{NSLocalizedDescriptionKey:@"缺少触控参数 x/y（0-1 归一化坐标）"}];
+        return NO;
+    }
+    return [self _normToPixelX:nx.doubleValue y:ny.doubleValue outPoint:outPt error:e];
+}
+
+/** 解析 points 数组（[{x,y},...]，1~HIDMaxTouchCount 个）→ malloc 像素点数组（调用方 free） */
+- (BOOL)_normPointsFromParams:(NSDictionary *)p outPoints:(CGPoint **)outPts outCount:(NSUInteger *)outCount error:(NSError **)e {
+    NSArray *pts = p[@"points"];
+    if (![pts isKindOfClass:[NSArray class]] || pts.count == 0 || pts.count > HIDMaxTouchCount) {
+        if (e) *e = [NSError errorWithDomain:@"TRCap" code:1
+                    userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"points 须为 1~%d 个 {x,y} 的数组", HIDMaxTouchCount]}];
+        return NO;
+    }
+    CGPoint *buf = malloc(sizeof(CGPoint) * pts.count);
+    if (!buf) {
+        if (e) *e = [NSError errorWithDomain:@"TRCap" code:99 userInfo:@{NSLocalizedDescriptionKey:@"内存不足"}];
+        return NO;
+    }
+    for (NSUInteger i = 0; i < pts.count; i++) {
+        NSDictionary *pt = pts[i];
+        NSNumber *nx = pt[@"x"], *ny = pt[@"y"];
+        CGPoint px;
+        if (![nx isKindOfClass:[NSNumber class]] || ![ny isKindOfClass:[NSNumber class]] ||
+            ![self _normToPixelX:nx.doubleValue y:ny.doubleValue outPoint:&px error:e]) {
+            free(buf);
+            if (e && !*e) *e = [NSError errorWithDomain:@"TRCap" code:1
+                               userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"points[%lu] 缺少 x/y 或越界", (unsigned long)i]}];
+            return NO;
+        }
+        buf[i] = px;
+    }
+    *outPts = buf;
+    *outCount = pts.count;
+    return YES;
+}
+
+/** 屏幕中心（像素） */
+- (CGPoint)_screenCenterPixel {
+    CGSize sz = [STHIDEventGenerator sharedGenerator].physicalScreenSize;
+    return CGPointMake(sz.width / 2.0, sz.height / 2.0);
+}
+
+/** 以中心点为捏合舞台 bounds（屏幕 60% 尺寸，钳制在屏内） */
+- (CGRect)_pinchStageCenteredAt:(CGPoint)center {
+    CGSize sz = [STHIDEventGenerator sharedGenerator].physicalScreenSize;
+    CGFloat w = sz.width * 0.6, h = sz.height * 0.6;
+    CGFloat x = MAX(0.0, MIN(sz.width - w, center.x - w / 2.0));
+    CGFloat y = MAX(0.0, MIN(sz.height - h, center.y - h / 2.0));
+    return CGRectMake(x, y, w, h);
+}
+
+/** 异步执行触摸注入（命令式手势用；ack 提前返回，注入在独立线程按参数时长执行） */
+- (NSDictionary *)_touchAsync:(void (^)(STHIDEventGenerator *gen))inject {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
+        inject([STHIDEventGenerator sharedGenerator]);
+    });
+    return @{@"ok":@YES};
+}
+
 /**
  * 注册触控类能力（归一化 0-1 坐标，设备侧转原生像素）
  * 2026-08-15 精简：touch.* 画布直操/AI 原语（tap/swipe/多点触控/手势/捏合/事件流等 18 项）无前端与
  * 运维消费，全部删除；仅保留被实际调用的 type.paste（前端 Ctrl+V / 移动端粘贴按钮走 invoke 通道）。
+ * 2026-08-16 恢复：消费方 = 前端聚焦画布手势识别（GESTURE_DEFS：touch.pinch/twoFingerTap/threeFingerTap）
+ * + AI/原生原语。坐标契约统一 0-1 归一化（(0,0)=左上、(1,1)=右下、(0.5,0.5)=屏幕中央），executor 内
+ * _norm* 转屏幕物理像素；越界/缺参报错不执行。慢手势异步执行 + ack 提前，防阻塞命令通道。
  */
 - (void)_registerTouchCapabilities {
     STHIDEventGenerator *hid = [STHIDEventGenerator sharedGenerator];
+    // ===== touch.* 多点触控/手势/捏合/事件流（2026-08-16 恢复，18 项）=====
+    // —— 命令式手势（异步注入）——
+    [self _registerControl:@"touch.tap" title:@"轻点" icon:@"👆" route:TRCapRouteTouch
+        params:@[@{@"name":@"x",@"type":@"number",@"required":@YES}, @{@"name":@"y",@"type":@"number",@"required":@YES}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            CGPoint pt;
+            if (![self _normPointFromParams:p outPoint:&pt error:e]) return nil;
+            return [self _touchAsync:^(STHIDEventGenerator *gen) { [gen tap:pt]; }];
+        }];
+    [self _registerControl:@"touch.doubleTap" title:@"双击" icon:@"👆" route:TRCapRouteTouch
+        params:@[@{@"name":@"x",@"type":@"number",@"required":@YES}, @{@"name":@"y",@"type":@"number",@"required":@YES}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            CGPoint pt;
+            if (![self _normPointFromParams:p outPoint:&pt error:e]) return nil;
+            return [self _touchAsync:^(STHIDEventGenerator *gen) { [gen doubleTap:pt]; }];
+        }];
+    [self _registerControl:@"touch.twoFingerTap" title:@"两指轻点" icon:@"🖐️" route:TRCapRouteTouch
+        params:@[@{@"name":@"x",@"type":@"number",@"required":@YES}, @{@"name":@"y",@"type":@"number",@"required":@YES}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            CGPoint pt;
+            if (![self _normPointFromParams:p outPoint:&pt error:e]) return nil;
+            return [self _touchAsync:^(STHIDEventGenerator *gen) { [gen twoFingerTap:pt]; }];
+        }];
+    [self _registerControl:@"touch.threeFingerTap" title:@"三指轻点" icon:@"🖐️" route:TRCapRouteTouch
+        params:@[@{@"name":@"x",@"type":@"number",@"required":@YES}, @{@"name":@"y",@"type":@"number",@"required":@YES}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            CGPoint pt;
+            if (![self _normPointFromParams:p outPoint:&pt error:e]) return nil;
+            return [self _touchAsync:^(STHIDEventGenerator *gen) { [gen threeFingerTap:pt]; }];
+        }];
+    [self _registerControl:@"touch.longPress" title:@"长按" icon:@"⏱" route:TRCapRouteTouch
+        params:@[@{@"name":@"x",@"type":@"number",@"required":@YES}, @{@"name":@"y",@"type":@"number",@"required":@YES}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            CGPoint pt;
+            if (![self _normPointFromParams:p outPoint:&pt error:e]) return nil;
+            return [self _touchAsync:^(STHIDEventGenerator *gen) { [gen longPress:pt]; }];
+        }];
+    [self _registerControl:@"touch.swipe" title:@"滑动" icon:@"➡️" route:TRCapRouteTouch
+        params:@[@{@"name":@"x1",@"type":@"number",@"required":@YES}, @{@"name":@"y1",@"type":@"number",@"required":@YES},
+                 @{@"name":@"x2",@"type":@"number",@"required":@YES}, @{@"name":@"y2",@"type":@"number",@"required":@YES},
+                 @{@"name":@"duration",@"type":@"number",@"required":@NO}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            CGPoint a, b;
+            if (![self _normPointFromParams:p outPoint:&a error:e]) return nil;
+            NSNumber *x2 = p[@"x2"], *y2 = p[@"y2"];
+            if (![x2 isKindOfClass:[NSNumber class]] || ![y2 isKindOfClass:[NSNumber class]] ||
+                ![self _normToPixelX:x2.doubleValue y:y2.doubleValue outPoint:&b error:e]) {
+                if (e && !*e) *e = [NSError errorWithDomain:@"TRCap" code:1
+                                   userInfo:@{NSLocalizedDescriptionKey:@"缺少终点坐标 x2/y2（0-1 归一化）"}];
+                return nil;
+            }
+            NSNumber *durN = p[@"duration"];
+            NSTimeInterval dur = [durN isKindOfClass:[NSNumber class]] && durN.doubleValue > 0 ? durN.doubleValue : 0.5;
+            return [self _touchAsync:^(STHIDEventGenerator *gen) { [gen dragLinearWithStartPoint:a endPoint:b duration:dur]; }];
+        }];
+    [self _registerControl:@"touch.curveSwipe" title:@"曲线滑动" icon:@"〰️" route:TRCapRouteTouch
+        params:@[@{@"name":@"x1",@"type":@"number",@"required":@YES}, @{@"name":@"y1",@"type":@"number",@"required":@YES},
+                 @{@"name":@"x2",@"type":@"number",@"required":@YES}, @{@"name":@"y2",@"type":@"number",@"required":@YES},
+                 @{@"name":@"duration",@"type":@"number",@"required":@NO}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            CGPoint a, b;
+            if (![self _normPointFromParams:p outPoint:&a error:e]) return nil;
+            NSNumber *x2 = p[@"x2"], *y2 = p[@"y2"];
+            if (![x2 isKindOfClass:[NSNumber class]] || ![y2 isKindOfClass:[NSNumber class]] ||
+                ![self _normToPixelX:x2.doubleValue y:y2.doubleValue outPoint:&b error:e]) {
+                if (e && !*e) *e = [NSError errorWithDomain:@"TRCap" code:1
+                                   userInfo:@{NSLocalizedDescriptionKey:@"缺少终点坐标 x2/y2（0-1 归一化）"}];
+                return nil;
+            }
+            NSNumber *durN = p[@"duration"];
+            NSTimeInterval dur = [durN isKindOfClass:[NSNumber class]] && durN.doubleValue > 0 ? durN.doubleValue : 0.5;
+            return [self _touchAsync:^(STHIDEventGenerator *gen) { [gen dragCurveWithStartPoint:a endPoint:b duration:dur]; }];
+        }];
+    [self _registerControl:@"touch.taps" title:@"连点" icon:@"👆" route:TRCapRouteTouch
+        params:@[@{@"name":@"x",@"type":@"number",@"required":@YES}, @{@"name":@"y",@"type":@"number",@"required":@YES},
+                 @{@"name":@"tapCount",@"type":@"number",@"required":@YES}, @{@"name":@"touchCount",@"type":@"number",@"required":@NO},
+                 @{@"name":@"delay",@"type":@"number",@"required":@NO}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            CGPoint pt;
+            if (![self _normPointFromParams:p outPoint:&pt error:e]) return nil;
+            NSNumber *tcN = p[@"tapCount"];
+            if (![tcN isKindOfClass:[NSNumber class]] || tcN.unsignedIntegerValue < 1) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:1
+                            userInfo:@{NSLocalizedDescriptionKey:@"tapCount 须为 >=1 的整数"}];
+                return nil;
+            }
+            NSUInteger touchCount = [p[@"touchCount"] isKindOfClass:[NSNumber class]] ? [p[@"touchCount"] unsignedIntegerValue] : 1;
+            if (touchCount < 1) touchCount = 1;
+            NSTimeInterval delay = [p[@"delay"] isKindOfClass:[NSNumber class]] && [p[@"delay"] doubleValue] > 0 ? [p[@"delay"] doubleValue] : 0.0;
+            return [self _touchAsync:^(STHIDEventGenerator *gen) {
+                [gen sendTaps:tcN.unsignedIntegerValue location:pt numberOfTouches:touchCount delayBetweenTaps:delay];
+            }];
+        }];
+    // touch.pinch：简化契约 {x,y,scale,angle,duration}（x,y=中心 0-1；scale 0.5~2.0；angle 弧度可缺省；
+    // duration 秒可缺省默认 0.5）；捏合舞台 bounds 由设备端按中心推屏幕 60% 矩形（替代历史 bounds 参数）
+    [self _registerControl:@"touch.pinch" title:@"捏合" icon:@"🔍" route:TRCapRouteTouch
+        params:@[@{@"name":@"x",@"type":@"number",@"required":@YES}, @{@"name":@"y",@"type":@"number",@"required":@YES},
+                 @{@"name":@"scale",@"type":@"number",@"required":@YES}, @{@"name":@"angle",@"type":@"number",@"required":@NO},
+                 @{@"name":@"duration",@"type":@"number",@"required":@NO}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            CGPoint c;
+            if (![self _normPointFromParams:p outPoint:&c error:e]) return nil;
+            NSNumber *scaleN = p[@"scale"];
+            if (![scaleN isKindOfClass:[NSNumber class]] || scaleN.doubleValue < 0.5 || scaleN.doubleValue > 2.0) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:1
+                            userInfo:@{NSLocalizedDescriptionKey:@"scale 须为 0.5~2.0（<1 捏合缩小，>1 放大）"}];
+                return nil;
+            }
+            CGFloat angle = [p[@"angle"] isKindOfClass:[NSNumber class]] ? [p[@"angle"] doubleValue] : 0.0;
+            NSTimeInterval dur = [p[@"duration"] isKindOfClass:[NSNumber class]] && [p[@"duration"] doubleValue] > 0 ? [p[@"duration"] doubleValue] : 0.5;
+            CGRect bounds = [self _pinchStageCenteredAt:c];
+            return [self _touchAsync:^(STHIDEventGenerator *gen) {
+                [gen pinchLinearInBounds:bounds scale:scaleN.doubleValue angle:angle duration:dur];
+            }];
+        }];
+    // —— 流式单事件（同步，瞬时注入）——
+    [self _registerControl:@"touch.down" title:@"按下" icon:@"👆" route:TRCapRouteTouch
+        params:@[@{@"name":@"x",@"type":@"number",@"required":@YES}, @{@"name":@"y",@"type":@"number",@"required":@YES}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            CGPoint pt;
+            if (![self _normPointFromParams:p outPoint:&pt error:e]) return nil;
+            [hid touchDown:pt];
+            return @{@"ok":@YES};
+        }];
+    [self _registerControl:@"touch.up" title:@"抬起" icon:@"👆" route:TRCapRouteTouch
+        params:@[@{@"name":@"x",@"type":@"number",@"required":@YES}, @{@"name":@"y",@"type":@"number",@"required":@YES}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            CGPoint pt;
+            if (![self _normPointFromParams:p outPoint:&pt error:e]) return nil;
+            [hid liftUp:pt];
+            return @{@"ok":@YES};
+        }];
+    [self _registerControl:@"touch.downMulti" title:@"N 指按下" icon:@"🖐️" route:TRCapRouteTouch
+        params:@[@{@"name":@"x",@"type":@"number",@"required":@YES}, @{@"name":@"y",@"type":@"number",@"required":@YES},
+                 @{@"name":@"count",@"type":@"number",@"required":@YES}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            CGPoint pt;
+            if (![self _normPointFromParams:p outPoint:&pt error:e]) return nil;
+            NSNumber *n = p[@"count"];
+            if (![n isKindOfClass:[NSNumber class]] || n.unsignedIntegerValue < 1 || n.unsignedIntegerValue > HIDMaxTouchCount) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:1
+                            userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"count 须为 1~%d", HIDMaxTouchCount]}];
+                return nil;
+            }
+            [hid touchDown:pt touchCount:n.unsignedIntegerValue];
+            return @{@"ok":@YES};
+        }];
+    [self _registerControl:@"touch.upMulti" title:@"N 指抬起" icon:@"🖐️" route:TRCapRouteTouch
+        params:@[@{@"name":@"x",@"type":@"number",@"required":@YES}, @{@"name":@"y",@"type":@"number",@"required":@YES},
+                 @{@"name":@"count",@"type":@"number",@"required":@YES}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            CGPoint pt;
+            if (![self _normPointFromParams:p outPoint:&pt error:e]) return nil;
+            NSNumber *n = p[@"count"];
+            if (![n isKindOfClass:[NSNumber class]] || n.unsignedIntegerValue < 1 || n.unsignedIntegerValue > HIDMaxTouchCount) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:1
+                            userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"count 须为 1~%d", HIDMaxTouchCount]}];
+                return nil;
+            }
+            [hid liftUp:pt touchCount:n.unsignedIntegerValue];
+            return @{@"ok":@YES};
+        }];
+    [self _registerControl:@"touch.downMultiAt" title:@"异点多指按下" icon:@"🖐️" route:TRCapRouteTouch
+        params:@[@{@"name":@"points",@"type":@"array",@"required":@YES}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            CGPoint *buf; NSUInteger n;
+            if (![self _normPointsFromParams:p outPoints:&buf outCount:&n error:e]) return nil;
+            [hid touchDownAtPoints:buf touchCount:n];
+            free(buf);
+            return @{@"ok":@YES};
+        }];
+    [self _registerControl:@"touch.upMultiAt" title:@"异点多指抬起" icon:@"🖐️" route:TRCapRouteTouch
+        params:@[@{@"name":@"points",@"type":@"array",@"required":@YES}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            CGPoint *buf; NSUInteger n;
+            if (![self _normPointsFromParams:p outPoints:&buf outCount:&n error:e]) return nil;
+            [hid liftUpAtPoints:buf touchCount:n];
+            free(buf);
+            return @{@"ok":@YES};
+        }];
+    [self _registerControl:@"touch.reset" title:@"清空触点" icon:@"🧹" route:TRCapRouteTouch params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+        [hid dispatchHandResetEvent];
+        return @{@"ok":@YES};
+    }];
+    // —— 事件流（event 单事件同步；eventStream 按时间轴播放，异步防阻塞）——
+    [self _registerControl:@"touch.event" title:@"单事件" icon:@"📡" route:TRCapRouteTouch
+        params:@[@{@"name":@"eventInfo",@"type":@"object",@"required":@YES}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            NSDictionary *info = p[@"eventInfo"];
+            if (![info isKindOfClass:[NSDictionary class]]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:1
+                            userInfo:@{NSLocalizedDescriptionKey:@"缺少 eventInfo 字典"}];
+                return nil;
+            }
+            [hid dispatchEventWithInfo:info];
+            return @{@"ok":@YES};
+        }];
+    [self _registerControl:@"touch.eventStream" title:@"事件流" icon:@"📡" route:TRCapRouteTouch
+        params:@[@{@"name":@"eventInfo",@"type":@"object",@"required":@YES}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            NSDictionary *info = p[@"eventInfo"];
+            if (![info isKindOfClass:[NSDictionary class]]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:1
+                            userInfo:@{NSLocalizedDescriptionKey:@"缺少 eventInfo 字典"}];
+                return nil;
+            }
+            return [self _touchAsync:^(STHIDEventGenerator *gen) { [gen sendEventStream:info]; }];
+        }];
     // 2026-08-14 移除 type.text 注册：HID keyPress 仅支持 ASCII（c<128），中文/emoji 静默丢弃；
     // 前端 ACT_DEFS/BATCH_CAPS 均无调用入口，type.paste 是完整的替代方案（支持中文/emoji）
     // Batch 3：粘贴输入（任意文本，支持中文/emoji）
