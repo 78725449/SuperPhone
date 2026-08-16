@@ -233,7 +233,6 @@
 
 <script type="module">
 import RFB from './novnc/core/rfb.js';
-import { DESECBCipher } from './novnc/core/crypto/des.js';
 
 (function () {
   var host = location.hostname;
@@ -325,7 +324,7 @@ import { DESECBCipher } from './novnc/core/crypto/des.js';
       isConnected = true;
       startSigPoll();
       setStatus('已连接，等待画面…', true);
-      // 2026-08-17：画面连接建立后启动剪贴板管理通道（第二条 WS，承载 0x50 clipboard.get/type.paste）
+      // 2026-08-17 v2：画面连接建立后启动剪贴板管理通道（主连接承载 0x50，单连接无并发 WS）
       mgmtInit(function (ok) {
         if (!ok) console.log('[mgmt] 管理通道不可用（粘贴回退 RFB 原语、复制按钮隐藏）');
       });
@@ -369,7 +368,6 @@ import { DESECBCipher } from './novnc/core/crypto/des.js';
     rfb.addEventListener('credentialsrequired', function () {
       var p = window.prompt('请输入 VNC 密码：');
       if (p) rfb.sendCredentials({ password: p });
-      mgmtPassword = p || ''; // 2026-08-17：记录密码供管理通道（第二条 WS）认证复用
     });
     // 断开/失败：软键盘由 kbInput blur 自动收起（input 事件驱动方案无 Keyboard 实例，无需 ungrab）
   }
@@ -847,141 +845,59 @@ import { DESECBCipher } from './novnc/core/crypto/des.js';
     flashStatus('✓ 已粘贴 ' + text.length + ' 字符', 'success');
   }
 
-  // ===== 剪贴板显式双向搬运（2026-08-17）：管理通道 + 复制/粘贴按钮 =====
-  // 第二条独立 WS（RFB 握手 + 认证）承载 0x50 扩展消息（clipboard.get / type.paste），
-  // 0x80 响应不经过 noVNC 解析（避免 "Unexpected server message" 断连）；
-  // cap.hello {mgmt:true} 使该客户端不计入画面、不推帧（设备端已支持）。
+  // ===== 剪贴板显式双向搬运（2026-08-17 v2）：管理通道（主连接承载，单连接）=====
+  // v1 用独立 mgmt WS 承载 0x50——实测 libvncserver websockify 不支持并发多条 WS 客户端，
+  // 第二条连接接入会踢断主连接（141ms 1006 → 重连循环）。v2 改为在主 RFB 连接上发 0x50 请求，
+  // 0x80 响应由 patch 过的 novnc rfb.js（case 128）转成 'tvextresponse' 事件（不再触发
+  // "Unexpected server message" 断连）。主连接是正常画面客户端，0x50 扩展消息与画面推送共存。
 
-  var mgmtSock = null;          // 管理通道 WebSocket
-  var mgmtPassword = '';        // 第一条连接输入的密码（认证复用）
-  var mgmtPhase = 0;            // 0=版本 1=安全类型 2=VNC Auth 3=结果 4=ServerInit 5=帧
-  var mgmtBuf = new Uint8Array(0);
-  var mgmtPending = null;       // { cb } 当前等待的 0x80 响应
-  var mgmtReadyCb = null;       // 就绪回调（一次）
-  var mgmtReady = false;        // 管理通道可用标记
+  var mgmtPending = null;       // { cb } 当前等待的 0x80 响应（设备端同步处理，严格按序返回）
+  var mgmtReady = false;        // 管理通道可用标记（主连接 connect + cap.list 探测完成）
   var mgmtCapHasClip = false;   // cap.list 探测：设备端是否支持 clipboard 组
 
-  // 第一条 noVNC 连接建立后启动管理通道（连接成功回调内调用，见 initRfb）
+  function mgmtHandleResponse(text) {
+    var parsed = null;
+    try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
+    var pend = mgmtPending;
+    mgmtPending = null;
+    if (pend && pend.cb) pend.cb(parsed);
+  }
+
+  // 主连接 connect 后调用：绑定 0x80 事件 + cap.list 探测能力目录（见 initRfb 的 connect 回调）
   function mgmtInit(cb) {
-    var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    mgmtReadyCb = cb || null;
+    mgmtReady = false;
+    mgmtPending = null;
     try {
-      mgmtSock = new WebSocket(proto + location.hostname + ':' + $PORT + '/websockify');
-    } catch (e) {
-      mgmtSock = null;
-      if (mgmtReadyCb) { mgmtReadyCb(false); mgmtReadyCb = null; }
-      return;
-    }
-    mgmtSock.binaryType = 'arraybuffer';
-    mgmtPhase = 0; mgmtBuf = new Uint8Array(0); mgmtPending = null;
-    mgmtSock.onopen = function () {
-      // "RFB 003.008\n"
-      mgmtSock.send(new Uint8Array([0x52, 0x46, 0x42, 0x20, 0x30, 0x30, 0x33, 0x2e, 0x30, 0x30, 0x38, 0x0a]));
-    };
-    mgmtSock.onmessage = function (ev) { mgmtOnData(new Uint8Array(ev.data)); };
-    mgmtSock.onclose = function () {
-      mgmtSock = null; mgmtReady = false;
-      if (mgmtReadyCb) { mgmtReadyCb(false); mgmtReadyCb = null; }
-    };
-    mgmtSock.onerror = function () { try { mgmtSock.close(); } catch (e) {} };
+      rfb.addEventListener('tvextresponse', function (e) {
+        mgmtHandleResponse((e && e.detail && e.detail.text) || '');
+      });
+      rfb.addEventListener('disconnect', function () { mgmtReady = false; mgmtPending = null; });
+    } catch (e) { if (cb) cb(false); return; }
+    mgmtRequest('cap.list', {}, function (resp) {
+      mgmtCapHasClip = !!(resp && resp.extensions && resp.extensions.some(function (g) {
+        return g.group === 'clipboard';
+      }));
+      mgmtReady = true;
+      updateClipButtons();
+      if (cb) cb(true);
+    });
   }
 
-  function mgmtOnData(u8) {
-    var tmp = new Uint8Array(mgmtBuf.length + u8.length);
-    tmp.set(mgmtBuf); tmp.set(u8, mgmtBuf.length);
-    mgmtBuf = tmp;
-    while (true) {
-      if (mgmtPhase === 0) { // 服务端版本（12 字节）
-        if (mgmtBuf.length < 12) return;
-        mgmtBuf = mgmtBuf.slice(12);
-        mgmtPhase = 1;
-      } else if (mgmtPhase === 1) { // 安全类型列表
-        if (mgmtBuf.length < 1) return;
-        var count = mgmtBuf[0];
-        if (mgmtBuf.length < 1 + count) return;
-        var types = Array.prototype.slice.call(mgmtBuf.slice(1, 1 + count));
-        mgmtBuf = mgmtBuf.slice(1 + count);
-        if (types.indexOf(1) !== -1) { mgmtSock.send(new Uint8Array([1])); mgmtPhase = 3; }      // None
-        else if (types.indexOf(2) !== -1) { mgmtSock.send(new Uint8Array([2])); mgmtPhase = 2; } // VNC Auth
-        else { mgmtFail('不支持的认证方式'); return; }
-      } else if (mgmtPhase === 2) { // VNC Auth challenge（16 字节）→ DES 加密回发
-        if (mgmtBuf.length < 16) return;
-        var challenge = mgmtBuf.slice(0, 16);
-        mgmtBuf = mgmtBuf.slice(16);
-        var key = mgmtPassword.split('').map(function (c) { return c.charCodeAt(0); });
-        var resp = DESECBCipher.importKey(key, null, false, []).encrypt({ name: 'DES-ECB' }, challenge);
-        mgmtSock.send(resp);
-        mgmtPhase = 3;
-      } else if (mgmtPhase === 3) { // SecurityResult（4 字节）
-        if (mgmtBuf.length < 4) return;
-        var ok = new DataView(mgmtBuf.buffer, mgmtBuf.byteOffset, 4).getUint32(0);
-        mgmtBuf = mgmtBuf.slice(4);
-        if (ok !== 0) { mgmtFail('认证失败'); return; }
-        mgmtSock.send(new Uint8Array([0])); // client init: shared=0
-        mgmtPhase = 4;
-      } else if (mgmtPhase === 4) { // ServerInit：24 字节 + nameLen(4) + name
-        if (mgmtBuf.length < 24) return;
-        mgmtBuf = mgmtBuf.slice(24);
-        if (mgmtBuf.length < 4) return;
-        var nameLen = new DataView(mgmtBuf.buffer, mgmtBuf.byteOffset, 4).getUint32(0);
-        if (mgmtBuf.length < 4 + nameLen) return;
-        mgmtBuf = mgmtBuf.slice(4 + nameLen);
-        mgmtPhase = 5;
-        mgmtReady = true;
-        // 就绪：标记管理客户端 + 探测能力目录
-        mgmtRequest('cap.hello', { mgmt: true }, function () {});
-        mgmtRequest('cap.list', {}, function (resp) {
-          mgmtCapHasClip = !!(resp && resp.extensions && resp.extensions.some(function (g) {
-            return g.group === 'clipboard';
-          }));
-          updateClipButtons();
-        });
-        if (mgmtReadyCb) { mgmtReadyCb(true); mgmtReadyCb = null; }
-      } else if (mgmtPhase === 5) { // 0x50/0x80 帧：1B type + 3B reserved + 4B payloadLen(BE) + payload
-        if (mgmtBuf.length < 8) return;
-        var dv = new DataView(mgmtBuf.buffer, mgmtBuf.byteOffset, 8);
-        var type = dv.getUint8(0);
-        var len = dv.getUint32(4);
-        // 2026-08-17 修复：扩展剪贴板帧（ServerCaps 等）长度为负数（0xFFFFFFF8 等），
-        // getUint32 解析为 42 亿 → 8+len 巨大 → 状态机永久等待/死循环 → 页面 JS 线程卡死
-        // → 主连接无法处理帧而断开（5801 连接反复断开重连）。负长度帧直接跳过整帧。
-        if (len > 0x7fffffff) {
-          var skipNeg = 8 + (0x100000000 - len); // 帧总长 = 8 + |len|（扩展剪贴板帧结构）
-          if (mgmtBuf.length < skipNeg) return;
-          mgmtBuf = mgmtBuf.slice(skipNeg);
-          continue; // 非响应帧（ServerCaps 协商），客户端无需处理
-        }
-        if (mgmtBuf.length < 8 + len) return;
-        var payload = mgmtBuf.slice(8, 8 + len);
-        mgmtBuf = mgmtBuf.slice(8 + len);
-        if (type !== 0x80) continue; // 只处理响应帧
-        var parsed = null;
-        try { parsed = JSON.parse(new TextDecoder().decode(payload)); } catch (e) { parsed = null; }
-        var pend = mgmtPending;
-        mgmtPending = null;
-        if (pend && pend.cb) pend.cb(parsed);
-      }
-    }
-  }
-
-  // 发送 0x50 请求；返回 true 表示已发送（管理通道就绪），否则 false（调用方回退）
+  // 在主连接发 0x50 请求；返回 true=已发送（主连接可用），否则 false（调用方回退）
   function mgmtRequest(op, params, cb) {
-    if (!mgmtSock || mgmtPhase !== 5 || !mgmtReady) return false;
-    var payload = new TextEncoder().encode(JSON.stringify({ op: op, params: params || {} }));
-    var frame = new Uint8Array(8 + payload.length);
-    frame[0] = 0x50;
-    new DataView(frame.buffer).setUint32(4, payload.length);
-    frame.set(payload, 8);
+    if (!rfb || !rfb._sock || rfb._rfbConnectionState !== 'connected') return false;
+    if (mgmtPending && mgmtPending.cb) mgmtPending.cb(null); // 防御：覆盖未响应的旧请求
+    var payload;
+    try { payload = new TextEncoder().encode(JSON.stringify({ op: op, params: params || {} })); }
+    catch (e) { return false; }
+    var sock = rfb._sock;
+    sock.sQpush8(0x50);
+    sock.sQpush8(0); sock.sQpush8(0); sock.sQpush8(0); // reserved
+    sock.sQpush32(payload.length);
+    sock.sQpushBytes(payload);
+    sock.flush();
     mgmtPending = { cb: cb };
-    try { mgmtSock.send(frame); } catch (e) { mgmtPending = null; return false; }
     return true;
-  }
-
-  function mgmtFail(msg) {
-    console.error('[mgmt] ' + msg);
-    try { mgmtSock.close(); } catch (e) {}
-    mgmtSock = null; mgmtReady = false;
-    if (mgmtReadyCb) { mgmtReadyCb(false); mgmtReadyCb = null; }
   }
 
   // 复制按钮（拉取设备剪贴板 → 写控制端剪贴板；降级链：writeText → execCommand → 提示）

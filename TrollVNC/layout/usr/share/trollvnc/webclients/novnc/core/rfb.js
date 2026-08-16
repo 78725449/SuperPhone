@@ -2464,6 +2464,25 @@ export default class RFB extends EventTargetMixin {
             case 250:  // XVP
                 return this._handleXvpMsg();
 
+            case 128:  // [SuperPhone 2026-08-17] TV extension response (0x80)
+                {
+                    // 1B type(已消费) + 3B reserved + 4B payloadLen(BE) + JSON payload；
+                    // 不进 default 的 _fail（原实现会 "Unexpected server message" 断连），
+                    // 转成 CustomEvent('tvextresponse') 供页面管理通道在主连接上复用 0x50/0x80。
+                    if (this._sock.rQwait("TV extension header", 7, 1)) { return false; }
+                    this._sock.rQshiftBytes(3); // reserved
+                    const tvextLen = this._sock.rQshift32();
+                    if (this._sock.rQwait("TV extension payload", tvextLen, 0)) { return false; }
+                    const tvextPayload = this._sock.rQshiftBytes(tvextLen);
+                    let tvextText = '';
+                    for (let i = 0; i < tvextPayload.length; i += 4096) {
+                        tvextText += String.fromCharCode.apply(
+                            null, tvextPayload.subarray(i, Math.min(i + 4096, tvextPayload.length)));
+                    }
+                    this.dispatchEvent(new CustomEvent("tvextresponse", { detail: { text: tvextText } }));
+                    return true;
+                }
+
             default:
                 this._fail("Unexpected server message (type " + msgType + ")");
                 Log.Debug("sock.rQpeekBytes(30): " + this._sock.rQpeekBytes(30));
