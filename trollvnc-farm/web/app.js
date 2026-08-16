@@ -2,7 +2,7 @@
 // rfb.js?v=2：noVNC 核心为 server 内存 patch（dot 圆点/TLS 屏蔽等），URL 带版本号强制浏览器
 // 重新拉取 patch 后的内容，避免旧版缓存（同 gesturehandler.js?v=3 方案）
 import RFB from '/novnc/core/rfb.js?v=2';
-import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS, GESTURE_DEFS } from './caps.js?v=6';
+import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS, GESTURE_DEFS } from './caps.js?v=7';
 import { attachPress } from './press.js';
 import { attachFarmGesture, resolveGesture } from './gesture.js';
 
@@ -961,12 +961,11 @@ function renderCapOps(container, device) {
   // 悬浮菜单（opsMenuCap）：不显示分组标题，按钮保留图标+文字（窄菜单参考 5801 面板宽度）
   const isOpsMenu = container.id === 'opsMenuCap';
   // 按键区：分组标题 + 按键对象按钮（按压识别，07 §3.2；KEY_DEFS 自包含契约，直发 RFB）
-  // 按键按钮先构建进临时数组，存在按键才追加分组标题，避免渲染孤立空标题
   const keyTitle = document.createElement('div');
   keyTitle.className = 'cap-group-title';
   keyTitle.textContent = '按键';
-  const keyBtns = [];
-  for (const k of KEY_DEFS) {
+  // 按键按钮构建（按压识别；键盘键 = 收起被控端软键盘 + 触控端调起控制端软键盘）
+  const buildKeyBtn = (k) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'op key-op';
@@ -984,20 +983,56 @@ function renderCapOps(container, device) {
       if (rfb && rfb._farmConnected) rfbPressKey(rfb, k, capId);
       // 控制台直连模式：按键仅在有活跃 RFB 连接时可用，无连接不发送
     } }));
-    keyBtns.push(b);
+    return b;
+  };
+  // FAB 悬浮菜单专属顺序（2026-08-17 用户拍板）：Home → 复制 → 粘贴 → 键盘 → 截屏 →
+  // 其余按键（音量/亮度/搜索）→ 全屏 → 电源（长按保留）→ 断开。
+  // 全屏/断开原为 index.html 静态按钮，改动态渲染以便电源插入其间（静态写死会丢电源按压识别）。
+  if (isOpsMenu) {
+    const byKey = new Map(KEY_DEFS.map((k) => [k.key, k]));
+    const order = ['home', 'volup', 'mute', 'voldn', 'briup', 'bridn', 'spotlight'];
+    frag.appendChild(buildKeyBtn(byKey.get('home')));
+    frag.appendChild(buildClipboardBtn('copy'));
+    frag.appendChild(buildClipboardBtn('paste'));
+    frag.appendChild(buildKeyBtn(byKey.get('keyboard')));
+    frag.appendChild(buildKeyBtn(byKey.get('snapshot')));
+    order.slice(1).forEach((key) => { const k = byKey.get(key); if (k) frag.appendChild(buildKeyBtn(k)); });
+    frag.appendChild(buildActionBtn('full', '全屏', '全屏切换',
+      '<path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/>'));
+    frag.appendChild(buildKeyBtn(byKey.get('power')));
+    frag.appendChild(buildActionBtn('disc', '断开', '断开（退出控制并返回设备墙）',
+      '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/><path d="M9.5 14.5l5-5"/>', 'danger'));
+    container.appendChild(frag);
+    return;
   }
+  // 桌面操作列（focusOpsCap）：KEY_DEFS 顺序 + 复制（电脑端已有 Ctrl+V，不挂粘贴）
+  const keyBtns = [];
+  for (const k of KEY_DEFS) keyBtns.push(buildKeyBtn(k));
   if (keyBtns.length > 0) {
-    if (!isOpsMenu) frag.appendChild(keyTitle);   // 悬浮菜单不显示「按键」分组标题
+    frag.appendChild(keyTitle);
     keyBtns.forEach((b) => frag.appendChild(b));
   }
+  frag.appendChild(buildClipboardBtn('copy'));
+  container.appendChild(frag);
+}
 
-  // 移动端悬浮菜单本地动作：粘贴到设备（2026-08-14 用户拍板恢复）
-  // 读取控制端剪贴板 → type.paste 原子注入被控设备聚焦输入框（与电脑 Ctrl+V 同链路）。
-  // 仅挂 opsMenu（移动端 FAB 菜单）：电脑端已有 Ctrl+V，不重复加按钮。
-  if (isOpsMenu) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'op';
+/**
+ * 剪贴板按钮构建（复制=拉取设备剪贴板 / 粘贴=注入设备；显式双向搬运 2026-08-17）
+ * @param {'copy'|'paste'} kind 按钮类型
+ * @returns {HTMLButtonElement} 按钮元素（已绑定 click）
+ */
+function buildClipboardBtn(kind) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'op';
+  if (kind === 'copy') {
+    b.title = '复制：拉取被控设备剪贴板到控制端';
+    b.innerHTML = '<span class="cap-icon">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+      '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>' +
+      '</svg></span><span class="cap-name">复制</span>';
+    b.addEventListener('click', copyFromFocusedDevice);
+  } else {
     b.title = '粘贴：读取控制端剪贴板并粘贴到被控设备聚焦输入框';
     b.innerHTML = '<span class="cap-icon">' +
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
@@ -1006,25 +1041,30 @@ function renderCapOps(container, device) {
       '<rect x="9" y="11" width="6" height="4" rx="1"/>' +
       '</svg></span><span class="cap-name">粘贴</span>';
     b.addEventListener('click', pasteToFocusedDevice);
-    frag.appendChild(b);
   }
+  return b;
+}
 
-  // 剪贴板显式双向搬运（2026-08-17）：复制按钮 = 拉取被控设备剪贴板到控制端。
-  // 桌面操作列与 FAB 菜单都挂（PC 端同样有拉取需求）；降级链见 farmWriteClipboardToControl。
-  {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'op';
-    b.title = '复制：拉取被控设备剪贴板到控制端';
-    b.innerHTML = '<span class="cap-icon">' +
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
-      '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>' +
-      '</svg></span><span class="cap-name">复制</span>';
-    b.addEventListener('click', copyFromFocusedDevice);
-    frag.appendChild(b);
-  }
-
-  container.appendChild(frag);
+/**
+ * 菜单动作按钮构建（全屏/断开；data-op 交由 doOp 统一处理，与原静态按钮行为一致）
+ * @param {string} op 动作标识（full/disc）
+ * @param {string} name 按钮名称
+ * @param {string} title 悬浮提示
+ * @param {string} svgPaths 内联 SVG path 内容
+ * @param {string} [cls] 附加类名（danger）
+ * @returns {HTMLButtonElement} 按钮元素
+ */
+function buildActionBtn(op, name, title, svgPaths, cls) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.dataset.op = op;
+  if (cls) b.className = cls;
+  b.title = title;
+  b.innerHTML = '<span class="cap-icon">' +
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + svgPaths + '</svg>' +
+    '</span><span class="cap-name">' + name + '</span>';
+  b.addEventListener('click', () => doOp(op));
+  return b;
 }
 
 /**
@@ -1433,6 +1473,7 @@ function exitFocus() {
   $('focusOps').classList.add('hidden');
   $('workspace').classList.remove('focus-open');
   $('opsMenu').classList.add('hidden');
+  cancelFabAutoCollapse();
   $('fab').classList.add('hidden');
   restoreWallTile(devId);
   // 退出大屏同步退出系统全屏（若处于全屏态）
@@ -2339,7 +2380,12 @@ function initFab() {
     const menu = $('opsMenu');
     const willOpen = menu.classList.contains('hidden');
     menu.classList.toggle('hidden');           // 未拖动 = 点击 → 展开/收起菜单
-    if (willOpen) positionOpsMenu();           // 展开后立即定位（避开 FAB 区域）
+    if (willOpen) {
+      positionOpsMenu();                       // 展开后立即定位（避开 FAB 区域）
+      scheduleFabAutoCollapse();               // 自动收起（设备配置 FabAutoCollapse/FabCollapseMs）
+    } else {
+      cancelFabAutoCollapse();
+    }
   };
   fab.addEventListener('pointerup', endDrag);
   fab.addEventListener('pointercancel', () => { dragging = false; });
@@ -2348,6 +2394,32 @@ function initFab() {
     const menu = $('opsMenu');
     if (menu && !menu.classList.contains('hidden')) positionOpsMenu();
   });
+}
+
+// ---------- FAB 菜单自动收起（2026-08-17，设备配置 FabAutoCollapse/FabCollapseMs）----------
+// 配置跟随设备（App 设置页 → 网关 configs 同步）：聚焦设备优先，无聚焦时取设备墙任一注册设备。
+// FabAutoCollapse 默认开启（true）；FabCollapseMs 默认 1000ms（100~10000）。instant reload 即时生效。
+let fabCollapseTimer = null;
+function fabCollapseConfigs() {
+  const dev = (focus && focus.device) || devices.find((d) => d.source === 'register') || devices[0];
+  const c = (dev && dev.configs) || {};
+  return {
+    auto: c.FabAutoCollapse !== false,                       // 默认开启
+    ms: Math.min(10000, Math.max(100, Number(c.FabCollapseMs) || 1000)),
+  };
+}
+function cancelFabAutoCollapse() {
+  if (fabCollapseTimer) { clearTimeout(fabCollapseTimer); fabCollapseTimer = null; }
+}
+function scheduleFabAutoCollapse() {
+  cancelFabAutoCollapse();
+  const cfg = fabCollapseConfigs();
+  if (!cfg.auto) return;
+  fabCollapseTimer = setTimeout(() => {
+    fabCollapseTimer = null;
+    const menu = $('opsMenu');
+    if (menu && !menu.classList.contains('hidden')) menu.classList.add('hidden');
+  }, cfg.ms);
 }
 
 /**
@@ -2501,6 +2573,7 @@ initFab();
 document.addEventListener('pointerdown', (e) => {
   if (!e.target.closest('#opsMenu') && !e.target.closest('#fab')) {
     $('opsMenu').classList.add('hidden');
+    cancelFabAutoCollapse();
   }
 });
 

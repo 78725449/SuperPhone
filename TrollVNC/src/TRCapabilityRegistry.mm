@@ -1113,6 +1113,9 @@ static NSDictionary *TRSearchGatewaySync(void) {
     [self _registerConfig:@"AsyncSwap" title:@"非阻塞交换" type:@"bool" reload:TRConfigReloadRestart];
     // Phase 10.6：卡片墙帧获取间隔（web/IPA 原硬编码 5s/10s，现可配置，instant 级别即时生效）
     [self _registerConfig:@"ThumbInterval" title:@"卡片墙帧获取间隔(秒)" type:@"number" min:@1 max:@60 step:@1 reload:TRConfigReloadInstant];
+    // 2026-08-17：控制台 FAB 悬浮菜单自动收起（App 设置页 → 网关 configs 同步，前端即时读取）
+    [self _registerConfig:@"FabAutoCollapse" title:@"悬浮菜单自动收起" type:@"bool" reload:TRConfigReloadInstant];
+    [self _registerConfig:@"FabCollapseMs" title:@"悬浮菜单收起延时(毫秒)" type:@"number" min:@100 max:@10000 step:@100 reload:TRConfigReloadInstant];
     // 输入
     [self _registerConfig:@"NaturalScroll" title:@"自然滚动" type:@"bool" reload:TRConfigReloadInstant];
     [self _registerConfig:@"ModifierMap" title:@"修饰键映射" type:@"enum"
@@ -1369,6 +1372,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
             @"FullscreenThresholdPercent": @0, @"MaxRects": @256,
             @"WheelStepPx": @48.0, @"KeepAliveSec": @0,
             @"ThumbInterval": @5,
+            @"FabAutoCollapse": @YES, @"FabCollapseMs": @1000,
         };
         return defs[key] ?: @0;
     }

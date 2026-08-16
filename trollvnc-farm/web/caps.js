@@ -90,6 +90,8 @@ export const CONFIG_DEFS = [
   { key: 'MaxRects', title: '最大矩形数', type: 'number', min: 1, max: 4096, step: 1, reload: 'restart' },
   { key: 'AsyncSwap', title: '非阻塞交换', type: 'bool', reload: 'restart' },
   { key: 'ThumbInterval', title: '卡片墙帧获取间隔(秒)', type: 'number', min: 1, max: 60, step: 1, reload: 'instant' },
+  { key: 'FabAutoCollapse', title: '悬浮菜单自动收起', type: 'bool', reload: 'instant' },
+  { key: 'FabCollapseMs', title: '悬浮菜单收起延时(毫秒)', type: 'number', min: 100, max: 10000, step: 100, reload: 'instant' },
   { key: 'NaturalScroll', title: '自然滚动', type: 'bool', reload: 'instant' },
   { key: 'ModifierMap', title: '修饰键映射', type: 'enum', enumValues: ['std', 'altcmd'], enumTitles: ['标准', 'Alt→Cmd'], reload: 'hot' },
   { key: 'AutoAssistEnabled', title: '辅助触控', type: 'bool', reload: 'instant' },
