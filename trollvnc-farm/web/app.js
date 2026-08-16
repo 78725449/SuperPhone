@@ -297,7 +297,7 @@ function startWallRfb(inst) {
   // rfb 字段仅为兼容既有 stopWallRfb/updateWallTile 引用，实为截图轮询实例
   inst.rfb = { kind: 'screenshot', timer: null, closed: false, lastHash: null, silent: 0 };
   const tick = async () => {
-    if (inst.paused || inst.rfb.closed) return;
+    if (inst.paused || !inst.rfb || inst.rfb.closed) return;
     let changed = false;
     try {
       // 1) 轻量屏幕 hash：安装本 IPA 的设备均具备 screen.hash 能力，失败即显式报错，无回退
@@ -323,7 +323,8 @@ function startWallRfb(inst) {
     } catch (e) {
       if (inst.statusEl) inst.statusEl.textContent = '获取失败';
     } finally {
-      if (!inst.paused && !inst.rfb.closed) {
+      // inst.rfb 可能已被 stopWallRfb 置 null（竞态：在途 tick 与卡片停止交错）——加空值保护
+      if (!inst.paused && inst.rfb && !inst.rfb.closed) {
         // 双速检测（与 IPA 控制端一致）：变化后快检 1s；静止按 1.5 倍退避至 15s 封顶
         const base = Number((inst.device.configs && inst.device.configs.ThumbInterval) || 5) || 5;
         let next;
