@@ -467,7 +467,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
                     userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"points 须为 1~%d 个 {x,y} 的数组", HIDMaxTouchCount]}];
         return NO;
     }
-    CGPoint *buf = malloc(sizeof(CGPoint) * pts.count);
+    CGPoint *buf = (CGPoint *)malloc(sizeof(CGPoint) * pts.count);
     if (!buf) {
         if (e) *e = [NSError errorWithDomain:@"TRCap" code:99 userInfo:@{NSLocalizedDescriptionKey:@"内存不足"}];
         return NO;
