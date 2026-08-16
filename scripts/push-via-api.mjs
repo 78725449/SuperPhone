@@ -1,18 +1,18 @@
 // 通过 GitHub Git Data API 推送本地提交（github.com 不可达时的备用通道）
-// 用法：GHTOK=<token> node push-via-api.mjs <本地commit> <本地base commit> <远程base commit>
+// 用法：GHTOK=<token> node push-via-api.mjs <本地commit> <远程base commit> [本地base commit]
 import { execSync } from 'node:child_process';
 
 const REPO = process.env.REPO || '78725449/SuperPhone';
 const TOKEN = process.env.GHTOK;
 const API = 'https://api.github.com';
-const CWD = process.env.CWD || 'C:\\Users\\Administrator\\Documents\\ChatGPT\\New project\\TrollVNC';
+const CWD = process.env.CWD || 'C:\\Users\\Administrator\\Documents\\ChatGPT\\New project';
 const BRANCH = process.env.BRANCH || 'main';
 const LOCAL = process.argv[2];
 const REMOTE_BASE = process.argv[3];
 const LOCAL_BASE = process.argv[4] || process.argv[3]; // 本地 diff 基准（可与远程 base 不同 sha，内容等价即可）
 
 if (!TOKEN || !LOCAL || !LOCAL_BASE || !REMOTE_BASE) {
-  console.error('usage: GHTOK=<token> node push-via-api.mjs <localCommit> <localBaseCommit> <remoteBaseCommit>');
+  console.error('usage: GHTOK=<token> node push-via-api.mjs <localCommit> <remoteBaseCommit> [localBaseCommit]');
   process.exit(1);
 }
 
