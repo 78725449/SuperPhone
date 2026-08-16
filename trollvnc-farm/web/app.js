@@ -2,7 +2,7 @@
 // rfb.js?v=2：noVNC 核心为 server 内存 patch（dot 圆点/TLS 屏蔽等），URL 带版本号强制浏览器
 // 重新拉取 patch 后的内容，避免旧版缓存（同 gesturehandler.js?v=3 方案）
 import RFB from '/novnc/core/rfb.js?v=2';
-import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS, GESTURE_DEFS } from './caps.js?v=4';
+import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS, GESTURE_DEFS } from './caps.js?v=5';
 import { attachPress } from './press.js';
 import { attachFarmGesture, resolveGesture } from './gesture.js';
 
@@ -1143,7 +1143,12 @@ async function submitPasteText(devId, text) {
   if (!devId || !text) return;
   try {
     const r = await invokeCap('', devId, 'type.paste', { text });
-    if (r && r.ok) toast(`✓ 已粘贴 ${text.length} 字符到设备`, 'success');
+    if (r && r.ok) {
+      // 2026-08-17 双保险：记录本次粘贴输入，设备端回推的剪贴板内容在 3s 内文本匹配时
+      // 视为回显（设备端抑制窗口漏网/通知延迟合并的兜底），不 toast、不覆盖控制端剪贴板
+      window._farmLastPaste = { text, at: Date.now() };
+      toast(`✓ 已粘贴 ${text.length} 字符到设备`, 'success');
+    }
     else toast(`✗ 粘贴失败：${(r && r.ack && r.ack.error) || '未知错误'}`, 'error');
   } catch (e) {
     toast(`✗ 粘贴调用失败：${e.message}`, 'error');
@@ -2064,6 +2069,9 @@ function farmWriteClipboardToControl(text, devName) {
     // 用户复制 A 后 1s 内再复制 B，B 的剪贴板事件被直接丢弃。改为"同文本短窗口去重"：
     // 仅当文本与上次相同且 500ms 内重复（协议/系统抖动）才过滤；不同文本立即放行。
     if (rfb._farmClipLastText === text && rfb._farmClipLastAt && now - rfb._farmClipLastAt < 500) return;
+    // 2026-08-17 双保险：type.paste 粘贴输入后 3s 内设备端回推同文本 → 视为输入回显
+    // （设备端抑制窗口漏网/通知延迟合并），忽略——不弹"已同步"、不覆盖控制端剪贴板
+    if (window._farmLastPaste && text === window._farmLastPaste.text && now - window._farmLastPaste.at < 3000) return;
     rfb._farmClipLastAt = now;
     rfb._farmClipLastText = text;
     // 2026-08-15 基建：回环由原生端 changeCount 锚点抑制断环（writeClipboard 写入触发的一次
