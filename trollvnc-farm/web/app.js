@@ -2,7 +2,7 @@
 // rfb.js?v=2：noVNC 核心为 server 内存 patch（dot 圆点/TLS 屏蔽等），URL 带版本号强制浏览器
 // 重新拉取 patch 后的内容，避免旧版缓存（同 gesturehandler.js?v=3 方案）
 import RFB from '/novnc/core/rfb.js?v=2';
-import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS, GESTURE_DEFS } from './caps.js?v=5';
+import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS, GESTURE_DEFS } from './caps.js?v=6';
 import { attachPress } from './press.js';
 import { attachFarmGesture, resolveGesture } from './gesture.js';
 
@@ -1008,8 +1008,21 @@ function renderCapOps(container, device) {
     frag.appendChild(b);
   }
 
-  // 动作区已移除（2026-08-15：ACT_DEFS 清空——type.paste 走 Ctrl+V 原子链路、clipboard.get 走
-  // 设备→控制端自动同步；capabilities 架构精简后该区不再渲染任何能力按钮）
+  // 剪贴板显式双向搬运（2026-08-17）：复制按钮 = 拉取被控设备剪贴板到控制端。
+  // 桌面操作列与 FAB 菜单都挂（PC 端同样有拉取需求）；降级链见 farmWriteClipboardToControl。
+  {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'op';
+    b.title = '复制：拉取被控设备剪贴板到控制端';
+    b.innerHTML = '<span class="cap-icon">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+      '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>' +
+      '</svg></span><span class="cap-name">复制</span>';
+    b.addEventListener('click', copyFromFocusedDevice);
+    frag.appendChild(b);
+  }
+
   container.appendChild(frag);
 }
 
@@ -1128,10 +1141,8 @@ async function readClipboardText() {
   return await navigator.clipboard.readText();
 }
 
-// 2026-08-15 基建：回环防护由原生端 changeCount 锚点抑制承担（writeClipboard 写入触发的一次
-// 通知被吞、setStringFromRemote 同理），此处不再做来源排除/文本去重——相同文本每次复制都同步。
-// 粘贴输入回显抑制由设备端 setStringForPasteInput（suppressInputEcho）治本承担（需重打 IPA），
-// 前端不做兜底（用户 2026-08-15 拍板：前端不加输入回显抑制）。
+// 2026-08-17 显式双向搬运：剪贴板无自动同步（设备端不推送、控制端复制不自动写设备），
+// 复制/粘贴均为显式按钮或 Ctrl+V 操作（见 copyFromFocusedDevice / pasteToFocusedDevice）。
 
 /**
  * 提交粘贴文本：调用 type.paste 能力注入被控设备（携带控制端文本 → 写设备剪贴板 + 模拟 Cmd+V，原子）。
@@ -1144,9 +1155,6 @@ async function submitPasteText(devId, text) {
   try {
     const r = await invokeCap('', devId, 'type.paste', { text });
     if (r && r.ok) {
-      // 2026-08-17 双保险：记录本次粘贴输入，设备端回推的剪贴板内容在 3s 内文本匹配时
-      // 视为回显（设备端抑制窗口漏网/通知延迟合并的兜底），不 toast、不覆盖控制端剪贴板
-      window._farmLastPaste = { text, at: Date.now() };
       toast(`✓ 已粘贴 ${text.length} 字符到设备`, 'success');
     }
     else toast(`✗ 粘贴失败：${(r && r.ack && r.ack.error) || '未知错误'}`, 'error');
@@ -1154,56 +1162,6 @@ async function submitPasteText(devId, text) {
     toast(`✗ 粘贴调用失败：${e.message}`, 'error');
   }
 }
-
-// 控制端→受控设备剪贴板同步核心（2026-08-14 抽出共用）：
-// 把控制端剪贴板文本经 RFB clipboardPasteFrom（Extended Clipboard 协议通道，UTF-8）写入
-// 当前连接会话（聚焦 focus.rfb + 直控 directRfbs），受设备 ClipboardEnabled 门控；
-// 无连接会话静默（不做任何同步、不提示）。
-// @param {string} txt 控制端剪贴板文本
-// @param {string|null} excludeDeviceId 排除回发的来源设备（"从谁复制的不推送给谁"）
-function farmPushClipboardToSessions(txt, excludeDeviceId) {
-  if (!txt) return;
-  const clipOn = (d) => !(d && d.configs && d.configs.ClipboardEnabled === false);
-  const sent = new Set();
-  if (focus && focus.device && focus.rfb && focus.rfb._farmConnected && clipOn(focus.device) &&
-      focus.device.id !== excludeDeviceId) {
-    sent.add(focus.rfb);
-  }
-  for (const [id, rfb] of directRfbs) {
-    if (!rfb._farmConnected) continue;
-    if (id === excludeDeviceId) continue;
-    const wi = wallInstances.get(id);
-    if (wi && !clipOn(wi.device)) continue;
-    sent.add(rfb);
-  }
-  sent.forEach((rfb) => { try { rfb.clipboardPasteFrom(txt); } catch (_) { /* 静默 */ } });
-}
-
-// IPA 容器原生桥（2026-08-14）：控制端设备装 IPA 时，App 原生层监听本机剪贴板
-// （TVNCConsoleWebViewController → evaluateJavaScript）推文本至此。无桥环境（浏览器/电脑）
-// 该函数永不触发。与 copy 事件同一条发送路径；防循环：若文本恰为最近 RFB 收到的
-// （控制端剪贴板被 RFB 写入的回显），则排除来源设备回发（"从谁复制的不推送给谁"），
-// 配合设备端回显抑制（setStringFromRemote 文本对比）双保险。
-window.__farmNativeClipboard = (text) => {
-  if (!text) return;
-  // 2026-08-15 基建：回环由原生端 changeCount 锚点抑制断环，此处直接同步给全部同步目标
-  //（focus 主控 + 直控设备）；相同文本每次复制都同步（不再文本去重/来源排除）。
-  farmPushClipboardToSessions(text, null);
-};
-
-// 控制端复制（Ctrl+C / 菜单复制）→ 协议通道同步到"当前连接会话"（2026-08-14 统一协议通道）。
-// 注：所有设备统一安装新版 IPA（enableExtendedClipboard），不做旧包兼容/降级检测（2026-08-14 用户决策）。
-document.addEventListener('copy', async () => {
-  let txt = null;
-  try {
-    txt = await readClipboardText();
-  } catch (_) {
-    return; // 复制动作本身已成功；同步失败不阻断复制（非降级路径，仅跳过同步）
-  }
-  if (!txt) return;
-  // 2026-08-15 基建：回环由原生端 changeCount 锚点抑制断环，此处直接同步给全部同步目标。
-  farmPushClipboardToSessions(txt, null);
-});
 
 // 移动端 FAB 菜单「粘贴」：读取控制端剪贴板 → type.paste 原子注入被控设备聚焦输入框。
 // 与电脑端 Ctrl+V 完全同链路（readClipboardText → submitPasteText）：
@@ -1222,7 +1180,8 @@ async function pasteToFocusedDevice() {
   try {
     txt = await readClipboardText(); // 同步发起（手势激活内），勿在调用前 await 其它操作
   } catch (err) {
-    toast(`✗ 粘贴失败：${err.message}`, 'error'); // 非 https/API 不可用/被拒：明确报错，不降级弹浮层
+    // 2026-08-17 http 双 Ctrl+V：非 https/API 不可用 → 弹浮层，第二次 Ctrl+V 自动注入
+    showPasteFallbackModal();
     return;
   }
   if (!txt) {
@@ -1246,7 +1205,8 @@ document.addEventListener('keydown', async (e) => {
   try {
     txt = await readClipboardText();
   } catch (err) {
-    toast(`✗ 粘贴失败：${err.message}`, 'error'); // 剪贴板不可读：明确报错，不降级弹浮层
+    // 2026-08-17 http 双 Ctrl+V：剪贴板不可读 → 弹浮层，第二次 Ctrl+V（焦点在输入框）自动注入
+    showPasteFallbackModal();
     return;
   }
   if (!txt) { toast('✗ 粘贴失败：控制端剪贴板为空', 'error'); return; }
@@ -2028,10 +1988,8 @@ function createRfb(container, device, opts = {}, statusEl = null) {
   // → noVNC RFB 'clipboard' 事件（noVNC 内部已过滤 viewOnly，仅控制/直控会话触发）。
   // 写入控制端剪贴板（"最后变化者胜"语义）+ toast 标注来源设备；设备端 setStringFromRemote
   // 有抑制回调不回发，writeText 不触发 copy 事件，双向均无回环。
-// 设备→控制端剪贴板写入（2026-08-14）：iOS WebKit 在【非用户手势】下 navigator.clipboard.writeText
-// 会被拒（NotAllowedError）——手机 Safari 与 IPA 容器 WKWebView 同受限，电脑 Chrome 无此限制。
-// 容器模式（IPA）：优先走原生桥 writeClipboard（farmBridge → 原生写 UIPasteboard，无手势/安全上下文限制）；
-// 无桥环境（浏览器）：writeText 尽力而为，失败明确提示。
+// 设备→控制端剪贴板写入（2026-08-14 基建）：IPA 容器走原生桥 writeClipboard（无手势/安全上下文限制）；
+// 无桥环境（浏览器）：writeText 尽力而为（https 瞬态激活窗口内），失败降级 execCommand（http 亦可）。
 // @param {string} text 设备剪贴板文本
 // @param {string} devName 来源设备名（toast 标注用）
 function farmWriteClipboardToControl(text, devName) {
@@ -2039,7 +1997,7 @@ function farmWriteClipboardToControl(text, devName) {
   if (bridge) {
     try {
       bridge.postMessage({ type: 'writeClipboard', text });
-      toast(`✓ 已同步设备「${devName}」剪贴板（${text.length} 字符）`, 'success');
+      toast(`✓ 已复制设备「${devName}」剪贴板（${text.length} 字符）`, 'success');
       return;
     } catch (e) {
       console.error('[clip] native writeClipboard 桥调用失败，降级 writeText：', e);
@@ -2048,36 +2006,106 @@ function farmWriteClipboardToControl(text, devName) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(() => {
       console.debug(`[clip] 已写入控制端剪贴板（${text.length} 字符）`);
-      toast(`✓ 已同步设备「${devName}」剪贴板（${text.length} 字符）`, 'success');
+      toast(`✓ 已复制设备「${devName}」剪贴板（${text.length} 字符）`, 'success');
     }).catch((err) => {
-      console.error('[clip] 写入控制端剪贴板失败：', err);
-      toast(`✗ 设备「${devName}」剪贴板已同步但写入控制端失败（iOS 非手势限制，建议使用 SuperPhone App 内控制台）`, 'error');
+      console.error('[clip] writeText 失败，降级 execCommand：', err);
+      execCopyFallback(text, devName);
     });
     return;
   }
-  console.error('[clip] navigator.clipboard 不可用（需 https 安全上下文）');
-  toast(`✗ navigator.clipboard 不可用（需 https 安全上下文），设备「${devName}」剪贴板无法写入控制端`, 'error');
+  execCopyFallback(text, devName);
 }
 
-// 设备→控制端剪贴板同步（RFB ServerCutText 负长度 Extended Clipboard，2.3u 修复）：
-// 被控端复制 → 网关透传 → noVNC 'clipboard' 事件 → 写控制端剪贴板（原生桥优先）。
-  rfb.addEventListener('clipboard', (e) => {
-    const text = e && e.detail && e.detail.text;
-    if (!text) return;
-    const now = Date.now();
-    // 2026-08-15 修复"被控设备复制后不是每次都能同步"：绝对 1s 节流会吞掉连续复制——
-    // 用户复制 A 后 1s 内再复制 B，B 的剪贴板事件被直接丢弃。改为"同文本短窗口去重"：
-    // 仅当文本与上次相同且 500ms 内重复（协议/系统抖动）才过滤；不同文本立即放行。
-    if (rfb._farmClipLastText === text && rfb._farmClipLastAt && now - rfb._farmClipLastAt < 500) return;
-    // 2026-08-17 双保险：type.paste 粘贴输入后 3s 内设备端回推同文本 → 视为输入回显
-    // （设备端抑制窗口漏网/通知延迟合并），忽略——不弹"已同步"、不覆盖控制端剪贴板
-    if (window._farmLastPaste && text === window._farmLastPaste.text && now - window._farmLastPaste.at < 3000) return;
-    rfb._farmClipLastAt = now;
-    rfb._farmClipLastText = text;
-    // 2026-08-15 基建：回环由原生端 changeCount 锚点抑制断环（writeClipboard 写入触发的一次
-    // 通知被吞），不再记录来源/做文本排除——相同文本每次复制都同步（用户要求）。
-    farmWriteClipboardToControl(text, device.name);
+// execCommand('copy') 兜底（http 或 writeText 被拒）：隐藏 textarea + select + execCommand。
+// 不要求安全上下文，仅在用户手势/瞬态激活窗口内可靠（局域网 clipboard.get 往返毫秒级满足）；
+// 失败给出明确提示（极低概率路径）。
+function execCopyFallback(text, devName) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    if (ok) {
+      toast(`✓ 已复制设备「${devName}」剪贴板（${text.length} 字符）`, 'success');
+      return;
+    }
+  } catch (e) {
+    console.error('[clip] execCommand 失败：', e);
+  }
+  toast(`✗ 复制失败：请手动复制设备「${devName}」剪贴板内容`, 'error');
+}
+
+// 复制按钮（2026-08-17 显式双向搬运）：拉取被控设备剪贴板 → 写控制端剪贴板（降级链见 farmWriteClipboardToControl）。
+async function copyFromFocusedDevice() {
+  if (!focus || !focus.device) {
+    toast('✗ 复制失败：请先进入设备控制', 'error');
+    return;
+  }
+  try {
+    const r = await invokeCap('', focus.device.id, 'clipboard.get');
+    const text = r && r.ack && r.ack.text != null ? r.ack.text : '';
+    if (!(r && r.ok) || typeof text !== 'string') {
+      toast(`✗ 复制失败：${(r && r.ack && r.ack.error) || '设备未返回剪贴板'}`, 'error');
+      return;
+    }
+    if (!text) {
+      toast('✗ 复制失败：被控设备剪贴板为空', 'error');
+      return;
+    }
+    farmWriteClipboardToControl(text, focus.device.name);
+  } catch (e) {
+    toast(`✗ 复制失败：${e.message}`, 'error');
+  }
+}
+
+// 粘贴降级浮层（2026-08-17 http 双 Ctrl+V）：readClipboardText 不可用（http 非安全上下文）时弹输入框；
+// 用户第二次 Ctrl+V（焦点在输入框）经 paste 事件捕获（clipboardData 不要求安全上下文）→ 自动注入被控设备。
+let _pasteFallbackModal = null;
+function showPasteFallbackModal() {
+  if (_pasteFallbackModal) { _pasteFallbackModal.focus(); return; }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal';
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+  const title = document.createElement('h3');
+  title.textContent = '粘贴输入（Ctrl+V 自动填入）';
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.placeholder = '粘贴或输入要注入被控设备的文本';
+  const okBtn = document.createElement('button');
+  okBtn.textContent = '注入';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = '取消';
+  const close = () => {
+    document.removeEventListener('keydown', kbHandler, true);
+    overlay.remove();
+    _pasteFallbackModal = null;
+  };
+  const doPaste = () => {
+    const txt = inp.value;
+    close();
+    if (txt && focus && focus.device) submitPasteText(focus.device.id, txt);
+  };
+  inp.addEventListener('paste', (e) => {
+    const txt = (e.clipboardData && e.clipboardData.getData('text')) || '';
+    if (txt) { inp.value = txt; e.preventDefault(); doPaste(); } // 第二次 Ctrl+V：自动注入
   });
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doPaste(); } });
+  okBtn.addEventListener('click', doPaste);
+  cancelBtn.addEventListener('click', close);
+  const kbHandler = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', kbHandler, true);
+  card.appendChild(title); card.appendChild(inp); card.appendChild(okBtn); card.appendChild(cancelBtn);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  _pasteFallbackModal = overlay;
+  inp.focus();
+}
+
   rfb.addEventListener('credentialsrequired', () => {
     const p = prompt(`请输入 ${device.name} 的 VNC 密码：`);
     if (p) rfb.sendCredentials({ password: p });

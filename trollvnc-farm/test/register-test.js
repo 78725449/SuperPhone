@@ -45,7 +45,7 @@ const MANIFEST = {
     scale: 1.0, frameRateSpec: '60', port: 5901, httpPort: 5801,
     bonjourEnabled: true, orientationSync: true, naturalScroll: true, keepAliveSec: 0,
     hasPassword: false, hasViewOnlyPassword: false, viewOnly: false,
-    clipboardEnabled: true, reverseMode: 'none',
+    reverseMode: 'none',
   },
   screen: { width: 1170, height: 2532 },
   httpPort: 5801,

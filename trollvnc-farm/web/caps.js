@@ -96,7 +96,6 @@ export const CONFIG_DEFS = [
   { key: 'WheelStepPx', title: '滚轮步进', type: 'number', min: 0, max: 1000, step: 1, reload: 'hot' },
   { key: 'WheelTuning', title: '滚轮调优', type: 'string', reload: 'hot' },
   { key: 'ViewOnly', title: '全局只读', type: 'bool', reload: 'instant' },
-  { key: 'ClipboardEnabled', title: '剪贴板同步', type: 'bool', reload: 'instant' },
   { key: 'FullPassword', title: '完全访问密码', type: 'password', reload: 'restart' },
   { key: 'ViewOnlyPassword', title: '只读密码', type: 'password', reload: 'restart' },
   { key: 'BindHost', title: '绑定地址', type: 'string', reload: 'restart' },
