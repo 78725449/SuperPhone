@@ -2,7 +2,7 @@
 // 用法：GHTOK=<token> node push-via-api.mjs <本地commit> <本地base commit> <远程base commit>
 import { execSync } from 'node:child_process';
 
-const REPO = process.env.REPO || '78725449/TrollVNC';
+const REPO = process.env.REPO || '78725449/SuperPhone';
 const TOKEN = process.env.GHTOK;
 const API = 'https://api.github.com';
 const CWD = process.env.CWD || 'C:\\Users\\Administrator\\Documents\\ChatGPT\\New project\\TrollVNC';

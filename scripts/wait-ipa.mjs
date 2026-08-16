@@ -4,7 +4,7 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const REPO = process.env.REPO || '78725449/TrollVNC';
+const REPO = process.env.REPO || '78725449/SuperPhone';
 const RUN_ID = process.argv[2];
 const OUT_DIR = process.argv[3] || 'C:\\Users\\Administrator\\Documents\\ChatGPT\\New project';
 if (!RUN_ID) { console.error('usage: node wait-ipa.mjs <runId> [outDir]'); process.exit(1); }
