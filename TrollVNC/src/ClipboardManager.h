@@ -23,8 +23,11 @@
 NS_ASSUME_NONNULL_BEGIN
 
 /// Lightweight clipboard manager that only supports UTF-8 text.
-/// Wraps UIPasteboard and listens for the Darwin notification: com.apple.pasteboard.notify.changed.
-/// Exposes an onChange callback invoked on the main thread.
+/// Wraps UIPasteboard as the shared clipboard access point for:
+///  - clipboard.get（复制按钮显式拉取被控端剪贴板）
+///  - type.paste / 5801 paste（粘贴输入的数据载体写入）
+/// 不再监听系统剪贴板变化（2026-08-17：自动同步架构已移除，剪贴板改为显式双向搬运——
+/// 复制=拉取、粘贴=注入，无自动推送、无回显抑制需求）。
 @interface ClipboardManager : NSObject
 
 /// Global singleton instance
@@ -33,31 +36,16 @@ NS_ASSUME_NONNULL_BEGIN
 + (instancetype)new NS_UNAVAILABLE;
 - (instancetype)init NS_UNAVAILABLE;
 
-/// Start listening for clipboard changes (idempotent)
-- (void)start;
-
-/// Stop listening for clipboard changes (safe to call multiple times)
-- (void)stop;
-
 /// Get current clipboard string (UTF-8). Returns nil if no plain text is available.
 - (nullable NSString *)currentString;
 
-/// Set clipboard string originating from a remote VNC client. Avoids echo by
-/// changeCount-anchored detection of the self-induced system notification
-/// (no count/text-based suppression, so a real user copy — including the same
-/// text — is never swallowed).
+/// Write clipboard string from a remote client（RFB 协议写入 / 5801 粘贴的数据载体）。
 - (void)setStringFromRemote:(NSString *)text;
 
-/// Set clipboard string as a *paste-input* data carrier (type.paste injection).
-/// Same write as setStringFromRemote, but marks the change as an input echo:
-/// the next system notification whose clipboard text equals this value is
-/// suppressed (not forwarded back to the controller), so paste-input never
-/// pollutes the controller-side clipboard sync timing. A different text
-/// (a real user copy after input) passes through normally.
+/// Write clipboard string as a *paste-input* data carrier（type.paste 注入）。
+/// 与 setStringFromRemote 同义写入，保留独立名供 type.paste executor 调用点；
+/// 无需回显抑制（自动同步已移除）。
 - (void)setStringForPasteInput:(NSString *)text;
-
-/// Clipboard change callback (executed on the main thread; text is nil when no plain text).
-@property (atomic, copy, nullable) void (^onChange)(NSString *_Nullable text);
 
 @end
 

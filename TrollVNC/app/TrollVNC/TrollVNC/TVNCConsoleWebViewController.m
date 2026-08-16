@@ -27,7 +27,6 @@
 static const NSTimeInterval kConsoleConfigPollInterval = 3.0;
 
 /// 系统剪贴板变化 Darwin 通知（与设备端 ClipboardManager 同源）
-static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteboard.notify.changed";
 
 @interface TVNCConsoleWebViewController () <WKNavigationDelegate, WKScriptMessageHandler>
 
@@ -41,9 +40,6 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
 @property(nonatomic, assign) BOOL cleanedUp;                     // 资源是否已释放
 @property(nonatomic, assign) BOOL consoleNeedsInitialLoad;              // 首屏待加载标记（viewDidLayoutSubviews 后触发）
 // 剪贴板监听（控制端 → 被控端自动同步，2026-08-14）
-@property(nonatomic, assign) int clipboardNotifyToken;           // Darwin 剪贴板通知 token（0=未注册）
-@property(nonatomic, assign) NSInteger clipboardLastCount;       // 上次观察到的 UIPasteboard changeCount
-@property(nonatomic, assign) NSInteger clipboardEchoCount;       // 预期回显的 changeCount（被控端同步写入触发的一次，命中即吞；-1=无待吞）
 
 /**
  * 构造 H5 控制台 URL（读 NSUserDefaults 网关配置 + 本机 DeviceUUID）。
@@ -148,14 +144,6 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
     // 点击卡片时画布贴顶、系统重排后跳底。改由 viewDidLayoutSubviews 布局完成后加载。
     self.consoleNeedsInitialLoad = YES;
 
-    // 步骤 6：本机剪贴板监听（控制端 → 被控端自动同步，2026-08-14）。
-    // 常开：控制端复制即自动桥出给 Web 层经 RFB 协议通道同步到受控设备；
-    // 页面未加载/无受控会话时 Web 层静默丢弃；回前台补一次（覆盖「其他 App 复制→切回」）。
-    [self startClipboardMonitoring];
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(appDidBecomeActive)
-                                                 name:UIApplicationDidBecomeActiveNotification
-                                               object:nil];
 }
 
 /**
@@ -261,8 +249,6 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
             NSString *text = message.body[@"text"];
             if (![text isKindOfClass:[NSString class]] || !text.length) return;
             UIPasteboard *pb = [UIPasteboard generalPasteboard];
-            self.clipboardLastCount = pb.changeCount;     // 写入前基线：写入触发的 Darwin 通知会推进 count
-            self.clipboardEchoCount = pb.changeCount + 1; // changeCount 锚点：仅吞本次写入触发的那一次通知（防回环）
             pb.string = text;
             NSLog(@"[Console] native writeClipboard (%lu chars)", (unsigned long)text.length);
         } @catch (NSException *e) {
@@ -451,115 +437,6 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
 }
 
 #pragma mark - 剪贴板监听（控制端 → 被控端自动同步，2026-08-14）
-
-/**
- * 启动本机剪贴板监听（常开）：注册 Darwin 通知 + 建立 changeCount 基线。
- * 控制端设备复制 → 本机 UIPasteboard 变化 → handleClipboardChanged 读文本推给 WebView，
- * Web 层经 RFB clipboardPasteFrom（Extended Clipboard 协议通道）同步到当前受控设备。
- * 与设备端（被控端）trollvncserver 的 ClipboardManager 同源同模式；App 进程内常开，
- * 页面未加载/无受控会话时 Web 层静默丢弃，无副作用。
- * 注：iOS 16+ 读 UIPasteboard 受「粘贴权限」约束（首次/按系统设置弹提示），属平台限制。
- */
-- (void)startClipboardMonitoring {
-    if (self.clipboardNotifyToken != 0) return;
-    self.clipboardLastCount = [UIPasteboard generalPasteboard].changeCount;
-    self.clipboardEchoCount = -1;   // 无待吞回显
-    __weak __typeof(self) weakSelf = self;
-    int token = 0;
-    uint32_t status = notify_register_dispatch(kConsolePasteboardDarwinNotification.UTF8String, &token,
-                                               dispatch_get_main_queue(), ^(int t) {
-        __strong __typeof(weakSelf) selfRef = weakSelf;
-        if (!selfRef) return;
-        [selfRef handleClipboardChanged];
-    });
-    if (status == NOTIFY_STATUS_OK) {
-        self.clipboardNotifyToken = token;
-        NSLog(@"[Console] clipboard monitoring started (token=%d)", token);
-    } else {
-        NSLog(@"[Console] clipboard notify register failed (status=%u)", status);
-    }
-}
-
-/**
- * 停止剪贴板监听（幂等）。
- */
-- (void)stopClipboardMonitoring {
-    if (self.clipboardNotifyToken != 0) {
-        notify_cancel(self.clipboardNotifyToken);
-        self.clipboardNotifyToken = 0;
-        NSLog(@"[Console] clipboard monitoring stopped");
-    }
-}
-
-/**
- * App 回到前台：补齐后台挂起期间可能错过的剪贴板变化
- * （覆盖「在其他 App 复制 → 切回 SuperPhone」场景，changeCount 未变则自然跳过）。
- * 2026-08-15：延迟 0.4s 再读取——iOS 16+ 的 UIPasteboard 粘贴权限弹窗在 App 前台过渡
- * 瞬间弹出可能抛 NSException（原实现直接闪退）；延后到前台动画完成后读取，避开过渡窗口。
- */
-- (void)appDidBecomeActive {
-    __weak __typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        __strong __typeof(weakSelf) selfRef = weakSelf;
-        if (selfRef) [selfRef handleClipboardChanged];
-    });
-}
-
-/**
- * 剪贴板变化处理：changeCount 去重 → 一次性回显抑制 → 桥出到 Web 层。
- * 回显抑制（2026-08-15 基建）：控制端收到被控端剪贴板（RFB 'clipboard' 事件 → writeClipboard 写本机剪贴板）
- * 同样触发 Darwin 通知；若推送回 Web 会触发 clipboardPasteFrom 回发 → 死循环。
- * 用 changeCount 锚点（clipboardEchoCount）只吞"被控端同步写入"触发的那一次通知，
- * 用户后续复制（含相同文本）每次放行——不再用文本记忆（原 clipboardLastPushed 会误伤相同文本）。
- * 2026-08-15：UIPasteboard 访问整体 @try 包裹——iOS 16+ 在权限弹窗未决/前台过渡期读取
- * 会抛 NSException（原实现无保护直接闪退）；异常时重设 changeCount 基线防重复触发。
- */
-- (void)handleClipboardChanged {
-    @try {
-        UIPasteboard *pb = [UIPasteboard generalPasteboard];
-        NSInteger count = pb.changeCount;
-        if (count == self.clipboardLastCount) return; // 重复/无变化通知
-        self.clipboardLastCount = count;
-        // 2026-08-15 一次性回显抑制（changeCount 锚点）：仅吞"被控端同步写入"触发的那一次通知，
-        // 用户后续复制（含相同文本）count 越过锚点，每次放行——替代原 clipboardLastPushed 文本记忆
-        //（后者会误伤"连续复制相同文本"：第二次起被当作回显跳过）。
-        if (self.clipboardEchoCount == count) {
-            self.clipboardEchoCount = -1;
-            return;
-        }
-        NSString *text = pb.string;
-        if (!text.length) return;
-        [self pushClipboardToWeb:text];
-    } @catch (NSException *e) {
-        NSLog(@"[Console] handleClipboardChanged exception: %@ %@", e.name, e.reason);
-        // 重设基线，避免异常后每次都重复进入（changeCount 读取失败时强制刷新）
-        @try { self.clipboardLastCount = [UIPasteboard generalPasteboard].changeCount; }
-        @catch (NSException *ignored) { self.clipboardLastCount = -1; }
-    }
-}
-
-/**
- * 桥出剪贴板文本到 WebView：调用 window.__farmNativeClipboard(JSON 字符串)。
- * 2026-08-15：JSON 序列化不转义 \u2028（行分隔符）/ \u2029（段分隔符）——直接嵌入 JS
- * 字符串字面量在 iOS ≤15 的 JavaScriptCore 中是语法错误（视为字符串外的行终止符），
- * evaluateJavaScript 失败 → 剪贴板同步静默失效（"复制后不同步"诱因之一）。
- * 手动替换为 \uXXXX 转义序列，保证任意文本可安全注入。
- * @param text 控制端本机剪贴板文本
- */
-- (void)pushClipboardToWeb:(NSString *)text {
-    WKWebView *wv = self.webView;
-    if (!wv) return;
-    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:text options:0 error:nil];
-    if (!jsonData) return;
-    NSString *json = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
-    json = [json stringByReplacingOccurrencesOfString:@"\u2028" withString:@"\\u2028"];
-    json = [json stringByReplacingOccurrencesOfString:@"\u2029" withString:@"\\u2029"];
-    NSString *js = [NSString stringWithFormat:@"window.__farmNativeClipboard && window.__farmNativeClipboard(%@);", json];
-    [wv evaluateJavaScript:js completionHandler:^(id result, NSError *error) {
-        if (error) NSLog(@"[Console] clipboard push JS error: %@", error.localizedDescription);
-    }];
-}
-
 #pragma mark - WKNavigationDelegate
 
 /**
@@ -619,11 +496,6 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
     if (self.cleanedUp) return;
     self.cleanedUp = YES;
     [self stopConfigPoll];
-    // 2026-08-14：停止剪贴板监听 + 移除前台观察者（防通知回调悬挂）
-    [self stopClipboardMonitoring];
-    [[NSNotificationCenter defaultCenter] removeObserver:self
-                                                    name:UIApplicationDidBecomeActiveNotification
-                                                  object:nil];
     WKWebView *wv = self.webView;
     if (!wv) return;
     // 2026-08-14：移除 WKScriptMessageHandler（addScriptMessageHandler:self 会强引用 self，必须显式移除防泄漏）

@@ -1122,7 +1122,6 @@ static NSDictionary *TRSearchGatewaySync(void) {
     [self _registerConfig:@"WheelTuning" title:@"滚轮调优" type:@"string" reload:TRConfigReloadHot];
     // 安全
     [self _registerConfig:@"ViewOnly" title:@"全局只读" type:@"bool" reload:TRConfigReloadInstant];
-    [self _registerConfig:@"ClipboardEnabled" title:@"剪贴板同步" type:@"bool" reload:TRConfigReloadInstant];
     [self _registerConfig:@"FullPassword" title:@"完全访问密码" type:@"password" reload:TRConfigReloadRestart];
     [self _registerConfig:@"ViewOnlyPassword" title:@"只读密码" type:@"password" reload:TRConfigReloadRestart];
     // 连接（端口固定不可调：5901/5801/18081 写死，不注册 Port/HttpPort/GatewayPort）
@@ -1357,7 +1356,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
         // 与 Root.plist 默认值对齐
         NSDictionary *defs = @{
             @"Enabled": @YES, @"BonjourEnabled": @YES, @"OrientationSync": @YES,
-            @"ClipboardEnabled": @YES, @"NaturalScroll": @YES, @"ServerCursor": @NO,
+            @"NaturalScroll": @YES, @"ServerCursor": @NO,
             @"ViewOnly": @NO, @"AsyncSwap": @NO, @"AutoAssistEnabled": @NO,
             @"SingleNotifEnabled": @YES, @"ClientNotifsEnabled": @YES, @"KeyLogging": @NO,
         };

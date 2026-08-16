@@ -78,7 +78,6 @@ static NSString *gBindHost = nil; // optional bind address from CLI/config
 static NSString *gDesktopName = @"SuperPhone";
 static BOOL gViewOnly = NO;
 static double gKeepAliveSec = 0.0; // 15..86400
-static BOOL gClipboardEnabled = YES;
 
 static double gScale = 1.0; // 0 < scale <= 1.0, 1.0 = no scaling
 // Preferred frame rate range (0 = unspecified)
@@ -654,9 +653,6 @@ static void parseDaemonOptions(void) {
     NSNumber *enableN = [prefs objectForKey:@"Enabled"];
     if ([enableN isKindOfClass:[NSNumber class]])
         gEnabled = enableN.boolValue;
-    NSNumber *clipN = [prefs objectForKey:@"ClipboardEnabled"];
-    if ([clipN isKindOfClass:[NSNumber class]])
-        gClipboardEnabled = clipN.boolValue;
     NSNumber *viewOnlyN = [prefs objectForKey:@"ViewOnly"];
     if ([viewOnlyN isKindOfClass:[NSNumber class]])
         gViewOnly = viewOnlyN.boolValue;
@@ -766,8 +762,7 @@ static void parseDaemonOptions(void) {
     [cfg appendFormat:@"port=%d http=%d ", gPort, gHttpPort];
 
     // Core feature flags
-    [cfg appendFormat:@"viewOnly=%@ clip=%@ keepAlive=%.0fs ", gViewOnly ? @"YES" : @"NO",
-                      gClipboardEnabled ? @"YES" : @"NO", gKeepAliveSec];
+    [cfg appendFormat:@"viewOnly=%@ keepAlive=%.0fs ", gViewOnly ? @"YES" : @"NO", gKeepAliveSec];
     [cfg appendFormat:@"scale=%.2f fps=%d:%d:%d defer=%.3f ", gScale, gFpsMin, gFpsPref, gFpsMax, gDeferWindowSec];
     [cfg appendFormat:@"inflight=%d tile=%d full%%=%d rects=%d ", gMaxInflightUpdates, gTileSize,
                       gFullscreenThresholdPercent, gMaxRectsLimit];
@@ -867,20 +862,6 @@ static void parseCLI(int argc, const char *argv[]) {
             }
             gKeepAliveSec = sec;
             TVLog(@"CLI: KeepAlive interval set to %.3f sec (-A)", gKeepAliveSec);
-            break;
-        }
-        case 'C': {
-            const char *val = optarg ? optarg : "on";
-            if (strcasecmp(val, "on") == 0 || strcmp(val, "1") == 0 || strcasecmp(val, "true") == 0) {
-                gClipboardEnabled = YES;
-                TVLog(@"CLI: Clipboard sync enabled (-C %s)", [@(val) UTF8String]);
-            } else if (strcasecmp(val, "off") == 0 || strcmp(val, "0") == 0 || strcasecmp(val, "false") == 0) {
-                gClipboardEnabled = NO;
-                TVLog(@"CLI: Clipboard sync disabled (-C %s)", [@(val) UTF8String]);
-            } else {
-                TVPrintError("Invalid -C value: %s (expected on|off|1|0|true|false)", val);
-                exit(EXIT_FAILURE);
-            }
             break;
         }
         case 's': {
@@ -3301,6 +3282,8 @@ static NSDictionary *tvExtHandleClientsDisconnect(rfbClientPtr cl, NSDictionary 
 static NSDictionary *tvExtHandleClientsBlock(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleClientsUnblock(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleClientsBlockedList(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleClipboardGet(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleTypePaste(rfbClientPtr cl, NSDictionary *params);
 
 /** 从 rfbClientPtr 读取一条扩展消息的 JSON payload
  *  注意：libvncserver 在 rfbProcessClientMessage 中已消费消息首字节（type，存入
@@ -3406,6 +3389,10 @@ static rfbBool tvExtHandleMessage(rfbClientPtr cl, void *data,
         resp = tvExtHandleClientsUnblock(cl, params);
     } else if ([op isEqualToString:@"clients.blocked.list"]) {
         resp = tvExtHandleClientsBlockedList(cl, params);
+    } else if ([op isEqualToString:@"clipboard.get"]) {
+        resp = tvExtHandleClipboardGet(cl, params);
+    } else if ([op isEqualToString:@"type.paste"]) {
+        resp = tvExtHandleTypePaste(cl, params);
     } else {
         resp = tvExtErr([NSString stringWithFormat:@"未知操作: %@", op ?: @""]);
     }
@@ -3476,6 +3463,38 @@ static NSDictionary *tvExtHandleCapHello(rfbClientPtr cl, NSDictionary *params) 
     return tvExtOk(@{@"exempted": @(isMgmt)});
 }
 
+/** 处理 clipboard.get：读取设备剪贴板当前文本（复制按钮显式拉取；契约对齐 TRCapabilityRegistry clipboard.get） */
+static NSDictionary *tvExtHandleClipboardGet(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    (void)params;
+    NSString *text = [[ClipboardManager sharedManager] currentString] ?: @"";
+    return tvExtOk(@{@"text": text});
+}
+
+/** 处理 type.paste：粘贴输入——写剪贴板作 Cmd+V 数据载体 + 释放残留修饰键 + 模拟 Cmd+V。
+ *  注入时序与 TRCapabilityRegistry type.paste 完全一致（异步执行，ack 提前返回，~300ms 内完成）。 */
+static NSDictionary *tvExtHandleTypePaste(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    NSString *text = params[@"text"];
+    if (![text isKindOfClass:[NSString class]] || text.length == 0) {
+        return tvExtErr(@"缺少粘贴文本 text");
+    }
+    [[ClipboardManager sharedManager] setStringForPasteInput:text];
+    STHIDEventGenerator *hid = [STHIDEventGenerator sharedGenerator];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
+        usleep(150000);                 // 等待可能残留的修饰键 down 到达（网络延迟窗口）
+        [hid releaseEveryKeys];         // 清残留修饰键（LeftControl 等）
+        [hid keyDown:@"COMMAND"];       // Command 按下
+        usleep(120000);                 // Command 先按住 120ms
+        [hid keyDown:@"v"];             // v 按下
+        usleep(90000);                  // v 按住 90ms（组合键识别窗口）
+        [hid keyUp:@"v"];
+        usleep(40000);
+        [hid keyUp:@"COMMAND"];
+    });
+    return tvExtOk(@{@"length": @(text.length)});
+}
+
 /** 处理 cap.list：返回扩展消息组目录供 AI 发现可用操作
  *  - 返回 extensions 数组，每组含 group 名与 ops 列表
  *  @param cl     客户端连接指针（未使用，保留以统一 handler 签名）
@@ -3491,6 +3510,7 @@ static NSDictionary *tvExtHandleCapList(rfbClientPtr cl, NSDictionary *params) {
         @{@"group": @"clients", @"ops": @[@"clients.count", @"clients.list",
                                          @"clients.disconnect", @"clients.block",
                                          @"clients.unblock", @"clients.blocked.list"]},
+        @{@"group": @"clipboard", @"ops": @[@"clipboard.get", @"type.paste"]},
     ];
     return tvExtOk(@{@"extensions": groups});
 }
@@ -3873,7 +3893,6 @@ static void tvPublishClientDisconnectedNotif(NSString *host) {
 #pragma mark - Client Handlers
 
 static BOOL gIsCaptureStarted = NO;
-static BOOL gIsClipboardStarted = NO;
 
 #if !TARGET_OS_SIMULATOR
 static BOOL gRestoreAssist = NO;
@@ -3920,12 +3939,6 @@ static void clientGoneHook(rfbClientPtr cl) {
         TVLog(@"No clients remaining; screen capture stopped.");
     }
 
-    if (gIsClipboardStarted && gClientCount == 0) {
-        [[ClipboardManager sharedManager] stop];
-        gIsClipboardStarted = NO;
-        TVLog(@"No clients remaining; clipboard listening stopped.");
-    }
-
 #if !TARGET_OS_SIMULATOR
     // AutoAssist: disable AssistiveTouch if we enabled it and no clients remain
     if (gClientCount == 0 && gRestoreAssist) {
@@ -3958,9 +3971,9 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
     // 2026-08-14 统一协议通道：enableExtendedClipboard 为 per-client 字段（_rfbClientRec），
     // 需对每个新客户端显式置位才协商 extended caps 伪编码（0xC0A1E5CE），
     // noVNC 检测到后走 ExtendedClipboard Notify/Request/Provide（UTF-8 + deflate）→ 中文双向无损。
-    if (gClipboardEnabled) {
-        cl->enableExtendedClipboard = TRUE;
-    }
+    // 2026-08-17 无条件开启：ClipboardEnabled 配置已移除（显式双向搬运，无自动同步），
+    // 扩展剪贴板协商固定启用（noVNC ExtendedClipboard UTF-8 双向）
+    cl->enableExtendedClipboard = TRUE;
 
     // Allocate per-client state bag
     TVClientState *st = (TVClientState *)calloc(1, sizeof(TVClientState));
@@ -4016,12 +4029,6 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
         TVLog(@"Screen capture started (clients=%d).", gClientCount);
     }
 
-    if (gClipboardEnabled && !gIsClipboardStarted && gClientCount > 0) {
-        gIsClipboardStarted = YES;
-        [[ClipboardManager sharedManager] start];
-        TVLog(@"Clipboard listening started (clients=%d).", gClientCount);
-    }
-
 #if !TARGET_OS_SIMULATOR
     // AutoAssist: enable AssistiveTouch if not already enabled
     if (gClientCount > 0 && gAutoAssistEnabled && ![PSAssistiveTouchSettingsDetail isEnabled]) {
@@ -4067,8 +4074,7 @@ static void setXCutTextUTF8(char *str, int len, rfbClientPtr cl) {
 
     // 2026-08-15：noVNC 的 extendedClipboardProvide 载荷为 [sizeBE(4)] + utf8 + "\0"，
     // size 包含尾部 NUL；libvncserver 按 size 原样回调 setXCutTextUTF8。剔除尾部 \0，
-    // 避免设备剪贴板残留空字节（与设备→控制端 sendExtendedClipboardProvideToClients 的
-    // 无 \0 载荷保持对称）。
+    // 避免设备剪贴板残留空字节（载荷无 \0 结尾，按 len 精确读取）。
     if (len > 0 && str[len - 1] == '\0') {
         len--;
     }
@@ -4086,124 +4092,6 @@ static void setXCutTextUTF8(char *str, int len, rfbClientPtr cl) {
         TVLog(@"Clipboard: applying client text to UIPasteboard (UTF-8)");
         [[ClipboardManager sharedManager] setStringFromRemote:s];
     });
-}
-
-// 2026-08-14 设备→控制剪贴板发送（协议修复）：
-// 旧版 libvncserver 的 rfbSendServerCutTextUTF8 以 framebufferUpdate rect（encoding=0x10000001）发送
-// Extended Clipboard，noVNC 不识该编码 → _handleDataRect 直接 _fail 断连
-// （"Failed while connected: Unsupported encoding (encoding: 268435457)"）。
-// 改为按 TigerVNC / libvncserver master 同款协议发送「负长度 ServerCutText Provide」：
-//   [type=3][pad×3][-(4+zlibLen) BE][flags=0x10000001 BE][zlib( [utf8Len BE] + utf8 )]
-// noVNC _handleServerCutText 原生解析（Provide → inflate → decodeUTF8 → 'clipboard' 事件），无需改动前端。
-//
-// @param utf8     UTF-8 编码的剪贴板文本（无 \0 结尾，按 utf8Len 精确读取）
-// @param utf8Len  UTF-8 文本字节数
-static void sendExtendedClipboardProvideToClients(const char *utf8, int utf8Len) {
-    if (!utf8 || utf8Len <= 0) {
-        return;
-    }
-
-    // 1) 组装压缩前载荷：[utf8Len(4BE)] + utf8 原文（与 libvncserver rfbSendExtendedServerCutTextData 同构）
-    uLongf rawLen = (uLongf)utf8Len + 4;
-    std::vector<uint8_t> raw(rawLen);
-    uint32_t sizeBE = htonl((uint32_t)utf8Len);
-    memcpy(raw.data(), &sizeBE, 4);
-    memcpy(raw.data() + 4, utf8, (size_t)utf8Len);
-
-    // 2) zlib 压缩（compress + Z_DEFAULT_COMPRESSION，与 libvncserver 一致）
-    uLongf zlibLen = compressBound(rawLen);
-    std::vector<uint8_t> zlibData(zlibLen);
-    if (compress(zlibData.data(), &zlibLen, raw.data(), rawLen) != Z_OK) {
-        TVLog(@"Clipboard: zlib compress failed (utf8Len=%d)", utf8Len);
-        return;
-    }
-
-    // 3) 组装负长度 ServerCutText 消息
-    const int total = 12 + (int)zlibLen;
-    std::vector<uint8_t> msg((size_t)total);
-    msg[0] = 3;                        // rfbServerCutText (0x03)
-    msg[1] = msg[2] = msg[3] = 0;      // padding
-    uint32_t negLen = htonl((uint32_t)(-(4 + (int)zlibLen)));   // 负长度 = -(4 字节 flags + zlib 流)
-    uint32_t flags = htonl((uint32_t)(rfbExtendedClipboard_Provide | rfbExtendedClipboard_Text)); // 0x10000001
-    memcpy(msg.data() + 4, &negLen, 4);
-    memcpy(msg.data() + 8, &flags, 4);
-    memcpy(msg.data() + 12, zlibData.data(), zlibLen);
-
-    // 4) 逐客户端发送（仅 enableExtendedClipboard 客户端；写互斥由 sendMutex 保护，
-    //    与 libvncserver rfbSendServerCutTextUTF8 的 LOCK(sendMutex) 模式一致；失败显式关闭连接）
-    rfbClientIteratorPtr it = rfbGetClientIterator(gScreen);
-    rfbClientPtr cl;
-    int sent = 0;
-    while ((cl = rfbClientIteratorNext(it)) != NULL) {
-        if (!cl->enableExtendedClipboard) {
-            continue;
-        }
-        pthread_mutex_lock(&cl->sendMutex);
-        if (rfbWriteExact(cl, (const char *)msg.data(), total) < 0) {
-            TVLog(@"Clipboard: write to client failed, closing");
-            rfbCloseClient(cl);
-        } else {
-            sent++;
-        }
-        pthread_mutex_unlock(&cl->sendMutex);
-    }
-    rfbReleaseClientIterator(it);
-
-    TVLog(@"Clipboard: extended provide sent (utf8Len=%d zlib=%d clients=%d)", utf8Len, (int)zlibLen, sent);
-}
-
-static void sendClipboardToClients(NSString *_Nullable text) {
-    if (!gScreen) {
-        TVLog(@"Clipboard: screen not initialized; skipping send");
-        return;
-    }
-
-    if (!gClipboardEnabled) {
-        TVLog(@"Clipboard: sync disabled; skipping send");
-        return;
-    }
-
-    if (gClientCount <= 0) {
-        TVLog(@"Clipboard: no connected clients; skipping send");
-        return;
-    }
-
-    // 2026-08-14 移除 Latin-1 降级：统一走 Extended Clipboard UTF-8（设备端 enableExtendedClipboard 已启用），
-    // 不做 Latin-1 双轨兜底——中文/emoji 必须 UTF-8 无损传输
-    char *utf8 = NULL;
-    int utf8Len = 0;
-
-    do {
-        if (!text) {
-            break;
-        }
-
-        NSData *utf8Data = [text dataUsingEncoding:NSUTF8StringEncoding allowLossyConversion:NO];
-        utf8Len = (int)utf8Data.length;
-        if (!utf8Len)
-            break;
-
-        utf8 = (char *)malloc((size_t)utf8Len);
-        if (!utf8) {
-            utf8Len = 0;
-            break;
-        }
-
-        memcpy(utf8, [utf8Data bytes], (size_t)utf8Len);
-
-    } while (0);
-
-    if (utf8) {
-        TVLog(@"Clipboard: sending to clients (utf8Len=%d, clients=%d)", utf8Len, gClientCount);
-        // 2026-08-14 不再调用旧版 libvncserver 的 rfbSendServerCutTextUTF8：
-        // 其 rect 编码 0x10000001 会导致 noVNC "Unsupported encoding" 断连；改走标准负长度 ServerCutText。
-        sendExtendedClipboardProvideToClients(utf8, utf8Len);
-    } else {
-        TVLog(@"Clipboard: no valid clipboard data to send");
-    }
-
-    if (utf8)
-        free(utf8);
 }
 
 #pragma mark - Server-Side Cursor
@@ -4287,19 +4175,6 @@ NS_INLINE void setupAlphaCursor(rfbScreenInfoPtr screen, int mode) {
 }
 
 #pragma mark - Setups (Native)
-
-static void prepareClipboardManager(void) {
-    // server->client sync; start/stop tied to client presence
-    if (gClipboardEnabled) {
-        // 回环抑制由 ClipboardManager 的 changeCount 锚点承担（远程写入触发的回显通知
-        // 在 handlePasteboardChangeFromSystem 内被吞），此处直接转发即可。
-        [[ClipboardManager sharedManager] setOnChange:^(NSString *_Nullable text) {
-            sendClipboardToClients(text);
-        }];
-    } else {
-        [[ClipboardManager sharedManager] setOnChange:nil];
-    }
-}
 
 static void prepareScreenCapturer(void) {
     // Apply preferred frame rate (if provided)
@@ -4567,19 +4442,14 @@ static void setupRfbClassicAuthentication(void) {
 }
 
 static void setupRfbCutTextHandlers(void) {
-    // client->server sync
-    if (gClipboardEnabled) {
-        gScreen->setXCutText = setXCutTextLatin1;
-        gScreen->setXCutTextUTF8 = setXCutTextUTF8;
-        // 2026-08-14 统一协议通道：启用 TightVNC Extended Clipboard（UTF-8 双向无损）。
-        // setXCutTextUTF8 回调已注册（承接客户端 Provide 解压后的 UTF-8 文本）；
-        // enableExtendedClipboard 为 per-client 字段（_rfbClientRec），需在 newClientHook
-        // 对每个新客户端置 TRUE 才协商 extended caps 伪编码（0xC0A1E5CE），
-        // noVNC 检测到后走 ExtendedClipboard Notify/Request/Provide（UTF-8 + deflate）→ 中文无损。
-        TVLog(@"Clipboard: client->server handlers registered (enabled, extended clipboard)");
-    } else {
-        TVLog(@"Clipboard: client->server handlers not registered (disabled)");
-    }
+    // client->server sync（2026-08-17 无条件注册：ClipboardEnabled 配置已移除）
+    gScreen->setXCutText = setXCutTextLatin1;
+    gScreen->setXCutTextUTF8 = setXCutTextUTF8;
+    // 2026-08-14 统一协议通道：启用 TightVNC Extended Clipboard（UTF-8 双向无损）。
+    // setXCutTextUTF8 回调已注册（承接客户端 Provide 解压后的 UTF-8 文本）；
+    // enableExtendedClipboard 为 per-client 字段（_rfbClientRec），需在 newClientHook
+    // 对每个新客户端置 TRUE 才协商 extended caps 伪编码（0xC0A1E5CE）。
+    TVLog(@"Clipboard: client->server handlers registered (extended clipboard)");
 }
 
 static void setupRfbServerSideCursor(void) {
@@ -4949,7 +4819,6 @@ int main(int argc, const char *argv[]) {
         setupRfbFileTransferExtension();
 
         prepareBulletinManager();
-        prepareClipboardManager();
         prepareScreenCapturer();
 
         initializeTilingOrReset();
