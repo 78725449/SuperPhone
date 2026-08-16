@@ -145,28 +145,28 @@
     #fab .wifi { width: 26px; height: 26px; }
   }
 
-  /* ===== 剪贴板浮层（HTTP 环境方案）：粘贴输入浮层 #clipOverlay / 设备复制推送浮层 #copyOverlay ===== */
-  #clipOverlay, #copyOverlay {
+  /* ===== 剪贴板浮层（HTTP 环境方案）：粘贴输入浮层 #clipOverlay ===== */
+  #clipOverlay {
     position: fixed; inset: 0; z-index: 20;
     background: rgba(0, 0, 0, .6);
     display: none;
     align-items: center; justify-content: center;
     padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   }
-  #clipOverlay.show, #copyOverlay.show { display: flex; }
-  #clipModal, #copyModal {
+  #clipOverlay.show { display: flex; }
+  #clipModal {
     background: #1c1c1e; border: 1px solid #3a3a3c;
     border-radius: 14px; padding: 16px;
     width: 100%; max-width: 360px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, .5);
   }
-  #clipModal h3, #copyModal h3 {
+  #clipModal h3 {
     margin: 0 0 4px; font: 600 16px/24px system-ui, sans-serif; color: #eee;
   }
-  #clipModal p, #copyModal p {
+  #clipModal p {
     margin: 0 0 12px; font: 12px/18px system-ui, sans-serif; color: #999;
   }
-  #clipText, #copyText {
+  #clipText {
     width: 100%; min-height: 96px;
     background: #2c2c2e; border: 1px solid #3a3a3c;
     border-radius: 10px; color: #eee;
@@ -174,17 +174,16 @@
     padding: 10px; resize: vertical;
     box-sizing: border-box; -webkit-appearance: none;
   }
-  #clipText:focus, #copyText:focus { outline: 2px solid var(--brand, #7C5CFF); }
-  #copyText { min-height: 120px; resize: none; }  /* 只读展示：不可编辑、不可缩放 */
+  #clipText:focus { outline: 2px solid var(--brand, #7C5CFF); }
   .clip-btns { display: flex; gap: 8px; margin-top: 12px; }
   .clip-btns button {
     flex: 1; min-height: 44px;
     border-radius: 10px; border: 1px solid #3a3a3c;
     font: 500 15px system-ui, sans-serif; padding: 8px;
   }
-  #clipCancel, #copyClose { background: #2c2c2e; color: #eee; }
-  #clipSend, #copySend { background: #7C5CFF; color: #fff; border-color: #7C5CFF; }
-  #clipSend:active, #copySend:active { background: #5B3FE0; }
+  #clipCancel { background: #2c2c2e; color: #eee; }
+  #clipSend { background: #7C5CFF; color: #fff; border-color: #7C5CFF; }
+  #clipSend:active { background: #5B3FE0; }
 </style>
 </head>
 <body>
@@ -232,21 +231,9 @@
   </div>
 </div>
 
-<!-- 复制浮层（设备→本端剪贴板推送，2026-08-15）：HTTP 明文无法写系统剪贴板，降级为显示文本 + 手动复制按钮 -->
-<div id="copyOverlay">
-  <div id="copyModal">
-    <h3>📋 设备剪贴板</h3>
-    <p>设备已复制以下内容。HTTP 环境无法自动写入系统剪贴板，请点击「复制」手动复制。</p>
-    <textarea id="copyText" readonly></textarea>
-    <div class="clip-btns">
-      <button id="copyClose">关闭</button>
-      <button id="copySend">复制</button>
-    </div>
-  </div>
-</div>
-
 <script type="module">
 import RFB from './novnc/core/rfb.js';
+import { DESECBCipher } from './novnc/core/crypto/des.js';
 
 (function () {
   var host = location.hostname;
@@ -338,6 +325,10 @@ import RFB from './novnc/core/rfb.js';
       isConnected = true;
       startSigPoll();
       setStatus('已连接，等待画面…', true);
+      // 2026-08-17：画面连接建立后启动剪贴板管理通道（第二条 WS，承载 0x50 clipboard.get/type.paste）
+      mgmtInit(function (ok) {
+        if (!ok) console.log('[mgmt] 管理通道不可用（粘贴回退 RFB 原语、复制按钮隐藏）');
+      });
       // 检测是否真的收到画面帧（区分"连上但黑帧"与"连不上"）
       var gotFrame = false;
       function fbSize() {
@@ -378,13 +369,7 @@ import RFB from './novnc/core/rfb.js';
     rfb.addEventListener('credentialsrequired', function () {
       var p = window.prompt('请输入 VNC 密码：');
       if (p) rfb.sendCredentials({ password: p });
-    });
-    // 设备→本端剪贴板推送（2026-08-15）：5801 noVNC 支持负长度 ServerCutText → 'clipboard' 事件；
-    // HTTP 明文无法写系统剪贴板，降级为复制浮层（文本 + 「复制」按钮）
-    rfb.addEventListener('clipboard', function (e) {
-      var text = e && e.detail && e.detail.text;
-      if (!text) return;
-      showCopyModal(text);
+      mgmtPassword = p || ''; // 2026-08-17：记录密码供管理通道（第二条 WS）认证复用
     });
     // 断开/失败：软键盘由 kbInput blur 自动收起（input 事件驱动方案无 Keyboard 实例，无需 ungrab）
   }
@@ -443,6 +428,8 @@ import RFB from './novnc/core/rfb.js';
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.5-4.5"/></svg>' },
     { op: 'kb',       label: '键盘',   icon: '⌨️',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6.5" width="19" height="11" rx="2"/><path d="M6 11h1M10 11h1M14 11h1M18 11h1M6 14.5h1M10 14.5h1M14 14.5h1M18 14.5h1"/></svg>' },
+    { op: 'copy',     label: '复制',   icon: '📋',
+      svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>' },
     { op: 'paste',    label: '粘贴',   icon: '📋',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h6v3H9z"/><rect x="4" y="4" width="16" height="18" rx="2"/><path d="M8 11h8M8 15h8M8 19h5"/></svg>' },
     { op: 'full',     label: '全屏',   icon: '⤢',
@@ -624,6 +611,10 @@ import RFB from './novnc/core/rfb.js';
         // 触控端再 focusKbInput 调起控制端软键盘（电脑端有实体键盘，不调软键盘）。
         tapKey(0x1008ff2e, 'XF86Keyboard');
         if (isTouch) focusKbInput();
+        break;
+      case 'copy':
+        // 2026-08-17 显式双向搬运：拉取设备剪贴板 → 写控制端剪贴板（管理通道 clipboard.get）
+        doDeviceCopy();
         break;
       case 'paste':
         // 2026-08-15：粘贴输入——弹浮层，粘贴文本后回车/确认 → pasteToDevice 原子注入（模拟 Cmd+V）
@@ -822,15 +813,25 @@ import RFB from './novnc/core/rfb.js';
    * @returns {void}
    */
   function pasteToDevice(text) {
-    if (!text || !rfb) return;
-    // ① 写设备剪贴板（数据准备，RFB ClientCutText → 设备 setStringFromRemote）
+    if (!text) return;
+    // 2026-08-17 显式双向搬运：优先走管理通道 type.paste（与设备端 0x50 op 同契约，
+    // 设备端写剪贴板 + 释放修饰键 + 模拟 Cmd+V）；管理通道未就绪时回退 RFB 原语拼装。
+    if (!mgmtRequest('type.paste', { text: text }, function (resp) {
+      if (resp && resp.ok) flashStatus('✓ 已粘贴 ' + text.length + ' 字符', 'success');
+      else flashStatus('✗ 粘贴失败：' + ((resp && resp.error) || '未知'), 'error');
+    })) {
+      pasteToDeviceLegacy(text);
+    }
+  }
+
+  // RFB 原语拼装兜底（管理通道不可用时）：ClientCutText 写剪贴板 + 自定义 keysym 清修饰键 + 模拟 Cmd+V
+  function pasteToDeviceLegacy(text) {
+    if (!rfb) return;
     try { rfb.clipboardPasteFrom(text); } catch (e) {}
-    // ② 150ms 后释放残留修饰键（自定义 keysym 0x1008ff82 → 设备端 releaseEveryKeys）
     setTimeout(function () {
       try { rfb.sendKey(0x1008ff82, null, true); } catch (e) {}
       try { rfb.sendKey(0x1008ff82, null, false); } catch (e) {}
     }, 150);
-    // ③ 250ms 后模拟 Cmd+V：Command(0xffe7) 按住 → v(0x76) 按下 → 依次抬起
     setTimeout(function () {
       try { rfb.sendKey(0xffe7, 'MetaLeft', true); } catch (e) {}
       setTimeout(function () {
@@ -843,9 +844,196 @@ import RFB from './novnc/core/rfb.js';
         }, 90);
       }, 120);
     }, 250);
-    // 动作级日志：粘贴输入成功（与控制台 toast 同构）
     flashStatus('✓ 已粘贴 ' + text.length + ' 字符', 'success');
   }
+
+  // ===== 剪贴板显式双向搬运（2026-08-17）：管理通道 + 复制/粘贴按钮 =====
+  // 第二条独立 WS（RFB 握手 + 认证）承载 0x50 扩展消息（clipboard.get / type.paste），
+  // 0x80 响应不经过 noVNC 解析（避免 "Unexpected server message" 断连）；
+  // cap.hello {mgmt:true} 使该客户端不计入画面、不推帧（设备端已支持）。
+
+  var mgmtSock = null;          // 管理通道 WebSocket
+  var mgmtPassword = '';        // 第一条连接输入的密码（认证复用）
+  var mgmtPhase = 0;            // 0=版本 1=安全类型 2=VNC Auth 3=结果 4=ServerInit 5=帧
+  var mgmtBuf = new Uint8Array(0);
+  var mgmtPending = null;       // { cb } 当前等待的 0x80 响应
+  var mgmtReadyCb = null;       // 就绪回调（一次）
+  var mgmtReady = false;        // 管理通道可用标记
+  var mgmtCapHasClip = false;   // cap.list 探测：设备端是否支持 clipboard 组
+
+  // 第一条 noVNC 连接建立后启动管理通道（连接成功回调内调用，见 initRfb）
+  function mgmtInit(cb) {
+    var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    mgmtReadyCb = cb || null;
+    try {
+      mgmtSock = new WebSocket(proto + location.hostname + ':' + $PORT + '/websockify');
+    } catch (e) {
+      mgmtSock = null;
+      if (mgmtReadyCb) { mgmtReadyCb(false); mgmtReadyCb = null; }
+      return;
+    }
+    mgmtSock.binaryType = 'arraybuffer';
+    mgmtPhase = 0; mgmtBuf = new Uint8Array(0); mgmtPending = null;
+    mgmtSock.onopen = function () {
+      // "RFB 003.008\n"
+      mgmtSock.send(new Uint8Array([0x52, 0x46, 0x42, 0x20, 0x30, 0x30, 0x33, 0x2e, 0x30, 0x30, 0x38, 0x0a]));
+    };
+    mgmtSock.onmessage = function (ev) { mgmtOnData(new Uint8Array(ev.data)); };
+    mgmtSock.onclose = function () {
+      mgmtSock = null; mgmtReady = false;
+      if (mgmtReadyCb) { mgmtReadyCb(false); mgmtReadyCb = null; }
+    };
+    mgmtSock.onerror = function () { try { mgmtSock.close(); } catch (e) {} };
+  }
+
+  function mgmtOnData(u8) {
+    var tmp = new Uint8Array(mgmtBuf.length + u8.length);
+    tmp.set(mgmtBuf); tmp.set(u8, mgmtBuf.length);
+    mgmtBuf = tmp;
+    while (true) {
+      if (mgmtPhase === 0) { // 服务端版本（12 字节）
+        if (mgmtBuf.length < 12) return;
+        mgmtBuf = mgmtBuf.slice(12);
+        mgmtPhase = 1;
+      } else if (mgmtPhase === 1) { // 安全类型列表
+        if (mgmtBuf.length < 1) return;
+        var count = mgmtBuf[0];
+        if (mgmtBuf.length < 1 + count) return;
+        var types = Array.prototype.slice.call(mgmtBuf.slice(1, 1 + count));
+        mgmtBuf = mgmtBuf.slice(1 + count);
+        if (types.indexOf(1) !== -1) { mgmtSock.send(new Uint8Array([1])); mgmtPhase = 3; }      // None
+        else if (types.indexOf(2) !== -1) { mgmtSock.send(new Uint8Array([2])); mgmtPhase = 2; } // VNC Auth
+        else { mgmtFail('不支持的认证方式'); return; }
+      } else if (mgmtPhase === 2) { // VNC Auth challenge（16 字节）→ DES 加密回发
+        if (mgmtBuf.length < 16) return;
+        var challenge = mgmtBuf.slice(0, 16);
+        mgmtBuf = mgmtBuf.slice(16);
+        var key = mgmtPassword.split('').map(function (c) { return c.charCodeAt(0); });
+        var resp = DESECBCipher.importKey(key, null, false, []).encrypt({ name: 'DES-ECB' }, challenge);
+        mgmtSock.send(resp);
+        mgmtPhase = 3;
+      } else if (mgmtPhase === 3) { // SecurityResult（4 字节）
+        if (mgmtBuf.length < 4) return;
+        var ok = new DataView(mgmtBuf.buffer, mgmtBuf.byteOffset, 4).getUint32(0);
+        mgmtBuf = mgmtBuf.slice(4);
+        if (ok !== 0) { mgmtFail('认证失败'); return; }
+        mgmtSock.send(new Uint8Array([0])); // client init: shared=0
+        mgmtPhase = 4;
+      } else if (mgmtPhase === 4) { // ServerInit：24 字节 + nameLen(4) + name
+        if (mgmtBuf.length < 24) return;
+        mgmtBuf = mgmtBuf.slice(24);
+        if (mgmtBuf.length < 4) return;
+        var nameLen = new DataView(mgmtBuf.buffer, mgmtBuf.byteOffset, 4).getUint32(0);
+        if (mgmtBuf.length < 4 + nameLen) return;
+        mgmtBuf = mgmtBuf.slice(4 + nameLen);
+        mgmtPhase = 5;
+        mgmtReady = true;
+        // 就绪：标记管理客户端 + 探测能力目录
+        mgmtRequest('cap.hello', { mgmt: true }, function () {});
+        mgmtRequest('cap.list', {}, function (resp) {
+          mgmtCapHasClip = !!(resp && resp.extensions && resp.extensions.some(function (g) {
+            return g.group === 'clipboard';
+          }));
+          updateClipButtons();
+        });
+        if (mgmtReadyCb) { mgmtReadyCb(true); mgmtReadyCb = null; }
+      } else if (mgmtPhase === 5) { // 0x50/0x80 帧：1B type + 3B reserved + 4B payloadLen(BE) + payload
+        if (mgmtBuf.length < 8) return;
+        var dv = new DataView(mgmtBuf.buffer, mgmtBuf.byteOffset, 8);
+        var type = dv.getUint8(0);
+        var len = dv.getUint32(4);
+        if (mgmtBuf.length < 8 + len) return;
+        var payload = mgmtBuf.slice(8, 8 + len);
+        mgmtBuf = mgmtBuf.slice(8 + len);
+        if (type !== 0x80) continue; // 只处理响应帧
+        var parsed = null;
+        try { parsed = JSON.parse(new TextDecoder().decode(payload)); } catch (e) { parsed = null; }
+        var pend = mgmtPending;
+        mgmtPending = null;
+        if (pend && pend.cb) pend.cb(parsed);
+      }
+    }
+  }
+
+  // 发送 0x50 请求；返回 true 表示已发送（管理通道就绪），否则 false（调用方回退）
+  function mgmtRequest(op, params, cb) {
+    if (!mgmtSock || mgmtPhase !== 5 || !mgmtReady) return false;
+    var payload = new TextEncoder().encode(JSON.stringify({ op: op, params: params || {} }));
+    var frame = new Uint8Array(8 + payload.length);
+    frame[0] = 0x50;
+    new DataView(frame.buffer).setUint32(4, payload.length);
+    frame.set(payload, 8);
+    mgmtPending = { cb: cb };
+    try { mgmtSock.send(frame); } catch (e) { mgmtPending = null; return false; }
+    return true;
+  }
+
+  function mgmtFail(msg) {
+    console.error('[mgmt] ' + msg);
+    try { mgmtSock.close(); } catch (e) {}
+    mgmtSock = null; mgmtReady = false;
+    if (mgmtReadyCb) { mgmtReadyCb(false); mgmtReadyCb = null; }
+  }
+
+  // 复制按钮（拉取设备剪贴板 → 写控制端剪贴板；降级链：writeText → execCommand → 提示）
+  function doDeviceCopy() {
+    if (!mgmtRequest('clipboard.get', {}, function (resp) {
+      var text = resp && resp.text != null ? resp.text : '';
+      if (!resp || !resp.ok) { flashStatus('✗ 复制失败：' + ((resp && resp.error) || '未知'), 'error'); return; }
+      if (!text) { flashStatus('✗ 复制失败：设备剪贴板为空', 'error'); return; }
+      copyTextToControl(text);
+    })) {
+      flashStatus('✗ 复制失败：管理通道未就绪', 'error');
+    }
+  }
+
+  function copyTextToControl(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        flashStatus('✓ 已复制设备剪贴板（' + text.length + ' 字符）', 'success');
+      }).catch(function () { execCopyFallback(text); });
+      return;
+    }
+    execCopyFallback(text);
+  }
+
+  function execCopyFallback(text) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (ok) { flashStatus('✓ 已复制设备剪贴板（' + text.length + ' 字符）', 'success'); return; }
+    } catch (e) {}
+    flashStatus('✗ 复制失败：请手动复制设备剪贴板内容', 'error');
+  }
+
+  // 能力探测结果：旧固件无 clipboard 组时隐藏复制按钮（粘贴 fallback 原语不受影响）
+  function updateClipButtons() {
+    document.querySelectorAll('[data-op="copy"]').forEach(function (el) {
+      el.style.display = mgmtCapHasClip ? '' : 'none';
+    });
+  }
+
+  // 电脑端 Ctrl+V 拦截（2026-08-17）：https 下直读注入；http 下弹浮层，第二次 Ctrl+V 自动注入
+  document.addEventListener('keydown', function (e) {
+    if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'v') return;
+    if (e.target.closest && e.target.closest('input, textarea')) return; // 已在输入框：原生粘贴
+    if (!rfb || !rfb._rfbConnectionState || rfb._rfbConnectionState !== 'connected') return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.readText) {
+      navigator.clipboard.readText().then(function (txt) {
+        if (txt) pasteToDevice(txt);
+      }).catch(function () { showClipModal(); });
+      return;
+    }
+    showClipModal();
+  }, true);
 
   var clipOverlay = document.getElementById('clipOverlay');
   var clipText = document.getElementById('clipText');
@@ -893,6 +1081,16 @@ import RFB from './novnc/core/rfb.js';
     }
   });
 
+  // 2026-08-17 http 双 Ctrl+V：浮层输入框捕获 paste 事件（clipboardData 不要求安全上下文）→ 自动注入
+  clipText.addEventListener('paste', function (e) {
+    var txt = (e.clipboardData && e.clipboardData.getData('text')) || '';
+    if (txt) {
+      e.preventDefault();
+      closeClipModal();
+      pasteToDevice(txt);
+    }
+  });
+
   // 取消按钮：关闭浮层
   clipCancel.addEventListener('click', closeClipModal);
 
@@ -900,34 +1098,6 @@ import RFB from './novnc/core/rfb.js';
   clipOverlay.addEventListener('click', function (e) {
     if (e.target === clipOverlay) closeClipModal();
   });
-
-  // ===== 复制浮层（设备→本端剪贴板推送，2026-08-15） =====
-  // HTTP 明文无法写系统剪贴板（writeText 被拒），降级为浮层显示文本 + 「复制」按钮手动复制。
-
-  var copyOverlay = document.getElementById('copyOverlay');
-  var copyText = document.getElementById('copyText');
-  var copySend = document.getElementById('copySend');
-  var copyClose = document.getElementById('copyClose');
-
-  /**
-   * 显示设备剪贴板浮层（来源：RFB clipboard 事件）
-   * @param {string} text 设备剪贴板文本
-   * @returns {void}
-   */
-  function showCopyModal(text) {
-    copyText.value = text;
-    copyOverlay.classList.add('show');
-    setTimeout(function () { copyText.focus(); }, 100);
-  }
-
-  /**
-   * 关闭复制浮层并清除内容
-   * @returns {void}
-   */
-  function closeCopyModal() {
-    copyOverlay.classList.remove('show');
-    copyText.value = '';
-  }
 
   /**
    * 右上角 toast（动作级日志，与控制台 toast 同构）：独立 #flashToast 元素，不复用中央 #status（连接态）。
@@ -968,29 +1138,6 @@ import RFB from './novnc/core/rfb.js';
     if (flashTimer) clearTimeout(flashTimer);
     flashTimer = setTimeout(function () { el.style.opacity = '0'; }, cfg.ms);
   }
-
-  // 「复制」按钮（用户手势内）：选中文本 + execCommand('copy')（http 下 Chrome 桌面可用；
-  // 失败/不支持时提示手动选择复制）
-  copySend.addEventListener('click', function () {
-    var t = copyText.value;
-    if (!t) return;
-    var ok = false;
-    try {
-      copyText.removeAttribute('readonly');
-      copyText.focus();
-      copyText.select();
-      copyText.setSelectionRange(0, t.length);
-      ok = document.execCommand('copy');
-    } catch (e) { ok = false; }
-    try { copyText.setAttribute('readonly', 'readonly'); } catch (e) {}
-    if (ok) flashStatus('✓ 已复制到本机剪贴板', 'success');
-    else flashStatus('✗ 复制失败，请手动选择文本复制', 'error');
-  });
-
-  copyClose.addEventListener('click', closeCopyModal);
-  copyOverlay.addEventListener('click', function (e) {
-    if (e.target === copyOverlay) closeCopyModal();
-  });
 
   /**
    * 为按钮附加按压识别（home/power 专用）：

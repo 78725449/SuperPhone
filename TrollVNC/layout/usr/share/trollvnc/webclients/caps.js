@@ -2,7 +2,8 @@
 // 新增能力 = 设备端注册 executor + 前端加定义（不做运行时发现）
 // 2026-08-14 方案 A：顺序与网关 KEY_DEFS 对齐（power 上、mute 在 voldn 上），新增 snapshot/spotlight
 // 2026-08-15：clipboard → paste（剪贴板按钮改为粘贴输入，见 index.vnc）
-export const DEFAULT_CAPS = ['power', 'home', 'volup', 'mute', 'voldn', 'briup', 'bridn', 'snapshot', 'spotlight', 'keyboard', 'paste'];
+// 2026-08-17：显式双向搬运——新增 copy（管理通道 clipboard.get 拉取设备剪贴板到控制端）
+export const DEFAULT_CAPS = ['power', 'home', 'volup', 'mute', 'voldn', 'briup', 'bridn', 'snapshot', 'spotlight', 'keyboard', 'copy', 'paste'];
 
 export const CAP_META = {
   power:     { op: 'power',     label: '电源',      icon: '⏻',    title: '电源' },
@@ -15,5 +16,6 @@ export const CAP_META = {
   snapshot:  { op: 'snapshot',  label: '截屏',      icon: '✂️', title: '截屏' },
   spotlight: { op: 'spotlight', label: '搜索',      icon: '🔍', title: '搜索' },
   keyboard:  { op: 'kb',        label: '键盘',      icon: '⌨️', title: '键盘' },
+  copy:      { op: 'copy',      label: '复制',      icon: '📋', title: '复制设备剪贴板到控制端' },
   paste:     { op: 'paste',     label: '粘贴',      icon: '📋', title: '粘贴输入到设备' },
 };
