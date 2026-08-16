@@ -32,6 +32,9 @@ static NSString *const kPasteboardDarwinNotification = @"com.apple.pasteboard.no
 @property(nonatomic, assign, getter=isStarted) BOOL started;
 @property(nonatomic, assign) NSInteger lastObservedChangeCount;     // last seen changeCount from UIPasteboard
 @property(nonatomic, assign) NSInteger lastSetChangeCount;          // 远程写入后自身 set 造成的 changeCount 锚点（-1=无效）
+@property(nonatomic, copy, nullable) NSString *lastSetValue;        // 最近一次远程写入的文本（suppressInputEcho 文本对比用）
+@property(nonatomic, assign) BOOL suppressInputEcho;                // 粘贴输入（type.paste）写入标记：下次通知文本相等则吞掉
+@property(nonatomic, copy, nullable) NSString *lastSentValue;       // 上次成功发送到控制端的文本（重复通知判定用）
 @end
 
 @implementation ClipboardManager
@@ -147,6 +150,28 @@ static NSString *const kPasteboardDarwinNotification = @"com.apple.pasteboard.no
     // Do NOT proactively callback: remote already has the content
 }
 
+- (void)setStringForPasteInput:(NSString *)text {
+    if (!text)
+        return;
+
+    UIPasteboard *pb = [UIPasteboard generalPasteboard];
+    // 2026-08-15 粘贴输入与剪贴板同步解耦（用户拍板）：
+    // type.paste 的"写剪贴板"只是 Cmd+V 注入的数据载体，不是"用户复制"。
+    // 记录本次写入文本 + 置 suppressInputEcho，后续系统通知若剪贴板文本仍等于该值
+    // （自身写入的回显，含通知延迟/合并场景）→ 吞掉不回传控制端，
+    // 避免"输入到被控端的文字反过来覆盖控制端剪贴板"的混乱。用户真实复制（文本不同）
+    // 不受影响（仍放行）。
+    // 2026-08-16 移除 changeCount 锚点：粘贴输入管线仅靠 suppressInputEcho 文本对比抑制回显
+    // （changeCount 延迟递增，锚点不可靠且可能误吞"粘贴后立即复制不同文本"的真实复制）。
+    // 仅清锚点、不回设：清掉 setStringFromRemote 可能残留的旧锚点，避免跨管线误吞。
+    self.lastSetChangeCount = -1;
+    self.lastSetValue = text;
+    self.suppressInputEcho = YES;
+    [pb setString:text];
+    TVLog("Remote setStringForPasteInput length=%lu, suppressInputEcho=YES",
+          (unsigned long)text.length);
+}
+
 #pragma mark - Internal
 
 - (void)handlePasteboardChangeFromSystem {
@@ -154,17 +179,43 @@ static NSString *const kPasteboardDarwinNotification = @"com.apple.pasteboard.no
     // System change notification received (triggered by external apps or by our own set)
     UIPasteboard *pb = [UIPasteboard generalPasteboard];
     NSInteger currentCount = pb.changeCount;
-    TVLog("System pasteboard changed: changeCount=%ld (last=%ld)", (long)currentCount,
-          (long)self.lastObservedChangeCount);
+    TVLog("System pasteboard changed: count=%ld last=%ld anchor=%ld suppress=%d", (long)currentCount,
+          (long)self.lastObservedChangeCount, (long)self.lastSetChangeCount, self.suppressInputEcho);
 
-    // Ignore duplicate or out-of-order notifications
-    if (self.lastObservedChangeCount == currentCount) {
+    // 2026-08-16 方案 C：重复通知判定改为「文本相等 且 changeCount 相等」。
+    // 原实现仅 changeCount 相等判重复；但 changeCount 延迟递增（官方文档「waits until the
+    // end of the current event loop」）——首次复制时通知回调读到的 changeCount 仍是基线值，
+    // 被误判为「重复通知」吞掉（首次复制需第二次才触发）。改为文本对比：文本变了（首次
+    // 复制/新内容）必然放行；只有「文本没变 且 changeCount 也没变」才是真重复。
+    NSString *current = [self currentString];
+    BOOL sameText = (current == self.lastSentValue) ||
+                    (current != nil && [current isEqualToString:self.lastSentValue]);
+    if (sameText && self.lastObservedChangeCount == currentCount) {
         TVLog("Ignoring duplicate pasteboard notification");
         return;
     }
 
     // Advance baseline and then process
     self.lastObservedChangeCount = currentCount;
+
+    // 2026-08-15 粘贴输入回显抑制（type.paste 输入与剪贴板同步解耦）：
+    // suppressInputEcho 置位表示最近一次剪贴板写入来自粘贴输入（数据载体非用户复制）。
+    // 若当前剪贴板文本仍等于该次写入值 → 自身回显，吞掉不回传控制端（无论 changeCount
+    // 锚点是否失效/通知是否延迟合并）；文本已不同（用户随后真实复制）→ 清标记正常放行。
+    // 一次性：抑制只针对该次输入写入，之后恢复正常同步。
+    if (self.suppressInputEcho) {
+        NSString *cur = [self currentString];
+        if (cur.length > 0 && [cur isEqualToString:self.lastSetValue]) {
+            self.suppressInputEcho = NO;
+            self.lastSetValue = nil;
+            self.lastSetChangeCount = -1;
+            TVLog("Suppressing paste-input echo (count=%ld)", (long)currentCount);
+            return;
+        }
+        self.suppressInputEcho = NO;
+        self.lastSetValue = nil;
+        TVLog("Paste-input marker cleared, change differs — real copy passes through");
+    }
 
     // 2026-08-15 changeCount 锚点回显判定（替代原计数型抑制，防误吞真实复制）：
     // - currentCount <= lastSetChangeCount：未越过锚点 = 远程写入自身的回显
@@ -187,6 +238,8 @@ static NSString *const kPasteboardDarwinNotification = @"com.apple.pasteboard.no
         TVLog("Change advanced past anchor (%ld) — real copy, dispatching", (long)currentCount);
     }
 
+    // 真实变化 → 记录本次发送文本，供下次重复判定对比（2026-08-16 方案 C）
+    self.lastSentValue = current;
     [self dispatchChangeIfNeeded];
 }
 

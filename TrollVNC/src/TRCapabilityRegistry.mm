@@ -452,7 +452,10 @@ static NSDictionary *TRSearchGatewaySync(void) {
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             NSString *text = p[@"text"];
             if (text.length) {
-                [[ClipboardManager sharedManager] setStringFromRemote:text];
+                // 2026-08-15 粘贴输入与剪贴板同步解耦（用户拍板）：type.paste 的"写剪贴板"
+                // 只是 Cmd+V 注入的数据载体，不是用户复制——走 setStringForPasteInput，
+                // 设备端抑制该次写入的回显（不回传控制端、不覆盖控制端剪贴板）。
+                [[ClipboardManager sharedManager] setStringForPasteInput:text];
             }
             // 2026-08-14 修复粘贴不生效（对比"粘贴输入按钮"时代实测有效）：
             // 历史实现为 COMMAND↓ → v↓ → COMMAND↑（v 不抬起），v 保持按下使 iOS 持续识别

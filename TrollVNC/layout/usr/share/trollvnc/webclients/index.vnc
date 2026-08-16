@@ -134,10 +134,7 @@
   #panel button:active { background: #e9eaee; }
   /* 面板/PC 栏 SF Symbols 图标尺寸（stroke=currentColor 跟随文字颜色） */
   #panel button svg, #bar button svg { width: 20px; height: 20px; flex: 0 0 auto; }
-  /* 「键盘」键激活高亮（2026-08-14 对齐原生 noVNC「Show Keyboard」：软键盘显示时点亮） */
-  #panel button.kbd-on, #bar button.kbd-on {
-    background: #2196f3; color: #fff; border-color: #2196f3;
-  }
+  /* 键盘按钮（2026-08-16 回退）：单向固定执行，无两态/黄色底样式 */
   @media (min-width: 900px) and (hover: hover) and (pointer: fine) {
     #panel { display: none !important; }
   }
@@ -256,15 +253,10 @@ import RFB from './novnc/core/rfb.js';
   var port = $PORT;
   var wsProto = location.protocol === 'https:' ? 'wss://' : 'ws://';
   var url = wsProto + host + ':' + port + '/websockify';
-  // 键盘按钮（2026-08-14 对齐上游原生 noVNC「Show Keyboard」语义；2026-08-15 升级实时打字方案）
-  // 「键盘」键 = 显示/隐藏控制端软键盘（聚焦/失焦隐藏 input）。
-  // 软键盘文字经 input/composition 事件转发（iOS 无 keydown，§2.3w）→ rfb.sendKey(keysym)
-  // → 设备端 kbdEvent 注入 HID（远程打字）；中文/emoji 回落 pasteToDevice（写剪贴板+模拟 Cmd+V）。
-  // 被控端键盘完全由被控端系统管理（点被控画面输入框才弹），不注入 attach/detach、无输入源切换。
-  // 演进回滚：删除输入源切换两态（kbdControl）+ HID attach 自定义 keysym（XF86KeyboardHide/Show）逻辑。
-  var kbdSoft = false;        // 控制端软键盘当前是否显示（kbInput 是否聚焦，focus/blur 事件驱动）
-  var kbdBtns = [];           // 键盘键按钮引用（PC 栏 + 面板，软键盘激活时加 .kbd-on 高亮）
-  // 触屏能力检测：仅用于"自动弹控制端软键盘"（PC 无系统软键盘）；按钮开关行为本身无判定
+  // 键盘按钮（2026-08-15 单向固定执行）：点击「键盘」键 = 发 XF86Keyboard keysym（0x1008ff2e）
+  // → 设备端 toggleOnScreenKeyboard 收起被控端软键盘；触控端再 focus kbInput 调起控制端软键盘，
+  // 电脑端有实体键盘、不弹软键盘。控制端软键盘文字经 input/composition 事件统一走 pasteToDevice。
+  // 触屏能力检测：用于「键盘」键点击后是否调起控制端软键盘（PC 有实体键盘，不弹）
   var isTouch = 'ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0;
 
   var screen = document.getElementById('screen');
@@ -346,9 +338,6 @@ import RFB from './novnc/core/rfb.js';
       isConnected = true;
       startSigPoll();
       setStatus('已连接，等待画面…', true);
-      // 键盘默认收起态（无高亮；用户点「键盘」键才弹出控制端软键盘）
-      kbdSoft = false;
-      updateKbdBtns();
       // 检测是否真的收到画面帧（区分"连上但黑帧"与"连不上"）
       var gotFrame = false;
       function fbSize() {
@@ -373,8 +362,6 @@ import RFB from './novnc/core/rfb.js';
       isConnected = false;
       stopSigPoll();
       setFabSignal(null, '设备未连接（拖动调整位置，点击展开操作）');
-      // 断开：键盘收起态复位（无高亮）
-      kbdSoft = false; updateKbdBtns();
       // 2026-08-15：非主动断开（1006 后台挂起等）标记待重连；主动断开（1000/1001）不重连
       var code = (e && e.detail && e.detail.code) ? e.detail.code : null;
       if (code !== 1000 && code !== 1001) needsReconnect = true;
@@ -385,7 +372,6 @@ import RFB from './novnc/core/rfb.js';
       isConnected = false;
       stopSigPoll();
       setFabSignal(null, '连接失败（拖动调整位置，点击展开操作）');
-      kbdSoft = false; updateKbdBtns();
       needsReconnect = true;
       setStatus('连接失败 ' + url, false);
     });
@@ -497,7 +483,6 @@ import RFB from './novnc/core/rfb.js';
         s2.textContent = k.label;
         b.appendChild(s2);
       }
-      if (k.op === 'kb') kbdBtns.push(b);   // 键盘键按钮引用（输入源切换高亮用）
       c.appendChild(b);
     });
   }
@@ -635,8 +620,10 @@ import RFB from './novnc/core/rfb.js';
         // 截屏（Home+Power）：设备端仅 down 时执行 snapshotPress，tapKey 发 down+up 一次
         tapKey(0x1008ff80, 'CustomSnapshot'); break;
       case 'kb':
-        // 「键盘」输入源切换（2026-08-14 协议 keysym：控制端 ⇄ 被控设备键盘，详见 toggleKbd）
-        toggleKbd();
+        // 键盘键 = 单向固定（2026-08-16 回退）：发 XF86Keyboard 收起被控端软键盘；
+        // 触控端再 focusKbInput 调起控制端软键盘（电脑端有实体键盘，不调软键盘）。
+        tapKey(0x1008ff2e, 'XF86Keyboard');
+        if (isTouch) focusKbInput();
         break;
       case 'paste':
         // 2026-08-15：粘贴输入——弹浮层，粘贴文本后回车/确认 → pasteToDevice 原子注入（模拟 Cmd+V）
@@ -653,19 +640,7 @@ import RFB from './novnc/core/rfb.js';
     }
   }
 
-  // ===== 键盘按钮（2026-08-14 对齐原生 noVNC「Show Keyboard」：显示/隐藏控制端软键盘） =====
-
-  /**
-   * 更新键盘键按钮的高亮与提示（PC 栏 + 面板同步）：
-   * 控制端软键盘激活（kbdSoft=true）加 .kbd-on 高亮（原生 noVNC selected 风格），收起则无高亮。
-   * @returns {void}
-   */
-  function updateKbdBtns() {
-    kbdBtns.forEach(function (b) {
-      b.classList.toggle('kbd-on', kbdSoft);
-      b.title = kbdSoft ? '收起控制端键盘' : '弹出控制端键盘';
-    });
-  }
+  // ===== 键盘按钮（2026-08-15 单向固定执行：收起被控端软键盘 + 触控端调起控制端软键盘） =====
 
   /**
    * 聚焦隐藏 input 唤起控制端软键盘（iOS 对文本输入元素 focus 才弹键盘）
@@ -690,6 +665,7 @@ import RFB from './novnc/core/rfb.js';
   function blurKbInput() {
     var kbi = document.getElementById('kbInput');
     if (!kbi) return;
+    releaseKbdShift(); // 收起键盘时兜底释放 Shift，防残留
     try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) {}
     try {
       kbi.setAttribute('readonly', 'readonly');
@@ -698,83 +674,138 @@ import RFB from './novnc/core/rfb.js';
     setTimeout(function () { try { kbi.removeAttribute('readonly'); } catch (e) {} }, 120);
   }
 
-  /**
-   * 键盘键点击 = 显示/隐藏控制端软键盘（对齐上游原生 noVNC「Show Keyboard」）。
-   * 聚焦 kbInput 弹控制端软键盘（iOS 对文本输入元素 focus 才弹键盘），再次点击失焦收起。
-   * 软键盘文字经 input/composition 事件转发 rfb.sendKey 直达设备（§2.3w，iOS 无 keydown）；
-   * 被控端键盘由被控端系统自行管理。
-   * @returns {void}
-   */
-  function toggleKbd() {
-    if (kbdSoft) {
-      blurKbInput();
-    } else {
-      focusKbInput();
-    }
-  }
-
-  // ===== 软键盘输入（2026-08-15 实时打字方案）：kb 键聚焦 #kbInput 唤起 iOS 软键盘，
-  // input/composition 事件实时转发——iOS 软键盘不产生 keydown，noVNC Keyboard 方案失效（§2.3w）。
-  // ASCII 逐键 sendKey（大写/符号补 Shift）、中文/emoji 走 pasteToDevice（写剪贴板+模拟 Cmd+V）。
+  // ===== 软键盘输入（2026-08-16 起英文/数字改走键值直发，中文/emoji 保留粘贴）：
+  // kb 键聚焦 #kbInput 唤起 iOS 软键盘。iOS 软键盘字符键不产生 keydown（§2.3w），
+  // 但 Enter/Backspace 等控制键产生 keydown。中文/emoji 经 pasteToDevice（写剪贴板+模拟 Cmd+V）；
+  // 英文/数字（单可打印 ASCII）经 kbdSendAscii 键值直发（前端补/不补 Shift，设备端 keyDown/keyUp 直接映射）；
+  // 中文/智能输入：compositionend 整段提交；删除键 = Backspace（keysym 直发）。
 
   var kbdComposing = false;     // 中文拼音组合中：暂停转发，compositionend 一次性注入
   var kbdJustComposed = false;  // Safari compositionend 后补发 input（乱序 bug），短窗口忽略
   var kbdJustComposedTimer = null;
+  var kbdLastLen = 0;           // 上次 input 处理后 kbInput.value 长度（删除键识别快照：变短=删除）
+  // Shift 状态跟踪（2026-08-16 方案 C 修正）：连续大写/符号期间 Shift 保持按下，仅切回小写/数字才抬起，
+  // 避免快速连打大写时「前一个字符的 Shift↑ 提前抬起、后一个字符失去 Shift 修饰」的交错。
+  var kbdShiftHeld = false;   // 当前 Shift 是否按下（仅当前会话内状态，非全局）
+  var kbdShiftTimer = null;   // 空闲自动释放 Shift 的定时器（停止输入 400ms 后自动抬 Shift 防残留）
 
-  // 实时注入单个 ASCII 字符（keysym=码点；大写/符号键 shift 形态补 Shift 组合，设备端 keyDown 不自动加 Shift）
-  function kbdSendChar(ch) {
-    if (!rfb) return;
-    var cp = ch.charCodeAt(0);
-    if (cp < 0x20 || cp > 0x7E) return;
-    try {
-      var needShift = /[A-Z~!@#$%^&*()_+{}|:"<>?]/.test(ch);
-      if (needShift) rfb.sendKey(0xffe1, 'ShiftLeft', true); // XK_Shift_L
-      rfb.sendKey(cp, null, true);
-      rfb.sendKey(cp, null, false);
-      if (needShift) rfb.sendKey(0xffe1, 'ShiftLeft', false);
-    } catch (e) {}
+  // 释放 Shift（若当前持有）：发 Shift_L↑ 并清状态与空闲定时器，供删除/回车/中文粘贴前置调用及 blur 兜底。
+  function releaseKbdShift() {
+    if (!kbdShiftHeld) return;
+    if (kbdShiftTimer) { clearTimeout(kbdShiftTimer); kbdShiftTimer = null; }
+    if (rfb) { try { rfb.sendKey(0xffe1, 'ShiftLeft', false); } catch (e) {} }
+    kbdShiftHeld = false;
   }
-  // 特殊键（退格/回车）
+  // 重置「空闲自动释放 Shift」定时器：发大写/符号字符后调用，停止输入 400ms 后自动抬 Shift 防残留。
+  function resetKbdShiftTimer() {
+    if (kbdShiftTimer) clearTimeout(kbdShiftTimer);
+    kbdShiftTimer = setTimeout(releaseKbdShift, 400);
+  }
+
+  // 特殊键（退格/回车）→ 向被控端发一次按键事件（down + 60ms 按住 + up，删除键操作被控设备）
   function kbdSendSpecial(keysym, code) {
     if (!rfb) return;
-    try { rfb.sendKey(keysym, code || null, true); rfb.sendKey(keysym, code || null, false); } catch (e) {}
+    releaseKbdShift(); // 删除/回车不应带 Shift 修饰，先释放（防连续大写后 Shift 残留）
+    try { rfb.sendKey(keysym, code || null, true); } catch (e) { return; }
+    setTimeout(function () { try { rfb.sendKey(keysym, code || null, false); } catch (e) {} }, 60);
   }
-  // 文本转发：纯 ASCII 逐键实时；含中文/emoji/多字符 → pasteToDevice（写剪贴板+模拟 Cmd+V）
-  function kbdForwardText(text) {
+  // 提交软键盘文本：走 pasteToDevice（type.paste 能力注入，写剪贴板+模拟 Cmd+V）。
+  // 仅用于中文/emoji/多字符（2026-08-16 起英文/数字 ASCII 改走 kbdSendAscii 键值直发）。
+  function kbdCommitText(text) {
     if (!text) return;
-    if (/^[\x20-\x7E]+$/.test(text)) {
-      for (var i = 0; i < text.length; i++) kbdSendChar(text.charAt(i));
+    releaseKbdShift(); // 中文/emoji 粘贴走 pasteToDevice 能力通道，不应带 Shift 修饰
+    pasteToDevice(text);
+  }
+  // 发送单个字符到被控端（键值直发，非粘贴）。前端根据字符判断「补/不补 Shift」信号
+  // （方案 C：设备端 keyDown/keyUp 直接映射不补 Shift）。
+  // Shift 采用「状态跟踪」而非「每字符独立补 Shift」（2026-08-16 修正交错）：
+  //   - 需要 Shift 且未持有 → 发 Shift_L(0xffe1)↓、置持有；连续大写/符号期间 Shift 保持按下。
+  //   - 不需要 Shift 且持有 → 发 Shift_L↑、清持有（切回小写/数字时抬起）。
+  //   - 字符键：基础字符↓，50ms 后基础字符↑（不再在 up 里顺带抬 Shift）。
+  // 50ms 为字符按住时长；多字符/非 ASCII 回退粘贴。
+  function kbdSendAscii(ch) {
+    if (!ch) return;
+    if (ch.length !== 1) { kbdCommitText(ch); return; }
+    var code = ch.charCodeAt(0);
+    if (code < 0x20 || code > 0x7e) { kbdCommitText(ch); return; }
+    if (!rfb) return;
+
+    var shift = false, base = ch;
+    if (code >= 0x41 && code <= 0x5a) { // A-Z → Shift + 小写
+      shift = true; base = String.fromCharCode(code + 0x20);
     } else {
-      pasteToDevice(text);
+      var shifted = { '!':'1','@':'2','#':'3','$':'4','%':'5','^':'6','&':'7','*':'8','(':'9',
+                      ')':'0','_':'-','+':'=','{':'[','}':']','|':'\\',':':';','"':"'",'<':',','>':'.','?':'/','~':'`' };
+      if (shifted[ch]) { shift = true; base = shifted[ch]; }
     }
+    var baseSym = base.charCodeAt(0);
+
+    try {
+      // 按需切换 Shift：需要且未持有 → 按下；不需要且持有 → 抬起（连续大写期间保持按下不抬）
+      if (shift && !kbdShiftHeld) {
+        rfb.sendKey(0xffe1, 'ShiftLeft', true); // XK_Shift_L ↓
+        kbdShiftHeld = true;
+      } else if (!shift && kbdShiftHeld) {
+        releaseKbdShift();                       // 切回小写/数字 → Shift_L ↑
+      }
+      rfb.sendKey(baseSym, null, true);          // 基础字符 ↓
+      setTimeout(function () {
+        try { rfb.sendKey(baseSym, null, false); } catch (e) {} // 基础字符 ↑
+      }, 50);
+      if (shift) resetKbdShiftTimer();           // 发大写/符号后重置空闲自动释放
+    } catch (e) {}
   }
 
   var kbInput = document.getElementById('kbInput');
   if (kbInput) {
+    // 占位空格：浮层 value 始终非空（中英文数字提交后补空格，删除键删占位触发 input）
+    kbInput.value = ' ';
+    kbdLastLen = 1;
     kbInput.addEventListener('compositionstart', function () { kbdComposing = true; });
     kbInput.addEventListener('compositionend', function (e) {
       kbdComposing = false;
-      var text = (e.data) || kbInput.value;
-      kbInput.value = '';
+      var text = e.data || '';
+      kbInput.value = ' '; // 补空格（重置占位）
+      kbdLastLen = 1;
       kbdJustComposed = true;
       if (kbdJustComposedTimer) clearTimeout(kbdJustComposedTimer);
       kbdJustComposedTimer = setTimeout(function () { kbdJustComposed = false; }, 60);
-      kbdForwardText(text);
+      kbdCommitText(text);
     });
     kbInput.addEventListener('input', function (e) {
-      if (kbdComposing || kbdJustComposed) { kbInput.value = ''; return; }
-      var dt = e.inputType || '';
-      var data = e.data || '';
-      if (dt === 'deleteContentBackward') { kbdSendSpecial(0xff08, 'Backspace'); kbInput.value = ''; return; }
-      if (dt === 'insertLineBreak') { kbdSendSpecial(0xff0d, 'Enter'); kbInput.value = ''; return; }
-      if (dt === 'insertText' && /^[\x20-\x7E]$/.test(data)) { kbdSendChar(data); kbInput.value = ''; return; }
+      // compositionend 后短窗口（60ms）iOS 会补发乱序 input：只清空不转发
+      if (kbdJustComposed) { kbInput.value = ' '; return; }
+      // composition 会话中：不干预 kbInput.value（iOS IME 拥有所有权）。
+      // 【2026-08-15 修复】此前在此执行 kbInput.value='' 会破坏 iOS IME 状态机：
+      // compositionend 不再触发 → kbdComposing 卡 true → 中英文 input 全被吞 → 不上屏。
+      if (kbdComposing) return;
       var v = kbInput.value;
-      if (v) { kbdForwardText(v); kbInput.value = ''; }
+      var dt = e.inputType || '';
+      // 删除键识别（2026-08-15 修复"删除不生效"）：优先用 iOS 删除键标准事件
+      // inputType=deleteContentBackward（与本地 value 无关——删除操作的是被控端，
+      // 控制端 input 可能为空/已清空，value 变短检测会漏掉）。长按删除 = 重复该事件。
+      // value 变短仅作兜底（iOS 事件异常时）。删除键语义 = 操作被控设备：
+      // 向被控端发一次 Backspace 按键事件（长按=连续删除）。
+      if (dt === 'deleteContentBackward' || v.length < kbdLastLen) {
+        kbdSendSpecial(0xff08, 'Backspace'); // XK_BackSpace → 被控端删字
+        // 删除后立即重置占位：浮层只做"删除触发器"，value 始终保持非空，删除键持续触发 input
+        kbInput.value = ' ';
+        kbdLastLen = 1;
+        return;
+      }
+      // 英文/数字：单可打印 ASCII 走键值直发（kbdSendAscii），多字符/非 ASCII 回退粘贴
+      var inc = e.data || '';
+      if (inc) kbdSendAscii(inc);
+      kbInput.value = ' ';
+      kbdLastLen = 1;
     });
-    // 控制端软键盘被系统收起（点击别处/滚动/切后台）：复位 kbdSoft 与按钮高亮
-    kbInput.addEventListener('blur', function () {
-      kbdSoft = false;
-      updateKbdBtns();
+    // 回车/换行/发送：iOS 单行 input 按 return 不触发 input（不插换行），只派发 keydown(13)。
+    // 捕获 Enter → 发 XK_Return，由被控端按聚焦场景识别为发送/换行/搜索。
+    kbInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.keyCode === 13) {
+        e.preventDefault();
+        kbdSendSpecial(0xff0d, 'Enter'); // XK_Return
+      }
     });
   }
 
@@ -812,6 +843,8 @@ import RFB from './novnc/core/rfb.js';
         }, 90);
       }, 120);
     }, 250);
+    // 动作级日志：粘贴输入成功（与控制台 toast 同构）
+    flashStatus('✓ 已粘贴 ' + text.length + ' 字符', 'success');
   }
 
   var clipOverlay = document.getElementById('clipOverlay');
@@ -875,7 +908,6 @@ import RFB from './novnc/core/rfb.js';
   var copyText = document.getElementById('copyText');
   var copySend = document.getElementById('copySend');
   var copyClose = document.getElementById('copyClose');
-  var statusFlashTimer = null;
 
   /**
    * 显示设备剪贴板浮层（来源：RFB clipboard 事件）
@@ -898,14 +930,43 @@ import RFB from './novnc/core/rfb.js';
   }
 
   /**
-   * 短时中央提示（复用状态浮层，2s 自动隐藏）
-   * @param {string} text 提示文案
+   * 右上角 toast（动作级日志，与控制台 toast 同构）：独立 #flashToast 元素，不复用中央 #status（连接态）。
+   * @param {string} text 文案
+   * @param {string} type success|error|info（默认 info）
    * @returns {void}
    */
-  function flashStatus(text) {
-    setStatus(text, false);
-    if (statusFlashTimer) clearTimeout(statusFlashTimer);
-    statusFlashTimer = setTimeout(hideStatus, 2000);
+  var FLASH_CFG = {
+    success: { color: '#34c759', ms: 2000 },
+    error:   { color: '#ff453a', ms: 3500 },
+    info:    { color: '#d0d0d0', ms: 2000 },
+  };
+  var flashTimer = null;
+  var flashLast = { msg: '', at: 0 };
+  function flashStatus(text, type) {
+    type = type || 'info';
+    var cfg = FLASH_CFG[type] || FLASH_CFG.info;
+    var now = Date.now();
+    if (flashLast.msg === text && now - flashLast.at < 500) return; // 同文案 500ms 去重防刷屏
+    flashLast = { msg: text, at: now };
+    var el = document.getElementById('flashToast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'flashToast';
+      document.body.appendChild(el);
+    }
+    el.textContent = text;
+    el.style.cssText =
+      'position:fixed;' +
+      'top:calc(env(safe-area-inset-top,0px) + 12px);' +
+      'right:calc(env(safe-area-inset-right,0px) + 14px);' +
+      'z-index:999;max-width:min(72vw,340px);' +
+      'background:rgba(20,26,40,.92);color:' + cfg.color + ';' +
+      'padding:10px 14px;border-radius:10px;border-left:3px solid ' + cfg.color + ';' +
+      'font:13px/1.4 system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.4);' +
+      'pointer-events:none;transition:opacity .25s;';
+    el.style.opacity = '1';
+    if (flashTimer) clearTimeout(flashTimer);
+    flashTimer = setTimeout(function () { el.style.opacity = '0'; }, cfg.ms);
   }
 
   // 「复制」按钮（用户手势内）：选中文本 + execCommand('copy')（http 下 Chrome 桌面可用；
@@ -922,8 +983,8 @@ import RFB from './novnc/core/rfb.js';
       ok = document.execCommand('copy');
     } catch (e) { ok = false; }
     try { copyText.setAttribute('readonly', 'readonly'); } catch (e) {}
-    if (ok) flashStatus('已复制到本机剪贴板');
-    else flashStatus('复制失败，请手动选择文本复制');
+    if (ok) flashStatus('✓ 已复制到本机剪贴板', 'success');
+    else flashStatus('✗ 复制失败，请手动选择文本复制', 'error');
   });
 
   copyClose.addEventListener('click', closeCopyModal);

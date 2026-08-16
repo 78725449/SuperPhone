@@ -160,10 +160,6 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
 .focus-ops h3 { margin: 0 0 4px; font-size: 14px; }
 .focus-ops .op { width: 100%; text-align: center; font-size: 18px; padding: 8px 0; }
 .focus-ops .op svg { width: 20px; height: 20px; vertical-align: middle; }
-/* 「键盘」键激活高亮（2026-08-14 对齐原生 noVNC「Show Keyboard」：软键盘显示时点亮） */
-.focus-ops .op.kbd-on, .ops-menu-grid button.kbd-on {
-  background: #2196f3; color: #fff; border-color: #2196f3;
-}
 .focus-ops hr { border: none; border-top: 1px solid var(--line); margin: 4px 0; }
 .focus-ops .chk { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-top: 4px; cursor: pointer; }
 /* 操作列滚动条主题化：深色细滑块 + hover 高亮为主题色（替代浏览器默认白/灰） */
@@ -635,3 +631,5 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
   border-top: 1px solid var(--line);
   margin: 6px 0;
 }
+
+/* 键盘按钮（2026-08-16 回退）：单向固定执行，无两态/黄色底样式 */

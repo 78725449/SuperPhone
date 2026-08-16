@@ -196,7 +196,7 @@ async function refreshDevices() {
     }
     if (added > 0) {
       updateDirectBtn();
-      toast(`直控模式：新增 ${added} 台设备推流`);
+      toast(`直控模式：新增 ${added} 台设备推流`, 'info');
     }
   }
 }
@@ -252,12 +252,8 @@ function createWallTile(d) {
     if (dev.mock) { alert('虚拟设备仅用于布局预览，不可控制'); return; }
     if (directMode) return; // 直控模式：点击卡片直达 RFB 控制（canvas 输入事件由 noVNC 处理），不聚焦、无悬停提示
     if (syncMode) { toggleSync(d.id); return; } // 同步选择模式：点卡片切换同步（选中态=边框高亮+同步中）
-    if (dev.online === false) {
-      alert(`设备「${dev.name}」离线，请唤醒手机后重试`);
-      return;
-    }
     if (batchMode) exitBatchMode(); // 批量模式下点卡片聚焦：退出批量选择
-    enterFocus(dev);
+    enterFocus(dev); // 离线设备由 enterFocus 收编进连接态浮层（不再弹 alert）
   });
   tile.querySelector('.tmore').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -699,26 +695,35 @@ function rfbPressKey(rfb, keyDef, capId) {
   }
 }
 
-// ---------- 键盘按钮（2026-08-15 实时打字方案：iOS 软键盘 input 事件驱动） ----------
-// 「键盘」键 = 显示/隐藏控制端软键盘。iOS 系统软键盘不产生 keydown/keyup（WebKit 只派发
-// input/composition 事件），noVNC Keyboard(keydown) 方案在 iOS 上失效（§2.3w 研究结论），
-// 改为监听 #kbdInput 的 input/composition 事件实时转发：
-//   - 单个 ASCII 字符（非 composition）：逐键 keysym 实时注入（无弹窗，大写/符号补 Shift 组合）
-//   - 中文/emoji/多字符（compositionend / 多字符插入）：整段走 type.paste（写被控端剪贴板 +
-//     模拟 Cmd+V，被控端弹一次系统隐私确认后落入聚焦输入框）
-//   - Backspace / Enter：keysym 实时注入
+// ---------- 键盘按钮（2026-08-16 双通道输入：iOS 软键盘 input/composition 事件） ----------
+// 「键盘」键 = 单向固定：发 XF86Keyboard 收起被控端软键盘，触控端再 focusKbdInput 调起控制端
+// 软键盘（电脑端有实体键盘，不调软键盘）。iOS 系统软键盘不产生 keydown/keyup（WebKit 只派发
+// input/composition 事件），noVNC Keyboard(keydown) 方案在 iOS 上失效（§2.3w 研究结论）。
+// 输入按字符分流（2026-08-16 方案）：
+//   - 英文/数字（单可打印 ASCII）：kbdSendAscii 键值直发（前端补/不补 Shift 信号，
+//     设备端 keyDown/keyUp 直接映射不补 Shift）
+//   - 中文/emoji/多字符：type.paste 能力注入（写被控端剪贴板 + 模拟 Cmd+V），
+//     被控端弹一次系统隐私确认后落入聚焦输入框
+//   - 中文/智能输入：compositionend 整段提交
+//   - 删除键 = 向被控端发一次 Backspace（keysym 直发，删除操作被控设备）；
+//     长按删除为重复 input 事件 → 连续 Backspace
 // 被控端键盘完全由被控端系统管理（点被控画面输入框才弹），控制端不注入 attach/detach。
-// 演进记录：2026-08-14 对齐上游 noVNC「Show Keyboard」（Keyboard keydown）→ 2026-08-15 因 iOS
-// 无 keydown 改 input/composition 驱动（xterm/wterm 移动端范式）。
-let kbdSoft = false;          // 控制端软键盘当前是否显示（kbdInput 是否聚焦，focus/blur 事件驱动）
-let kbdBtns = [];             // 键盘键按钮引用（focusOps + opsMenu，软键盘激活时加 .kbd-on 高亮）
-let kbdComposing = false;     // 中文拼音组合中：暂停实时转发，compositionend 一次性注入
+// 演进记录：2026-08-14 noVNC Keyboard(keydown) → 2026-08-15 上午 input 逐键 keysym(ASCII)+
+// 粘贴(中文) A+B 混合 → 2026-08-15 下午统一粘贴通道 → 2026-08-16 英文/数字改回键值直发
+// （方案 C：设备端不补 Shift，前端补/不补 Shift 信号）。
+let kbdComposing = false;     // 中文拼音组合中：暂停转发，compositionend 一次性注入
 let kbdJustComposed = false;  // Safari 在 compositionend 后补发 input（isComposing 乱序），短窗口忽略
 let kbdJustComposedTimer = null;
+let kbdLastLen = 0;           // 上次 input 处理后 kbi.value 长度（删除键识别快照：变短=删除）
+// Shift 状态跟踪（2026-08-16 方案 C 修正）：连续大写/符号期间 Shift 保持按下，仅切回小写/数字才抬起，
+// 避免快速连打大写时「前一个字符的 Shift↑ 提前抬起、后一个字符失去 Shift 修饰」的交错。
+let kbdShiftHeld = false;   // 当前 Shift 是否按下（仅当前会话内状态，非全局）
+let kbdShiftTimer = null;   // 空闲自动释放 Shift 的定时器（停止输入 400ms 后自动抬 Shift 防残留）
 /** 触屏能力判定：仅用于"自动弹控制端软键盘"（PC 无系统软键盘）；按钮开关行为本身无判定 */
 const isTouchable = () => 'ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0;
 
-/** 聚焦隐藏 input 唤起控制端软键盘（iOS 对文本输入元素 focus 才弹键盘） */
+/** 聚焦隐藏 input 唤起控制端软键盘（iOS 对文本输入元素 focus 才弹键盘）。
+ *  仅负责 focus 弹起控制端软键盘；收起被控端键盘由键盘按钮单独发 XF86Keyboard（避免重复）。 */
 function focusKbdInput() {
   const kbi = document.getElementById('kbdInput');
   if (!kbi) return;
@@ -738,6 +743,7 @@ function focusKbdInput() {
 function blurKbdInput() {
   const kbi = document.getElementById('kbdInput');
   if (!kbi) return;
+  releaseKbdShift(); // 收起键盘时兜底释放 Shift，防残留
   try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) { /* 忽略 */ }
   try {
     kbi.setAttribute('readonly', 'readonly');
@@ -747,54 +753,33 @@ function blurKbdInput() {
 }
 
 /**
- * 更新键盘键按钮的高亮与提示（PC 操作列 + 移动端菜单同步）：
- * 控制端软键盘激活（kbdSoft=true）加 .kbd-on 高亮（原生 noVNC selected 风格），收起则无高亮。
+ * 释放 Shift（若当前持有）：发 Shift_L↑ 并清状态与空闲定时器。
+ * 供删除/回车/中文粘贴等「不应带 Shift 修饰」的操作前置调用，及 blur/退出时兜底防残留。
  * @returns {void}
  */
-function updateKbdBtns() {
-  for (const b of kbdBtns) {
-    b.classList.toggle('kbd-on', kbdSoft);
-    b.title = kbdSoft ? '收起控制端键盘' : '弹出控制端键盘';
-  }
-}
-
-/**
- * 键盘键点击 = 显示/隐藏控制端软键盘（对齐上游原生 noVNC「Show Keyboard」）。
- * 聚焦 kbdInput 弹控制端软键盘（iOS 对文本输入元素 focus 才弹键盘），再次点击失焦收起。
- * 按键经 Keyboard 实例转发 sendKey 直达被控设备；被控端键盘由被控端系统自行管理。
- * @returns {void}
- */
-function toggleKbd() {
-  if (kbdSoft) {
-    blurKbdInput();
-  } else {
-    focusKbdInput();
-  }
-}
-
-/**
- * 实时注入单个 ASCII 字符到当前聚焦设备（2026-08-15）：
- * keysym = X11 keysym，对可打印 ASCII（0x20-0x7E）等于码点；设备端 keysymToString 直接返回字符。
- * 大写字母与上排符号键的 shift 形态需补 Shift 组合（设备端 keyDown 不自动加 Shift，STHIDEventGenerator）。
- * @param {string} ch 单个 ASCII 字符
- * @returns {void}
- */
-function kbdSendChar(ch) {
+function releaseKbdShift() {
+  if (!kbdShiftHeld) return;
+  if (kbdShiftTimer) { clearTimeout(kbdShiftTimer); kbdShiftTimer = null; }
   const rfb = focus && focus.rfb;
-  if (!rfb || !rfb._farmConnected) return;
-  const cp = ch.codePointAt(0);
-  if (cp < 0x20 || cp > 0x7E) return; // 非 ASCII 不逐键（中文/emoji 走 type.paste）
-  try {
-    const needShift = /[A-Z~!@#$%^&*()_+{}|:"<>?]/.test(ch);
-    if (needShift) rfb.sendKey(0xffe1, 'ShiftLeft', true); // XK_Shift_L
-    rfb.sendKey(cp, null, true);
-    rfb.sendKey(cp, null, false);
-    if (needShift) rfb.sendKey(0xffe1, 'ShiftLeft', false);
-  } catch (e) { /* noVNC API 异常静默忽略 */ }
+  if (rfb && rfb._farmConnected) {
+    try { rfb.sendKey(0xffe1, 'ShiftLeft', false); } catch (e) { /* 静默 */ }
+  }
+  kbdShiftHeld = false;
 }
 
 /**
- * 发送特殊键（退格/回车等）到当前聚焦设备（down+up）。
+ * 重置「空闲自动释放 Shift」定时器：发大写/符号字符后调用，停止输入 400ms 后自动抬 Shift，
+ * 避免用户停止打字后 Shift 一直残留按下（导致后续被控端输入被 Shift 修饰）。
+ * @returns {void}
+ */
+function resetKbdShiftTimer() {
+  if (kbdShiftTimer) clearTimeout(kbdShiftTimer);
+  kbdShiftTimer = setTimeout(releaseKbdShift, 400);
+}
+
+/**
+ * 发送特殊键（退格/回车等）到当前聚焦设备（down + 60ms 按住 + up，与两端单击按键统一时长）。
+ * 删除键 = 向被控端发一次 Backspace 按键事件（删除操作被控设备，非控制端本地）。
  * @param {number} keysym X11 keysym
  * @param {string} code   DOM code（用于 noVNC qemu 扩展 scancode 路径，可为 null）
  * @returns {void}
@@ -802,85 +787,152 @@ function kbdSendChar(ch) {
 function kbdSendSpecial(keysym, code) {
   const rfb = focus && focus.rfb;
   if (!rfb || !rfb._farmConnected) return;
+  releaseKbdShift(); // 删除/回车不应带 Shift 修饰，先释放（防连续大写后 Shift 残留）
   try {
     rfb.sendKey(keysym, code || null, true);
-    rfb.sendKey(keysym, code || null, false);
+    setTimeout(() => {
+      try { rfb.sendKey(keysym, code || null, false); } catch (e) { /* 静默 */ }
+    }, 60);
   } catch (e) { /* noVNC API 异常静默忽略 */ }
 }
 
 /**
- * 转发一段软键盘文本到当前聚焦设备：
- * 纯 ASCII → 逐键实时注入（无隐私弹窗）；含中文/emoji/多字符 → type.paste 原子注入
- * （写被控端剪贴板 + releaseEveryKeys + 异步模拟 Cmd+V，被控端弹一次系统隐私确认）。
+ * 提交软键盘文本到当前聚焦设备：走 type.paste 能力注入（写被控端剪贴板 +
+ * releaseEveryKeys + 异步模拟 Cmd+V，被控端弹一次系统隐私确认后落入聚焦输入框）。
+ * 仅用于中文/emoji/多字符（2026-08-16 起英文/数字 ASCII 改走 kbdSendAscii 键值直发）。
  * @param {string} text 要注入的文本
  * @returns {void}
  */
-function kbdForwardText(text) {
+function kbdCommitText(text) {
   if (!text) return;
-  if (/^[\x20-\x7E]+$/.test(text)) {
-    for (const ch of text) kbdSendChar(ch);
-  } else if (focus && focus.device) {
+  releaseKbdShift(); // 中文/emoji 粘贴走 type.paste 能力通道，不应带 Shift 修饰
+  if (focus && focus.device) {
     submitPasteText(focus.device.id, text);
   }
 }
 
 /**
- * 初始化控制端软键盘实时转发（2026-08-15 重写）：
- * 绑定 #kbdInput 的 input/composition 事件（iOS 软键盘唯一可靠的事件源），
- * 逐键/整段转发到当前聚焦设备（详见模块头注释）。不再使用 noVNC Keyboard(keydown) 实例。
- * 软键盘在「键盘」键点击后弹出（见 toggleKbd）。
+ * 发送单个字符到当前聚焦设备（键值直发，非粘贴）。
+ * 前端根据字符判断「补/不补 Shift」信号（方案 C：设备端 keyDown/keyUp 直接映射不补 Shift）。
+ * Shift 采用「状态跟踪」而非「每字符独立补 Shift」（2026-08-16 修正交错）：
+ *   - 需要 Shift 且未持有 → 发 Shift_L(0xffe1)↓、置持有；连续大写/符号期间 Shift 保持按下。
+ *   - 不需要 Shift 且持有 → 发 Shift_L↑、清持有（切回小写/数字时抬起）。
+ *   - 字符键：基础字符↓，50ms 后基础字符↑（不再在 up 里顺带抬 Shift）。
+ * 50ms 为字符按住时长（模拟真实按键，避免 down/up 太近被 iOS 判无效）。
+ * 多字符/非 ASCII → 回退粘贴（kbdCommitText，中文/emoji/粘贴场景）。
+ * @param {string} ch 本次 input 事件的增量文本（通常单字符）
+ * @returns {void}
+ */
+function kbdSendAscii(ch) {
+  if (!ch) return;
+  if (ch.length !== 1) { kbdCommitText(ch); return; }
+  const code = ch.charCodeAt(0);
+  if (code < 0x20 || code > 0x7e) { kbdCommitText(ch); return; }
+  const rfb = focus && focus.rfb;
+  if (!rfb || !rfb._farmConnected) return;
+
+  // 判断是否需要 Shift，得到基础字符（无 shift 字符）
+  let shift = false, base = ch;
+  if (code >= 0x41 && code <= 0x5a) { // A-Z → Shift + 小写
+    shift = true; base = String.fromCharCode(code + 0x20);
+  } else {
+    const shifted = { '!':'1','@':'2','#':'3','$':'4','%':'5','^':'6','&':'7','*':'8','(':'9',
+                      ')':'0','_':'-','+':'=','{':'[','}':']','|':'\\',':':';','"':"'",'<':',','>':'.','?':'/','~':'`' };
+    if (shifted[ch]) { shift = true; base = shifted[ch]; }
+  }
+  const baseSym = base.charCodeAt(0); // 可打印 ASCII keysym == 码点
+
+  try {
+    // 按需切换 Shift：需要且未持有 → 按下；不需要且持有 → 抬起（连续大写期间保持按下不抬）
+    if (shift && !kbdShiftHeld) {
+      rfb.sendKey(0xffe1, 'ShiftLeft', true); // XK_Shift_L ↓
+      kbdShiftHeld = true;
+    } else if (!shift && kbdShiftHeld) {
+      releaseKbdShift();                       // 切回小写/数字 → Shift_L ↑
+    }
+    rfb.sendKey(baseSym, null, true);          // 基础字符 ↓
+    setTimeout(() => {
+      try { rfb.sendKey(baseSym, null, false); } catch (e) { /* 静默 */ } // 基础字符 ↑
+    }, 50);
+    if (shift) resetKbdShiftTimer();           // 发大写/符号后重置空闲自动释放
+  } catch (e) { /* noVNC API 异常静默忽略 */ }
+}
+
+/**
+ * 初始化控制端软键盘输入（2026-08-16 起英文/数字改走键值直发，中文/emoji 保留粘贴）：
+ * 绑定 #kbdInput 的 input/composition/keydown 事件（iOS 软键盘唯一可靠的事件源）：
+ *   - compositionend：中文/emoji/智能输入整段提交（type.paste）
+ *   - 非组合 input：删除键 → Backspace 直发被控端；
+ *     英文/数字（单可打印 ASCII）→ kbdSendAscii 键值直发（被控端补 Shift）；
+ *     多字符/非 ASCII → 回退粘贴
+ *   - keydown：回车/换行/发送 → Enter keysym 直发被控端（单行 input 无 insertLineBreak）
+ * 软键盘在「键盘」键点击后弹出（仅触控端；见 renderCapOps 键盘键绑定）。
  * @returns {void}
  */
 function initTouchKeyboard() {
   const kbi = document.getElementById('kbdInput');
   if (!kbi) return;
 
-  // 中文拼音组合开始：暂停实时转发（拼音过程不逐键，避免把拼音字母打进被控端）
+  // 占位空格保持 value 非空：iOS 空 input 上点删除键不触发 input 事件（没内容可删），
+  // 删除键因此失效。靠占位让删除键始终触发 inputType=deleteContentBackward（删占位空格）。
+  kbi.value = ' ';
+  kbdLastLen = 1;
+
+  // 中文拼音组合开始：暂停转发（拼音过程不注入，compositionend 一次性提交）
   kbi.addEventListener('compositionstart', () => { kbdComposing = true; });
-  // 组合结束：拿最终文本（中文/emoji）整段注入
+  // 组合结束：拿最终文本（中文/emoji/智能输入英文）整段提交
   kbi.addEventListener('compositionend', (e) => {
     kbdComposing = false;
-    const text = e.data || kbi.value;
-    kbi.value = '';
+    const text = e.data || '';
+    kbi.value = ' ';
+    kbdLastLen = 1;
     // Safari 在 compositionend 后可能补发一个 input（isComposing 乱序 bug）：短窗口忽略
     kbdJustComposed = true;
     if (kbdJustComposedTimer) clearTimeout(kbdJustComposedTimer);
     kbdJustComposedTimer = setTimeout(() => { kbdJustComposed = false; }, 60);
-    kbdForwardText(text);
+    kbdCommitText(text);
   });
-  // 实时输入事件：ASCII 逐键 / Backspace / Enter / 多字符整段
+  // 输入事件：删除键 / 回车 / 英文逐键增量（统一粘贴通道）
   kbi.addEventListener('input', (e) => {
-    if (kbdComposing || kbdJustComposed) { kbi.value = ''; return; }
-    const dt = e.inputType || '';
-    const data = e.data || '';
-    if (dt === 'deleteContentBackward') { // iOS 退格（长按删除为重复 deleteContentBackward）
-      kbdSendSpecial(0xff08, 'Backspace'); // XK_BackSpace
-      kbi.value = '';
-      return;
-    }
-    if (dt === 'insertLineBreak') { // 回车
-      kbdSendSpecial(0xff0d, 'Enter'); // XK_Return
-      kbi.value = '';
-      return;
-    }
-    if (dt === 'insertText' && /^[\x20-\x7E]$/.test(data)) { // 单个 ASCII：实时逐键
-      kbdSendChar(data);
-      kbi.value = '';
-      return;
-    }
-    // 多字符插入（粘贴/预测/emoji 等）：整段注入后清空
+    // compositionend 后短窗口（60ms）iOS 会补发乱序 input：只清空不转发
+    if (kbdJustComposed) { kbi.value = ' '; return; }
+    // composition 会话中：不干预 kbi.value（iOS IME 拥有所有权）。
+    // 【2026-08-15 修复】此前在此执行 kbi.value='' 会破坏 iOS IME 状态机：
+    // compositionend 不再触发 → kbdComposing 卡 true → 中英文 input 全被吞 → 不上屏。
+    // 拼音/智能输入的过程字符（insertCompositionText）由 compositionend 一次性提交。
+    if (kbdComposing) return;
+
     const v = kbi.value;
-    if (v) {
-      kbdForwardText(v);
-      kbi.value = '';
+    const dt = e.inputType || '';
+    // 删除键识别（2026-08-15 修复"删除不生效"）：优先用 iOS 删除键标准事件
+    // inputType=deleteContentBackward（与本地 value 无关——删除操作的是被控端，
+    // 控制端 input 可能为空/已清空，value 变短检测会漏掉）。长按删除 = 重复该事件。
+    // value 变短仅作兜底（iOS 事件异常时）。删除键语义 = 操作被控设备：
+    // 向被控端发一次 Backspace 按键事件（长按=连续删除）。
+    if (dt === 'deleteContentBackward' || v.length < kbdLastLen) {
+      kbdSendSpecial(0xff08, 'Backspace'); // XK_BackSpace → 被控端删字
+      // 删除后立即重置占位：浮层只做"删除触发器"，value 始终保持非空，删除键持续触发 input
+      kbi.value = ' ';
+      kbdLastLen = 1;
+      return;
+    }
+    // 英文/数字：单可打印 ASCII 走键值直发（kbdSendAscii），多字符/非 ASCII 回退粘贴
+    const inc = e.data || '';
+    if (inc) kbdSendAscii(inc);
+    kbi.value = ' ';
+    kbdLastLen = 1;
+  });
+
+  // 回车/换行/发送：iOS 单行 input 按 return 不触发 input（不插换行），只派发 keydown(13)，
+  // 故不能用 input 的 insertLineBreak（单行 input 永不触发）。捕获 Enter → 发 XK_Return，
+  // 由被控端按聚焦场景识别为发送/换行/搜索。
+  kbi.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.keyCode === 13) {
+      e.preventDefault();
+      kbdSendSpecial(0xff0d, 'Enter'); // XK_Return
     }
   });
 
-  // 控制端软键盘被系统收起（点击别处/滚动/切后台）：复位 kbdSoft 与按钮高亮
-  kbi.addEventListener('blur', () => {
-    kbdSoft = false;
-    updateKbdBtns();
-  });
   // 2026-08-14 审查结论（用户实测确认）：iOS 键盘上方「粘贴」按钮不出现（QuickType 栏无此按钮），
   // 长按也无法触达 kbdInput（隐藏元素不可交互，长按画面会转发被控设备弹出被控端菜单）——
   // iOS 上无横幅自动取剪贴板路径不存在。用户拍板：iOS 不提供正向粘贴，
@@ -919,14 +971,18 @@ function renderCapOps(container, device) {
     b.title = k.title;
     b.innerHTML = '<span class="cap-icon">' + (k.svg || escapeHtml(k.icon || '?')) + '</span><span class="cap-name">' + escapeHtml(k.title) + '</span>';
     container.__pressCleanups.push(attachPress(b, k, { invoke: (capId) => {
-      // 键盘键 = 显示/隐藏控制端软键盘（对齐原生 noVNC「Show Keyboard」，详见 toggleKbd）
-      if (k.key === 'keyboard') { toggleKbd(); return; }
+      // 键盘键 = 单向固定（2026-08-16 回退）：发 XF86Keyboard 收起被控端软键盘；
+      // 触控端再 focusKbdInput 调起控制端软键盘（电脑端有实体键盘，不调软键盘）。
+      if (k.key === 'keyboard') {
+        kbdSendSpecial(0x1008ff2e, null); // XF86Keyboard → 设备端 toggleOnScreenKeyboard 收起被控端键盘
+        if (isTouchable()) focusKbdInput();
+        return;
+      }
       const rfb = focus && focus.rfb;
       if (rfb && rfb._farmConnected) rfbPressKey(rfb, k, capId);
       // 控制台直连模式：按键仅在有活跃 RFB 连接时可用，无连接不发送
     } }));
     keyBtns.push(b);
-    if (k.key === 'keyboard') kbdBtns.push(b);   // 键盘键按钮引用（输入源切换高亮）
   }
   if (keyBtns.length > 0) {
     if (!isOpsMenu) frag.appendChild(keyTitle);   // 悬浮菜单不显示「按键」分组标题
@@ -957,34 +1013,42 @@ function renderCapOps(container, device) {
 }
 
 /**
- * 显示轻量 toast 提示（右上角短暂浮现，自动消失）
- * @param {string} msg 提示文案
+ * 显示右上角 toast（动作级日志，与控制台/5801 同构）：fixed 右上角 + 安全区，三态上色，500ms 同文案去重。
+ * @param {string} msg  文案（两段式「动作 + 结果/原因」，前缀 ✓/✗ 由调用方带上）
+ * @param {string} type success|error|info（默认 info）
  * @returns {void}
  */
+const TOAST_CFG = {
+  success: { color: '#34c759', ms: 2000 },  // ✓ 成功 绿
+  error:   { color: '#ff453a', ms: 3500 },  // ✗ 失败 红
+  info:    { color: '#d0d0d0', ms: 2000 },  // 中性 灰
+};
 let farmToastTimer = null;
-function toast(msg) {
+let farmToastLast = { msg: '', at: 0 };
+function toast(msg, type = 'info') {
+  const cfg = TOAST_CFG[type] || TOAST_CFG.info;
+  const now = Date.now();
+  if (farmToastLast.msg === msg && now - farmToastLast.at < 500) return; // 同文案 500ms 去重防刷屏
+  farmToastLast = { msg, at: now };
   let el = document.getElementById('farmToast');
   if (!el) {
     el = document.createElement('div');
     el.id = 'farmToast';
     document.body.appendChild(el);
   }
-  // 2026-08-15 修复"复制提示浮层超出画面不便于查看"：聚焦画布打开时 toast 挂到画布容器
-  // #focusScreen 内（absolute 顶部居中，始终在画布范围内可见）；无画布场景保持 fixed 右上角。
-  const screenEl = document.getElementById('focusScreen');
-  const inCanvas = !!(focus && focus.device && screenEl);
-  if (el.parentElement !== (inCanvas ? screenEl : document.body)) {
-    (inCanvas ? screenEl : document.body).appendChild(el);
-  }
-  if (inCanvas) {
-    el.style.cssText = 'position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:60;background:rgba(20,26,40,.92);color:#fff;padding:10px 14px;border-radius:10px;font:13px/1.4 system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.4);max-width:calc(100% - 24px);pointer-events:none;transition:opacity .25s;';
-  } else {
-    el.style.cssText = 'position:fixed;top:14px;right:14px;z-index:999;background:rgba(20,26,40,.92);color:#fff;padding:10px 14px;border-radius:10px;font:13px/1.4 system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.4);max-width:70vw;pointer-events:none;transition:opacity .25s;';
-  }
   el.textContent = msg;
+  el.style.cssText =
+    'position:fixed;' +
+    'top:calc(env(safe-area-inset-top, 0px) + 12px);' +
+    'right:calc(env(safe-area-inset-right, 0px) + 14px);' +
+    'z-index:999;max-width:min(72vw, 340px);' +
+    'background:rgba(20,26,40,.92);color:' + cfg.color + ';' +
+    'padding:10px 14px;border-radius:10px;border-left:3px solid ' + cfg.color + ';' +
+    'font:13px/1.4 system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.4);' +
+    'pointer-events:none;transition:opacity .25s;';
   el.style.opacity = '1';
   if (farmToastTimer) clearTimeout(farmToastTimer);
-  farmToastTimer = setTimeout(() => { el.style.opacity = '0'; }, 2000);
+  farmToastTimer = setTimeout(() => { el.style.opacity = '0'; }, cfg.ms);
 }
 
 /**
@@ -1065,6 +1129,25 @@ async function readClipboardText() {
 
 // 2026-08-15 基建：回环防护由原生端 changeCount 锚点抑制承担（writeClipboard 写入触发的一次
 // 通知被吞、setStringFromRemote 同理），此处不再做来源排除/文本去重——相同文本每次复制都同步。
+// 粘贴输入回显抑制由设备端 setStringForPasteInput（suppressInputEcho）治本承担（需重打 IPA），
+// 前端不做兜底（用户 2026-08-15 拍板：前端不加输入回显抑制）。
+
+/**
+ * 提交粘贴文本：调用 type.paste 能力注入被控设备（携带控制端文本 → 写设备剪贴板 + 模拟 Cmd+V，原子）。
+ * @param {string|null} devId 目标设备 ID（可能为空：keydown 直达路径用 focus.device.id）
+ * @param {string} text 要注入的文本
+ * @returns {Promise<void>}
+ */
+async function submitPasteText(devId, text) {
+  if (!devId || !text) return;
+  try {
+    const r = await invokeCap('', devId, 'type.paste', { text });
+    if (r && r.ok) toast(`✓ 已粘贴 ${text.length} 字符到设备`, 'success');
+    else toast(`✗ 粘贴失败：${(r && r.ack && r.ack.error) || '未知错误'}`, 'error');
+  } catch (e) {
+    toast(`✗ 粘贴调用失败：${e.message}`, 'error');
+  }
+}
 
 // 控制端→受控设备剪贴板同步核心（2026-08-14 抽出共用）：
 // 把控制端剪贴板文本经 RFB clipboardPasteFrom（Extended Clipboard 协议通道，UTF-8）写入
@@ -1116,23 +1199,6 @@ document.addEventListener('copy', async () => {
   farmPushClipboardToSessions(txt, null);
 });
 
-/**
- * 提交粘贴文本：调用 type.paste 能力注入被控设备（携带控制端文本 → 写设备剪贴板 + 模拟 Cmd+V，原子）。
- * @param {string|null} devId 目标设备 ID（可能为空：keydown 直达路径用 focus.device.id）
- * @param {string} text 要注入的文本
- * @returns {Promise<void>}
- */
-async function submitPasteText(devId, text) {
-  if (!devId || !text) return;
-  try {
-    const r = await invokeCap('', devId, 'type.paste', { text });
-    if (r && r.ok) toast(`✓ 已粘贴 ${text.length} 字符到设备`);
-    else toast(`✗ 粘贴失败：${(r && r.ack && r.ack.error) || '未知错误'}`);
-  } catch (e) {
-    toast(`✗ 粘贴调用失败：${e.message}`);
-  }
-}
-
 // 移动端 FAB 菜单「粘贴」：读取控制端剪贴板 → type.paste 原子注入被控设备聚焦输入框。
 // 与电脑端 Ctrl+V 完全同链路（readClipboardText → submitPasteText）：
 //   - readClipboardText 必须在用户手势内同步调用（本函数由按钮 click 触发，激活窗口有效）；
@@ -1143,18 +1209,18 @@ async function submitPasteText(devId, text) {
 // 一键直读直贴为显式用户手势，一次点击即可走完整时序）。
 async function pasteToFocusedDevice() {
   if (!focus || !focus.device) {
-    toast('请先进入设备控制');
+    toast('✗ 粘贴失败：请先进入设备控制', 'error');
     return;
   }
   let txt = null;
   try {
     txt = await readClipboardText(); // 同步发起（手势激活内），勿在调用前 await 其它操作
   } catch (err) {
-    toast(err.message); // 非 https/API 不可用/被拒：明确报错，不降级弹浮层
+    toast(`✗ 粘贴失败：${err.message}`, 'error'); // 非 https/API 不可用/被拒：明确报错，不降级弹浮层
     return;
   }
   if (!txt) {
-    toast('控制端剪贴板为空，请先复制文本');
+    toast('✗ 粘贴失败：控制端剪贴板为空', 'error');
     return;
   }
   await submitPasteText(focus.device.id, txt);
@@ -1174,10 +1240,10 @@ document.addEventListener('keydown', async (e) => {
   try {
     txt = await readClipboardText();
   } catch (err) {
-    toast(err.message); // 剪贴板不可读：明确报错，不降级弹浮层
+    toast(`✗ 粘贴失败：${err.message}`, 'error'); // 剪贴板不可读：明确报错，不降级弹浮层
     return;
   }
-  if (!txt) { toast('控制端剪贴板为空，请先复制文本'); return; }
+  if (!txt) { toast('✗ 粘贴失败：控制端剪贴板为空', 'error'); return; }
   await submitPasteText(focus.device.id, txt);
 }, true);
 
@@ -1189,8 +1255,7 @@ document.addEventListener('keydown', async (e) => {
 async function enterFocus(d) {
   if (focus && focus.device.id === d.id) return;
   if (focus) exitFocus();
-  if (d.online === false) { alert(`设备「${d.name}」离线，请唤醒手机后重试`); return; }
-  // 只走隧道：未注册设备不可控制
+  // 只走隧道：未注册设备不可控制（离线已注册设备收编进连接态浮层，见建立连接前判断）
   if (d.source !== 'register') { alert('设备未注册（无隧道），请先在手机 App 配置网关完成注册'); return; }
   // 2026-08-14 审查删除：点卡片不再作为控制端→设备写剪贴板事件（隐式同步易造成控制端旧文本
   // 被塞入设备，用户拍板去除；控制端→设备方向仅保留 copy 事件用户主动复制同步）
@@ -1240,9 +1305,6 @@ async function enterFocus(d) {
   if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.farmBridge) {
     window.webkit.messageHandlers.farmBridge.postMessage({ type: 'setTabBarHidden', hidden: true });
   }
-  // 键盘软键盘状态复位（默认收起；用户需要输入时点「键盘」能力键才弹出，避免误弹系统粘贴条）
-  kbdSoft = false; kbdBtns = [];
-  updateKbdBtns();
   renderCapOps($('focusOpsCap'), d);
   renderCapOps($('opsMenuCap'), d);
   if (window.matchMedia('(max-width: 900px)').matches) $('fab').classList.remove('hidden');
@@ -1252,6 +1314,11 @@ async function enterFocus(d) {
   const broadcast = '1';
   // 先初始化 focus 再建立连接，避免在 null 上赋值抛错（修复点击卡片黑屏）
   focus = { device: d, rfb: null };
+  // 离线设备收编进连接态浮层（2026-08-16）：进入聚焦画面显示离线态，不建立 RFB（点离线卡片不再弹 alert）
+  if (d.online === false) {
+    setFocusOverlay(false, '设备离线，请唤醒手机后重试');
+    return;
+  }
   const fRfb = createRfb(stage, d, { grp, broadcast, ctrl: true }, $('focusStatusDot'));
   focus.rfb = fRfb;
   fRfb.addEventListener('connect', () => {
@@ -1392,10 +1459,8 @@ function exitFocus() {
   if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.farmBridge) {
     window.webkit.messageHandlers.farmBridge.postMessage({ type: 'setTabBarHidden', hidden: false });
   }
-  // 退出：收起控制端软键盘、复位键盘按钮高亮
-  kbdSoft = false; kbdBtns = [];
+  // 退出：收起控制端软键盘
   blurKbdInput();
-  updateKbdBtns();
   exitSyncMode(); // 关闭同步订阅与选择模式
   $('focusPanel').classList.add('hidden');
   $('focusOps').classList.add('hidden');
@@ -1605,7 +1670,7 @@ function startDirectRfb(d) {
       updateDirectBtn();
       if (directMode) {
         const code = e && e.detail && e.detail.code;
-        toast(`设备「${d.name}」直控已断开` + (code ? `（${code}）` : ''));
+        toast(`设备「${d.name}」直控已断开` + (code ? `（${code}）` : ''), 'error');
       }
     }
   });
@@ -1629,8 +1694,8 @@ function toggleDirectMode() {
     if (startDirectRfb(d)) n++;
   }
   updateDirectBtn();
-  if (n > 0) toast(`直控模式：${n} 台设备已开启推流，点击卡片直接控制`);
-  else toast('直控模式：当前无在线真实设备');
+  if (n > 0) toast(`直控模式：${n} 台设备已开启推流，点击卡片直接控制`, 'info');
+  else toast('直控模式：当前无在线真实设备', 'info');
 }
 
 /**
@@ -1934,10 +1999,10 @@ function createRfb(container, device, opts = {}, statusEl = null) {
     else if (code === 4005) {
       // 设备隧道在线但 5901 画面服务不可用（设备端 VNC 服务未运行）：
       // 与"设备离线"区分开，明确提示画面服务问题而非误导为设备掉线
-      toast('设备在线但画面服务不可用（设备端 VNC 服务未运行），请检查设备');
+      toast('✗ 设备在线但画面服务不可用（设备端 VNC 服务未运行），请检查设备', 'error');
     } else if (code && code !== 1000) {
       // 非正常关闭（1006 等）：显示断开码便于定位（1000=正常断开不提示）
-      toast(`画面断开 (${code})${d.reason ? '：' + d.reason : ''}`);
+      toast(`画面断开 (${code})${d.reason ? '：' + d.reason : ''}`, 'error');
     }
   });
   // 设备 → 控制端剪贴板同步（方案 B 双向，2026-08-14）：
@@ -1956,7 +2021,7 @@ function farmWriteClipboardToControl(text, devName) {
   if (bridge) {
     try {
       bridge.postMessage({ type: 'writeClipboard', text });
-      toast(`已同步设备「${devName}」剪贴板（${text.length} 字符）`);
+      toast(`✓ 已同步设备「${devName}」剪贴板（${text.length} 字符）`, 'success');
       return;
     } catch (e) {
       console.error('[clip] native writeClipboard 桥调用失败，降级 writeText：', e);
@@ -1965,15 +2030,15 @@ function farmWriteClipboardToControl(text, devName) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(() => {
       console.debug(`[clip] 已写入控制端剪贴板（${text.length} 字符）`);
-      toast(`已同步设备「${devName}」剪贴板（${text.length} 字符）`);
+      toast(`✓ 已同步设备「${devName}」剪贴板（${text.length} 字符）`, 'success');
     }).catch((err) => {
       console.error('[clip] 写入控制端剪贴板失败：', err);
-      toast(`✗ 设备「${devName}」剪贴板已同步但写入控制端失败（iOS 非手势限制，建议使用 SuperPhone App 内控制台）`);
+      toast(`✗ 设备「${devName}」剪贴板已同步但写入控制端失败（iOS 非手势限制，建议使用 SuperPhone App 内控制台）`, 'error');
     });
     return;
   }
   console.error('[clip] navigator.clipboard 不可用（需 https 安全上下文）');
-  toast(`✗ navigator.clipboard 不可用（需 https 安全上下文），设备「${devName}」剪贴板无法写入控制端`);
+  toast(`✗ navigator.clipboard 不可用（需 https 安全上下文），设备「${devName}」剪贴板无法写入控制端`, 'error');
 }
 
 // 设备→控制端剪贴板同步（RFB ServerCutText 负长度 Extended Clipboard，2.3u 修复）：
@@ -2086,20 +2151,20 @@ async function saveEditModal() {
   const rawOrder = $('fEditOrder').value.trim();
   const order = rawOrder === '' ? null : Number(rawOrder);
   if (order !== null && (!Number.isInteger(order) || order < 0 || order > 99999)) {
-    toast('✗ ID 须为 0-99999 的整数，或留空清除');
+    toast('✗ ID 须为 0-99999 的整数，或留空清除', 'error');
     return;
   }
   const name = $('fEditName').value.trim();
-  if (!name) { toast('✗ 名称不能为空'); return; }
+  if (!name) { toast('✗ 名称不能为空', 'error'); return; }
   const devId = editModalDevice.id;
   try {
     await api(`/api/devices/${encodeURIComponent(devId)}`, { method: 'PATCH', body: JSON.stringify({ name, order }) });
     $('editModal').classList.add('hidden');
-    toast(`已更新「${name}」`);
+    toast(`✓ 已更新「${name}」`, 'success');
     editModalDevice = null;
     await refreshDevices();
   } catch (e) {
-    toast(`✗ 保存失败：${e.message}`);
+    toast(`✗ 保存失败：${e.message}`, 'error');
   }
 }
 
@@ -2111,10 +2176,10 @@ async function saveEditModal() {
 async function deleteDeviceCard(d) {
   try {
     await api(`/api/devices/${encodeURIComponent(d.id)}`, { method: 'DELETE' });
-    toast(`已删除「${d.name}」`);
+    toast(`✓ 已删除「${d.name}」`, 'success');
     await refreshDevices();
   } catch (e) {
-    toast(`✗ 删除失败：${e.message}`);
+    toast(`✗ 删除失败：${e.message}`, 'error');
   }
 }
 $('btnSaveEdit').onclick = () => saveEditModal();

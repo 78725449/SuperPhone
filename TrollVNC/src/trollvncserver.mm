@@ -2613,8 +2613,16 @@ NS_INLINE NSString *keysymToString(rfbKeySym ks) {
         return @"LEFTCOMMAND"; // Treat Super as Command in both schemes
     case XK_Super_R:
         return @"RIGHTCOMMAND";
+    case XK_Caps_Lock:
+        return @"CAPSLOCK"; // 大写锁定 → kHIDUsage_KeyboardCapsLock
     default:
         break;
+    }
+    // 小键盘数字（XK_KP_0..XK_KP_9 = 0xFFB0..0xFFB9）→ 主键盘数字字符（iOS 数字语义相同，
+    // 映射到 kHIDUsage_Keyboard0-9，避免引入未定义的 Keypad usage 常量）
+    if (ks >= XK_KP_0 && ks <= XK_KP_9) {
+        unichar ch = (unichar)('0' + (ks - XK_KP_0));
+        return [NSString stringWithCharacters:&ch length:1];
     }
     // Function keys XK_F1..XK_F24
     if (ks >= XK_F1 && ks <= XK_F24) {

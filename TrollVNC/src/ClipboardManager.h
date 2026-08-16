@@ -48,6 +48,14 @@ NS_ASSUME_NONNULL_BEGIN
 /// text — is never swallowed).
 - (void)setStringFromRemote:(NSString *)text;
 
+/// Set clipboard string as a *paste-input* data carrier (type.paste injection).
+/// Same write as setStringFromRemote, but marks the change as an input echo:
+/// the next system notification whose clipboard text equals this value is
+/// suppressed (not forwarded back to the controller), so paste-input never
+/// pollutes the controller-side clipboard sync timing. A different text
+/// (a real user copy after input) passes through normally.
+- (void)setStringForPasteInput:(NSString *)text;
+
 /// Clipboard change callback (executed on the main thread; text is nil when no plain text).
 @property (atomic, copy, nullable) void (^onChange)(NSString *_Nullable text);
 

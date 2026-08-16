@@ -33,24 +33,35 @@ console.log('home label aligned:', s.includes("label: 'Home'"));
 console.log('snapshot label aligned:', s.includes("label: '截屏'"));
 // 收起菜单按钮移除（2026-08-14）
 console.log('panel-close removed:', !s.includes('panel-close'));
-// 软键盘（2026-08-15 实时打字方案：input/composition 事件驱动，无 Keyboard 实例/无 touchKb）
+// 软键盘（2026-08-16：英文/数字走 kbdSendAscii 键值直发 + 中文/emoji 走 kbdCommitText 粘贴）
 console.log('kbInput element present:', s.includes('id="kbInput"'));
 console.log('Keyboard import removed:', !s.includes("import Keyboard"));
 console.log('no touchKb / new Keyboard:', !s.includes('touchKb') && !s.includes('new Keyboard'));
-console.log('input-event kbd present:', s.includes('function kbdSendChar') && s.includes('function kbdForwardText') && s.includes('kbdComposing'));
+console.log('kbdCommitText paste present:', s.includes('function kbdCommitText') && s.includes('kbdComposing'));
+console.log('kbdSendAscii key-event present:', s.includes('function kbdSendAscii') && s.includes('rfb.sendKey(baseSym, null, true)'));
+console.log('kbdSendAscii shift signal:', s.includes("rfb.sendKey(0xffe1, 'ShiftLeft', true)"));
+// P1/P2（2026-08-16）：Shift 状态跟踪消除交错 + kbdSendSpecial 对齐 60ms 按住
+console.log('P1 kbdShiftHeld state:', s.includes('kbdShiftHeld') && s.includes('kbdShiftTimer'));
+console.log('P1 release/reset shift fn:', s.includes('function releaseKbdShift') && s.includes('function resetKbdShiftTimer'));
+console.log('P1 shift-up out of char-up:', !s.includes("if (shift) rfb.sendKey(0xffe1, 'ShiftLeft', false)"));
+console.log('P2 kbdSendSpecial 60ms:', /rfb\.sendKey\(keysym, code \|\| null, true\);\s*\} catch \(e\) \{ return; \}\s*setTimeout/.test(s));
+console.log('no old per-key kbdSendChar:', !s.includes('function kbdSendChar') && !s.includes('function kbdForwardText') && !s.includes('function kbdCommitBuffer'));
+console.log('delete via Backspace keysym:', s.includes('kbdSendSpecial(0xff08') && s.includes('Backspace'));
+console.log('enter via keydown + XK_Return:', s.includes("kbInput.addEventListener('keydown'") && s.includes('kbdSendSpecial(0xff0d'));
+console.log('no insertLineBreak dead branch:', !s.includes("dt === 'insertLineBreak'"));
 console.log('no legacy keyInput diff:', !s.includes('kbOnInput') && !s.includes('kbReset') && !s.includes('keysyms.lookup'));
-// 「键盘」键 = 显示/隐藏控制端软键盘（2026-08-14 对齐原生 noVNC「Show Keyboard」，无输入源切换/无 attach hack）
-console.log('kbdSoft default false:', s.includes('var kbdSoft = false'));
-console.log('kbdBtns var:', s.includes('var kbdBtns = []'));
+// 「键盘」键 = 两态开关（2026-08-16）：'control' 收起原生+拉起控制端 / 'device' 用被控端原生键盘
+console.log('no kbdSoft:', !s.includes('kbdSoft'));
+console.log('no kbdBtns:', !s.includes('kbdBtns'));
 console.log('no kbdControl two-state:', !s.includes('var kbdControl') && !s.includes('kbdControl ='));
 console.log('no attach protocol keysym:', !s.includes('tapKey(0x1008ff83') && !s.includes('tapKey(0x1008ff84'));
-console.log('no auto-popup on connect:', !s.includes('if (isTouch) { focusKbInput(); kbdSoft = true; }'));
-console.log('toggleKbd/updateKbdBtns/focusKbInput present:', s.includes('function toggleKbd') && s.includes('function updateKbdBtns') && s.includes('function focusKbInput'));
-console.log('kb case routes to toggleKbd:', s.includes("case 'kb'") && s.includes('toggleKbd()'));
-console.log('toggle = kbdSoft blur/focus (native):', s.includes('if (kbdSoft) {') && s.includes('blurKbInput();') && s.includes('focusKbInput();'));
+console.log('no kbdMode/toggleKbdMode:', !s.includes('kbdMode') && !s.includes('function toggleKbdMode'));
+console.log('no old toggleKbd:', !s.includes('function toggleKbd(') && !s.includes('function updateKbdBtns'));
+console.log('kb case one-shot XF86Keyboard:', s.includes("case 'kb'") && s.includes("tapKey(0x1008ff2e, 'XF86Keyboard')"));
+console.log('kb case touch focusKbInput:', s.includes("case 'kb'") && s.includes('isTouch') && s.includes('focusKbInput()'));
+console.log('focusKbInput present:', s.includes('function focusKbInput'));
 console.log('iOS reliable dismiss (readonly trick):', s.includes("kbi.setAttribute('readonly', 'readonly')") && s.includes("kbi.removeAttribute('readonly')"));
-console.log('connect resets kbdSoft:', s.includes('kbdSoft = false;'));
-console.log('kbd-on highlight (no kbd-control/device):', s.includes('.kbd-on') && !s.includes('.kbd-control') && !s.includes('.kbd-device'));
+console.log('no kbd-device-mode css:', !s.includes('.kbd-device-mode'));
 console.log('no pagehide attach restore:', !s.includes('XF86KeyboardShow'));
 console.log('paste overlay kept:', s.includes('id="clipOverlay"') && s.includes('function pasteToDevice') && s.includes("pasteToDevice(t)"));
 
