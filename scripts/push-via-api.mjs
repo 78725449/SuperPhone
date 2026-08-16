@@ -53,7 +53,7 @@ for (const rawLine of names.trim().split('\n')) {
   const ls = execSync(`git -c core.quotepath=false ls-tree ${LOCAL} -- "${filePath}"`, { encoding: 'utf8', cwd: CWD }).trim();
   const parts = ls.split(/\s+/); // [mode, type, sha, path]
   const [mode, type, sha] = parts;
-  const content = execSync(`git cat-file blob ${sha}`, { encoding: null, cwd: CWD });
+  const content = execSync(`git cat-file blob ${sha}`, { encoding: null, cwd: CWD, maxBuffer: 256 * 1024 * 1024 });
   const b64 = content.toString('base64');
   const blob = await api('POST', `${API}/repos/${REPO}/git/blobs`, { content: b64, encoding: 'base64' });
   treeEntries.push({ path: filePath, mode, type: 'blob', sha: blob.sha });
@@ -62,8 +62,23 @@ for (const rawLine of names.trim().split('\n')) {
 }
 console.log('entries:', treeEntries.length, '| blobs uploaded:', uploaded);
 
-// 3. 构建 tree（增量 base_tree）
-const tree = await api('POST', `${API}/repos/${REPO}/git/trees`, { base_tree: baseTree, tree: treeEntries });
+// 2.5 获取远程 base tree 递归清单，过滤与 base 相同的条目（GitHub tree API 对 base_tree 合并
+//     提交相同路径/相同内容条目会报 422 GitRPC::BadObjectState）
+const baseTreeInfo = await api('GET', `${API}/repos/${REPO}/git/trees/${baseTree}?recursive=1`);
+const basePaths = new Map();
+for (const t of baseTreeInfo.tree || []) {
+  if (t.type === 'blob' && t.path) basePaths.set(t.path, t.sha);
+}
+const filtered = treeEntries.filter((e) => {
+  if (e.sha === null) return basePaths.has(e.path); // 删除：仅当 base 中存在该路径
+  return basePaths.get(e.path) !== e.sha;           // blob：仅当与 base 内容不同
+});
+console.log('entries after base-dedup:', treeEntries.length, '->', filtered.length);
+
+// 3. 构建 tree（增量 base_tree；全量相同时直接复用 baseTree）
+const tree = filtered.length === 0
+  ? { sha: baseTree }
+  : await api('POST', `${API}/repos/${REPO}/git/trees`, { base_tree: baseTree, tree: filtered });
 console.log('new tree:', tree.sha);
 
 // 4. 创建 commit
