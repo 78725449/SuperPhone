@@ -978,6 +978,120 @@ const requestHandler = async (req, res) => {
               console.log(`[novnc] WARN: clipboardPasteFrom 未命中，noVNC 版本可能已变更，需人工核对！`);
             }
           }
+          // 聚焦画布多点手势（2026-08-16）：pinch/twotap/threetap 改走 farmgesture 自定义事件，
+          // 由前端 gesture.js resolveGesture 译为 touch.* 能力（设备端真实 IOHID 多点注入）。
+          // 行为变更：两指轻点原=右键(Home)、三指轻点原=中键(电源)、捏合原=Ctrl+wheel 合成缩放，
+          // 均改为调用被控端真实触摸手势；单指 tap/drag/长按保持原样。
+          {
+            const gw = (label, old, next) => {
+              const before = rfbSrc.includes(old);
+              rfbSrc = rfbSrc.replace(old, next);
+              console.log(`[novnc] rfb.js gesture patch [${label}]: matched=${before}`);
+              if (!before) console.log(`[novnc] WARN: gesture patch ${label} 未命中，noVNC 版本可能已变更！`);
+            };
+            const gStart = `                    case 'twotap':
+                        this._handleTapEvent(ev, 0x4);
+                        break;
+                    case 'threetap':
+                        this._handleTapEvent(ev, 0x2);
+                        break;`;
+            const gStartNext = `                    case 'twotap':
+                        this._farmDispatchGesture('twotap', ev);
+                        break;
+                    case 'threetap':
+                        this._farmDispatchGesture('threetap', ev);
+                        break;`;
+            gw('twotap/threetap start', gStart, gStartNext);
+
+            const gPinchStart = `                    case 'pinch':
+                        this._gestureLastMagnitudeX = Math.hypot(ev.detail.magnitudeX,
+                                                                 ev.detail.magnitudeY);
+                        this._fakeMouseMove(ev, pos.x, pos.y);
+                        break;`;
+            const gPinchStartNext = `                    case 'pinch':
+                        // [farm patch] 捏合记录起始间距（gestureend 算总 scale 派发 farmgesture）
+                        this._farmPinchStart = Math.hypot(ev.detail.magnitudeX,
+                                                          ev.detail.magnitudeY);
+                        this._farmPinchX = ev.detail.clientX;
+                        this._farmPinchY = ev.detail.clientY;
+                        break;`;
+            gw('pinch start', gPinchStart, gPinchStartNext);
+
+            const gPinchMove = `                    case 'pinch':
+                        // Always scroll in the same position.
+                        // We don't know if the mouse was moved so we need to move it
+                        // every update.
+                        this._fakeMouseMove(ev, pos.x, pos.y);
+                        magnitude = Math.hypot(ev.detail.magnitudeX, ev.detail.magnitudeY);
+                        if (Math.abs(magnitude - this._gestureLastMagnitudeX) > GESTURE_ZOOMSENS) {
+                            this._handleKeyEvent(KeyTable.XK_Control_L, "ControlLeft", true);
+                            while ((magnitude - this._gestureLastMagnitudeX) > GESTURE_ZOOMSENS) {
+                                this._handleMouseButton(pos.x, pos.y, 0x8);
+                                this._handleMouseButton(pos.x, pos.y, 0x0);
+                                this._gestureLastMagnitudeX += GESTURE_ZOOMSENS;
+                            }
+                            while ((magnitude -  this._gestureLastMagnitudeX) < -GESTURE_ZOOMSENS) {
+                                this._handleMouseButton(pos.x, pos.y, 0x10);
+                                this._handleMouseButton(pos.x, pos.y, 0x0);
+                                this._gestureLastMagnitudeX -= GESTURE_ZOOMSENS;
+                            }
+                        }
+                        this._handleKeyEvent(KeyTable.XK_Control_L, "ControlLeft", false);
+                        break;`;
+            const gPinchMoveNext = `                    case 'pinch':
+                        // [farm patch] 跟踪捏合过程最新间距与位置（gestureend 计算总 scale）
+                        this._farmPinchEnd = Math.hypot(ev.detail.magnitudeX, ev.detail.magnitudeY);
+                        this._farmPinchX = ev.detail.clientX;
+                        this._farmPinchY = ev.detail.clientY;
+                        break;`;
+            gw('pinch move', gPinchMove, gPinchMoveNext);
+
+            const gTapEnd = `                switch (ev.detail.type) {
+                    case 'onetap':
+                    case 'twotap':
+                    case 'threetap':
+                    case 'pinch':
+                    case 'twodrag':
+                        break;`;
+            const gTapEndNext = `                switch (ev.detail.type) {
+                    case 'onetap':
+                    case 'twotap':
+                    case 'threetap':
+                    case 'twodrag':
+                        break;
+                    case 'pinch': {
+                        // [farm patch] 命令式捏合：gestureend 一次性派发。
+                        // scale 语义：magnitude 为累计位移量（非间距比），位移增量 200px ≈ 放大一倍；
+                        // 钳制 0.5~2.0 与设备端 pinch 校验一致，避免超界被拒。
+                        const pinchDelta = (this._farmPinchEnd >= 0 ? this._farmPinchEnd : 0) - (this._farmPinchStart || 0);
+                        const scale = Math.max(0.5, Math.min(2.0, 1 + pinchDelta / 200));
+                        const evPinch = { detail: { clientX: this._farmPinchX, clientY: this._farmPinchY } };
+                        this._farmDispatchGesture('pinch', evPinch, { scale });
+                        break;
+                    }`;
+            gw('pinch end', gTapEnd, gTapEndNext);
+
+            const gMethod = `    _handleGesture(ev) {
+        let magnitude;
+
+        let pos = clientToElement(ev.detail.clientX, ev.detail.clientY,
+                                  this._canvas);`;
+            const gMethodNext = `    _farmDispatchGesture(type, ev, extra) {
+        const detail = Object.assign({ type }, extra || {});
+        if (ev && ev.detail) {
+            detail.clientX = ev.detail.clientX;
+            detail.clientY = ev.detail.clientY;
+        }
+        this._canvas.dispatchEvent(new CustomEvent('farmgesture', { detail }));
+    }
+
+    _handleGesture(ev) {
+        let magnitude;
+
+        let pos = clientToElement(ev.detail.clientX, ev.detail.clientY,
+                                  this._canvas);`;
+            gw('_farmDispatchGesture method', gMethod, gMethodNext);
+          }
           const after = rfbSrc.includes('secure context (TLS)');
           console.log(`[novnc] rfb.js patch: before=${before} after=${after}`);
           res.writeHead(200, {

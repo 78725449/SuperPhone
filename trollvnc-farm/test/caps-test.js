@@ -1,7 +1,7 @@
 // 能力前端自包含定义单测（web/caps.js）：无上报、无元数据表，全部为可直接调用的定义数组
 // 2026-08-15 精简：ACT_DEFS/QUICK_ACTIONS/QUICK_CONFIG_GROUPS/configSchemaByReload 已删除（卡片菜单仅留编辑/删除），
 // BATCH_CAPS 去掉 clients.*/sys.*/gateway.*（App 原生客户端列表另有入口）。
-import { BATCH_CAPS, CONFIG_DEFS, CONFIG_BY_KEY, KEY_DEFS, groupByCategory } from '../web/caps.js';
+import { BATCH_CAPS, CONFIG_DEFS, CONFIG_BY_KEY, KEY_DEFS, GESTURE_DEFS, groupByCategory } from '../web/caps.js';
 
 let failures = 0;
 function check(name, cond, extra = '') {
@@ -27,6 +27,13 @@ check('KEY_DEFS 按键含 ks/code/ptr 直发映射', KEY_DEFS.some((k) => typeof
 
 // ---- groupByCategory 保留（批量分组渲染：hid/service/native） ----
 check('groupByCategory 按 category 分组', groupByCategory(BATCH_CAPS).size === 3);
+
+// ---- GESTURE_DEFS（2026-08-16 画布多点手势契约：pinch/twotap/threetap → touch.* invoke） ----
+check('GESTURE_DEFS 3 项且字段齐全',
+  GESTURE_DEFS.length === 3 && GESTURE_DEFS.every((g) => g.gesture && g.id && g.title && g.icon && g.category === 'touch'));
+check('GESTURE_DEFS id 为 touch.* 且不与 BATCH_CAPS/KEY_DEFS 冲突',
+  GESTURE_DEFS.every((g) => /^touch\./.test(g.id))
+  && !GESTURE_DEFS.some((g) => [...BATCH_CAPS, ...KEY_DEFS].some((d) => d.id === g.id)));
 
 console.log(failures === 0 ? 'ALL CAPS TESTS PASSED' : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

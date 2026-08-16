@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node server/index.js",
-    "test": "node test/smoke.js && node test/tunnel-test.js && node test/register-test.js && node test/dedupe-test.js && node test/caps-test.js && node test/pending-replay-test.js && node test/press-test.js && node test/order-test.js"
+    "test": "node test/smoke.js && node test/tunnel-test.js && node test/register-test.js && node test/dedupe-test.js && node test/caps-test.js && node test/gesture-test.js && node test/pending-replay-test.js && node test/press-test.js && node test/order-test.js"
   },
   "dependencies": {
     "@novnc/novnc": "^1.5.0",

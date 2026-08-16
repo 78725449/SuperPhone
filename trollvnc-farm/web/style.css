@@ -117,6 +117,7 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
   top: 50% !important;
   transform: translate(-50%, -50%) !important;
   margin: 0 !important;
+  touch-action: none; /* 多指手势稳定：防 iOS 双击缩放/页面滚动抢占画布（gesturehandler preventDefault 兜底） */
 }
 /* noVNC _screen（stage 直接子元素）默认 overflow:auto——canvas 尺寸瞬变（首帧测量偏差）
    会让滚动条出现并自动滚动，把画布推走（贴顶/贴底）。聚焦视图禁用滚动：
@@ -267,6 +268,7 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
   position: absolute; left: 50%; top: 50%;
   transform: translate(-50%, -50%);
   pointer-events: none;
+  touch-action: none; /* 直控/同步推流画布同样防浏览器手势抢占（多指识别稳定） */
 }
 .tile .thumb {
   position: absolute; left: 0; top: 0; width: 100%; height: 100%;

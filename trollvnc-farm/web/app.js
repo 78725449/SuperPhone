@@ -2,8 +2,9 @@
 // rfb.js?v=2：noVNC 核心为 server 内存 patch（dot 圆点/TLS 屏蔽等），URL 带版本号强制浏览器
 // 重新拉取 patch 后的内容，避免旧版缓存（同 gesturehandler.js?v=3 方案）
 import RFB from '/novnc/core/rfb.js?v=2';
-import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=4';
+import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS, GESTURE_DEFS } from './caps.js?v=4';
 import { attachPress } from './press.js';
+import { attachFarmGesture, resolveGesture } from './gesture.js';
 
 const $ = (id) => document.getElementById(id);
 const isMobile = () => window.matchMedia('(max-width: 900px)').matches;
@@ -1975,6 +1976,18 @@ function createRfb(container, device, opts = {}, statusEl = null) {
     cv.addEventListener('mousedown', cursorPoke, opt);
     cv.addEventListener('wheel', cursorPoke, { capture: true, passive: false });
     rfb.addEventListener('disconnect', () => clearTimeout(cursorTimer));
+  }
+  // 聚焦画布多点手势（2026-08-16）：noVNC pinch/twotap/threetap → touch.* 能力调用
+  // （真实 IOHID 多点注入；仅聚焦可操控会话响应，直控/同步实例与断开后不响应）
+  if (!opts.viewOnly && rfb._canvas) {
+    attachFarmGesture(rfb._canvas, {
+      shouldRun: () => !!(focus && focus.rfb === rfb && focus.device && rfb._farmConnected && !rfb.viewOnly),
+      invoke: (cap, params) => {
+        const dev = focus && focus.device;
+        if (!dev) return;
+        invokeCap('', dev.id, cap, params).catch((err) => console.warn(`[gesture] ${cap} 失败: ${err.message}`));
+      },
+    });
   }
   // PC 端聚焦/直控画面：保持 noVNC 默认（showDotCursor=true）——服务端光标优先，
   // PC 上显示的是设备端真实发送的光标（可验证 IPA 圆点图案是否编译生效）；

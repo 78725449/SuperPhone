@@ -65,6 +65,16 @@ export const BATCH_CAPS = [
   { id: 'settings.searchGateway', title: '搜索网关', icon: '🔍', category: 'native', params: [] },
 ];
 
+/** 聚焦画布多点手势定义（2026-08-16：画布多指识别 → touch.* invoke）。
+ *  由 server patch 的 rfb.js 在 pinch/twotap/threetap 手势上派发 farmgesture CustomEvent，
+ *  app.js 经 gesture.js resolveGesture 译为 { cap, params }（坐标 0-1 归一化，与设备端契约一致）。
+ *  增改手势 = 本数组加一条 + 设备端注册对应 touch.* executor + gesture.js resolveGesture 加分支。 */
+export const GESTURE_DEFS = [
+  { gesture: 'pinch',    id: 'touch.pinch',          title: '捏合',     icon: '🔍', category: 'touch' },
+  { gesture: 'twotap',   id: 'touch.twoFingerTap',   title: '两指轻点', icon: '🖐️', category: 'touch' },
+  { gesture: 'threetap', id: 'touch.threeFingerTap', title: '三指轻点', icon: '🖐️', category: 'touch' },
+];
+
 /** 配置表单定义（契约）：与设备端 _registerConfigSchemas 对齐（37 项全量保留——均有真实实现） */
 export const CONFIG_DEFS = [
   { key: 'Scale', title: '输出缩放', type: 'number', min: 0.1, max: 1.0, step: 0.1, reload: 'hot' },
