@@ -1098,7 +1098,6 @@ static NSDictionary *TRSearchGatewaySync(void) {
     [self _registerConfig:@"OrientationSync" title:@"方向同步" type:@"bool" reload:TRConfigReloadHot];
     [self _registerConfig:@"OrientationPadFix" title:@"方向偏移" type:@"enum"
         enumValues:@[@0,@1,@2,@3] enumTitles:@[@"禁用",@"90°",@"180°",@"270°"] reload:TRConfigReloadHot];
-    [self _registerConfig:@"ServerCursor" title:@"服务端光标" type:@"bool" reload:TRConfigReloadHot];
     // 进阶画面
     [self _registerConfig:@"DeferWindowSec" title:@"延迟窗口" type:@"number" min:@0 max:@0.5 step:@0.005 reload:TRConfigReloadHot];
     [self _registerConfig:@"MaxInflight" title:@"最大并行帧" type:@"number" min:@0 max:@8 step:@1 reload:TRConfigReloadHot];
@@ -1359,7 +1358,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
         // 与 Root.plist 默认值对齐
         NSDictionary *defs = @{
             @"Enabled": @YES, @"BonjourEnabled": @YES, @"OrientationSync": @YES,
-            @"NaturalScroll": @YES, @"ServerCursor": @NO,
+            @"NaturalScroll": @YES,
             @"ViewOnly": @NO, @"AsyncSwap": @NO, @"AutoAssistEnabled": @NO,
             @"SingleNotifEnabled": @YES, @"ClientNotifsEnabled": @YES, @"KeyLogging": @NO,
         };

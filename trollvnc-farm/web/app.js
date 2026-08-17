@@ -1956,7 +1956,7 @@ function createRfb(container, device, opts = {}, statusEl = null) {
   // 光标策略（2026-08-17 用户需求，与 5801 直连页对齐，全端统一苹果灰圆）：
   // - 墙缩略图（viewOnly）：无光标（消除多 RFB 覆盖层光标串扰）
   // - 手机端控制画面：苹果灰圆，触屏点击/移动显示、空闲 1.5s 自动隐藏
-  // - PC 端聚焦/直控画面：苹果灰圆常驻（有物理鼠标，跟随显示不隐藏），忽略服务端光标图像
+  // - PC 端聚焦/直控画面：苹果灰圆常驻（有物理鼠标，跟随显示不隐藏）
   // 苹果风格触控光标（2026-08-14）：iOS 系统触摸指示器样式——半透明灰圆（深灰 128，中心≈0.85 透明度，边缘渐隐）。
   const APPLE_CURSOR_SIZE = 24;
   const APPLE_CURSOR_R = 9;
@@ -1980,7 +1980,7 @@ function createRfb(container, device, opts = {}, statusEl = null) {
     rfb._cursor.change(appleRgba, appleHot, appleHot, APPLE_CURSOR_SIZE, APPLE_CURSOR_SIZE);
   };
   if (opts.viewOnly) {
-    // 覆盖 _refreshCursor：无论服务端光标/dot 一律渲染为空（clear → cursor:none + 覆盖层清空）
+    // 覆盖 _refreshCursor：一律渲染为空（clear → cursor:none + 覆盖层清空）
     rfb._refreshCursor = () => { if (rfb._cursor) rfb._cursor.clear(); };
   } else if (isMobile()) {
     let cursorTimer = null;
@@ -2000,7 +2000,7 @@ function createRfb(container, device, opts = {}, statusEl = null) {
     cv.addEventListener('wheel', cursorPoke, { capture: true, passive: false });
     rfb.addEventListener('disconnect', () => clearTimeout(cursorTimer));
   } else {
-    // PC 聚焦/直控：强制苹果圆常驻（忽略服务端光标），鼠标移动/点击/连上即显示
+    // PC 聚焦/直控：强制苹果圆常驻，鼠标移动/点击/连上即显示
     rfb._refreshCursor = () => appleShow();
     const cv = rfb._canvas;
     const opt = { capture: true, passive: true };
@@ -2020,7 +2020,7 @@ function createRfb(container, device, opts = {}, statusEl = null) {
       },
     });
   }
-  // PC 端聚焦/直控画面：苹果灰圆常驻（2026-08-17，见上方光标策略分支），忽略服务端光标图像。
+  // PC 端聚焦/直控画面：苹果灰圆常驻（2026-08-17，见上方光标策略分支）。
   // 状态用红/蓝圆点表示（蓝=已连接，红=已断开/失败），不再显示文字
   const setStatus = (s) => {
     if (!statusEl) return;

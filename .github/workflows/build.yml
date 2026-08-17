@@ -115,7 +115,6 @@ jobs:
           TVNC_ORIENTATION_SYNC: true
           TVNC_NATURAL_SCROLL: false
           TVNC_AUTO_ASSIST_ENABLED: false
-          TVNC_SERVER_CURSOR: false
           TVNC_BONJOUR_ENABLED: false
           TVNC_KEY_LOGGING: false
           # Optional secrets (empty when not defined)

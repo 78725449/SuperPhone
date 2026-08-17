@@ -108,9 +108,6 @@ static BOOL gWheelNaturalDir = NO;        // natural scroll direction (invert de
 // Modifier mapping scheme: 0 = standard (Alt->Option, Meta/Super->Command), 1 = Alt-as-Command
 static int gModMapScheme = 0;
 static BOOL gAutoAssistEnabled = NO;
-static BOOL gCursorEnabled = NO;
-// 前置声明：ServerCursor 配置 set 时（L3154）需即时重建/清除服务端光标（定义在 L4512）
-static void setupRfbServerSideCursor(void);
 static BOOL gKeyEventLogging = NO;
 static BOOL gOrientationSyncEnabled = YES;
 
@@ -334,8 +331,7 @@ static void printUsageAndExit(const char *prog) {
 
     fprintf(stderr, "Accessibility:\n");
     fprintf(stderr, "  -O on|off  Observe iOS interface orientation and sync (default: on)\n");
-    fprintf(stderr, "  -E on|off  Enable AssistiveTouch auto-activation (default: off)\n");
-    fprintf(stderr, "  -U on|off  Enable server-side cursor X (default: off)\n\n");
+    fprintf(stderr, "  -E on|off  Enable AssistiveTouch auto-activation (default: off)\n\n");
 
     fprintf(stderr, "Notifications:\n");
     fprintf(stderr, "  -i on|off  Single notification when first client connects (default: on)\n");
@@ -667,9 +663,6 @@ static void parseDaemonOptions(void) {
     NSNumber *naturalN = [prefs objectForKey:@"NaturalScroll"];
     if ([naturalN isKindOfClass:[NSNumber class]])
         gWheelNaturalDir = naturalN.boolValue;
-    NSNumber *cursorN = [prefs objectForKey:@"ServerCursor"];
-    if ([cursorN isKindOfClass:[NSNumber class]])
-        gCursorEnabled = cursorN.boolValue;
     NSNumber *asyncSwapN = [prefs objectForKey:@"AsyncSwap"];
     if ([asyncSwapN isKindOfClass:[NSNumber class]])
         gAsyncSwapEnabled = asyncSwapN.boolValue;
@@ -766,8 +759,8 @@ static void parseDaemonOptions(void) {
     [cfg appendFormat:@"scale=%.2f fps=%d:%d:%d defer=%.3f ", gScale, gFpsMin, gFpsPref, gFpsMax, gDeferWindowSec];
     [cfg appendFormat:@"inflight=%d tile=%d full%%=%d rects=%d ", gMaxInflightUpdates, gTileSize,
                       gFullscreenThresholdPercent, gMaxRectsLimit];
-    [cfg appendFormat:@"async=%@ cursor=%@ orient=%@ orientFix=%d keylog=%@ ", gAsyncSwapEnabled ? @"YES" : @"NO",
-                      gCursorEnabled ? @"YES" : @"NO", gOrientationSyncEnabled ? @"YES" : @"NO",
+    [cfg appendFormat:@"async=%@ orient=%@ orientFix=%d keylog=%@ ", gAsyncSwapEnabled ? @"YES" : @"NO",
+                      gOrientationSyncEnabled ? @"YES" : @"NO",
                       gOrientationFixQuad, gKeyEventLogging ? @"YES" : @"NO"];
 
     // Wheel / input tuning
@@ -821,7 +814,7 @@ static void parseCLI(int argc, const char *argv[]) {
 #pragma clang diagnostic pop
 
     int opt;
-    const char *optstr = "p:b:n:vA:C:s:F:d:Q:t:P:R:aW:w:NM:KU:O:o:I:i:H:D:e:k:B:T:Vh";
+    const char *optstr = "p:b:n:vA:C:s:F:d:Q:t:P:R:aW:w:NM:KO:o:I:i:H:D:e:k:B:T:Vh";
     optind = 1;
     while ((opt = getopt(__argc2, __argv2.data(), optstr)) != -1) {
         switch (opt) {
@@ -1052,20 +1045,6 @@ static void parseCLI(int argc, const char *argv[]) {
                 TVLog(@"CLI: AssistiveTouch auto-activation disabled (-E %s)", [@(val) UTF8String]);
             } else {
                 TVPrintError("Invalid -E value: %s (expected on|off|1|0|true|false)", val);
-                exit(EXIT_FAILURE);
-            }
-            break;
-        }
-        case 'U': {
-            const char *val = optarg ? optarg : "off";
-            if (strcasecmp(val, "on") == 0 || strcmp(val, "1") == 0 || strcasecmp(val, "true") == 0) {
-                gCursorEnabled = YES;
-                TVLog(@"CLI: Cursor enabled (-U %s)", [@(val) UTF8String]);
-            } else if (strcasecmp(val, "off") == 0 || strcmp(val, "0") == 0 || strcasecmp(val, "false") == 0) {
-                gCursorEnabled = NO;
-                TVLog(@"CLI: Cursor disabled (-U %s)", [@(val) UTF8String]);
-            } else {
-                TVPrintError("Invalid -U value: %s (expected on|off|1|0|true|false)", val);
                 exit(EXIT_FAILURE);
             }
             break;
@@ -3139,10 +3118,6 @@ int tvReloadConfigForKey(const char *key) {
         if (spec.length) parseFrameRateSpec(spec.UTF8String ?: "");
     } else if ([k isEqualToString:@"OrientationSync"]) {
         gOrientationSyncEnabled = [p boolForKey:@"OrientationSync"];
-    } else if ([k isEqualToString:@"ServerCursor"]) {
-        // 2026-08-14：改配置后即时重建/清除服务端光标（原实现只改全局变量，运行中开关不生效）
-        gCursorEnabled = [p boolForKey:@"ServerCursor"];
-        setupRfbServerSideCursor();
     } else if ([k isEqualToString:@"DeferWindowSec"]) {
         double v = [p doubleForKey:@"DeferWindowSec"];
         if (v < 0.0) v = 0.0;
@@ -4291,86 +4266,6 @@ static void setXCutTextUTF8(char *str, int len, rfbClientPtr cl) {
     });
 }
 
-#pragma mark - Server-Side Cursor
-
-NS_INLINE void setupXCursor(rfbScreenInfoPtr screen) {
-    // 2026-08-14：苹果风格圆点光标（白色填充 + 黑色描边，透明外圈）。
-    // 与前端 noVNC dot 光标（server/index.js 7×7 白点黑边）视觉一致，
-    // 深色/浅色画面下均清晰可见；13×13 较 7×7 在真机触控场景更易辨识。
-    int width = 13, height = 13;
-
-    // mask：半径 6.5 的圆（不透明区域）
-    const char mask[] = "    xxxxx    "
-                        "  xxxxxxxxx  "
-                        " xxxxxxxxxxx "
-                        " xxxxxxxxxxx "
-                        "xxxxxxxxxxxxx"
-                        "xxxxxxxxxxxxx"
-                        "xxxxxxxxxxxxx"
-                        "xxxxxxxxxxxxx"
-                        "xxxxxxxxxxxxx"
-                        " xxxxxxxxxxx "
-                        " xxxxxxxxxxx "
-                        "  xxxxxxxxx  "
-                        "    xxxxx    ";
-    // cursor：'x'=黑色像素（描边环），' '=白色像素（填充），mask 之外透明
-    const char cursor[] = "    xxxxx    "
-                          "  xxxxxxxxx  "
-                          " xxx     xxx "
-                          " xx       xx "
-                          "xx         xx"
-                          "xx         xx"
-                          "xx         xx"
-                          "xx         xx"
-                          "xx         xx"
-                          " xx       xx "
-                          " xxx     xxx "
-                          "  xxxxxxxxx  "
-                          "    xxxxx    ";
-
-    rfbCursorPtr c = rfbMakeXCursor(width, height, (char *)cursor, (char *)mask);
-    if (!c)
-        return;
-
-    c->xhot = width / 2;
-    c->yhot = height / 2;
-    rfbSetCursor(screen, c);
-}
-
-NS_INLINE void setupAlphaCursor(rfbScreenInfoPtr screen, int mode) {
-    int i, j;
-    rfbCursorPtr c = screen ? screen->cursor : NULL;
-    if (!c)
-        return;
-
-    int maskStride = (c->width + 7) / 8;
-
-    if (c->alphaSource) {
-        free(c->alphaSource);
-        c->alphaSource = NULL;
-    }
-    if (mode == 0)
-        return;
-
-    c->alphaSource = (unsigned char *)malloc((size_t)c->width * (size_t)c->height);
-    if (!c->alphaSource)
-        return;
-
-    for (j = 0; j < c->height; j++) {
-        for (i = 0; i < c->width; i++) {
-            unsigned char value = (unsigned char)(0x100 * i / c->width);
-            rfbBool masked = (c->mask[(i / 8) + maskStride * j] << (i & 7)) & 0x80;
-            c->alphaSource[i + c->width * j] = (unsigned char)(masked ? (mode == 1 ? value : 0xff - value) : 0);
-        }
-    }
-
-    if (c->cleanupMask)
-        free(c->mask);
-
-    c->mask = (unsigned char *)rfbMakeMaskFromAlphaSource(c->width, c->height, c->alphaSource);
-    c->cleanupMask = TRUE;
-}
-
 #pragma mark - Setups (Native)
 
 static void prepareScreenCapturer(void) {
@@ -4647,20 +4542,6 @@ static void setupRfbCutTextHandlers(void) {
     // enableExtendedClipboard 为 per-client 字段（_rfbClientRec），需在 newClientHook
     // 对每个新客户端置 TRUE 才协商 extended caps 伪编码（0xC0A1E5CE）。
     TVLog(@"Clipboard: client->server handlers registered (extended clipboard)");
-}
-
-static void setupRfbServerSideCursor(void) {
-    if (gCursorEnabled) {
-        setupXCursor(gScreen);
-        setupAlphaCursor(gScreen, 0);
-        TVLog(@"Cursor: XCursor + alpha mode=2 enabled");
-    } else {
-        // 2026-08-14：关闭必须清除已注册的服务端光标（原实现只打日志，残留 X 持续发送）。
-        // rfbSetCursor(NULL) 置 screen->cursor=NULL + cursorWasChanged，新连接不再发服务端光标
-        // （noVNC 回落显示 dot 圆点）；已建立连接保留旧光标，重连后生效。
-        rfbSetCursor(gScreen, NULL);
-        TVLog(@"Cursor: disabled (default; enable with -U on)");
-    }
 }
 
 static void setupRfbHttpServer(void) {
@@ -5011,7 +4892,6 @@ int main(int argc, const char *argv[]) {
         setupRfbEventHandlers();
         setupRfbClassicAuthentication();
         setupRfbCutTextHandlers();
-        setupRfbServerSideCursor();
         setupRfbHttpServer();
         setupRfbFileTransferExtension();
 

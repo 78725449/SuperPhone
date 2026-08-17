@@ -154,8 +154,6 @@
 
 "Server" = "服务器";
 
-"Server-Side Cursor" = "服务器端光标";
-
 "server:port" = "服务器:端口";
 
 "Set a password for view-only access (no input)." = "设置仅查看访问的密码（无控制权限）。";

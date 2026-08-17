@@ -154,8 +154,6 @@
 
 "Server" = "Server";
 
-"Server-Side Cursor" = "Server-Side Cursor";
-
 "server:port" = "server:port";
 
 "Set a password for view-only access (no input)." = "Set a password for view-only access (no input).";

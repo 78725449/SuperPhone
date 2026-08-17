@@ -81,7 +81,6 @@ export const CONFIG_DEFS = [
   { key: 'FrameRateSpec', title: '帧率', type: 'string', reload: 'hot' },
   { key: 'OrientationSync', title: '方向同步', type: 'bool', reload: 'hot' },
   { key: 'OrientationPadFix', title: '方向偏移', type: 'enum', enumValues: [0, 1, 2, 3], enumTitles: ['禁用', '90°', '180°', '270°'], reload: 'hot' },
-  { key: 'ServerCursor', title: '服务端光标', type: 'bool', reload: 'hot' },
   { key: 'DeferWindowSec', title: '延迟窗口', type: 'number', min: 0, max: 0.5, step: 0.005, reload: 'hot' },
   { key: 'MaxInflight', title: '最大并行帧', type: 'number', min: 0, max: 8, step: 1, reload: 'hot' },
   { key: 'PerformanceMode', title: '性能模式', type: 'enum', enumValues: ['balanced', 'quality', 'performance', 'custom'], enumTitles: ['均衡', '画质', '性能', '自定义'], reload: 'hot' },

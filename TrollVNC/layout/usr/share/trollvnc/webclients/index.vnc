@@ -308,7 +308,7 @@ import RFB from './novnc/core/rfb.js';
     rfb.resizeSession = false;
     // 光标策略（2026-08-17 与网关前端 app.js 对齐，全端统一苹果灰圆）：
     // - 触屏版（isTouch）：苹果灰圆，触屏点击/移动显示、空闲 1.5s 自动隐藏
-    // - PC 版：苹果灰圆常驻（有物理鼠标，跟随显示不隐藏），忽略服务端光标图像
+    // - PC 版：苹果灰圆常驻（有物理鼠标，跟随显示不隐藏）
     // 苹果风格触控光标（2026-08-14）：iOS 系统触摸指示器样式——半透明灰圆（深灰 128，中心≈0.85 透明度，边缘渐隐）。
     rfb.showDotCursor = false;   // 全端不再用 noVNC 默认 dot
     var APPLE_CURSOR_SIZE = 24, APPLE_CURSOR_R = 9;
@@ -350,7 +350,7 @@ import RFB from './novnc/core/rfb.js';
       screen.addEventListener('mousedown', cursorPoke, touchOpt);
       rfb.addEventListener('disconnect', function () { clearTimeout(cursorTimer); });
     } else {
-      // PC：强制苹果圆常驻（忽略服务端光标），鼠标移动/点击/连上即显示
+      // PC：强制苹果圆常驻，鼠标移动/点击/连上即显示
       rfb._refreshCursor = function () { appleCursorShow(); };
       var pcOpt = { capture: true, passive: true };
       screen.addEventListener('mousemove', appleCursorShow, pcOpt);
