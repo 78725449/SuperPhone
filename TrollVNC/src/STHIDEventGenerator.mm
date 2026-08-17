@@ -1188,8 +1188,10 @@ static inline uint32_t hidUsageCodeForCharacter(NSString *key) {
     if ([key isEqualToString:@"PAUSE"])
         return kHIDUsage_KeyboardPause;
 
-    // FIXME:
-    // FORWARD/REWIND/FORWARD2/REWIND2/EJECT/PLAYPAUSE/SPOTLIGHT/BRIGHTUP/BRIGHTDOWN/SHOW_HIDE_KEYBOARD
+    // 媒体/系统键（EJECT/PLAYPAUSE/FORWARD/REWIND/SPOTLIGHT/BRIGHTUP/BRIGHTDOWN/SHOW_HIDE_KEYBOARD
+    // 等）统一在 trollvncserver.mm kbdAddEvent 的 keysym switch 拦截并按 Consumer Page 注入，
+    // 不经过 keyDown/keyUp（2026-08-18 确认，此前 FIXME 所列键名大多已由该 switch 覆盖）。
+    // 能走到 keyDown 的键名必须在此映射表落项，返回 0 即静默丢弃。
 
     return 0;
 }

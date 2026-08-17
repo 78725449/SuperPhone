@@ -3,7 +3,7 @@
 // 2026-08-14 方案 A：顺序与网关 KEY_DEFS 对齐（power 上、mute 在 voldn 上），新增 snapshot/spotlight
 // 2026-08-15：clipboard → paste（剪贴板按钮改为粘贴输入，见 index.vnc）
 // 2026-08-17：显式双向搬运——新增 copy（管理通道 clipboard.get 拉取设备剪贴板到控制端）
-export const DEFAULT_CAPS = ['power', 'home', 'volup', 'mute', 'voldn', 'briup', 'bridn', 'snapshot', 'spotlight', 'keyboard', 'copy', 'paste'];
+// 2026-08-18：移除 DEFAULT_CAPS 死导出（index.vnc 仅消费 CAP_META；按钮清单由 BAR_KEYS 常量定义）
 
 export const CAP_META = {
   power:     { op: 'power',     label: '电源',      icon: '⏻',    title: '电源' },

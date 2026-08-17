@@ -732,11 +732,11 @@ static NSDictionary *TRSearchGatewaySync(void) {
             return [self _touchAsync:^(STHIDEventGenerator *gen) { [gen sendEventStream:info]; }];
         }];
     // 2026-08-14 移除 type.text 注册：HID keyPress 仅支持 ASCII（c<128），中文/emoji 静默丢弃；
-    // 前端 ACT_DEFS/BATCH_CAPS 均无调用入口，type.paste 是完整的替代方案（支持中文/emoji）
+    // 前端 BATCH_CAPS 无调用入口，type.paste 是完整的替代方案（支持中文/emoji）
     // Batch 3：粘贴输入（任意文本，支持中文/emoji）
     // 方案 B（2026-08-14）：粘贴输入与剪贴板同步解耦，text 参数可选：
     //  - text 有值：先写设备剪贴板（幂等同步，兼容旧链路：同步+粘贴一步到位）
-    //  - text 为空：跳过写剪贴板，仅触发粘贴动作（文本已在"复制自动同步/协议通道 clipboardPasteFrom"进入设备剪贴板）
+    //  - text 为空：跳过写剪贴板，仅触发粘贴动作（文本已由控制端显式搬运：复制→协议通道 clipboardPasteFrom 写入设备剪贴板）
     // 可靠前提：模拟 Cmd+V 前先 releaseEveryKeys 释放所有残留按键——noVNC 端 Ctrl+V 拦截只吞 V 键，
     // Ctrl 的 down 仍会注入设备（残留修饰键会把 Cmd+V 变成 Ctrl+Command+V 组合被 iOS 拒绝，
     // 即"文字已到剪贴板但不写入"根因），清理后保证粘贴组合干净。
@@ -780,8 +780,8 @@ static NSDictionary *TRSearchGatewaySync(void) {
         NSString *text = [[ClipboardManager sharedManager] currentString] ?: @"";
         return @{@"ok":@YES, @"text":text};
     }];
-    // 2026-08-14 移除 clipboard.set 注册：前端剪贴板同步已统一走 RFB 协议通道（clipboardPasteFrom → Extended Clipboard UTF-8），
-    // 不再走能力通道；type.paste executor 内部已包含 setStringFromRemote 调用（带 text 时写入剪贴板）
+    // 2026-08-14 移除 clipboard.set 注册：前端剪贴板同步已统一走 RFB 协议通道（clipboardPasteFrom 写入设备剪贴板），
+    // 不再走能力通道；type.paste executor 内部已包含 setStringForPasteInput 调用（带 text 时写入剪贴板）
     [self _registerControl:@"screenshot" title:@"屏幕快照" icon:@"📷" route:TRCapRouteNative params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
         // 静默截图：调用 ScreenCapturer 单帧捕获 → UIImage → JPEG base64（不触发系统动画，不存相册）
         UIImage *img = [[ScreenCapturer sharedCapturer] captureSingleFrameImage];
@@ -1216,7 +1216,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
 /**
  * 按能力 ID 前缀 + route 类型推断 category
  * 功能：优先按 capId 前缀推断（覆盖 route 类型无法区分的情况，如 stylus、service、gateway、clients 等），
- *       Phase 11.3/11.4：新增 app、macro、screen.hash/diff/waitStable/subscribe 前缀推断。
+ *       2026-08-15 精简后仅 screen.hash 需前缀推断（screen.diff/waitStable 及 app/macro/subscribe 均已删除）。
  * 参数：capId - 能力 ID
  *       route - 路由类型
  * 返回值：NSString* - category 字符串
@@ -1242,7 +1242,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
 /**
  * category → 中文标题映射（供前端分组标题显示）
  * 功能：将 category 标识转为中文分组标题字符串。
- *       Phase 11：新增 app/macro/screen 扩展标题。
+ *       含 service/gateway/screen 扩展标题（app/macro 已随能力删除）。
  * 参数：category - 分类标识
  * 返回值：NSString* - 中文标题字符串
  */

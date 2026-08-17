@@ -237,7 +237,7 @@
   </svg>
 </button>
 <div id="panel" role="menu">
-  <!-- 按钮由 renderKeys 按 BAR_KEYS 常量渲染（末尾追加「收起菜单」close 按钮） -->
+  <!-- 按钮由 renderKeys 按 BAR_KEYS 常量渲染（home/copy/paste/kb/snapshot/音量/亮度/搜索/full/power/disc） -->
 </div>
 
 <!-- 粘贴输入浮层（2026-08-18 PC/触屏统一：轻量，无确定按钮；长按调出系统粘贴菜单或软键盘/实体键盘输入，
@@ -281,9 +281,6 @@ import RFB from './novnc/core/rfb.js';
   var sigTimer = null;       // 延迟轮询定时器（每 3s 同源 fetch 测 RTT）
   // rfb 提升为可重建引用（2026-08-15）：后台挂起 WS 断开后切回前台自动重连（对齐控制台 focus 机制）
   var rfb = null;
-  var needsReconnect = false;   // 非主动断开标记（异常断开后需重建）
-  var reconnectAttempts = 0;    // 重建次数（防设备真离线无限刷屏）
-  var RECONNECT_MAX = 5;
 
   /**
    * 初始化 RFB 连接（创建 + 光标策略 + 操作栏跟随 + 全部事件绑定）。
@@ -369,9 +366,7 @@ import RFB from './novnc/core/rfb.js';
       isConnected = false;
       stopSigPoll();
       setFabSignal(null, '设备未连接（拖动调整位置，点击展开操作）');
-      // 2026-08-15：非主动断开（1006 后台挂起等）标记待重连；主动断开（1000/1001）不重连
-      var code = (e && e.detail && e.detail.code) ? e.detail.code : null;
-      if (code !== 1000 && code !== 1001) needsReconnect = true;
+      // 2026-08-15：非主动断开（1006 后台挂起等）触发重建；主动断开（1000/1001）不重连
       var msg = (e && e.detail && e.detail.message) ? '：' + e.detail.message : '';
       setStatus('已断开' + msg + '（目标 ' + url + '）', false);
     });
@@ -379,7 +374,6 @@ import RFB from './novnc/core/rfb.js';
       isConnected = false;
       stopSigPoll();
       setFabSignal(null, '连接失败（拖动调整位置，点击展开操作）');
-      needsReconnect = true;
       setStatus('连接失败 ' + url, false);
     });
     rfb.addEventListener('credentialsrequired', function () {
@@ -396,19 +390,15 @@ import RFB from './novnc/core/rfb.js';
    */
   function recreateRfb() {
     try { if (rfb) rfb.disconnect(); } catch (e) {}
-    needsReconnect = false;
-    reconnectAttempts++;
     initRfb();
     setStatus('连接中…', true);
   }
 
-  // 2026-08-17 对齐网关 focus 重连：回前台直接查连接状态并重置尝试数（不依赖 needsReconnect
-  // 标志——后台挂起期间 WS close 事件可能不派发，标志未置位会导致不重连）
+  // 2026-08-17 对齐网关 focus 重连：回前台直接查连接状态（后台挂起期间 WS close 事件可能不派发）
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState !== 'visible') return;
     if (!rfb) return;
     if (rfb._rfbConnectionState !== 'connected') {
-      reconnectAttempts = 0;
       recreateRfb();
     }
   });
@@ -639,8 +629,7 @@ import RFB from './novnc/core/rfb.js';
         doDeviceCopy();
         break;
       case 'paste':
-        // 2026-08-17：先读控制端剪贴板（仅 https 可用）→ 直接注入；读不到不弹浮层，
-        // 聚焦隐藏 textarea，再次按 Ctrl+V 或再次点击「粘贴」即注入
+        // 2026-08-18：https 直读控制端剪贴板直贴；http 读不到 → 弹输入浮层（浮层内 Ctrl+V/回车自动注入）
         pasteFromControl();
         break;
       case 'full':
@@ -650,7 +639,6 @@ import RFB from './novnc/core/rfb.js';
       case 'disc':
         try { rfb.disconnect(); } catch (e) {}
         break;
-      case 'close': break; // 仅关闭面板，由调用处处理
     }
   }
 
@@ -667,25 +655,6 @@ import RFB from './novnc/core/rfb.js';
       kbi.focus();
       if (kbi.setSelectionRange) { try { kbi.setSelectionRange(kbi.value.length, kbi.value.length); } catch (e) {} }
     } catch (e) {}
-  }
-
-  /**
-   * 收起控制端软键盘（blur 触发系统收起）。
-   * iOS Safari 对隐藏 input 直接 blur() 常不收起系统软键盘（焦点行为差异、收起异步），
-   * 是"控制端软键盘残留 + 被控键盘弹出 = 两个键盘同时显示"的根因之一。
-   * 组合手段确保收起：activeElement.blur + readonly 切换（iOS 经典 trick，延时恢复 readonly）。
-   * @returns {void}
-   */
-  function blurKbInput() {
-    var kbi = document.getElementById('kbInput');
-    if (!kbi) return;
-    releaseKbdShift(); // 收起键盘时兜底释放 Shift，防残留
-    try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) {}
-    try {
-      kbi.setAttribute('readonly', 'readonly');
-      kbi.blur();
-    } catch (e) {}
-    setTimeout(function () { try { kbi.removeAttribute('readonly'); } catch (e) {} }, 120);
   }
 
   // ===== 软键盘输入（2026-08-16 起英文/数字改走键值直发，中文/emoji 保留粘贴）：
@@ -1319,7 +1288,7 @@ import RFB from './novnc/core/rfb.js';
   }
 
   // ---------- 面板自动收起（2026-08-17 语义改造：点击菜单按键后收起，不再从展开时计时）----------
-  // 配置（设备端 FabAutoCollapse/FabCollapseMs，经 0x50 config.get）：FabAutoCollapse=按键后是否收起；
+  // 配置（设备端 FabAutoCollapse/FabCollapseMs，经 HTTP 5802 config.get）：FabAutoCollapse=按键后是否收起；
   // FabCollapseMs=点击按键后延迟 ms 收起（默认 1000）。
   var panelCollapseTimer = null;
   var panelFabCfg = null;             // 缓存 config.get 结果 {auto, ms}

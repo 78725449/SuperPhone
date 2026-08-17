@@ -1,8 +1,7 @@
 // SuperPhone 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
-// rfb.js?v=2：noVNC 核心为 server 内存 patch（dot 圆点/TLS 屏蔽等），URL 带版本号强制浏览器
-// 重新拉取 patch 后的内容，避免旧版缓存（同 gesturehandler.js?v=3 方案）
+// rfb.js?v=2：noVNC 核心为 server 内存 patch，URL 带版本号强制浏览器重新拉取 patch 后的内容避免旧缓存
 import RFB from '/novnc/core/rfb.js?v=2';
-import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS, GESTURE_DEFS } from './caps.js?v=7';
+import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=7';
 import { attachPress } from './press.js';
 import { attachFarmGesture, resolveGesture } from './gesture.js';
 
@@ -149,7 +148,7 @@ async function refreshDevices() {
   const data = await api('/api/devices');
   // 容器模式（?selfId=）过滤自身设备：卡片墙不显示本设备（与 IPA 原生 handleDevices 的 UUID 去重一致）
   const remote = SELF_ID ? (data.devices || []).filter((d) => String(d.id) !== SELF_ID) : (data.devices || []);
-  // 注入虚拟预览设备（MOCK_COUNT=30 便于查看卡片墙布局与比例自适应；置 0 即关闭）
+  // 注入虚拟预览设备（MOCK_COUNT=0：预览关闭；置 >0 可查看卡片墙布局）
   devices = remote.concat(MOCK_DEVICES);
   const onlineCount = devices.filter((d) => d.online === true).length;
   $('empty').classList.toggle('hidden', devices.length > 0);
@@ -660,7 +659,7 @@ async function showBatchConfigPanel(ids) {
   document.body.appendChild(modal);
 }
 
-// ---------- 控制台操作菜单（07 §4.1：按键区 KEY_DEFS + 动作区 ACT_DEFS） ----------
+// ---------- 控制台操作菜单（07 §4.1：按键区 KEY_DEFS + 动作区本地按钮） ----------
 // 适配/全屏/断开为控制台本地操作，不在能力清单内，由静态按钮提供
 /**
  * 按键区 RFB 直发：与画布同通道（noVNC sendKey/_sendMouse），低延迟、时序保证、纳入广播。
@@ -865,7 +864,7 @@ function kbdSendAscii(ch) {
  * 绑定 #kbdInput 的 input/composition/keydown 事件（iOS 软键盘唯一可靠的事件源）：
  *   - compositionend：中文/emoji/智能输入整段提交（type.paste）
  *   - 非组合 input：删除键 → Backspace 直发被控端；
- *     英文/数字（单可打印 ASCII）→ kbdSendAscii 键值直发（被控端补 Shift）；
+ *     英文/数字（单可打印 ASCII）→ kbdSendAscii 键值直发（前端自行发/释放 Shift）；
  *     多字符/非 ASCII → 回退粘贴
  *   - keydown：回车/换行/发送 → Enter keysym 直发被控端（单行 input 无 insertLineBreak）
  * 软键盘在「键盘」键点击后弹出（仅触控端；见 renderCapOps 键盘键绑定）。
@@ -894,7 +893,7 @@ function initTouchKeyboard() {
     kbdJustComposedTimer = setTimeout(() => { kbdJustComposed = false; }, 60);
     kbdCommitText(text);
   });
-  // 输入事件：删除键 / 回车 / 英文逐键增量（统一粘贴通道）
+  // 输入事件：删除键 / 回车 / 英文逐键键值直发（中文/emoji 走 compositionend 粘贴通道）
   kbi.addEventListener('input', (e) => {
     // compositionend 后短窗口（60ms）iOS 会补发乱序 input：只清空不转发
     if (kbdJustComposed) { kbi.value = ' '; return; }
@@ -937,13 +936,12 @@ function initTouchKeyboard() {
 
   // 2026-08-14 审查结论（用户实测确认）：iOS 键盘上方「粘贴」按钮不出现（QuickType 栏无此按钮），
   // 长按也无法触达 kbdInput（隐藏元素不可交互，长按画面会转发被控设备弹出被控端菜单）——
-  // iOS 上无横幅自动取剪贴板路径不存在。用户拍板：iOS 不提供正向粘贴，
-  // 控制端→设备方向仅保留 copy 事件（用户主动复制即同步）；原 paste 事件监听已删除。
+  // iOS 软键盘不挂 paste 监听；正向粘贴由 FAB 菜单「粘贴」按钮/降级浮层显式提供（pasteToFocusedDevice）。
 }
 initTouchKeyboard();
 
 /**
- * 渲染控制台操作菜单（07 §4.1）：按键区（KEY_DEFS 按键对象+按压识别）+ 动作区（ACT_DEFS）
+ * 渲染控制台操作菜单（07 §4.1）：按键区（KEY_DEFS 按键对象+按压识别）+ 动作区（本地按钮）
  * 按键区按钮挂 attachPress 按压识别（click/double/triple/long/down/up），动作区按钮单击直执行
  * @param {HTMLElement} container 容器（focusOpsCap / opsMenuCap）
  * @param {object} device 当前聚焦设备
@@ -1252,9 +1250,8 @@ document.addEventListener('keydown', async (e) => {
   await submitPasteText(focus.device.id, txt);
 }, true);
 
-// 触控长按 = 传达被控设备长按（2026-08-14）：控制端→设备剪贴板仅保留 copy 事件（用户主动复制
-// 即经协议通道同步）；长按被控画面不再作为粘贴手势，改为左键按下保持传达设备长按（rfb.js patch
-// 0x1/0x0），与电脑端鼠标按住一致。原 __farmPasteLongPress 已删除。
+// 触控长按 = 传达被控设备长按（2026-08-14）：长按被控画面不再作为粘贴手势，改为左键按下保持
+// 传达设备长按（rfb.js patch 0x1/0x0），与电脑端鼠标按住一致。原 __farmPasteLongPress 已删除。
 
 // ---------- 聚焦视图 ----------
 async function enterFocus(d) {
@@ -1925,7 +1922,7 @@ function createRfb(container, device, opts = {}, statusEl = null) {
   const rfb = new RFB(container, uri, {});
   rfb.scaleViewport = true;
   rfb.resizeSession = false;
-  rfb.showDotCursor = false; // 2026-08-17 全端统一苹果灰圆，不再用 noVNC 默认 dot
+  rfb.showDotCursor = false; // 2026-08-18 前端光标全权接管，不用 noVNC 默认 dot
   // 2026-08-15：画面余白透明跟随系统主题——noVNC 内部 _screen 默认硬编码 rgb(40,40,40) 深灰，
   // 覆盖外层 .screen 的 transparent 无效；此处显式置透明，露出 body 背景（--bg 随 prefers-color-scheme）。
   rfb.background = 'transparent';
@@ -2006,7 +2003,7 @@ function createRfb(container, device, opts = {}, statusEl = null) {
       },
     });
   }
-  // PC 端聚焦/直控画面：苹果灰圆常驻（2026-08-17，见上方光标策略分支）。
+  // PC 端聚焦/直控画面：常驻深灰圆+浅灰外圈覆盖层（2026-08-18，见上方光标策略分支）。
   // 状态用红/蓝圆点表示（蓝=已连接，红=已断开/失败），不再显示文字
   const setStatus = (s) => {
     if (!statusEl) return;
@@ -2552,7 +2549,7 @@ function applyCardWBounds() {
   if (px > maxPx) px = maxPx;
   applyCardW(px);
 }
-// 默认值 = 每行 10 列对应的 px；仅当用户手动调整过（localStorage 有值）才沿用
+// 默认值 = 固定 175px；仅当用户手动调整过（localStorage 有值）才沿用
 const b = computeCardWBounds();
 const savedCardW = parseInt(localStorage.getItem('farm_cardw') || String(b.defaultPx), 10);
 applyCardW(savedCardW);

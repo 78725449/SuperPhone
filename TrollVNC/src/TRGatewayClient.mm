@@ -240,7 +240,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 - (NSData *)_registerData {
     // 2026-08-13：去除能力/配置 schema 上报（capabilities/capMetadata/configSchema），
     // 仅上报身份/连接信息 + 当前配置值（configs 供前端读取当前参数）。
-    // 前端自包含定义直发（KEY_DEFS/ACT_DEFS/BATCH_CAPS/CONFIG_DEFS），新增能力=设备端注册+前端加定义。
+    // 前端自包含定义直发（KEY_DEFS/BATCH_CAPS/CONFIG_DEFS），新增能力=设备端注册+前端加定义。
     NSMutableDictionary *reg = [NSMutableDictionary dictionary];
     reg[@"type"] = @"register";
     reg[@"deviceId"] = [self _deviceId];
