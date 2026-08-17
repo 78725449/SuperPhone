@@ -1284,42 +1284,12 @@ import RFB from './novnc/core/rfb.js';
   function togglePanel() {
     if (panel.classList.contains('show')) {
       panel.classList.remove('show');
-      cancelPanelAutoCollapse();
       return;
     }
     panel.classList.add('show');      // 先显示以获取尺寸
     var pos = computePanelPos();
     panel.style.left = pos.left + 'px';
     panel.style.top = pos.top + 'px';
-    schedulePanelAutoCollapse();      // 自动收起（设备配置 FabAutoCollapse/FabCollapseMs，经 0x50 config.get）
-  }
-
-  // ---------- 面板自动收起（2026-08-17，与网关控制台 FAB 同配置同行为）----------
-  var panelCollapseTimer = null;
-  var panelFabCfg = null;             // 缓存 config.get 结果 {auto, ms}
-
-  function cancelPanelAutoCollapse() {
-    if (panelCollapseTimer) { clearTimeout(panelCollapseTimer); panelCollapseTimer = null; }
-  }
-
-  function schedulePanelAutoCollapse() {
-    cancelPanelAutoCollapse();
-    var apply = function (auto, ms) {
-      if (!auto) return;
-      panelCollapseTimer = setTimeout(function () {
-        panelCollapseTimer = null;
-        panel.classList.remove('show');
-      }, ms);
-    };
-    if (panelFabCfg) { apply(panelFabCfg.auto, panelFabCfg.ms); return; }
-    // 首次：经管理通道查设备配置（与设备端 TRCapabilityRegistry 同源）
-    mgmtRequest('config.get', { keys: ['FabAutoCollapse', 'FabCollapseMs'] }, function (resp) {
-      var c = (resp && resp.configs) || {};
-      var auto = c.FabAutoCollapse !== false;                    // 默认开启
-      var ms = Math.min(10000, Math.max(100, Number(c.FabCollapseMs) || 1000));
-      panelFabCfg = { auto: auto, ms: ms };
-      apply(auto, ms);
-    });
   }
 
   /**
@@ -1390,7 +1360,6 @@ import RFB from './novnc/core/rfb.js';
     if (!panel.classList.contains('show')) return;
     if (panel.contains(e.target) || e.target === fab) return;
     panel.classList.remove('show');
-    cancelPanelAutoCollapse();
   });
 
   // 窗口尺寸变化时：约束 FAB 位置到新视口内 + 若面板可见则重新定位

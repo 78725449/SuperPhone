@@ -3284,7 +3284,6 @@ static NSDictionary *tvExtHandleClientsUnblock(rfbClientPtr cl, NSDictionary *pa
 static NSDictionary *tvExtHandleClientsBlockedList(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleClipboardGet(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleTypePaste(rfbClientPtr cl, NSDictionary *params);
-static NSDictionary *tvExtHandleConfigGet(rfbClientPtr cl, NSDictionary *params);
 
 /** 从 rfbClientPtr 读取一条扩展消息的 JSON payload
  *  注意：libvncserver 在 rfbProcessClientMessage 中已消费消息首字节（type，存入
@@ -3399,8 +3398,6 @@ static rfbBool tvExtHandleMessage(rfbClientPtr cl, void *data,
         resp = tvExtHandleClipboardGet(cl, params);
     } else if ([op isEqualToString:@"type.paste"]) {
         resp = tvExtHandleTypePaste(cl, params);
-    } else if ([op isEqualToString:@"config.get"]) {
-        resp = tvExtHandleConfigGet(cl, params);
     } else {
         resp = tvExtErr([NSString stringWithFormat:@"未知操作: %@", op ?: @""]);
     }
@@ -3503,35 +3500,6 @@ static NSDictionary *tvExtHandleTypePaste(rfbClientPtr cl, NSDictionary *params)
     return tvExtOk(@{@"length": @(text.length)});
 }
 
-/** 处理 config.get：按 key 返回设备配置值（前端 UI 行为参数读取，白名单防任意读）。
- *  - params.keys 数组（如 @[@"FabAutoCollapse", @"FabCollapseMs"]），未知 key 返回 null
- *  - 与 TRCapabilityRegistry._registerConfig 同源（NSUserDefaults + 默认值），5801 页面经此
- *    读取控制台 FAB 同款配置（菜单自动收起等），保证两端行为一致 */
-static NSDictionary *tvExtHandleConfigGet(rfbClientPtr cl, NSDictionary *params) {
-    (void)cl;
-    NSArray *keys = params[@"keys"];
-    if (![keys isKindOfClass:[NSArray class]] || keys.count == 0) {
-        return tvExtErr(@"缺少参数 keys（字符串数组）");
-    }
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
-    NSMutableDictionary *values = [NSMutableDictionary dictionary];
-    for (id k in keys) {
-        if (![k isKindOfClass:[NSString class]]) continue;
-        // 白名单：仅暴露控制端 UI 行为参数，不暴露密码/证书等敏感配置
-        if ([k isEqualToString:@"FabAutoCollapse"] || [k isEqualToString:@"FabCollapseMs"]) {
-            id v = [d objectForKey:k];
-            if (v == nil) {
-                // 与 TRCapabilityRegistry 默认值回退一致
-                v = [k isEqualToString:@"FabAutoCollapse"] ? @YES : @1000;
-            }
-            values[k] = v;
-        } else {
-            values[k] = [NSNull null];
-        }
-    }
-    return tvExtOk(@{@"configs": values});
-}
-
 /** 处理 cap.list：返回扩展消息组目录供 AI 发现可用操作
  *  - 返回 extensions 数组，每组含 group 名与 ops 列表
  *  @param cl     客户端连接指针（未使用，保留以统一 handler 签名）
@@ -3548,7 +3516,6 @@ static NSDictionary *tvExtHandleCapList(rfbClientPtr cl, NSDictionary *params) {
                                          @"clients.disconnect", @"clients.block",
                                          @"clients.unblock", @"clients.blocked.list"]},
         @{@"group": @"clipboard", @"ops": @[@"clipboard.get", @"type.paste"]},
-        @{@"group": @"config",    @"ops": @[@"config.get"]},
     ];
     return tvExtOk(@{@"extensions": groups});
 }
