@@ -306,41 +306,40 @@ import RFB from './novnc/core/rfb.js';
     rfb = new RFB(screen, url, {});
     rfb.scaleViewport = true;
     rfb.resizeSession = false;
-    // 光标策略（2026-08-14 与网关前端 app.js 对齐）：
-    // - 手机触控版（isTouch）：无常驻光标——showDotCursor=false，服务端光标开启时触屏点击/移动显示
-    //   服务端圆点、空闲 1.5s 自动隐藏；服务端光标关闭时无光标
-    // - PC 版：保持 noVNC 默认 showDotCursor=true（服务端光标优先，dot 白点黑边兜底）
+    // 光标策略（2026-08-17 与网关前端 app.js 对齐，全端统一苹果灰圆）：
+    // - 触屏版（isTouch）：苹果灰圆，触屏点击/移动显示、空闲 1.5s 自动隐藏
+    // - PC 版：苹果灰圆常驻（有物理鼠标，跟随显示不隐藏），忽略服务端光标图像
+    // 苹果风格触控光标（2026-08-14）：iOS 系统触摸指示器样式——半透明灰圆（深灰 128，中心≈0.85 透明度，边缘渐隐）。
+    rfb.showDotCursor = false;   // 全端不再用 noVNC 默认 dot
+    var APPLE_CURSOR_SIZE = 24, APPLE_CURSOR_R = 9;
+    var appleCursorRgba = (function () {
+      var S = APPLE_CURSOR_SIZE, cx = (S - 1) / 2, cy = (S - 1) / 2, R = APPLE_CURSOR_R;
+      var rgba = new Uint8Array(S * S * 4);
+      for (var y = 0; y < S; y++) {
+        for (var x = 0; x < S; x++) {
+          var d = Math.hypot(x - cx, y - cy);
+          var i = (y * S + x) * 4;
+          if (d <= R) {
+            rgba[i] = 128; rgba[i + 1] = 128; rgba[i + 2] = 128; // 深灰
+            rgba[i + 3] = Math.round(217 * (1.0 - 0.6 * (d / R))); // 中心≈0.85 边缘渐隐
+          }
+        }
+      }
+      return rgba;
+    })();
+    var appleCursorHot = Math.round((APPLE_CURSOR_SIZE - 1) / 2);
+    var appleCursorShow = function () {
+      rfb._cursor.change(appleCursorRgba, appleCursorHot, appleCursorHot,
+                         APPLE_CURSOR_SIZE, APPLE_CURSOR_SIZE);
+    };
     if (isTouch) {
-      rfb.showDotCursor = false;
       var cursorTimer = null;
       var CURSOR_IDLE_MS = 1500;
       var cursorHide = function () {
         if (rfb._cursor && rfb._cursor._canvas) rfb._cursor._hideCursor();
       };
-      // 苹果风格触控光标（2026-08-14）：iOS 系统触摸指示器样式——半透明灰圆，
-      // 触屏点击/移动时显示、空闲 1.5s 自动隐藏。不显示服务端光标图像（白点黑边不合苹果风格）。
-      var APPLE_CURSOR_SIZE = 24, APPLE_CURSOR_R = 9;
-      var appleCursorRgba = (function () {
-        var S = APPLE_CURSOR_SIZE, cx = (S - 1) / 2, cy = (S - 1) / 2, R = APPLE_CURSOR_R;
-        var rgba = new Uint8Array(S * S * 4);
-        for (var y = 0; y < S; y++) {
-          for (var x = 0; x < S; x++) {
-            var d = Math.hypot(x - cx, y - cy);
-            var i = (y * S + x) * 4;
-            if (d <= R) {
-              rgba[i] = 128; rgba[i + 1] = 128; rgba[i + 2] = 128; // 深灰（2026-08-14 加深）
-              rgba[i + 3] = Math.round(217 * (1.0 - 0.6 * (d / R))); // 中心≈0.85 边缘渐隐
-            }
-          }
-        }
-        return rgba;
-      })();
-      var cursorShow = function () {
-        rfb._cursor.change(appleCursorRgba, Math.round((APPLE_CURSOR_SIZE - 1) / 2),
-                           Math.round((APPLE_CURSOR_SIZE - 1) / 2), APPLE_CURSOR_SIZE, APPLE_CURSOR_SIZE);
-      };
       var cursorPoke = function () {
-        cursorShow();
+        appleCursorShow();
         clearTimeout(cursorTimer);
         cursorTimer = setTimeout(cursorHide, CURSOR_IDLE_MS);
       };
@@ -351,7 +350,12 @@ import RFB from './novnc/core/rfb.js';
       screen.addEventListener('mousedown', cursorPoke, touchOpt);
       rfb.addEventListener('disconnect', function () { clearTimeout(cursorTimer); });
     } else {
-      rfb.showDotCursor = true;
+      // PC：强制苹果圆常驻（忽略服务端光标），鼠标移动/点击/连上即显示
+      rfb._refreshCursor = function () { appleCursorShow(); };
+      var pcOpt = { capture: true, passive: true };
+      screen.addEventListener('mousemove', appleCursorShow, pcOpt);
+      screen.addEventListener('mousedown', appleCursorShow, pcOpt);
+      rfb.addEventListener('connect', appleCursorShow);
     }
 
     // 画布尺寸变化（首帧到达 / scaleViewport 缩放 / 窗口尺寸变化）时同步操作栏位置

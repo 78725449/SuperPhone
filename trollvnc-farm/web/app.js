@@ -1948,51 +1948,46 @@ function createRfb(container, device, opts = {}, statusEl = null) {
   const rfb = new RFB(container, uri, {});
   rfb.scaleViewport = true;
   rfb.resizeSession = false;
-  rfb.showDotCursor = true;
+  rfb.showDotCursor = false; // 2026-08-17 全端统一苹果灰圆，不再用 noVNC 默认 dot
   // 2026-08-15：画面余白透明跟随系统主题——noVNC 内部 _screen 默认硬编码 rgb(40,40,40) 深灰，
   // 覆盖外层 .screen 的 transparent 无效；此处显式置透明，露出 body 背景（--bg 随 prefers-color-scheme）。
   rfb.background = 'transparent';
   if (opts.viewOnly) rfb.viewOnly = true;   // 墙缩略图只读：点击卡片=切入大屏控制，不直接操控
-  // 光标策略（2026-08-14 用户需求）：
-  // - 墙缩略图（viewOnly）：无光标（消除多 RFB 覆盖层光标串扰——PC"屏幕中原有的 X"即来自
-  //   墙缩略图/直控卡片的独立覆盖层）
-  // - 手机端控制画面：尊重服务端光标——ServerCursor 开 → 触屏点击/移动显示服务端圆点，
-  //   空闲 1.5s 自动隐藏；ServerCursor 关 → 服务端无光标 → 无光标。不使用 dot（showDotCursor=false）
-  // - PC 端聚焦/直控画面：保持 dot 圆点（showDotCursor=true），鼠标移入仅一个圆点
+  // 光标策略（2026-08-17 用户需求，与 5801 直连页对齐，全端统一苹果灰圆）：
+  // - 墙缩略图（viewOnly）：无光标（消除多 RFB 覆盖层光标串扰）
+  // - 手机端控制画面：苹果灰圆，触屏点击/移动显示、空闲 1.5s 自动隐藏
+  // - PC 端聚焦/直控画面：苹果灰圆常驻（有物理鼠标，跟随显示不隐藏），忽略服务端光标图像
+  // 苹果风格触控光标（2026-08-14）：iOS 系统触摸指示器样式——半透明灰圆（深灰 128，中心≈0.85 透明度，边缘渐隐）。
+  const APPLE_CURSOR_SIZE = 24;
+  const APPLE_CURSOR_R = 9;
+  const appleRgba = (() => {
+    const S = APPLE_CURSOR_SIZE, cx = (S - 1) / 2, cy = (S - 1) / 2, R = APPLE_CURSOR_R;
+    const rgba = new Uint8Array(S * S * 4);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const d = Math.hypot(x - cx, y - cy);
+        const i = (y * S + x) * 4;
+        if (d <= R) {
+          rgba[i] = 128; rgba[i + 1] = 128; rgba[i + 2] = 128; // 深灰
+          rgba[i + 3] = Math.round(217 * (1.0 - 0.6 * (d / R))); // 中心≈0.85 边缘渐隐
+        }
+      }
+    }
+    return rgba;
+  })();
+  const appleHot = Math.round((APPLE_CURSOR_SIZE - 1) / 2);
+  const appleShow = () => {
+    rfb._cursor.change(appleRgba, appleHot, appleHot, APPLE_CURSOR_SIZE, APPLE_CURSOR_SIZE);
+  };
   if (opts.viewOnly) {
-    rfb.showDotCursor = false;
     // 覆盖 _refreshCursor：无论服务端光标/dot 一律渲染为空（clear → cursor:none + 覆盖层清空）
     rfb._refreshCursor = () => { if (rfb._cursor) rfb._cursor.clear(); };
   } else if (isMobile()) {
-    rfb.showDotCursor = false;
     let cursorTimer = null;
     const CURSOR_IDLE_MS = 1500;
     const cursorHide = () => { if (rfb._cursor && rfb._cursor._canvas) rfb._cursor._hideCursor(); };
-    // 苹果风格触控光标（2026-08-14）：iOS 系统触摸指示器样式——半透明灰圆，
-    // 触屏点击/移动时显示、空闲 1.5s 自动隐藏。不显示服务端光标图像（白点黑边不合苹果风格）。
-    const APPLE_CURSOR_SIZE = 24;
-    const APPLE_CURSOR_R = 9;
-    const appleCursorRgba = (() => {
-      const S = APPLE_CURSOR_SIZE, cx = (S - 1) / 2, cy = (S - 1) / 2, R = APPLE_CURSOR_R;
-      const rgba = new Uint8Array(S * S * 4);
-      for (let y = 0; y < S; y++) {
-        for (let x = 0; x < S; x++) {
-          const d = Math.hypot(x - cx, y - cy);
-          const i = (y * S + x) * 4;
-          if (d <= R) {
-            rgba[i] = 128; rgba[i + 1] = 128; rgba[i + 2] = 128; // 深灰（2026-08-14 加深）
-            rgba[i + 3] = Math.round(217 * (1.0 - 0.6 * (d / R))); // 中心≈0.85 边缘渐隐
-          }
-        }
-      }
-      return rgba;
-    })();
-    const cursorShow = () => {
-      rfb._cursor.change(appleCursorRgba, Math.round((APPLE_CURSOR_SIZE - 1) / 2),
-                         Math.round((APPLE_CURSOR_SIZE - 1) / 2), APPLE_CURSOR_SIZE, APPLE_CURSOR_SIZE);
-    };
     const cursorPoke = () => {
-      cursorShow();
+      appleShow();
       clearTimeout(cursorTimer);
       cursorTimer = setTimeout(cursorHide, CURSOR_IDLE_MS);
     };
@@ -2004,6 +1999,14 @@ function createRfb(container, device, opts = {}, statusEl = null) {
     cv.addEventListener('mousedown', cursorPoke, opt);
     cv.addEventListener('wheel', cursorPoke, { capture: true, passive: false });
     rfb.addEventListener('disconnect', () => clearTimeout(cursorTimer));
+  } else {
+    // PC 聚焦/直控：强制苹果圆常驻（忽略服务端光标），鼠标移动/点击/连上即显示
+    rfb._refreshCursor = () => appleShow();
+    const cv = rfb._canvas;
+    const opt = { capture: true, passive: true };
+    cv.addEventListener('mousemove', appleShow, opt);
+    cv.addEventListener('mousedown', appleShow, opt);
+    rfb.addEventListener('connect', appleShow);
   }
   // 聚焦画布多点手势（2026-08-16）：noVNC pinch/twotap/threetap → touch.* 能力调用
   // （真实 IOHID 多点注入；仅聚焦可操控会话响应，直控/同步实例与断开后不响应）
@@ -2017,9 +2020,7 @@ function createRfb(container, device, opts = {}, statusEl = null) {
       },
     });
   }
-  // PC 端聚焦/直控画面：保持 noVNC 默认（showDotCursor=true）——服务端光标优先，
-  // PC 上显示的是设备端真实发送的光标（可验证 IPA 圆点图案是否编译生效）；
-  // ServerCursor 关闭时回落 dot 圆点。
+  // PC 端聚焦/直控画面：苹果灰圆常驻（2026-08-17，见上方光标策略分支），忽略服务端光标图像。
   // 状态用红/蓝圆点表示（蓝=已连接，红=已断开/失败），不再显示文字
   const setStatus = (s) => {
     if (!statusEl) return;
