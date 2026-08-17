@@ -3317,8 +3317,13 @@ static void tvExtWriteResponse(rfbClientPtr cl, NSDictionary *resp) {
     hdr.type = TV_EXT_RESP_TYPE;
     memset(hdr.reserved, 0, 3);
     hdr.payloadLen = htonl((uint32_t)json.length);
+    // 2026-08-17：响应必须与 FBU 帧互斥原子写出——FBU 发送在 sendMutex 锁内整帧写，
+    // 若扩展响应不加锁直接 rfbWriteExact，会插入 FBU 帧中间 → noVNC 把 0x80 字节当
+    // FBU rect 消费 → 流错位 → "Unexpected server message (type 125)" 断连。
+    pthread_mutex_lock(&cl->sendMutex);
     rfbWriteExact(cl, (const char *)&hdr, sizeof(hdr));
     rfbWriteExact(cl, (const char *)json.bytes, json.length);
+    pthread_mutex_unlock(&cl->sendMutex);
 }
 
 /** 构造成功响应
