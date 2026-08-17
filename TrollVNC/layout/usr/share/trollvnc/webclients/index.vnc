@@ -150,45 +150,13 @@
     #fab .wifi { width: 26px; height: 26px; }
   }
 
-  /* ===== 剪贴板浮层（HTTP 环境方案）：粘贴输入浮层 #clipOverlay ===== */
-  #clipOverlay {
-    position: fixed; inset: 0; z-index: 20;
-    background: rgba(0, 0, 0, .6);
-    display: none;
-    align-items: center; justify-content: center;
-    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
-  }
-  #clipOverlay.show { display: flex; }
-  #clipModal {
-    background: #1c1c1e; border: 1px solid #3a3a3c;
-    border-radius: 14px; padding: 16px;
-    width: 100%; max-width: 360px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, .5);
-  }
-  #clipModal h3 {
-    margin: 0 0 4px; font: 600 16px/24px system-ui, sans-serif; color: #eee;
-  }
-  #clipModal p {
-    margin: 0 0 12px; font: 12px/18px system-ui, sans-serif; color: #999;
-  }
+  /* ===== 粘贴输入（http 环境方案，2026-08-17）：隐藏 textarea 承接 Ctrl+V，不弹浮层 ===== */
   #clipText {
-    width: 100%; min-height: 96px;
-    background: #2c2c2e; border: 1px solid #3a3a3c;
-    border-radius: 10px; color: #eee;
-    font: 14px/20px system-ui, sans-serif;
-    padding: 10px; resize: vertical;
-    box-sizing: border-box; -webkit-appearance: none;
+    position: fixed; left: 0; top: 0;
+    width: 1px; height: 1px;
+    opacity: 0; border: 0; padding: 0; margin: 0; resize: none;
+    -webkit-appearance: none; background: transparent;
   }
-  #clipText:focus { outline: 2px solid var(--brand, #7C5CFF); }
-  .clip-btns { display: flex; gap: 8px; margin-top: 12px; }
-  .clip-btns button {
-    flex: 1; min-height: 44px;
-    border-radius: 10px; border: 1px solid #3a3a3c;
-    font: 500 15px system-ui, sans-serif; padding: 8px;
-  }
-  #clipCancel { background: #2c2c2e; color: #eee; }
-  #clipSend { background: #7C5CFF; color: #fff; border-color: #7C5CFF; }
-  #clipSend:active { background: #5B3FE0; }
 </style>
 </head>
 <body>
@@ -223,18 +191,9 @@
   <!-- 按钮由 renderKeys 按 BAR_KEYS 常量渲染（末尾追加「收起菜单」close 按钮） -->
 </div>
 
-<!-- 粘贴输入浮层（HTTP 环境：点击「粘贴」按钮弹出，粘贴文本后回车/确认 → 原子注入设备聚焦输入框） -->
-<div id="clipOverlay">
-  <div id="clipModal">
-    <h3>📋 粘贴到设备</h3>
-    <p>请先在设备画面上点击目标输入框使其聚焦，再在此处粘贴文本（Ctrl+V / 长按），确认后发送。</p>
-    <textarea id="clipText" placeholder="在此粘贴要发送到设备的文字…" autocomplete="off"></textarea>
-    <div class="clip-btns">
-      <button id="clipCancel">取消</button>
-      <button id="clipSend">确认粘贴</button>
-    </div>
-  </div>
-</div>
+<!-- 粘贴输入（2026-08-17 http 环境方案：隐藏 textarea 承接 Ctrl+V 原生粘贴，不弹浮层；
+     点击「粘贴」→ 先读控制端剪贴板（仅 https 可用），读不到则聚焦本框，再次按 Ctrl+V 或再次点击「粘贴」即注入） -->
+<textarea id="clipText" placeholder="粘贴文本" autocomplete="off"></textarea>
 
 <script type="module">
 import RFB from './novnc/core/rfb.js';
@@ -622,8 +581,9 @@ import RFB from './novnc/core/rfb.js';
         doDeviceCopy();
         break;
       case 'paste':
-        // 2026-08-15：粘贴输入——弹浮层，粘贴文本后回车/确认 → pasteToDevice 原子注入（模拟 Cmd+V）
-        showClipModal();
+        // 2026-08-17：先读控制端剪贴板（仅 https 可用）→ 直接注入；读不到不弹浮层，
+        // 聚焦隐藏 textarea，再次按 Ctrl+V 或再次点击「粘贴」即注入
+        pasteFromControl();
         break;
       case 'full':
         if (document.fullscreenElement) document.exitFullscreen();
@@ -937,74 +897,62 @@ import RFB from './novnc/core/rfb.js';
     if (window.isSecureContext && navigator.clipboard && navigator.clipboard.readText) {
       navigator.clipboard.readText().then(function (txt) {
         if (txt) pasteToDevice(txt);
-      }).catch(function () { showClipModal(); });
+      }).catch(function () { enterPasteArmed(); });
       return;
     }
-    showClipModal();
+    enterPasteArmed();
   }, true);
 
-  var clipOverlay = document.getElementById('clipOverlay');
   var clipText = document.getElementById('clipText');
-  var clipSend = document.getElementById('clipSend');
-  var clipCancel = document.getElementById('clipCancel');
+  var clipArmed = false; // 待粘贴状态：隐藏 textarea 已就绪，再次点击「粘贴」或 Ctrl+V 即注入
 
   /**
-   * 显示粘贴输入浮层（textaera 清空 + 自动聚焦，用户粘贴文本后回车/确认发送）
+   * 「粘贴」按钮入口（2026-08-17）：先读控制端剪贴板（仅 https 安全上下文可用）。
+   * - 读到文本 → 直接注入（无窗口）
+   * - 读不到 → 不弹浮层，进入待粘贴状态：用户按 Ctrl+V（焦点在隐藏 textarea →
+   *   浏览器原生粘贴 → paste 事件自动注入），或再次点击「粘贴」提交已有内容
    * @returns {void}
    */
-  function showClipModal() {
-    clipText.value = '';
-    clipOverlay.classList.add('show');
-    // 延迟聚焦以等待过渡动画完成（部分浏览器需要元素可见后才能聚焦）
-    setTimeout(function () {
-      clipText.focus();
-    }, 100);
-  }
-
-  /**
-   * 关闭粘贴浮层并清除内容
-   * @returns {void}
-   */
-  function closeClipModal() {
-    clipOverlay.classList.remove('show');
-    clipText.value = '';
-  }
-
-  // 确认粘贴按钮：pasteToDevice 原子注入（写剪贴板 + 模拟 Cmd+V），非仅写入剪贴板
-  clipSend.addEventListener('click', function () {
-    var t = clipText.value;
-    if (!t) return;
-    closeClipModal();
-    pasteToDevice(t);
-  });
-
-  // 回车（Enter）触发粘贴；Shift+Enter 保留换行（textarea 多行输入不误触）
-  clipText.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
+  function pasteFromControl() {
+    if (clipArmed && clipText.value) {           // 再次点击「粘贴」：提交隐藏输入框内容
       var t = clipText.value;
-      if (!t) return;
-      closeClipModal();
+      clipText.value = '';
+      clipArmed = false;
       pasteToDevice(t);
+      return;
     }
-  });
+    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.readText) {
+      navigator.clipboard.readText().then(function (txt) {
+        if (txt) pasteToDevice(txt);
+        else enterPasteArmed();
+      }).catch(function () { enterPasteArmed(); });
+      return;
+    }
+    enterPasteArmed();
+  }
 
-  // 2026-08-17 http 双 Ctrl+V：浮层输入框捕获 paste 事件（clipboardData 不要求安全上下文）→ 自动注入
+  /**
+   * 进入待粘贴状态：不弹浮层。提示 + 清空并聚焦隐藏 textarea（触屏不自动聚焦，避免弹软键盘）。
+   * @returns {void}
+   */
+  function enterPasteArmed() {
+    flashStatus('剪贴板不可读：请按 Ctrl+V，或再次点击「粘贴」', 'info');
+    clipText.value = '';
+    clipArmed = true;
+    if (!isTouch) {
+      try { clipText.focus(); } catch (e) {}
+    }
+  }
+
+  // 2026-08-17 隐藏 textarea 捕获 paste 事件（clipboardData 不要求安全上下文）→ 自动注入
   clipText.addEventListener('paste', function (e) {
     var txt = (e.clipboardData && e.clipboardData.getData('text')) || '';
     if (txt) {
       e.preventDefault();
-      closeClipModal();
+      clipText.value = '';
+      clipArmed = false;
       pasteToDevice(txt);
     }
-  });
-
-  // 取消按钮：关闭浮层
-  clipCancel.addEventListener('click', closeClipModal);
-
-  // 点击遮罩区域关闭浮层
-  clipOverlay.addEventListener('click', function (e) {
-    if (e.target === clipOverlay) closeClipModal();
   });
 
   /**
