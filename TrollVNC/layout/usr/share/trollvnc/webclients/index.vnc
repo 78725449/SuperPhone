@@ -116,7 +116,8 @@
     padding: 8px;
     border-radius: 14px;
     z-index: 11;
-    max-height: 70vh;
+    /* 2026-08-17：移除 CSS max-height——JS computePanelPos 每次展开按可用高度动态设
+       （与网关 opsMenu 一致）；CSS 70vh 会让 offsetHeight 测量值被压成 70vh，高屏也滚动 */
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     width: min(160px, 88vw);
