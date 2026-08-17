@@ -3285,6 +3285,8 @@ static NSDictionary *tvExtHandleClientsBlockedList(rfbClientPtr cl, NSDictionary
 static NSDictionary *tvExtHandleClipboardGet(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleTypePaste(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleConfigGet(rfbClientPtr cl, NSDictionary *params);
+// HTTP 管理 API（5802）：首包可能已含部分 body，由 tvHttpApiHandleClient 复用
+static NSData *tvHttpApiReadBodyFromPartial(int fd, NSData *partial);
 
 /** 从 rfbClientPtr 读取一条扩展消息的 JSON payload
  *  注意：libvncserver 在 rfbProcessClientMessage 中已消费消息首字节（type，存入
