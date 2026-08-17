@@ -338,7 +338,6 @@ static void printUsageAndExit(const char *prog) {
     fprintf(stderr, "  -I on|off  User notifications for client connect/disconnect (default: on)\n\n");
 
     fprintf(stderr, "Extensions:\n");
-    fprintf(stderr, "  -C on|off  Clipboard sync (default: on)\n");
     fprintf(stderr, "  -T on|off  File transfer (default: off)\n\n");
 
 #if DEBUG
@@ -814,7 +813,7 @@ static void parseCLI(int argc, const char *argv[]) {
 #pragma clang diagnostic pop
 
     int opt;
-    const char *optstr = "p:b:n:vA:C:s:F:d:Q:t:P:R:aW:w:NM:KO:o:I:i:H:D:e:k:B:T:Vh";
+    const char *optstr = "p:b:n:vA:s:F:d:Q:t:P:R:aW:w:NM:KO:o:I:i:H:D:e:k:B:T:Vh";
     optind = 1;
     while ((opt = getopt(__argc2, __argv2.data(), optstr)) != -1) {
         switch (opt) {
@@ -2660,6 +2659,49 @@ static void kbdAddEvent(rfbBool down, rfbKeySym keySym, rfbClientPtr cl) {
             [gen otherConsumerUsageDown:kHIDUsage_Csmr_ScanNextTrack];
         else
             [gen otherConsumerUsageUp:kHIDUsage_Csmr_ScanNextTrack];
+        return;
+    // 标准 XF86 媒体 keysym 补全（2026-08-18，此前落到 default 被 keysymToString 返回 nil 静默丢弃）
+    case 0x1008ff16UL: // XF86AudioPrev（标准 Previous Track）
+        if (down)
+            [gen otherConsumerUsageDown:kHIDUsage_Csmr_ScanPreviousTrack];
+        else
+            [gen otherConsumerUsageUp:kHIDUsage_Csmr_ScanPreviousTrack];
+        return;
+    case 0x1008ff17UL: // XF86AudioNext（标准 Next Track）
+        if (down)
+            [gen otherConsumerUsageDown:kHIDUsage_Csmr_ScanNextTrack];
+        else
+            [gen otherConsumerUsageUp:kHIDUsage_Csmr_ScanNextTrack];
+        return;
+    case 0x1008ff15UL: // XF86AudioStop
+        if (down)
+            [gen otherConsumerUsageDown:kHIDUsage_Csmr_Stop];
+        else
+            [gen otherConsumerUsageUp:kHIDUsage_Csmr_Stop];
+        return;
+    case 0x1008ff3bUL: // XF86AudioPause
+        if (down)
+            [gen otherConsumerUsageDown:kHIDUsage_Csmr_Pause];
+        else
+            [gen otherConsumerUsageUp:kHIDUsage_Csmr_Pause];
+        return;
+    case 0x1008ff31UL: // XF86AudioForward（快进）
+        if (down)
+            [gen otherConsumerUsageDown:kHIDUsage_Csmr_FastForward];
+        else
+            [gen otherConsumerUsageUp:kHIDUsage_Csmr_FastForward];
+        return;
+    case 0x1008ff32UL: // XF86AudioRewind（快退）
+        if (down)
+            [gen otherConsumerUsageDown:kHIDUsage_Csmr_Rewind];
+        else
+            [gen otherConsumerUsageUp:kHIDUsage_Csmr_Rewind];
+        return;
+    case 0x1008ff2cUL: // XF86Eject
+        if (down)
+            [gen otherConsumerUsageDown:kHIDUsage_Csmr_Eject];
+        else
+            [gen otherConsumerUsageUp:kHIDUsage_Csmr_Eject];
         return;
     // 系统动作键（H5 控制台按键直发映射）：点击即触发，仅 down 时执行（up 忽略，防 toggle 双触发）
     case 0x1008ff2eUL: // XF86Keyboard → 唤起/收起系统键盘
@@ -4537,10 +4579,10 @@ static void setupRfbCutTextHandlers(void) {
     // client->server sync（2026-08-17 无条件注册：ClipboardEnabled 配置已移除）
     gScreen->setXCutText = setXCutTextLatin1;
     gScreen->setXCutTextUTF8 = setXCutTextUTF8;
-    // 2026-08-14 统一协议通道：启用 TightVNC Extended Clipboard（UTF-8 双向无损）。
-    // setXCutTextUTF8 回调已注册（承接客户端 Provide 解压后的 UTF-8 文本）；
-    // enableExtendedClipboard 为 per-client 字段（_rfbClientRec），需在 newClientHook
-    // 对每个新客户端置 TRUE 才协商 extended caps 伪编码（0xC0A1E5CE）。
+    // ExtendedClipboard 已禁用（2026-08-17 架构级修复，见 newClientHook）：0.9.15 会在
+    // SetEncodings 请求该伪编码后主动推送 ServerCaps 且不受 sendMutex 保护 → 与 FBU 帧竞争
+    // 致 noVNC type 125 断连。剪贴板显式搬运全走 0x50/0x80（sendMutex 锁内）。
+    // setXCutTextUTF8 回调保留承接客户端 Provide（旧客户端经 RFC 6143 XCutText 路径）。
     TVLog(@"Clipboard: client->server handlers registered (extended clipboard)");
 }
 
