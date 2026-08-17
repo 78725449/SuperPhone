@@ -1256,28 +1256,37 @@ import RFB from './novnc/core/rfb.js';
     var fr = fab.getBoundingClientRect();
     var vw = window.innerWidth, vh = window.innerHeight;
     var gap = 10, pad = 8;
+    // 安全区（刘海/Home 条）：与网关 opsMenu 同源（CSS 变量 env(safe-area-inset-*)）。
+    // 2026-08-17：此前只用固定 pad，真机刘海屏上面板会被顶部刘海/底部 Home 条遮挡——
+    // 与网关端浮出菜单定位不一致（网关已按安全区钳制）。
+    var cs = getComputedStyle(document.documentElement);
+    var safeT = parseInt(cs.getPropertyValue('--safe-top')) || 0;
+    var safeB = parseInt(cs.getPropertyValue('--safe-bottom')) || 0;
+    var safeL = parseInt(cs.getPropertyValue('--safe-left')) || 0;
+    var safeR = parseInt(cs.getPropertyValue('--safe-right')) || 0;
     // 重置 maxHeight 后测量面板原始尺寸（CSS 默认 70vh 上限；上次设置的值会压缩 offsetHeight）
     panel.style.maxHeight = '';
     var pw = panel.offsetWidth || 168;
     var ph = panel.offsetHeight || 360;
-    // maxHeight 按视口高度裁剪（下边界适配时保证面板不超出上边界）
-    var maxH = Math.max(80, Math.min(ph, vh - pad * 2));
+    // maxHeight 按可用高度（视口扣安全区）裁剪（下边界适配时保证面板不超出安全区上边界）
+    var availH = Math.max(120, vh - safeT - safeB - pad * 2);
+    var maxH = Math.max(80, Math.min(ph, availH));
     panel.style.maxHeight = maxH + 'px';
     var mh = Math.min(ph, maxH);
-    // 水平：FAB 在左半屏 → 右侧展开；右半屏 → 左侧展开；空间不足自动换侧，钳制在视口内
+    // 水平：FAB 在左半屏 → 右侧展开；右半屏 → 左侧展开；空间不足自动换侧，钳制在安全区内
     var fabCenter = fr.left + fr.width / 2;
-    var spaceRight = vw - (fr.right + gap) - pad;
-    var spaceLeft = fr.left - gap - pad;
+    var spaceRight = vw - safeR - (fr.right + gap) - pad;
+    var spaceLeft = fr.left - safeL - gap - pad;
     var left;
     if (fabCenter < vw / 2) left = spaceRight >= pw ? fr.right + gap : fr.left - gap - pw;
     else left = spaceLeft >= pw ? fr.left - gap - pw : fr.right + gap;
-    if (left < pad) left = pad;
-    if (left + pw > vw - pad) left = vw - pw - pad;
+    if (left < safeL + pad) left = safeL + pad;
+    if (left + pw > vw - safeR - pad) left = vw - safeR - pw - pad;
     // 垂直：面板从 FAB 底部下方开始向下展开（与 FAB 保持关联）；
-    // 若面板底部触碰屏幕下边界 → 整体上移，底部贴下边界，永不越界
+    // 若面板底部触碰安全区下边界 → 整体上移，底部贴安全区上沿，永不越界/被遮挡
     var top = fr.bottom + gap;
-    if (top + mh > vh - pad) top = vh - mh - pad;
-    if (top < pad) top = pad;
+    if (top + mh > vh - safeB - pad) top = vh - safeB - mh - pad;
+    if (top < safeT + pad) top = safeT + pad;
     return { left: left, top: top };
   }
 
