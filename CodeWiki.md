@@ -224,7 +224,7 @@ New project/
 
 #### 4.1.3 TRCapabilityRegistry — 能力注册表
 
-**文件**：`TrollVNC/src/TRCapabilityRegistry.h`（93 行）+ `.mm`（1752 行）
+**文件**：`TrollVNC/src/TRCapabilityRegistry.h`（94 行）+ `.mm`（1751 行）
 **类名**：`TRCapabilityRegistry`（单例）
 
 **核心职责**：能力即服务注册表，数据驱动统一管理所有设备能力（控制型 + 配置型）；提供 `invoke:` 统一执行入口（按 route 分发 HID/Touch/LocalCmd/Native）和 `setConfig:` 统一配置下发入口；经 5901 RFB 扩展消息桥接本地命令；自签 CA 证书生成；局域网网关搜索。
@@ -255,7 +255,7 @@ New project/
 
 #### 4.1.4 TRGatewayClient — 网关注册/心跳客户端
 
-**文件**：`TrollVNC/src/TRGatewayClient.h`（47 行）+ `.mm`（612 行）
+**文件**：`TrollVNC/src/TRGatewayClient.h`（47 行）+ `.mm`（613 行）
 **类名**：`TRGatewayClient`（单例）
 
 **核心职责**：内网群控网关注册/心跳客户端（BSD socket / TCP JSON 行协议）；读取 `GatewayHost/GatewayToken` 配置生成并持久化设备 UUID；连接网关 18081 发送 register，定时 30s 发 hello；处理网关下发的 cmd 命令（ping/query/set/invoke/restart）；收到 ack 后启动 18181 隧道客户端并注入 commandHandler；设置变更时标记 `_needsReregister` 由 worker 线程重发 register；跨用户域镜像 DeviceUUID 到 mobile 域供 App 读取。
@@ -281,7 +281,7 @@ New project/
 
 #### 4.1.5 TRTunnelClient — 隧道客户端
 
-**文件**：`TrollVNC/src/TRTunnelClient.h`（44 行）+ `.mm`（612 行）
+**文件**：`TrollVNC/src/TRTunnelClient.h`（41 行）+ `.mm`（612 行）
 **类名**：`TRTunnelClient`（单例）
 
 **核心职责**：设备侧隧道客户端（BSD socket / TCP + 帧封装）；注册到网关成功后由 TRGatewayClient._startTunnel 启动，建立到网关 18181 的隧道连接；握手后进入帧封装透传模式，让 RFB 裸字节透传与 JSON 心跳/命令在同一隧道上共存；通过 select() 多路复用隧道与本地 127.0.0.1:5901 双向数据流；每 30s 发 PING 心跳；CMD 帧复用 commandHandler；独立线程运行，断线退避重连。
@@ -312,7 +312,7 @@ New project/
 
 #### 4.1.6 STHIDEventGenerator — IOHID 事件注入器
 
-**文件**：`TrollVNC/src/STHIDEventGenerator.h`（305 行）+ `.mm`（1684 行）
+**文件**：`TrollVNC/src/STHIDEventGenerator.h`（305 行）+ `.mm`（1686 行）
 **类名**：`STHIDEventGenerator`（单例）
 
 **核心职责**：通过 IOKit 私有 API（IOHIDEventCreateKeyboardEvent / IOHIDEventCreateDigitizerEvent 等）注入键盘、触摸、按键、滚轮事件至系统 BackBoard，使所有事件具有真实硬件来源（绕过沙盒限制）；提供触摸/手势/按键的高级 API + 底层事件流；keepAlive 定时器防休眠；管理活动按键/触点状态。
@@ -388,7 +388,7 @@ New project/
 - `updateSingleBannerWithContent:badgeCount:userInfo:` 单条持续横幅（interruptionLevel=Passive，0.33s 延迟 trigger）
 - iOS 16+ `setBadgeCount:` 重置徽章
 
-**TRWatchDog**（`TRWatchDog.h` 158 行 + `.mm` 989 行）
+**TRWatchDog**（`TRWatchDog.h` 159 行 + `.mm` 990 行）
 - 基于 `TRTask`（Swift）启动/停止/重启子进程，状态机驱动（Stopped/Starting/Running/Stopping/Crashed/Throttled）
 - 串行 dispatch_queue 保证线程安全；keepAlive 条件重启（BOOL 或 NSDictionary 含 Crashed/SuccessfulExit 条件）
 - throttle interval 防止快速重启循环；exit timeout 超时后 SIGKILL 强制终止
@@ -765,7 +765,7 @@ tun = {
 
 #### 5.2.1 web/app.js — 前端主逻辑
 
-**文件**：`trollvnc-farm/web/app.js`（2727 行）
+**文件**：`trollvnc-farm/web/app.js`（2724 行）
 
 **核心职责**：浏览器/WKWebView 单页应用，承担卡片墙渲染、聚焦大屏控制、操作列与移动端 FAB、布局切换、批量操作、直控模式、同步控制、剪贴板显式双向搬运、iOS 软键盘双通道输入、容器模式（?container=ipa）。
 
@@ -813,7 +813,7 @@ kbdShiftHeld, kbdShiftTimer, kbdComposing, kbdJustComposed, kbdLastLen
 
 #### 5.2.2 web/caps.js — 前端契约唯一真相源
 
-**文件**：`trollvnc-farm/web/caps.js`（227 行）
+**文件**：`trollvnc-farm/web/caps.js`（228 行）
 
 **核心职责**：自包含定义按键/批量能力/手势/配置表单契约，封装网关 invoke/configs API。原则：无上报、无元数据表、无运行时发现；新增能力 = 设备端注册 executor + 此处加一条。
 
@@ -973,7 +973,7 @@ CMD ["node", "server/index.js"]
 
 #### 5.4.4 scripts/gen-cert.mjs — 自签证书生成
 
-**文件**：`trollvnc-farm/scripts/gen-cert.mjs`（117 行）
+**文件**：`trollvnc-farm/scripts/gen-cert.mjs`（116 行）
 
 **核心职责**：为网关自动生成自签 TLS 证书（RSA2048，3650 天），SAN 含 DNS:localhost + 全部本机 IPv4。
 
