@@ -183,6 +183,37 @@
     background: #f5f6f8;
   }
   #pasteModal p { margin: 10px 0 0; font: 12px/18px system-ui, sans-serif; color: #8a8a8e; }
+
+  /* ===== 复制结果浮层（2026-08-17）：展示设备剪贴板文本供长按复制 ===== */
+  #copyOverlay {
+    position: fixed; inset: 0; z-index: 30;
+    background: rgba(0, 0, 0, .5);
+    display: none; align-items: center; justify-content: center;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }
+  #copyOverlay.show { display: flex; }
+  #copyModal {
+    width: 100%; max-width: 340px;
+    background: #fff; border-radius: 14px;
+    padding: 16px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, .4);
+  }
+  #copyModal h3 { margin: 0 0 10px; font: 600 16px/24px system-ui, sans-serif; color: #1c1c1e; }
+  #copyModalText {
+    width: 100%; min-height: 88px;
+    border: 1px solid rgba(0, 0, 0, .15); border-radius: 10px;
+    font: 15px/22px system-ui, sans-serif; color: #1c1c1e;
+    padding: 10px; box-sizing: border-box; resize: vertical;
+    background: #f5f6f8;
+  }
+  #copyModal p { margin: 10px 0 0; font: 12px/18px system-ui, sans-serif; color: #8a8a8e; }
+  .copy-close { margin-top: 12px; text-align: right; }
+  #copyClose {
+    min-height: 40px; padding: 0 18px;
+    border: 1px solid rgba(0, 0, 0, .15); border-radius: 10px;
+    background: #f5f6f8; color: #1c1c1e;
+    font: 500 14px system-ui, sans-serif;
+  }
 </style>
 </head>
 <body>
@@ -228,6 +259,16 @@
     <h3>📋 粘贴到设备</h3>
     <textarea id="pasteInput" placeholder="长按粘贴或输入文本…" autocomplete="off"></textarea>
     <p>粘贴内容后自动发送</p>
+  </div>
+</div>
+
+<!-- 复制结果浮层（2026-08-17：http/iOS Safari 无法写入控制端剪贴板时，展示设备剪贴板文本供长按复制） -->
+<div id="copyOverlay">
+  <div id="copyModal">
+    <h3>📋 设备剪贴板内容</h3>
+    <textarea id="copyModalText" readonly></textarea>
+    <p>长按上方文本复制到本机</p>
+    <div class="copy-close"><button id="copyClose">关闭</button></div>
   </div>
 </div>
 
@@ -915,8 +956,29 @@ import RFB from './novnc/core/rfb.js';
       document.body.removeChild(ta);
       if (ok) { flashStatus('✓ 已复制设备剪贴板（' + text.length + ' 字符）', 'success'); return; }
     } catch (e) {}
-    flashStatus('✗ 复制失败：请手动复制设备剪贴板内容', 'error');
+    // 2026-08-17：http/iOS Safari execCommand('copy') 不可用 → 浮层展示文本供长按复制
+    showCopyTextModal(text);
   }
+
+  // ===== 复制结果浮层（2026-08-17）：展示设备剪贴板文本，长按复制后关闭 =====
+  var copyOverlay = document.getElementById('copyOverlay');
+  var copyModalText = document.getElementById('copyModalText');
+
+  function showCopyTextModal(text) {
+    copyModalText.value = text;
+    copyOverlay.classList.add('show');
+    setTimeout(function () {
+      try { copyModalText.focus(); copyModalText.select(); } catch (e) {}
+    }, 100);
+  }
+  function closeCopyTextModal() {
+    copyOverlay.classList.remove('show');
+    copyModalText.value = '';
+  }
+  document.getElementById('copyClose').addEventListener('click', closeCopyTextModal);
+  copyOverlay.addEventListener('click', function (e) {
+    if (e.target === copyOverlay) closeCopyTextModal();
+  });
 
   // 能力探测结果：旧固件无 clipboard 组时隐藏复制按钮（粘贴 fallback 原语不受影响）
   function updateClipButtons() {
@@ -945,11 +1007,11 @@ import RFB from './novnc/core/rfb.js';
   var clipArmed = false; // 待粘贴状态：隐藏 textarea 已就绪，再次点击「粘贴」或 Ctrl+V 即注入
 
   /**
-   * 「粘贴」按钮入口（2026-08-17 分层）：
-   * 1. https 安全上下文 → 读控制端剪贴板直贴（无窗口，一次完成）
-   * 2. http → 读设备剪贴板（clipboard.get 经 5802 管理通道，无浏览器安全上下文限制）
-   * 3. 都没有 → 触屏端弹轻量输入浮层（长按调系统粘贴菜单/输入后自动注入）；电脑端聚焦隐藏
-   *    textarea（Ctrl+V 原生粘贴自动注入）
+   * 「粘贴」按钮入口（2026-08-17 语义修正：粘贴 = 控制端剪贴板 → 设备）：
+   * - https 安全上下文 → 读控制端剪贴板直贴（无窗口，一次完成）
+   * - http（控制端剪贴板不可读）→ 不读设备剪贴板充数，直接进入待粘贴输入：
+   *   触屏端弹轻量浮层（长按调系统粘贴菜单/输入后自动注入）；电脑端聚焦隐藏
+   *   textarea（Ctrl+V 原生粘贴自动注入）
    * @returns {void}
    */
   function pasteFromControl() {
@@ -963,27 +1025,20 @@ import RFB from './novnc/core/rfb.js';
     if (window.isSecureContext && navigator.clipboard && navigator.clipboard.readText) {
       navigator.clipboard.readText().then(function (txt) {
         if (txt) { pasteToDevice(txt); return; }
-        pasteFromDeviceClipboard();
-      }).catch(function () { pasteFromDeviceClipboard(); });
+        enterPasteInput();
+      }).catch(function () { enterPasteInput(); });
       return;
     }
-    pasteFromDeviceClipboard();
+    enterPasteInput();
   }
 
   /**
-   * 读设备剪贴板（clipboard.get，http 环境同样可用）→ 有内容直接注入（type.paste 写回+Cmd+V，
-   * 等效"设备剪贴板 → 聚焦输入框"）；设备剪贴板为空 → 按端型进入待粘贴输入。
+   * 进入待粘贴输入：触屏弹浮层（长按调系统粘贴），电脑聚焦隐藏 textarea（Ctrl+V）。
    * @returns {void}
    */
-  function pasteFromDeviceClipboard() {
-    mgmtRequest('clipboard.get', {}, function (resp) {
-      if (resp && resp.ok && resp.text) {
-        pasteToDevice(resp.text);
-        return;
-      }
-      if (isTouch) showPasteInputModal();   // 触屏：轻量浮层（长按调系统粘贴/输入后自动注入）
-      else enterPasteArmed();               // 电脑：隐藏 textarea + Ctrl+V
-    });
+  function enterPasteInput() {
+    if (isTouch) showPasteInputModal();
+    else enterPasteArmed();
   }
 
   /**

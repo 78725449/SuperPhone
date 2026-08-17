@@ -1217,23 +1217,15 @@ async function pasteToFocusedDevice() {
     toast('✗ 粘贴失败：请先进入设备控制', 'error');
     return;
   }
-  // 2026-08-17 分层（与 5801 直连页对齐）：
-  // 1. https 安全上下文 → 读控制端剪贴板直贴（无窗口，一次完成）
+  // 2026-08-17 语义修正（与 5801 对齐）：粘贴 = 控制端剪贴板 → 设备。
+  // https 安全上下文 → 读控制端剪贴板直贴（无窗口，一次完成）；
+  // http（控制端剪贴板不可读）→ 不读设备剪贴板充数，直接弹输入浮层（粘贴/回车自动注入）。
   if (window.isSecureContext && navigator.clipboard && navigator.clipboard.readText) {
     try {
       const txt = await navigator.clipboard.readText();
       if (txt) { await submitPasteText(focus.device.id, txt); return; }
     } catch (e) { /* 读失败落下一层 */ }
   }
-  // 2. http → 读设备剪贴板（clipboard.get 能力，无安全上下文限制）→ 有内容直接注入
-  try {
-    const r = await invokeCap('', focus.device.id, 'clipboard.get');
-    if (r && r.ok && typeof r.ack.text === 'string' && r.ack.text) {
-      await submitPasteText(focus.device.id, r.ack.text);
-      return;
-    }
-  } catch (e) { /* 能力调用失败落下一层 */ }
-  // 3. 都没有 → 浮层输入框（无确定按钮；粘贴/回车自动注入）
   showPasteFallbackModal();
 }
 
@@ -2110,7 +2102,40 @@ function execCopyFallback(text, devName) {
   } catch (e) {
     console.error('[clip] execCommand 失败：', e);
   }
-  toast(`✗ 复制失败：请手动复制设备「${devName}」剪贴板内容`, 'error');
+  // 2026-08-17：http/iOS Safari execCommand('copy') 不可用 → 浮层展示文本供长按复制（对齐 5801）
+  showCopyTextModal(text, devName);
+}
+
+// 复制结果浮层（2026-08-17，与 5801 对齐）：设备剪贴板文本无法写入控制端剪贴板时，
+// 展示文本供长按复制；关闭按钮或点遮罩关闭。
+let _copyTextModal = null;
+function showCopyTextModal(text, devName) {
+  if (_copyTextModal) { _copyTextModal.remove(); _copyTextModal = null; }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal';
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+  const title = document.createElement('h3');
+  title.textContent = `设备「${devName}」剪贴板内容`;
+  const ta = document.createElement('textarea');
+  ta.readOnly = true;
+  ta.value = text;
+  ta.style.cssText = 'width:100%;min-height:120px;box-sizing:border-box;padding:8px;margin:10px 0;';
+  const p = document.createElement('p');
+  p.textContent = '长按上方文本复制到本机';
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '关闭';
+  const close = () => {
+    overlay.remove();
+    _copyTextModal = null;
+  };
+  closeBtn.addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  card.appendChild(title); card.appendChild(ta); card.appendChild(p); card.appendChild(closeBtn);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  _copyTextModal = overlay;
+  setTimeout(() => { try { ta.focus(); ta.select(); } catch (e) {} }, 100);
 }
 
 // 复制按钮（2026-08-17 显式双向搬运）：拉取被控设备剪贴板 → 写控制端剪贴板（降级链见 farmWriteClipboardToControl）。
