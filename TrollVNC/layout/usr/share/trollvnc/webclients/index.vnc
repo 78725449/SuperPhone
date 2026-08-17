@@ -105,12 +105,12 @@
     #fab { display: none; }
   }
 
-  /* ===== 操作面板（点击 FAB 展开）——白色卡片风格（与网关 opsMenu 对齐） ===== */
+  /* ===== 操作面板（点击 FAB 展开）——白色卡片风格，视觉规格与网关 opsMenu 统一（2026-08-17） ===== */
   #panel {
     position: fixed;
     display: none;
     flex-direction: column;
-    gap: 6px;
+    gap: 2px;
     background: #fff;
     border: 1px solid rgba(0, 0, 0, .12);
     padding: 8px;
@@ -119,21 +119,25 @@
     max-height: 70vh;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
-    min-width: 152px;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, .28);
+    width: min(160px, 88vw);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, .28);
   }
   #panel.show { display: flex; }
   #panel button {
-    min-height: 44px; min-width: 140px;
+    min-height: 44px; width: 100%;
     border: 1px solid rgba(0, 0, 0, .08); background: #f5f6f8; color: #1c1c1e;
-    border-radius: 10px; font: 500 14px system-ui, sans-serif;
-    padding: 8px 12px;
+    border-radius: 10px; font: 500 16px system-ui, sans-serif;
+    padding: 8px 10px;
     display: flex; align-items: center; justify-content: flex-start;
-    gap: 8px;
+    gap: 10px;
   }
   #panel button:active { background: #e9eaee; }
-  /* 面板/PC 栏 SF Symbols 图标尺寸（stroke=currentColor 跟随文字颜色） */
-  #panel button svg, #bar button svg { width: 20px; height: 20px; flex: 0 0 auto; }
+  /* 白底上的「断开」危险按钮：深红文字（与网关 .danger 一致） */
+  #panel button.danger { color: #e8463a; }
+  /* 面板 SF Symbols 图标尺寸（1.1em 与网关一致，stroke=currentColor 跟随文字颜色）；
+     PC 栏（#bar）保持 20px 固定（侧栏场景） */
+  #panel button svg { width: 1.1em; height: 1.1em; flex: 0 0 auto; }
+  #bar button svg { width: 20px; height: 20px; flex: 0 0 auto; }
   /* 键盘按钮（2026-08-16 回退）：单向固定执行，无两态/黄色底样式 */
   @media (min-width: 900px) and (hover: hover) and (pointer: fine) {
     #panel { display: none !important; }
@@ -458,7 +462,7 @@ import RFB from './novnc/core/rfb.js';
         var s2 = document.createElement('span');
         s2.textContent = k.label;
         b.appendChild(s2);
-        if (k.op === 'disc') { b.style.color = '#ff6b6b'; b.style.borderColor = '#5a2a2a'; }
+        if (k.op === 'disc') { b.classList.add('danger'); }   // 与网关 .danger 一致（深红文字）
       } else {
         // PC 栏：图标 + 文字（2026-08-14：与面板一致显示图标，原为纯文本）
         var s1 = document.createElement('span');
@@ -1284,12 +1288,42 @@ import RFB from './novnc/core/rfb.js';
   function togglePanel() {
     if (panel.classList.contains('show')) {
       panel.classList.remove('show');
+      cancelPanelAutoCollapse();
       return;
     }
     panel.classList.add('show');      // 先显示以获取尺寸
     var pos = computePanelPos();
     panel.style.left = pos.left + 'px';
     panel.style.top = pos.top + 'px';
+    schedulePanelAutoCollapse();      // 自动收起（设备配置 FabAutoCollapse/FabCollapseMs，经 0x50 config.get）
+  }
+
+  // ---------- 面板自动收起（2026-08-17，与网关控制台 FAB 同配置同行为）----------
+  var panelCollapseTimer = null;
+  var panelFabCfg = null;             // 缓存 config.get 结果 {auto, ms}
+
+  function cancelPanelAutoCollapse() {
+    if (panelCollapseTimer) { clearTimeout(panelCollapseTimer); panelCollapseTimer = null; }
+  }
+
+  function schedulePanelAutoCollapse() {
+    cancelPanelAutoCollapse();
+    var apply = function (auto, ms) {
+      if (!auto) return;
+      panelCollapseTimer = setTimeout(function () {
+        panelCollapseTimer = null;
+        panel.classList.remove('show');
+      }, ms);
+    };
+    if (panelFabCfg) { apply(panelFabCfg.auto, panelFabCfg.ms); return; }
+    // 首次：经管理通道查设备配置（与设备端 TRCapabilityRegistry 同源）
+    mgmtRequest('config.get', { keys: ['FabAutoCollapse', 'FabCollapseMs'] }, function (resp) {
+      var c = (resp && resp.configs) || {};
+      var auto = c.FabAutoCollapse !== false;                    // 默认开启
+      var ms = Math.min(10000, Math.max(100, Number(c.FabCollapseMs) || 1000));
+      panelFabCfg = { auto: auto, ms: ms };
+      apply(auto, ms);
+    });
   }
 
   /**
@@ -1360,6 +1394,7 @@ import RFB from './novnc/core/rfb.js';
     if (!panel.classList.contains('show')) return;
     if (panel.contains(e.target) || e.target === fab) return;
     panel.classList.remove('show');
+    cancelPanelAutoCollapse();
   });
 
   // 窗口尺寸变化时：约束 FAB 位置到新视口内 + 若面板可见则重新定位
