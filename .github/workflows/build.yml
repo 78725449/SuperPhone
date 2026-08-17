@@ -7,6 +7,12 @@ name: Build SuperPhone
 on:
   push:
     branches: [main]
+    # 2026-08-18：paths 过滤——仅设备端（TrollVNC/）或 workflow 自身变更才触发编译，
+    # 避免纯网关（trollvnc-farm/）/脚本（scripts/）/文档改动触发设备端编译（私有仓库 billing 拦截秒失败）。
+    # workflow_dispatch 手动触发不受 paths 限制（手动编译永远可用）。
+    paths:
+      - 'TrollVNC/**'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
     inputs:
       is_managed:

@@ -20,7 +20,7 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
 ```
 
 - **设备端无 lint/typecheck**；**Windows 不能本地构建**，出 .tipa 只能走 CI。
-- **CI**（`.github/workflows/build.yml`）：push `main` 触发 macOS 编译 4 种 scheme——default/rootless/roothide 出 `.deb`，bootstrap 出 `.tipa`（TrollStore 安装产物）；可选 `workflow_dispatch` 输入（is_managed 打 Managed.plist 预置、desktop_name、port、view_only、scale、frame_rate_spec、modifier_map）。
+- **CI**（`.github/workflows/build.yml`）：push `main` 触发 macOS 编译 4 种 scheme——default/rootless/roothide 出 `.deb`，bootstrap 出 `.tipa`（TrollStore 安装产物）；可选 `workflow_dispatch` 输入（is_managed 打 Managed.plist 预置、desktop_name、port、view_only、scale、frame_rate_spec、modifier_map）。**push 带 paths 过滤（2026-08-18）**：仅 `TrollVNC/**` 或 workflow 自身变更才触发编译，纯网关/脚本/文档改动不触发（避免私有仓库 billing 拦截秒失败）；`workflow_dispatch` 手动触发不受 paths 限制。
 - 版本号在 `TrollVNC/Makefile` 的 `PACKAGE_VERSION`（现 0.0.1）。
 
 ## 架构红线（改任何端前先读 `说明文档.md`）

@@ -1208,7 +1208,7 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
 
 ### 9.3 CI 流程
 
-- push `main` 触发 `.github/workflows/build.yml`（macOS runner）
+- push `main` 触发 `.github/workflows/build.yml`（macOS runner）；**push 带 paths 过滤（2026-08-18）**：仅 `TrollVNC/**` 或 workflow 自身变更才触发，纯网关/脚本/文档改动不触发（避免私有仓库 billing 拦截秒失败）；`workflow_dispatch` 手动触发不受 paths 限制
 - 4 scheme matrix 编译：default/rootless/roothide 出 `.deb`，bootstrap 出 `.tipa`（TrollStore 安装产物）
 - 可选 `workflow_dispatch` 输入：is_managed（打 Managed.plist 预置）/ desktop_name / port / view_only / scale / frame_rate_spec / modifier_map
 - push main 时创建 v0.0.1 tag + GitHub Release（body = TrollVNC/CHANGELOG.md）
