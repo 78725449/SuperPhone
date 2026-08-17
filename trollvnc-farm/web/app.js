@@ -1217,19 +1217,24 @@ async function pasteToFocusedDevice() {
     toast('✗ 粘贴失败：请先进入设备控制', 'error');
     return;
   }
-  let txt = null;
+  // 2026-08-17 分层（与 5801 直连页对齐）：
+  // 1. https 安全上下文 → 读控制端剪贴板直贴（无窗口，一次完成）
+  if (window.isSecureContext && navigator.clipboard && navigator.clipboard.readText) {
+    try {
+      const txt = await navigator.clipboard.readText();
+      if (txt) { await submitPasteText(focus.device.id, txt); return; }
+    } catch (e) { /* 读失败落下一层 */ }
+  }
+  // 2. http → 读设备剪贴板（clipboard.get 能力，无安全上下文限制）→ 有内容直接注入
   try {
-    txt = await readClipboardText(); // 同步发起（手势激活内），勿在调用前 await 其它操作
-  } catch (err) {
-    // 2026-08-17 http 双 Ctrl+V：非 https/API 不可用 → 弹浮层，第二次 Ctrl+V 自动注入
-    showPasteFallbackModal();
-    return;
-  }
-  if (!txt) {
-    toast('✗ 粘贴失败：控制端剪贴板为空', 'error');
-    return;
-  }
-  await submitPasteText(focus.device.id, txt);
+    const r = await invokeCap('', focus.device.id, 'clipboard.get');
+    if (r && r.ok && typeof r.ack.text === 'string' && r.ack.text) {
+      await submitPasteText(focus.device.id, r.ack.text);
+      return;
+    }
+  } catch (e) { /* 能力调用失败落下一层 */ }
+  // 3. 都没有 → 浮层输入框（无确定按钮；粘贴/回车自动注入）
+  showPasteFallbackModal();
 }
 
 // 电脑端 Ctrl+V 拦截：focus 画布聚焦时按 Ctrl+V，禁止 noVNC 把 Ctrl+V 发到被控设备。
@@ -1246,13 +1251,37 @@ document.addEventListener('keydown', async (e) => {
   try {
     txt = await readClipboardText();
   } catch (err) {
-    // 2026-08-17 http 双 Ctrl+V：剪贴板不可读 → 弹浮层，第二次 Ctrl+V（焦点在输入框）自动注入
-    showPasteFallbackModal();
+    // 2026-08-17 对齐 5801：http 电脑端不弹浮层，聚焦隐藏 textarea，再按一次 Ctrl+V（原生粘贴）自动注入；
+    // 触屏端无 Ctrl+V，走粘贴按钮的浮层路径（pasteToFocusedDevice 第 3 层）
+    if (isTouchable()) { showPasteFallbackModal(); return; }
+    ensureFarmClipText().focus();
+    toast('剪贴板不可读：请再按一次 Ctrl+V 粘贴', 'info');
     return;
   }
   if (!txt) { toast('✗ 粘贴失败：控制端剪贴板为空', 'error'); return; }
   await submitPasteText(focus.device.id, txt);
 }, true);
+
+// http 电脑端 Ctrl+V 承接（2026-08-17，与 5801 隐藏 textarea 方案对齐）：动态隐藏 textarea，
+// 焦点在其中时用户按 Ctrl+V → 浏览器原生粘贴 → paste 事件自动注入被控设备。
+let _farmClipText = null;
+function ensureFarmClipText() {
+  if (_farmClipText) return _farmClipText;
+  const ta = document.createElement('textarea');
+  ta.id = 'farmClipText';
+  ta.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;resize:none;background:transparent;';
+  document.body.appendChild(ta);
+  ta.addEventListener('paste', (e) => {
+    const txt = (e.clipboardData && e.clipboardData.getData('text')) || '';
+    if (txt) {
+      e.preventDefault();
+      ta.value = '';
+      if (focus && focus.device) submitPasteText(focus.device.id, txt);
+    }
+  });
+  _farmClipText = ta;
+  return ta;
+}
 
 // 触控长按 = 传达被控设备长按（2026-08-14）：控制端→设备剪贴板仅保留 copy 事件（用户主动复制
 // 即经协议通道同步）；长按被控画面不再作为粘贴手势，改为左键按下保持传达设备长按（rfb.js patch
@@ -2107,8 +2136,8 @@ async function copyFromFocusedDevice() {
   }
 }
 
-// 粘贴降级浮层（2026-08-17 http 双 Ctrl+V）：readClipboardText 不可用（http 非安全上下文）时弹输入框；
-// 用户第二次 Ctrl+V（焦点在输入框）经 paste 事件捕获（clipboardData 不要求安全上下文）→ 自动注入被控设备。
+// 粘贴降级浮层（2026-08-17）：控制端（https 不可用）与设备剪贴板均为空时弹输入框；
+// 无确定按钮——粘贴进文本（paste 事件，不要求安全上下文）或回车即自动注入被控设备。
 let _pasteFallbackModal = null;
 function showPasteFallbackModal() {
   if (_pasteFallbackModal) { _pasteFallbackModal.focus(); return; }
@@ -2117,12 +2146,10 @@ function showPasteFallbackModal() {
   const card = document.createElement('div');
   card.className = 'modal-card';
   const title = document.createElement('h3');
-  title.textContent = '粘贴输入（Ctrl+V 自动填入）';
+  title.textContent = '粘贴输入（粘贴或回车自动注入）';
   const inp = document.createElement('input');
   inp.type = 'text';
-  inp.placeholder = '粘贴或输入要注入被控设备的文本';
-  const okBtn = document.createElement('button');
-  okBtn.textContent = '注入';
+  inp.placeholder = '长按粘贴或输入文本';
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = '取消';
   const close = () => {
@@ -2137,14 +2164,13 @@ function showPasteFallbackModal() {
   };
   inp.addEventListener('paste', (e) => {
     const txt = (e.clipboardData && e.clipboardData.getData('text')) || '';
-    if (txt) { inp.value = txt; e.preventDefault(); doPaste(); } // 第二次 Ctrl+V：自动注入
+    if (txt) { e.preventDefault(); inp.value = txt; doPaste(); } // 粘贴进文本：自动注入
   });
   inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doPaste(); } });
-  okBtn.addEventListener('click', doPaste);
   cancelBtn.addEventListener('click', close);
   const kbHandler = (e) => { if (e.key === 'Escape') close(); };
   document.addEventListener('keydown', kbHandler, true);
-  card.appendChild(title); card.appendChild(inp); card.appendChild(okBtn); card.appendChild(cancelBtn);
+  card.appendChild(title); card.appendChild(inp); card.appendChild(cancelBtn);
   overlay.appendChild(card);
   document.body.appendChild(overlay);
   _pasteFallbackModal = overlay;
@@ -2382,7 +2408,7 @@ function initFab() {
     menu.classList.toggle('hidden');           // 未拖动 = 点击 → 展开/收起菜单
     if (willOpen) {
       positionOpsMenu();                       // 展开后立即定位（避开 FAB 区域）
-      scheduleFabAutoCollapse();               // 自动收起（设备配置 FabAutoCollapse/FabCollapseMs）
+      // 2026-08-17：展开不再定时收起——点开必为按键，收起改由「点击菜单按键后」触发（scheduleFabAutoCollapse）
     } else {
       cancelFabAutoCollapse();
     }
@@ -2396,9 +2422,10 @@ function initFab() {
   });
 }
 
-// ---------- FAB 菜单自动收起（2026-08-17，设备配置 FabAutoCollapse/FabCollapseMs）----------
+// ---------- FAB 菜单自动收起（2026-08-17 语义改造：点击菜单按键后收起，不再从展开时计时）----------
 // 配置跟随设备（App 设置页 → 网关 configs 同步）：聚焦设备优先，无聚焦时取设备墙任一注册设备。
-// FabAutoCollapse 默认开启（true）；FabCollapseMs 默认 1000ms（100~10000）。instant reload 即时生效。
+// FabAutoCollapse=点击按键后是否收起（默认开启）；FabCollapseMs=点击按键后延迟 ms 收起（默认 1000ms）。
+// instant reload 即时生效。
 let fabCollapseTimer = null;
 function fabCollapseConfigs() {
   const dev = (focus && focus.device) || devices.find((d) => d.source === 'register') || devices[0];
@@ -2575,6 +2602,11 @@ document.addEventListener('pointerdown', (e) => {
     $('opsMenu').classList.add('hidden');
     cancelFabAutoCollapse();
   }
+});
+// 2026-08-17 点击菜单按键后按 FabCollapseMs 延迟收起（展开时不再定时收起——点开必为按键）。
+// pointerdown 先于按键自身的 press/click 处理派发，延迟到 FabCollapseMs 后收起不打断操作。
+$('opsMenu').addEventListener('pointerdown', (e) => {
+  if (e.target.closest && e.target.closest('button')) scheduleFabAutoCollapse();
 });
 
 // ===== 布局切换：卡片（宫格）/ 列表 两档（借鉴 IPA 控制端布局按钮，PC 端隐藏、移动端主用） =====

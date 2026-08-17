@@ -10,7 +10,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <link rel="icon" href="data:," />
 <title>控制台</title>
 <style>
@@ -69,6 +69,7 @@
     padding: 4px 10px;
     display: flex; align-items: center; justify-content: flex-start;
     gap: 8px;
+    touch-action: manipulation;      /* 防双击缩放/300ms 延迟（无效按键静默） */
   }
   #bar button:active { background: #3a3a3a; }
   @media (min-width: 900px) and (hover: hover) and (pointer: fine) {
@@ -131,6 +132,7 @@
     padding: 8px 10px;
     display: flex; align-items: center; justify-content: flex-start;
     gap: 10px;
+    touch-action: manipulation;      /* 防双击缩放/300ms 延迟（无效按键静默） */
   }
   #panel button:active { background: #e9eaee; }
   /* 白底上的「断开」危险按钮：深红文字（与网关 .danger 一致） */
@@ -157,6 +159,30 @@
     opacity: 0; border: 0; padding: 0; margin: 0; resize: none;
     -webkit-appearance: none; background: transparent;
   }
+
+  /* ===== 触屏端粘贴输入浮层（2026-08-17）：轻量，无确定按钮，粘贴后自动注入 ===== */
+  #pasteOverlay {
+    position: fixed; inset: 0; z-index: 30;
+    background: rgba(0, 0, 0, .5);
+    display: none; align-items: center; justify-content: center;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }
+  #pasteOverlay.show { display: flex; }
+  #pasteModal {
+    width: 100%; max-width: 340px;
+    background: #fff; border-radius: 14px;
+    padding: 16px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, .4);
+  }
+  #pasteModal h3 { margin: 0 0 10px; font: 600 16px/24px system-ui, sans-serif; color: #1c1c1e; }
+  #pasteInput {
+    width: 100%; min-height: 88px;
+    border: 1px solid rgba(0, 0, 0, .15); border-radius: 10px;
+    font: 15px/22px system-ui, sans-serif; color: #1c1c1e;
+    padding: 10px; box-sizing: border-box; resize: vertical;
+    background: #f5f6f8;
+  }
+  #pasteModal p { margin: 10px 0 0; font: 12px/18px system-ui, sans-serif; color: #8a8a8e; }
 </style>
 </head>
 <body>
@@ -194,6 +220,16 @@
 <!-- 粘贴输入（2026-08-17 http 环境方案：隐藏 textarea 承接 Ctrl+V 原生粘贴，不弹浮层；
      点击「粘贴」→ 先读控制端剪贴板（仅 https 可用），读不到则聚焦本框，再次按 Ctrl+V 或再次点击「粘贴」即注入） -->
 <textarea id="clipText" placeholder="粘贴文本" autocomplete="off"></textarea>
+
+<!-- 触屏端粘贴输入浮层（2026-08-17：轻量，无确定按钮；长按调出系统粘贴菜单或软键盘输入，
+     粘贴进文本后自动执行粘贴输入并关闭） -->
+<div id="pasteOverlay">
+  <div id="pasteModal">
+    <h3>📋 粘贴到设备</h3>
+    <textarea id="pasteInput" placeholder="长按粘贴或输入文本…" autocomplete="off"></textarea>
+    <p>粘贴内容后自动发送</p>
+  </div>
+</div>
 
 <script type="module">
 import RFB from './novnc/core/rfb.js';
@@ -346,11 +382,13 @@ import RFB from './novnc/core/rfb.js';
     setStatus('连接中…', true);
   }
 
-  // 2026-08-15：后台挂起 WS 断开（1006）→ 切回前台立即重建连接（对齐控制台 focus 自动重连）
+  // 2026-08-17 对齐网关 focus 重连：回前台直接查连接状态并重置尝试数（不依赖 needsReconnect
+  // 标志——后台挂起期间 WS close 事件可能不派发，标志未置位会导致不重连）
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState !== 'visible') return;
     if (!rfb) return;
-    if (needsReconnect && reconnectAttempts < RECONNECT_MAX) {
+    if (rfb._rfbConnectionState !== 'connected') {
+      reconnectAttempts = 0;
       recreateRfb();
     }
   });
@@ -907,10 +945,11 @@ import RFB from './novnc/core/rfb.js';
   var clipArmed = false; // 待粘贴状态：隐藏 textarea 已就绪，再次点击「粘贴」或 Ctrl+V 即注入
 
   /**
-   * 「粘贴」按钮入口（2026-08-17）：先读控制端剪贴板（仅 https 安全上下文可用）。
-   * - 读到文本 → 直接注入（无窗口）
-   * - 读不到 → 不弹浮层，进入待粘贴状态：用户按 Ctrl+V（焦点在隐藏 textarea →
-   *   浏览器原生粘贴 → paste 事件自动注入），或再次点击「粘贴」提交已有内容
+   * 「粘贴」按钮入口（2026-08-17 分层）：
+   * 1. https 安全上下文 → 读控制端剪贴板直贴（无窗口，一次完成）
+   * 2. http → 读设备剪贴板（clipboard.get 经 5802 管理通道，无浏览器安全上下文限制）
+   * 3. 都没有 → 触屏端弹轻量输入浮层（长按调系统粘贴菜单/输入后自动注入）；电脑端聚焦隐藏
+   *    textarea（Ctrl+V 原生粘贴自动注入）
    * @returns {void}
    */
   function pasteFromControl() {
@@ -923,12 +962,28 @@ import RFB from './novnc/core/rfb.js';
     }
     if (window.isSecureContext && navigator.clipboard && navigator.clipboard.readText) {
       navigator.clipboard.readText().then(function (txt) {
-        if (txt) pasteToDevice(txt);
-        else enterPasteArmed();
-      }).catch(function () { enterPasteArmed(); });
+        if (txt) { pasteToDevice(txt); return; }
+        pasteFromDeviceClipboard();
+      }).catch(function () { pasteFromDeviceClipboard(); });
       return;
     }
-    enterPasteArmed();
+    pasteFromDeviceClipboard();
+  }
+
+  /**
+   * 读设备剪贴板（clipboard.get，http 环境同样可用）→ 有内容直接注入（type.paste 写回+Cmd+V，
+   * 等效"设备剪贴板 → 聚焦输入框"）；设备剪贴板为空 → 按端型进入待粘贴输入。
+   * @returns {void}
+   */
+  function pasteFromDeviceClipboard() {
+    mgmtRequest('clipboard.get', {}, function (resp) {
+      if (resp && resp.ok && resp.text) {
+        pasteToDevice(resp.text);
+        return;
+      }
+      if (isTouch) showPasteInputModal();   // 触屏：轻量浮层（长按调系统粘贴/输入后自动注入）
+      else enterPasteArmed();               // 电脑：隐藏 textarea + Ctrl+V
+    });
   }
 
   /**
@@ -953,6 +1008,44 @@ import RFB from './novnc/core/rfb.js';
       clipArmed = false;
       pasteToDevice(txt);
     }
+  });
+
+  // ===== 触屏端粘贴浮层（2026-08-17）：轻量，无确定按钮；粘贴进文本后自动执行注入 =====
+  var pasteOverlay = document.getElementById('pasteOverlay');
+  var pasteInput = document.getElementById('pasteInput');
+
+  function showPasteInputModal() {
+    pasteInput.value = '';
+    pasteOverlay.classList.add('show');
+    // 延迟聚焦以等待过渡（部分浏览器需要元素可见后才能聚焦）
+    setTimeout(function () { try { pasteInput.focus(); } catch (e) {} }, 100);
+  }
+  function closePasteInputModal() {
+    pasteOverlay.classList.remove('show');
+    pasteInput.value = '';
+  }
+  // 粘贴进文本 → 自动注入并关闭（用户长按调出系统粘贴菜单，paste 事件取 clipboardData）
+  pasteInput.addEventListener('paste', function (e) {
+    var txt = (e.clipboardData && e.clipboardData.getData('text')) || '';
+    if (txt) {
+      e.preventDefault();
+      closePasteInputModal();
+      pasteToDevice(txt);
+    }
+  });
+  // 回车（软键盘输入后）→ 注入；Shift+Enter 保留换行
+  pasteInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      var t = pasteInput.value;
+      if (!t) return;
+      closePasteInputModal();
+      pasteToDevice(t);
+    }
+  });
+  // 点击遮罩关闭
+  pasteOverlay.addEventListener('click', function (e) {
+    if (e.target === pasteOverlay) closePasteInputModal();
   });
 
   /**
@@ -1039,7 +1132,7 @@ import RFB from './novnc/core/rfb.js';
    * 按住连发按键（音量/亮度/静音）的 down/up 分离式按压（2026-08-14 方案 A 升级）：
    * 按下即发送 keysym down、抬起发送 up、按住期间保持 down——iOS 对按住不松的音量/亮度键
    * 自动连发（物理按键行为），替代原 tap 式（down+60ms+up 一次性），对齐网关控制台按压语义。
-   * 触控类按键无双击/长按语义；面板不因点击按钮收起（与网关控制台一致）。
+   * 触控类按键无双击/长按语义；收起由 panel pointerdown 统一触发（点击按键后收起，2026-08-17）。
    * @param {HTMLElement} btn  - 目标按钮
    * @param {number} ks       - X11 keysym（如 0x1008ff13=音量+）
    * @param {string} code     - 键码名（如 'AudioVolumeUp'）
@@ -1073,7 +1166,7 @@ import RFB from './novnc/core/rfb.js';
   // 统一绑定 data-op 按钮（PC 栏 + 手机面板）。
   // home/power 走 attachKeyPress 按压识别（单击/双击/长按），跳过 click 统一绑定避免双触发；
   // 音量/亮度/静音走 attachKeyPressDownUp 按住连发（down/up 分离式），同样跳过 click 防双触发；
-  // 其余按钮保持 click → dispatchOp。面板不因点击按钮自动收起（与网关控制台一致），仅 FAB/点外部收起。
+  // 其余按钮保持 click → dispatchOp。收起由 panel pointerdown 统一触发（2026-08-17 点击按键后收起）。
   document.querySelectorAll('[data-op]').forEach(function (btn) {
     var op = btn.getAttribute('data-op');
     if (op === 'home') {
@@ -1231,10 +1324,12 @@ import RFB from './novnc/core/rfb.js';
     var pos = computePanelPos();
     panel.style.left = pos.left + 'px';
     panel.style.top = pos.top + 'px';
-    schedulePanelAutoCollapse();      // 自动收起（设备配置 FabAutoCollapse/FabCollapseMs，经 0x50 config.get）
+    // 2026-08-17：展开不再定时收起——点开必为按键，收起改由「点击菜单按键后」触发（schedulePanelAutoCollapse）
   }
 
-  // ---------- 面板自动收起（2026-08-17，与网关控制台 FAB 同配置同行为）----------
+  // ---------- 面板自动收起（2026-08-17 语义改造：点击菜单按键后收起，不再从展开时计时）----------
+  // 配置（设备端 FabAutoCollapse/FabCollapseMs，经 0x50 config.get）：FabAutoCollapse=按键后是否收起；
+  // FabCollapseMs=点击按键后延迟 ms 收起（默认 1000）。
   var panelCollapseTimer = null;
   var panelFabCfg = null;             // 缓存 config.get 结果 {auto, ms}
 
@@ -1331,6 +1426,14 @@ import RFB from './novnc/core/rfb.js';
     if (panel.contains(e.target) || e.target === fab) return;
     panel.classList.remove('show');
     cancelPanelAutoCollapse();
+  });
+
+  // 2026-08-17 点击菜单按键后按 FabCollapseMs 延迟收起（按键即点即执行，收起不打断操作）。
+  // pointerdown 先于按键自身的 pointer/click 处理派发，延迟到 FabCollapseMs 后收起，
+  // 长按类按键（home/power 800ms）也能在触发后正常收起。
+  panel.addEventListener('pointerdown', function (e) {
+    if (!panel.classList.contains('show')) return;
+    if (e.target.closest && e.target.closest('button')) schedulePanelAutoCollapse();
   });
 
   // 窗口尺寸变化时：约束 FAB 位置到新视口内 + 若面板可见则重新定位
