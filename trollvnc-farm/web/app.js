@@ -1243,37 +1243,14 @@ document.addEventListener('keydown', async (e) => {
   try {
     txt = await readClipboardText();
   } catch (err) {
-    // 2026-08-17 对齐 5801：http 电脑端不弹浮层，聚焦隐藏 textarea，再按一次 Ctrl+V（原生粘贴）自动注入；
-    // 触屏端无 Ctrl+V，走粘贴按钮的浮层路径（pasteToFocusedDevice 第 3 层）
-    if (isTouchable()) { showPasteFallbackModal(); return; }
-    ensureFarmClipText().focus();
-    toast('剪贴板不可读：请再按一次 Ctrl+V 粘贴', 'info');
+    // 2026-08-18 与 5801 对齐：http 下读不到控制端剪贴板 → 统一弹输入浮层
+    //（PC/触屏一致），不再用隐藏 textarea「第二次 Ctrl+V」方案
+    showPasteFallbackModal();
     return;
   }
   if (!txt) { toast('✗ 粘贴失败：控制端剪贴板为空', 'error'); return; }
   await submitPasteText(focus.device.id, txt);
 }, true);
-
-// http 电脑端 Ctrl+V 承接（2026-08-17，与 5801 隐藏 textarea 方案对齐）：动态隐藏 textarea，
-// 焦点在其中时用户按 Ctrl+V → 浏览器原生粘贴 → paste 事件自动注入被控设备。
-let _farmClipText = null;
-function ensureFarmClipText() {
-  if (_farmClipText) return _farmClipText;
-  const ta = document.createElement('textarea');
-  ta.id = 'farmClipText';
-  ta.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;resize:none;background:transparent;';
-  document.body.appendChild(ta);
-  ta.addEventListener('paste', (e) => {
-    const txt = (e.clipboardData && e.clipboardData.getData('text')) || '';
-    if (txt) {
-      e.preventDefault();
-      ta.value = '';
-      if (focus && focus.device) submitPasteText(focus.device.id, txt);
-    }
-  });
-  _farmClipText = ta;
-  return ta;
-}
 
 // 触控长按 = 传达被控设备长按（2026-08-14）：控制端→设备剪贴板仅保留 copy 事件（用户主动复制
 // 即经协议通道同步）；长按被控画面不再作为粘贴手势，改为左键按下保持传达设备长按（rfb.js patch
@@ -1953,60 +1930,69 @@ function createRfb(container, device, opts = {}, statusEl = null) {
   // 覆盖外层 .screen 的 transparent 无效；此处显式置透明，露出 body 背景（--bg 随 prefers-color-scheme）。
   rfb.background = 'transparent';
   if (opts.viewOnly) rfb.viewOnly = true;   // 墙缩略图只读：点击卡片=切入大屏控制，不直接操控
-  // 光标策略（2026-08-17 用户需求，与 5801 直连页对齐，全端统一苹果灰圆）：
-  // - 墙缩略图（viewOnly）：无光标（消除多 RFB 覆盖层光标串扰）
-  // - 手机端控制画面：苹果灰圆，触屏点击/移动显示、空闲 1.5s 自动隐藏
-  // - PC 端聚焦/直控画面：苹果灰圆常驻（有物理鼠标，跟随显示不隐藏）
-  // 苹果风格触控光标（2026-08-14）：iOS 系统触摸指示器样式——半透明灰圆（深灰 128，中心≈0.85 透明度，边缘渐隐）。
-  const APPLE_CURSOR_SIZE = 24;
-  const APPLE_CURSOR_R = 9;
-  const appleRgba = (() => {
-    const S = APPLE_CURSOR_SIZE, cx = (S - 1) / 2, cy = (S - 1) / 2, R = APPLE_CURSOR_R;
+  // 光标策略（2026-08-18 定稿）：
+  // - 墙缩略图（viewOnly）与触屏端（isMobile）：不显示任何光标（触屏手指即指针，
+  //   不再有自动消失触点；墙缩略图消除多 RFB 覆盖层串扰）——服务器光标（移除
+  //   ServerCursor 后 libvncserver 默认 X 形）与前端圆一律屏蔽
+  // - PC 端聚焦/直控画面：常驻深灰圆+浅灰外圈（自绘 fixed 覆盖层 pcRgba）
+  // PC 端常驻光标样式（2026-08-18）：内芯深灰 + 外圈一圈浅灰描边，尺寸略大（28px）。
+  const PC_CURSOR_SIZE = 28;
+  const PC_CURSOR_R = 11;          // 外圈半径
+  const PC_CURSOR_CORE_R = 8;      // 内芯半径（深灰）
+  const pcRgba = (() => {
+    const S = PC_CURSOR_SIZE, cx = (S - 1) / 2, cy = (S - 1) / 2, R = PC_CURSOR_R, CR = PC_CURSOR_CORE_R;
     const rgba = new Uint8Array(S * S * 4);
     for (let y = 0; y < S; y++) {
       for (let x = 0; x < S; x++) {
         const d = Math.hypot(x - cx, y - cy);
         const i = (y * S + x) * 4;
-        if (d <= R) {
-          rgba[i] = 128; rgba[i + 1] = 128; rgba[i + 2] = 128; // 深灰
-          rgba[i + 3] = Math.round(217 * (1.0 - 0.6 * (d / R))); // 中心≈0.85 边缘渐隐
+        if (d <= CR) {
+          // 内芯：均匀深灰（恒定透明度，避免中心渐变加深成一个点）
+          rgba[i] = 60; rgba[i + 1] = 60; rgba[i + 2] = 60;
+          // 边缘 1px 羽化：CR-1 内从 232 平滑降到 0，消除硬边
+          rgba[i + 3] = d > CR - 1
+            ? Math.round(232 * (CR - d))
+            : 232;
+        } else if (d <= R) {
+          // 外圈：浅灰描边环，由内向外渐隐
+          rgba[i] = 160; rgba[i + 1] = 160; rgba[i + 2] = 160;
+          rgba[i + 3] = Math.round(210 * (1.0 - ((d - CR) / (R - CR))));
         }
       }
     }
     return rgba;
   })();
-  const appleHot = Math.round((APPLE_CURSOR_SIZE - 1) / 2);
-  const appleShow = () => {
-    rfb._cursor.change(appleRgba, appleHot, appleHot, APPLE_CURSOR_SIZE, APPLE_CURSOR_SIZE);
-  };
-  if (opts.viewOnly) {
-    // 覆盖 _refreshCursor：一律渲染为空（clear → cursor:none + 覆盖层清空）
+  const pcHot = Math.round((PC_CURSOR_SIZE - 1) / 2);
+  if (opts.viewOnly || isMobile()) {
+    // 墙缩略图 / 触屏端：不显示任何光标。服务器光标（移除 ServerCursor 后
+    // libvncserver 默认 X 形）与前端圆一律屏蔽（clear → cursor:none + 覆盖层清空）。
     rfb._refreshCursor = () => { if (rfb._cursor) rfb._cursor.clear(); };
-  } else if (isMobile()) {
-    let cursorTimer = null;
-    const CURSOR_IDLE_MS = 1500;
-    const cursorHide = () => { if (rfb._cursor && rfb._cursor._canvas) rfb._cursor._hideCursor(); };
-    const cursorPoke = () => {
-      appleShow();
-      clearTimeout(cursorTimer);
-      cursorTimer = setTimeout(cursorHide, CURSOR_IDLE_MS);
-    };
-    const cv = rfb._canvas;
-    const opt = { capture: true, passive: true };
-    cv.addEventListener('touchstart', cursorPoke, opt);
-    cv.addEventListener('touchmove', cursorPoke, opt);
-    cv.addEventListener('mousemove', cursorPoke, opt);
-    cv.addEventListener('mousedown', cursorPoke, opt);
-    cv.addEventListener('wheel', cursorPoke, { capture: true, passive: false });
-    rfb.addEventListener('disconnect', () => clearTimeout(cursorTimer));
   } else {
-    // PC 聚焦/直控：强制苹果圆常驻，鼠标移动/点击/连上即显示
-    rfb._refreshCursor = () => appleShow();
+    // PC 聚焦/直控：覆盖层常驻光标（自绘 fixed canvas，pcRgba）。
+    // 系统光标已被 rfb._cursor 初始 clear() 置为 none，圆由本层常驻绘制。
+    const layer = document.createElement('canvas');
+    layer.style.cssText = 'position:fixed;z-index:65535;pointer-events:none;visibility:hidden;';
+    document.body.appendChild(layer);
+    const paint = (x, y) => {
+      layer.width = PC_CURSOR_SIZE;
+      layer.height = PC_CURSOR_SIZE;
+      layer.getContext('2d').putImageData(
+        new ImageData(new Uint8ClampedArray(pcRgba), PC_CURSOR_SIZE, PC_CURSOR_SIZE), 0, 0);
+      layer.style.left = (x - pcHot) + 'px';
+      layer.style.top = (y - pcHot) + 'px';
+      layer.style.visibility = '';
+    };
+    const show = (e) => paint(e.clientX, e.clientY);
+    const hide = () => { layer.style.visibility = 'hidden'; };
     const cv = rfb._canvas;
     const opt = { capture: true, passive: true };
-    cv.addEventListener('mousemove', appleShow, opt);
-    cv.addEventListener('mousedown', appleShow, opt);
-    rfb.addEventListener('connect', appleShow);
+    cv.addEventListener('mouseover', show, opt);
+    cv.addEventListener('mousemove', show, opt);
+    cv.addEventListener('mousedown', show, opt);
+    cv.addEventListener('mouseleave', hide, opt);
+    rfb.addEventListener('disconnect', hide);
+    // 覆盖 _refreshCursor 为空操作：系统光标保持 none，常驻灰圆由覆盖层接管
+    rfb._refreshCursor = () => {};
   }
   // 聚焦画布多点手势（2026-08-16）：noVNC pinch/twotap/threetap → touch.* 能力调用
   // （真实 IOHID 多点注入；仅聚焦可操控会话响应，直控/同步实例与断开后不响应）

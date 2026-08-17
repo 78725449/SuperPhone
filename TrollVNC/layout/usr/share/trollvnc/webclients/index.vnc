@@ -152,15 +152,7 @@
     #fab .wifi { width: 26px; height: 26px; }
   }
 
-  /* ===== 粘贴输入（http 环境方案，2026-08-17）：隐藏 textarea 承接 Ctrl+V，不弹浮层 ===== */
-  #clipText {
-    position: fixed; left: 0; top: 0;
-    width: 1px; height: 1px;
-    opacity: 0; border: 0; padding: 0; margin: 0; resize: none;
-    -webkit-appearance: none; background: transparent;
-  }
-
-  /* ===== 触屏端粘贴输入浮层（2026-08-17）：轻量，无确定按钮，粘贴后自动注入 ===== */
+  /* ===== 粘贴输入浮层（2026-08-18 PC/触屏统一）：轻量，无确定按钮，粘贴后自动注入 ===== */
   #pasteOverlay {
     position: fixed; inset: 0; z-index: 30;
     background: rgba(0, 0, 0, .5);
@@ -248,11 +240,7 @@
   <!-- 按钮由 renderKeys 按 BAR_KEYS 常量渲染（末尾追加「收起菜单」close 按钮） -->
 </div>
 
-<!-- 粘贴输入（2026-08-17 http 环境方案：隐藏 textarea 承接 Ctrl+V 原生粘贴，不弹浮层；
-     点击「粘贴」→ 先读控制端剪贴板（仅 https 可用），读不到则聚焦本框，再次按 Ctrl+V 或再次点击「粘贴」即注入） -->
-<textarea id="clipText" placeholder="粘贴文本" autocomplete="off"></textarea>
-
-<!-- 触屏端粘贴输入浮层（2026-08-17：轻量，无确定按钮；长按调出系统粘贴菜单或软键盘输入，
+<!-- 粘贴输入浮层（2026-08-18 PC/触屏统一：轻量，无确定按钮；长按调出系统粘贴菜单或软键盘/实体键盘输入，
      粘贴进文本后自动执行粘贴输入并关闭） -->
 <div id="pasteOverlay">
   <div id="pasteModal">
@@ -306,8 +294,8 @@ import RFB from './novnc/core/rfb.js';
     rfb = new RFB(screen, url, {});
     rfb.scaleViewport = true;
     rfb.resizeSession = false;
-    // 光标策略（2026-08-17 与网关前端 app.js 对齐，全端统一苹果灰圆）：
-    // - 触屏版（isTouch）：苹果灰圆，触屏点击/移动显示、空闲 1.5s 自动隐藏
+    // 光标策略（2026-08-18 定稿）：
+    // - 触屏版（isTouch）：不显示任何光标（手指即指针，无自动消失触点）
     // - PC 版：苹果灰圆常驻（有物理鼠标，跟随显示不隐藏）
     // 苹果风格触控光标（2026-08-14）：iOS 系统触摸指示器样式——半透明灰圆（深灰 128，中心≈0.85 透明度，边缘渐隐）。
     rfb.showDotCursor = false;   // 全端不再用 noVNC 默认 dot
@@ -333,22 +321,9 @@ import RFB from './novnc/core/rfb.js';
                          APPLE_CURSOR_SIZE, APPLE_CURSOR_SIZE);
     };
     if (isTouch) {
-      var cursorTimer = null;
-      var CURSOR_IDLE_MS = 1500;
-      var cursorHide = function () {
-        if (rfb._cursor && rfb._cursor._canvas) rfb._cursor._hideCursor();
-      };
-      var cursorPoke = function () {
-        appleCursorShow();
-        clearTimeout(cursorTimer);
-        cursorTimer = setTimeout(cursorHide, CURSOR_IDLE_MS);
-      };
-      var touchOpt = { capture: true, passive: true };
-      screen.addEventListener('touchstart', cursorPoke, touchOpt);
-      screen.addEventListener('touchmove', cursorPoke, touchOpt);
-      screen.addEventListener('mousemove', cursorPoke, touchOpt);
-      screen.addEventListener('mousedown', cursorPoke, touchOpt);
-      rfb.addEventListener('disconnect', function () { clearTimeout(cursorTimer); });
+      // 触屏端不显示任何光标（手指即指针，移除自动消失触点）；
+      // 服务器光标（移除 ServerCursor 后默认 X 形）与前端圆一律屏蔽（clear → cursor:none）
+      rfb._refreshCursor = function () { if (rfb._cursor) rfb._cursor.clear(); };
     } else {
       // PC：强制苹果圆常驻，鼠标移动/点击/连上即显示
       rfb._refreshCursor = function () { appleCursorShow(); };
@@ -991,7 +966,7 @@ import RFB from './novnc/core/rfb.js';
     });
   }
 
-  // 电脑端 Ctrl+V 拦截（2026-08-17）：https 下直读注入；http 下弹浮层，第二次 Ctrl+V 自动注入
+  // 电脑端 Ctrl+V 拦截（2026-08-18）：https 下直读注入；http 下弹输入浮层（与触屏统一）
   document.addEventListener('keydown', function (e) {
     if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'v') return;
     if (e.target.closest && e.target.closest('input, textarea')) return; // 已在输入框：原生粘贴
@@ -1001,75 +976,32 @@ import RFB from './novnc/core/rfb.js';
     if (window.isSecureContext && navigator.clipboard && navigator.clipboard.readText) {
       navigator.clipboard.readText().then(function (txt) {
         if (txt) pasteToDevice(txt);
-      }).catch(function () { enterPasteArmed(); });
+      }).catch(function () { showPasteInputModal(); });
       return;
     }
-    enterPasteArmed();
+    showPasteInputModal();
   }, true);
 
-  var clipText = document.getElementById('clipText');
-  var clipArmed = false; // 待粘贴状态：隐藏 textarea 已就绪，再次点击「粘贴」或 Ctrl+V 即注入
-
   /**
-   * 「粘贴」按钮入口（2026-08-17 语义修正：粘贴 = 控制端剪贴板 → 设备）：
+   * 「粘贴」按钮入口（2026-08-18 语义：粘贴 = 控制端剪贴板 → 设备，PC/触屏统一）：
    * - https 安全上下文 → 读控制端剪贴板直贴（无窗口，一次完成）
-   * - http（控制端剪贴板不可读）→ 不读设备剪贴板充数，直接进入待粘贴输入：
-   *   触屏端弹轻量浮层（长按调系统粘贴菜单/输入后自动注入）；电脑端聚焦隐藏
-   *   textarea（Ctrl+V 原生粘贴自动注入）
+   * - http（控制端剪贴板不可读）→ 弹轻量输入浮层（与触屏端一致）：
+   *   浮层内 Ctrl+V（clipboardData 不要求安全上下文）或输入文本后回车，自动注入。
+   *   不再使用隐藏 textarea「第二次点击提交」方案。
    * @returns {void}
    */
   function pasteFromControl() {
-    if (clipArmed && clipText.value) {           // 再次点击「粘贴」：提交隐藏输入框内容
-      var t = clipText.value;
-      clipText.value = '';
-      clipArmed = false;
-      pasteToDevice(t);
-      return;
-    }
     if (window.isSecureContext && navigator.clipboard && navigator.clipboard.readText) {
       navigator.clipboard.readText().then(function (txt) {
         if (txt) { pasteToDevice(txt); return; }
-        enterPasteInput();
-      }).catch(function () { enterPasteInput(); });
+        showPasteInputModal();
+      }).catch(function () { showPasteInputModal(); });
       return;
     }
-    enterPasteInput();
+    showPasteInputModal();
   }
 
-  /**
-   * 进入待粘贴输入：触屏弹浮层（长按调系统粘贴），电脑聚焦隐藏 textarea（Ctrl+V）。
-   * @returns {void}
-   */
-  function enterPasteInput() {
-    if (isTouch) showPasteInputModal();
-    else enterPasteArmed();
-  }
-
-  /**
-   * 进入待粘贴状态：不弹浮层。提示 + 清空并聚焦隐藏 textarea（触屏不自动聚焦，避免弹软键盘）。
-   * @returns {void}
-   */
-  function enterPasteArmed() {
-    flashStatus('剪贴板不可读：请按 Ctrl+V，或再次点击「粘贴」', 'info');
-    clipText.value = '';
-    clipArmed = true;
-    if (!isTouch) {
-      try { clipText.focus(); } catch (e) {}
-    }
-  }
-
-  // 2026-08-17 隐藏 textarea 捕获 paste 事件（clipboardData 不要求安全上下文）→ 自动注入
-  clipText.addEventListener('paste', function (e) {
-    var txt = (e.clipboardData && e.clipboardData.getData('text')) || '';
-    if (txt) {
-      e.preventDefault();
-      clipText.value = '';
-      clipArmed = false;
-      pasteToDevice(txt);
-    }
-  });
-
-  // ===== 触屏端粘贴浮层（2026-08-17）：轻量，无确定按钮；粘贴进文本后自动执行注入 =====
+  // ===== 粘贴输入浮层（2026-08-18 PC/触屏统一）：轻量，无确定按钮；粘贴/输入后自动注入 =====
   var pasteOverlay = document.getElementById('pasteOverlay');
   var pasteInput = document.getElementById('pasteInput');
 
@@ -1482,7 +1414,9 @@ import RFB from './novnc/core/rfb.js';
   // 点击面板外区域收起面板
   document.addEventListener('pointerdown', function (e) {
     if (!panel.classList.contains('show')) return;
-    if (panel.contains(e.target) || e.target === fab) return;
+    // 用 closest('#fab') 而非 e.target===fab：fab 内是 SVG 子元素，严格相等恒 false，
+    // 会让「展开后再点 fab 收起」被此处先收起、随后 pointerup 又展开（互相抵消，点不回去）。
+    if (panel.contains(e.target) || (e.target.closest && e.target.closest('#fab'))) return;
     panel.classList.remove('show');
     cancelPanelAutoCollapse();
   });
