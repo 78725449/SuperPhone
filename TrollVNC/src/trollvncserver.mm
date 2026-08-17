@@ -4006,12 +4006,17 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
     if (!cl->viewOnly && gViewOnly)
         cl->viewOnly = TRUE;
 
-    // 2026-08-14 统一协议通道：enableExtendedClipboard 为 per-client 字段（_rfbClientRec），
-    // 需对每个新客户端显式置位才协商 extended caps 伪编码（0xC0A1E5CE），
-    // noVNC 检测到后走 ExtendedClipboard Notify/Request/Provide（UTF-8 + deflate）→ 中文双向无损。
-    // 2026-08-17 无条件开启：ClipboardEnabled 配置已移除（显式双向搬运，无自动同步），
-    // 扩展剪贴板协商固定启用（noVNC ExtendedClipboard UTF-8 双向）
-    cl->enableExtendedClipboard = TRUE;
+    // 2026-08-17 架构级修复（type 125 根因）：ExtendedClipboard 关闭，剪贴板显式双向搬运
+    // 走 0x50/0x80 管理通道（5801 直连页 mgmtRequest / 网关 REST → TRCapabilityRegistry），
+    // 均不依赖 ExtendedClipboard。
+    // 根因：enableExtendedClipboard=TRUE 时 libvncserver 0.9.15 会在客户端 SetEncodings
+    // 请求 ExtendedClipboard 伪编码后**主动推送 ServerCaps（type 3 消息）**——该推送
+    // 不经 tvExtWriteResponse、不受 sendMutex 保护（无锁路径），与 FBU 帧竞争 →
+    // noVNC 在 _FBU.rects>0 时把 ServerCaps 字节当 rect 数据消费 → 流错位 →
+    // "Unexpected server message (type 125)" 断连（5801 直连页连接后立即断开）。
+    // 关闭后服务器不再主动推送任何非 FBU 消息；0x80 响应有 sendMutex 锁（帧级原子），
+    // 与 FBU 发送（libvncserver 内部同样持 sendMutex 整帧写）互斥 → 字节流帧级稳定。
+    cl->enableExtendedClipboard = FALSE;
 
     // Allocate per-client state bag
     TVClientState *st = (TVClientState *)calloc(1, sizeof(TVClientState));
