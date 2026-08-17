@@ -329,10 +329,7 @@ import RFB from './novnc/core/rfb.js';
       isConnected = true;
       startSigPoll();
       setStatus('已连接，等待画面…', true);
-      // 2026-08-17 v2：画面连接建立后启动剪贴板管理通道（主连接承载 0x50，单连接无并发 WS）
-      mgmtInit(function (ok) {
-        if (!ok) console.log('[mgmt] 管理通道不可用（粘贴回退 RFB 原语、复制按钮隐藏）');
-      });
+      // 2026-08-17 v3：管理通道已由页面加载时经 HTTP 初始化（不依赖 RFB 连接）
       // 检测是否真的收到画面帧（区分"连上但黑帧"与"连不上"）
       var gotFrame = false;
       function fbSize() {
@@ -400,6 +397,11 @@ import RFB from './novnc/core/rfb.js';
   });
 
   initRfb();
+
+  // 2026-08-17 v3：管理通道走设备端 HTTP（5802），页面加载即初始化，不依赖 RFB 连接
+  mgmtInit(function (ok) {
+    if (!ok) console.log('[mgmt] HTTP 管理通道不可用（粘贴回退 RFB 原语、复制按钮隐藏）');
+  });
 
   // ===== 按键常量 + 统一渲染（07 §4.4：一份数据，PC #bar 与手机 #panel 共用） =====
 
@@ -817,14 +819,12 @@ import RFB from './novnc/core/rfb.js';
    */
   function pasteToDevice(text) {
     if (!text) return;
-    // 2026-08-17 显式双向搬运：优先走管理通道 type.paste（与设备端 0x50 op 同契约，
-    // 设备端写剪贴板 + 释放修饰键 + 模拟 Cmd+V）；管理通道未就绪时回退 RFB 原语拼装。
-    if (!mgmtRequest('type.paste', { text: text }, function (resp) {
+    // 2026-08-17 显式双向搬运：走设备端 HTTP 管理通道 type.paste（写剪贴板 + 释放修饰键 + 模拟 Cmd+V）；
+    // HTTP 失败回退 RFB 原语拼装。
+    mgmtRequest('type.paste', { text: text }, function (resp) {
       if (resp && resp.ok) flashStatus('✓ 已粘贴 ' + text.length + ' 字符', 'success');
-      else flashStatus('✗ 粘贴失败：' + ((resp && resp.error) || '未知'), 'error');
-    })) {
-      pasteToDeviceLegacy(text);
-    }
+      else pasteToDeviceLegacy(text);
+    });
   }
 
   // RFB 原语拼装兜底（管理通道不可用时）：ClientCutText 写剪贴板 + 自定义 keysym 清修饰键 + 模拟 Cmd+V
@@ -850,71 +850,49 @@ import RFB from './novnc/core/rfb.js';
     flashStatus('✓ 已粘贴 ' + text.length + ' 字符', 'success');
   }
 
-  // ===== 剪贴板显式双向搬运（2026-08-17 v2）：管理通道（主连接承载，单连接）=====
-  // v1 用独立 mgmt WS 承载 0x50——实测 libvncserver websockify 不支持并发多条 WS 客户端，
-  // 第二条连接接入会踢断主连接（141ms 1006 → 重连循环）。v2 改为在主 RFB 连接上发 0x50 请求，
-  // 0x80 响应由 patch 过的 novnc rfb.js（case 128）转成 'tvextresponse' 事件（不再触发
-  // "Unexpected server message" 断连）。主连接是正常画面客户端，0x50 扩展消息与画面推送共存。
+  // ===== 剪贴板显式双向搬运（2026-08-17 v3）：管理通道改走独立 HTTP 端口 5802 =====
+  // v1 独立 mgmt WS 被 libvncserver websockify 踢断（不支持并发 WS）；v2 主连接承载
+  // 0x50/0x80 与 FBU 帧竞争 → "Unexpected server message (type 125)" 断连。v3 架构级
+  // 修复：管理操作（clipboard.get / type.paste / config.get / cap.list）改走设备端
+  // HTTP API（5802 端口，与网关 REST 同构），RFB 流只剩画面 FBU + 客户端输入 → type 125 根除。
 
-  var mgmtPending = null;       // { cb } 当前等待的 0x80 响应（设备端同步处理，严格按序返回）
-  var mgmtReady = false;        // 管理通道可用标记（主连接 connect + cap.list 探测完成）
-  var mgmtCapHasClip = false;   // cap.list 探测：设备端是否支持 clipboard 组
+  var mgmtReady = false;        // 管理通道可用标记（HTTP API 探测完成）
+  var mgmtCapHasClip = true;    // HTTP API 总支持 clipboard（不再依赖 cap.list 探测）
 
-  function mgmtHandleResponse(text) {
-    var parsed = null;
-    try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
-    var pend = mgmtPending;
-    mgmtPending = null;
-    if (pend && pend.cb) pend.cb(parsed);
+  // HTTP 管理通道：POST {op, params} → 设备端 5802 /api；返回 JSON
+  function mgmtRequest(op, params, cb) {
+    var apiHost = location.hostname;
+    var apiUrl = (location.protocol === 'https:' ? 'https://' : 'http://') + apiHost + ':5802/api';
+    var body;
+    try { body = JSON.stringify({ op: op, params: params || {} }); } catch (e) { if (cb) cb(null); return; }
+    fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body,
+    }).then(function (r) { return r.json(); }).then(function (resp) {
+      if (cb) cb(resp);
+    }).catch(function () { if (cb) cb(null); });
   }
 
-  // 主连接 connect 后调用：绑定 0x80 事件 + cap.list 探测能力目录（见 initRfb 的 connect 回调）
+  // 页面加载即探测 HTTP 管理通道（不依赖 RFB 连接；0x50/0x80 全移除）
   function mgmtInit(cb) {
-    mgmtReady = false;
-    mgmtPending = null;
-    try {
-      rfb.addEventListener('tvextresponse', function (e) {
-        mgmtHandleResponse((e && e.detail && e.detail.text) || '');
-      });
-      rfb.addEventListener('disconnect', function () { mgmtReady = false; mgmtPending = null; });
-    } catch (e) { if (cb) cb(false); return; }
     mgmtRequest('cap.list', {}, function (resp) {
-      mgmtCapHasClip = !!(resp && resp.extensions && resp.extensions.some(function (g) {
-        return g.group === 'clipboard';
-      }));
+      var groups = (resp && resp.extensions) || [];
+      mgmtCapHasClip = groups.some(function (g) { return g.group === 'clipboard'; });
       mgmtReady = true;
       updateClipButtons();
       if (cb) cb(true);
     });
   }
 
-  // 在主连接发 0x50 请求；返回 true=已发送（主连接可用），否则 false（调用方回退）
-  function mgmtRequest(op, params, cb) {
-    if (!rfb || !rfb._sock || rfb._rfbConnectionState !== 'connected') return false;
-    if (mgmtPending && mgmtPending.cb) mgmtPending.cb(null); // 防御：覆盖未响应的旧请求
-    var payload;
-    try { payload = new TextEncoder().encode(JSON.stringify({ op: op, params: params || {} })); }
-    catch (e) { return false; }
-    var sock = rfb._sock;
-    sock.sQpush8(0x50);
-    sock.sQpush8(0); sock.sQpush8(0); sock.sQpush8(0); // reserved
-    sock.sQpush32(payload.length);
-    sock.sQpushBytes(payload);
-    sock.flush();
-    mgmtPending = { cb: cb };
-    return true;
-  }
-
   // 复制按钮（拉取设备剪贴板 → 写控制端剪贴板；降级链：writeText → execCommand → 提示）
   function doDeviceCopy() {
-    if (!mgmtRequest('clipboard.get', {}, function (resp) {
-      var text = resp && resp.text != null ? resp.text : '';
+    mgmtRequest('clipboard.get', {}, function (resp) {
       if (!resp || !resp.ok) { flashStatus('✗ 复制失败：' + ((resp && resp.error) || '未知'), 'error'); return; }
+      var text = resp.text != null ? resp.text : '';
       if (!text) { flashStatus('✗ 复制失败：设备剪贴板为空', 'error'); return; }
       copyTextToControl(text);
-    })) {
-      flashStatus('✗ 复制失败：管理通道未就绪', 'error');
-    }
+    });
   }
 
   function copyTextToControl(text) {

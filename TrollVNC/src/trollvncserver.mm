@@ -3553,6 +3553,158 @@ static NSDictionary *tvExtHandleCapList(rfbClientPtr cl, NSDictionary *params) {
     return tvExtOk(@{@"extensions": groups});
 }
 
+#pragma mark - HTTP Management API (5802, 与 RFB 流隔离)
+
+// 架构级方案（2026-08-17）：管理操作（剪贴板/type.paste/配置）改走独立 HTTP 端口 5802，
+// 与网关 REST 架构同构（管理走 HTTP、画面走 RFB），彻底消除 0x50/0x80 与 FBU 帧在
+// 5901 字节流上的竞争（type 125 根因：FBU 分片发送 + 客户端 _FBU.rects>0 消费窗口
+// 无法感知 0x80 → 流错位）。本服务器复用 tvExtHandle* 纯函数（cl 传 NULL），零重复实现。
+
+static const int kHttpApiPort = 5802;
+
+static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
+    NSString *op = req[@"op"];
+    if (![op isKindOfClass:[NSString class]]) return tvExtErr(@"op 字段缺失或非字符串");
+    NSDictionary *params = req[@"params"] ?: @{};
+    if (![params isKindOfClass:[NSDictionary class]]) return tvExtErr(@"params 必须是对象");
+    // 仅开放管理类 op（与 0x50 通道同一组纯函数；cl 传 NULL——这些 handler 不使用 cl）
+    if ([op isEqualToString:@"cap.list"]) {
+        return tvExtHandleCapList(NULL, params);
+    } else if ([op isEqualToString:@"clipboard.get"]) {
+        return tvExtHandleClipboardGet(NULL, params);
+    } else if ([op isEqualToString:@"type.paste"]) {
+        return tvExtHandleTypePaste(NULL, params);
+    } else if ([op isEqualToString:@"config.get"]) {
+        return tvExtHandleConfigGet(NULL, params);
+    }
+    return tvExtErr([NSString stringWithFormat:@"未知操作: %@", op ?: @""]);
+}
+
+static void tvHttpApiWriteResponse(int fd, NSDictionary *resp) {
+    NSData *json = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
+    if (!json) json = [NSData dataWithBytes:"{}" length:2];
+    NSMutableString *head = [NSMutableString stringWithString:
+        @"HTTP/1.1 200 OK\r\n"
+        @"Content-Type: application/json; charset=utf-8\r\n"
+        @"Access-Control-Allow-Origin: *\r\n"
+        @"Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n"
+        @"Access-Control-Allow-Headers: Content-Type\r\n"
+        @"Access-Control-Max-Age: 86400\r\n"
+        @"Connection: close\r\n"];
+    [head appendFormat:@"Content-Length: %lu\r\n\r\n", (unsigned long)json.length];
+    NSMutableData *out = [NSMutableData dataWithData:[head dataUsingEncoding:NSUTF8StringEncoding]];
+    [out appendData:json];
+    (void)write(fd, out.bytes, out.length);
+}
+
+static void tvHttpApiHandleClient(int fd) {
+    char first[2048];
+    ssize_t n = read(fd, first, sizeof(first) - 1);
+    if (n > 0) {
+        first[n] = '\0';
+        NSString *requestLine = [[NSString stringWithUTF8String:first] componentsSeparatedByString:@"\r\n"].firstObject;
+        // OPTIONS 预检：直接 204
+        if ([requestLine hasPrefix:@"OPTIONS"]) {
+            NSString *resp = @"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\n"
+                             @"Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n"
+                             @"Access-Control-Allow-Headers: Content-Type\r\n"
+                             @"Access-Control-Max-Age: 86400\r\nConnection: close\r\n\r\n";
+            (void)write(fd, resp.UTF8String, resp.length);
+            close(fd);
+            return;
+        }
+        if ([requestLine hasPrefix:@"POST"]) {
+            // 首包已含 head 开头，重组读取 body
+            NSData *headData = [NSData dataWithBytes:first length:(NSUInteger)n];
+            NSData *body = tvHttpApiReadBodyFromPartial(fd, headData);
+            if (body) {
+                NSDictionary *req = [NSJSONSerialization JSONObjectWithData:body options:0 error:nil];
+                if ([req isKindOfClass:[NSDictionary class]]) {
+                    NSDictionary *resp = tvHttpApiDispatch(req);
+                    tvHttpApiWriteResponse(fd, resp);
+                    close(fd);
+                    return;
+                }
+            }
+            tvHttpApiWriteResponse(fd, tvExtErr(@"请求体解析失败"));
+            close(fd);
+            return;
+        }
+    }
+    close(fd);
+}
+
+// 支持"首包已含部分 body"的读取：head 已消费，body 可能已部分到达
+static NSData *tvHttpApiReadBodyFromPartial(int fd, NSData *partial) {
+    NSRange sep = [partial rangeOfData:[NSData dataWithBytes:"\r\n\r\n" length:4] options:0 range:NSMakeRange(0, partial.length)];
+    if (sep.location == NSNotFound) return nil;
+    NSString *head = [[NSString alloc] initWithData:[partial subdataWithRange:NSMakeRange(0, sep.location)] encoding:NSUTF8StringEncoding];
+    NSInteger bodyLen = -1;
+    for (NSString *line in [head componentsSeparatedByString:@"\r\n"]) {
+        if ([line.lowercaseString hasPrefix:@"content-length:"]) {
+            bodyLen = [[line substringFromIndex:15] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]].integerValue;
+            break;
+        }
+    }
+    if (bodyLen < 0) return nil;
+    NSUInteger consumed = sep.location + 4;
+    NSMutableData *body = [NSMutableData data];
+    if (consumed < partial.length) {
+        NSUInteger avail = partial.length - consumed;
+        [body appendData:[partial subdataWithRange:NSMakeRange(consumed, MIN(avail, (NSUInteger)bodyLen))]];
+    }
+    while (body.length < (NSUInteger)bodyLen) {
+        char b[2048];
+        ssize_t r = read(fd, b, sizeof(b));
+        if (r <= 0) break;
+        [body appendBytes:b length:(NSUInteger)r];
+    }
+    return body.length > 0 ? body : nil;
+}
+
+static void *tvHttpApiServerMain(void *arg) {
+    (void)arg;
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) return NULL;
+    int one = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(kHttpApiPort);
+    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        TVLog(@"HTTP API: bind :%d failed (%s)", kHttpApiPort, strerror(errno));
+        close(s);
+        return NULL;
+    }
+    if (listen(s, 8) != 0) {
+        TVLog(@"HTTP API: listen :%d failed (%s)", kHttpApiPort, strerror(errno));
+        close(s);
+        return NULL;
+    }
+    TVLog(@"HTTP management API listening on :%d", kHttpApiPort);
+    for (;;) {
+        int c = accept(s, NULL, NULL);
+        if (c < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        tvHttpApiHandleClient(c);
+    }
+    close(s);
+    return NULL;
+}
+
+static void startHttpApiServer(void) {
+    pthread_t th;
+    if (pthread_create(&th, NULL, tvHttpApiServerMain, NULL) != 0) {
+        TVLog(@"HTTP API: thread create failed");
+        return;
+    }
+    pthread_detach(th);
+}
+
 #pragma mark - Client Helpers
 
 // Generate a stable-length 8-char id for a given socket fd (deterministic per fd).
@@ -4866,6 +5018,9 @@ int main(int argc, const char *argv[]) {
 
         initializeTilingOrReset();
         initializeAndRunRfbServer();
+
+        // 2026-08-17 架构级：管理操作走独立 HTTP 端口（5802），与 RFB 画面流隔离
+        startHttpApiServer();
 
         installSignalHandlers();
         installTerminationHandlers();
