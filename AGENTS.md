@@ -15,7 +15,7 @@
 
 ```bash
 cd trollvnc-farm && npm start        # 启动网关（8080；部署带 FARM_TOKEN=xxx）
-cd trollvnc-farm && npm test         # 9 个测试套件（smoke/tunnel/register/dedupe/caps/gesture/pending-replay/press/order）——网关改动必须全过
+cd trollvnc-farm && npm test         # 10 个测试套件（smoke/tunnel/register/dedupe/caps/gesture/pending-replay/press/order/events）——网关改动必须全过
 cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + Theos）
 ```
 

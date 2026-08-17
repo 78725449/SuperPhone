@@ -69,7 +69,7 @@
 │  trollvnc-farm/    网关（Node.js ESM）                                │
 │  ├── server/       单入口 index.js（注册/隧道/控制台/WS 桥接）         │
 │  ├── web/          无构建静态前端（app.js/caps.js/press.js/gesture.js）│
-│  ├── test/         测试套件（npm test 串行 9 套件）                    │
+│  ├── test/         测试套件（npm test 串行 10 套件）                    │
 │  ├── deploy/       软路由部署文档                                      │
 │  └── scripts/      gen-cert.mjs（自签证书）                           │
 │                                                                      │
@@ -152,13 +152,13 @@ New project/
 │   └── CHANGELOG.md / README.md / COPYING
 │
 ├── trollvnc-farm/                       # 网关 Node.js ESM
-│   ├── server/index.js                  # 单入口（1543 行）
+│   ├── server/index.js                  # 单入口（1574 行）
 │   ├── web/                             # 前端（无构建）
 │   │   ├── index.html / app.js / style.css
 │   │   ├── caps.js                      # 前端契约唯一真相源
 │   │   ├── press.js / gesture.js
 │   │   └── mockup.html / mockup-full.html
-│   ├── test/                            # 测试套件（9 套件 + 验收脚本）
+│   ├── test/                            # 测试套件（10 套件 + 验收脚本）
 │   ├── deploy/                          # 软路由部署文档
 │   ├── scripts/gen-cert.mjs             # 自签证书生成
 │   ├── Dockerfile / docker-compose.yml
@@ -773,7 +773,8 @@ tun = {
 
 | 函数 | 作用 |
 |---|---|
-| `refreshDevices` | 拉 /api/devices，过滤 SELF_ID，注入 MOCK_DEVICES，按签名变化重算卡片比例；6 秒轮询（仅 visible） |
+| `refreshDevices` | 拉 /api/devices，过滤 SELF_ID，注入 MOCK_DEVICES，按签名变化重算卡片比例；由 /ws/events 推送驱动（2026-08-18），6s 轮询降级为 WS 断线兜底（仅 visible） |
+| `connectEventsWS` | 订阅 /ws/events 设备变更推送：收到事件重拉 refreshDevices；断线退避重连（2s 起，上限 30s） |
 | `startWallRfb` | 卡片墙画面获取：每 ThumbInterval 秒调 screen.hash，变化才调 screenshot 拉帧；双速检测（变化 1s / 静止 1.5 倍退避至 15s 封顶）；无 RFB 持久连接 |
 | `createWallTile` | 创建卡片 DOM（含批量复选框、⋯ 菜单）；点击卡片进入聚焦/同步/批量不同分支 |
 | `enterFocus` / `exitFocus` | 聚焦大屏进出：URL ?focus= 持久化、IPA setTabBarHidden 桥接、createRfb(grp+broadcast+ctrl)、断线重连 |
@@ -912,7 +913,7 @@ script app.js?v=126（type=module）
 
 所有端到端套件共享模式：随机端口隔离（FARM_PORT/REG_PORT/TUNNEL_PORT + FARM_DATA_DIR 临时目录 + FARM_TLS=0 + FARM_HOST=127.0.0.1，order-test 额外 FARM_MDNS=0）、spawn 网关子进程、waitFor 轮询就绪、check(name,cond) 断言、finally 杀子进程 + 清临时目录。
 
-**npm test 串行 9 个套件**（package.json 实际配置，三方文档已一致为 9）：
+**npm test 串行 10 个套件**（package.json 实际配置，三方文档已一致为 10）：
 
 | # | 文件 | 测什么 |
 |---|---|---|
@@ -925,6 +926,7 @@ script app.js?v=126（type=module）
 | 7 | `pending-replay-test.js` | 回归：会话 A 退出后 100ms 内（debounce rfb.stop 未下发）设备推旧残留帧→网关应缓冲不转发；debounce rfb.stop 到达；重进会话 B 触发 stop→start 重建；会话 B 600ms 窗口内不得收到旧残留数据 |
 | 8 | `press-test.js` | press.js 时序：volup 按下 down、抬起 up、不补 click；home 双击→home.double；单击窗口超时→click；按住 900ms→home.long；power 三击→power.triple |
 | 9 | `order-test.js` | 卡片墙 order 排序：注册 a/b/c 初始按 addedAt；PATCH b=1/a=3 → [b,a,c]；相同 order 按 id 字典序兜底；清除 order（null）回到注册时间段；order=-1/100000 拒绝 400 |
+| 10 | `events-test.js` | 设备变更推送（2026-08-18）：/ws/events 订阅后设备 register 上线收到 register 事件；DELETE 删除收到 delete 事件；事件为 {type,deviceId,ts} 轻量通知；非 /ws/events 连接不进入订阅集合 |
 
 **辅助文件**（不属于 npm test）：
 - `fake-rfb-server.js`：smoke 用的假 VNC echo server
@@ -1274,7 +1276,7 @@ node scripts/wait-ipa.mjs <runId>
 
 | 项 | 修复前 | 代码真相源 | 修复状态 |
 |---|---|---|---|
-| 测试套件数 | 8（AGENTS.md / 说明文档.md） | **9**（package.json 串行 9 个，含 `gesture-test.js`） | ✅ 已修复：AGENTS.md L18、说明文档.md L58 同步为 9 套件，套件列表补 `gesture` |
+| 测试套件数 | 8（AGENTS.md / 说明文档.md） | **10**（package.json 串行 10 个，含 `gesture-test.js`、`events-test.js`） | ✅ 已修复：AGENTS.md、说明文档.md 同步为 10 套件，套件列表补 `gesture`、`events` |
 | CONFIG_DEFS 项数 | 38（2026-08-17 校准）/ 37 | **37 项**（caps.js 实际 37，`caps-test.js` 断言 `=== 37`；2026-08-18 ServerCursor 移除由 38 回退 37） | ✅ 已修复：AGENTS.md L30、说明文档.md L153 同步为 37 |
 | BATCH_CAPS | 20（两文档一致） | 20（一致） | — 无需修复 |
 | KEY_DEFS | 10（两文档一致） | 10（一致） | — 无需修复 |
