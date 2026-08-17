@@ -166,6 +166,7 @@ function startDiscovery() {
         reg.online = true;
         reg.lastSeen = Date.now();
         saveDb();
+        notifyDevicesChanged('update', reg.id);
         console.log('[mdns] up (registered already): ' + service.name + ' @ ' + host + ':' + port);
         return;
       }
@@ -179,12 +180,16 @@ function startDiscovery() {
       dev.online = true;
       dev.lastSeen = Date.now();
       saveDb();
+      notifyDevicesChanged('register', dev.id);
       console.log(`[mdns] up: ${service.name} @ ${host}:${port}`);
     });
     browser.on('down', (service) => {
       const host = (service.referer && service.referer.address) || (service.addresses || [])[0];
       const dev = devices.find((d) => d.source !== 'register' && d.host === host && d.port === service.port);
-      if (dev) dev.online = false;
+      if (dev) {
+        dev.online = false;
+        notifyDevicesChanged('offline', dev.id);
+      }
     });
     console.log('[mdns] discovering _rfb._tcp ...');
     try {
@@ -737,6 +742,7 @@ async function handleApi(req, res, url) {
       }
       if (req.method === 'DELETE') {
         removeDevice(id);
+        notifyDevicesChanged('delete', id);
         sendJson(res, 200, { ok: true });
         return true;
       }
@@ -762,6 +768,7 @@ async function handleApi(req, res, url) {
         }
         saveDb();
         probeDevice(dev).then(() => saveDb());
+        notifyDevicesChanged('update', id);
         sendJson(res, 200, { device: dev });
         return true;
       }
@@ -1186,6 +1193,19 @@ const httpRedirect = tlsOptions ? http.createServer(httpRedirectHandler) : null;
 
 const wss = new WebSocketServer({ server, path: undefined });
 
+// 设备列表变更推送（2026-08-18）：前端经 /ws/events 长连接订阅，后端在设备
+// 上线/离线/删除/改名/排序等变更点广播事件，前端收到后重拉 /api/devices。
+// 事件通知+前端重拉方案：后端只推 {type, deviceId}，不推全量列表，避免带宽浪费。
+const eventClients = new Set(); // 订阅 /ws/events 的 WS 连接
+function notifyDevicesChanged(type, deviceId) {
+  const msg = JSON.stringify({ type, deviceId: deviceId || null, ts: Date.now() });
+  for (const ws of eventClients) {
+    if (ws.readyState === 1) {
+      try { ws.send(msg); } catch { /* noop */ }
+    }
+  }
+}
+
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, 'http://' + (req.headers.host || 'localhost'));
   if (TOKEN && url.searchParams.get('token') !== TOKEN) {
@@ -1193,6 +1213,14 @@ wss.on('connection', (ws, req) => {
     return;
   }
   // 单通道铁律：注册只走 TCP JSON(18081)，无 WS 注册端点
+
+  // 设备列表变更订阅端点（2026-08-18）：前端长连接，替代 6s 轮询
+  if (url.pathname === '/ws/events') {
+    eventClients.add(ws);
+    ws.on('close', () => eventClients.delete(ws));
+    ws.on('error', () => eventClients.delete(ws));
+    return;
+  }
 
   const m = url.pathname.match(/^\/ws\/vnc\/([^/]+)$/);
   if (m) {
@@ -1236,6 +1264,7 @@ setInterval(() => {
       try { rec.ws && rec.ws.terminate(); } catch { /* noop */ }
       try { rec.sock && rec.sock.destroy(); } catch { /* noop */ }
       registeredDevices.delete(deviceId);
+      notifyDevicesChanged('offline', deviceId);
     }
   }
 }, 30000);
@@ -1284,6 +1313,7 @@ const regServer = net.createServer((sock) => {
       saveDb();
       console.log(`[reg] device registered: ${dev.name} (${deviceId}) @ ${remoteIp}:${dev.port}`);
       send({ type: 'ack', deviceId, name: dev.name });
+      notifyDevicesChanged('register', deviceId);
     } else if (msg.type === 'hello' && deviceId) {
       const rec = registeredDevices.get(deviceId);
       if (rec) rec.lastHeartbeat = Date.now();
@@ -1495,6 +1525,7 @@ const tunnelServer = net.createServer((sock) => {
             dev.online = regAlive;
             if (!regAlive) dev.lastSeen = Date.now();
             saveDb();
+            notifyDevicesChanged(regAlive ? 'update' : 'offline', deviceId);
           }
           console.log(`[tunnel] closed for device ${deviceId}`);
         }

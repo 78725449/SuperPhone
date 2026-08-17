@@ -201,6 +201,25 @@ async function refreshDevices() {
   }
 }
 
+// 设备列表变更推送订阅（2026-08-18）：后端经 /ws/events 广播设备上线/离线/删除/改名/排序，
+// 前端收到后重拉 /api/devices，替代 6s 轮询（轮询保留为 WS 断线兜底）。
+// 事件通知+前端重拉：后端只推 {type, deviceId}，前端统一 refreshDevices 拉全量，保证一致性。
+let eventsWS = null;
+let eventsWSRetry = 0;
+function connectEventsWS() {
+  try { if (eventsWS) eventsWS.close(); } catch { /* noop */ }
+  eventsWS = new WebSocket(wsUrl('/ws/events'));
+  eventsWS.onopen = () => { eventsWSRetry = 0; };
+  eventsWS.onmessage = () => { refreshDevices().catch(() => {}); };
+  eventsWS.onclose = () => {
+    eventsWS = null;
+    // WS 断线退避重连（2s 起，上限 30s）；期间由 6s 轮询兜底
+    const delay = Math.min(2000 * Math.pow(2, eventsWSRetry++), 30000);
+    setTimeout(connectEventsWS, delay);
+  };
+  eventsWS.onerror = () => { try { eventsWS.close(); } catch { /* noop */ } };
+}
+
 function createWallTile(d) {
   const tile = document.createElement('div');
   tile.className = 'tile' + (d.online ? '' : ' tile-offline') + (d.mock ? ' tile-mock' : '');
@@ -2717,6 +2736,8 @@ window.addEventListener('resize', fitFocusPanel);
   try {
     await refreshDevices();
     restoreFocusFromUrl(); // 2026-08-14：刷新后自动恢复当前操作的设备画面（URL ?focus=）
+    connectEventsWS(); // 2026-08-18：设备变更推送订阅（替代轮询为主通道）
+    // 6s 轮询降级为 WS 断线兜底：仅页面可见时拉取，保证 WS 异常时设备列表仍能更新
     setInterval(() => { if (document.visibilityState === 'visible') refreshDevices().catch(() => {}); }, 6000);
   } catch (e) {
     if (e.message === 'unauthorized') showLogin();
