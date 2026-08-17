@@ -89,7 +89,8 @@
 | 端口 | 角色 | 协议 | 说明 |
 |---|---|---|---|
 | 手机 **5901** | 原生双向控制通道 | RFB/VNC | 画面下行 + 操作上行；含 0x50/0x80 扩展消息命令通道 |
-| 手机 **5801** | 网页文件服务器 | HTTP | 只发 noVNC 页面，无配置 API |
+| 手机 **5801** | 网页文件服务器 | HTTP | 只发 noVNC 页面；管理 API 在 5802 |
+| 手机 **5802** | 直连页管理 API | HTTP v3 | clipboard.get / type.paste / config.get / cap.list（trollvncserver 自实现轻量 API 服务器，与 RFB 流隔离，2026-08-17 起） |
 | 网关 **8080** | 控制台 | HTTP/HTTPS + WS | 外部经 frp/隧道到此，再由网关桥到 5901 |
 | 网关 **18081** | 注册/心跳 | TCP JSON 行 | 设备主动拨入 |
 | 网关 **18181** | 隧道 | TCP 帧（FT_） | 设备主动建立；无隧道 4003 拒绝 |
@@ -372,7 +373,7 @@ New project/
 **关键方法**：
 - `+ sharedManager`：单例
 - `- currentString`：读 UIPasteboard.generalPasteboard.string，空返回 nil
-- `- setStringFromRemote:`：写 UIPasteboard（RFB 协议 / 5801 粘贴的数据载体）
+- `- setStringFromRemote:`：写 UIPasteboard（RFB 协议 / 5801 经 5802 管理通道粘贴的数据载体，RFB 原语兜底）
 - `- setStringForPasteInput:`：与 setStringFromRemote 同义，保留独立名供 type.paste executor 调用
 
 **架构决策（2026-08-17）**：自动同步已移除——平台无写入者身份，自动同步只能启发式且有误判边界，已决策弃用；显式双向搬运：复制=拉（clipboard.get / 0x50 clipboard.get）、粘贴=推（type.paste）；设备端不再监听系统剪贴板、不再自动推送。
@@ -764,7 +765,7 @@ tun = {
 
 #### 5.2.1 web/app.js — 前端主逻辑
 
-**文件**：`trollvnc-farm/web/app.js`（2683 行）
+**文件**：`trollvnc-farm/web/app.js`（2727 行）
 
 **核心职责**：浏览器/WKWebView 单页应用，承担卡片墙渲染、聚焦大屏控制、操作列与移动端 FAB、布局切换、批量操作、直控模式、同步控制、剪贴板显式双向搬运、iOS 软键盘双通道输入、容器模式（?container=ipa）。
 
@@ -776,7 +777,7 @@ tun = {
 | `startWallRfb` | 卡片墙画面获取：每 ThumbInterval 秒调 screen.hash，变化才调 screenshot 拉帧；双速检测（变化 1s / 静止 1.5 倍退避至 15s 封顶）；无 RFB 持久连接 |
 | `createWallTile` | 创建卡片 DOM（含批量复选框、⋯ 菜单）；点击卡片进入聚焦/同步/批量不同分支 |
 | `enterFocus` / `exitFocus` | 聚焦大屏进出：URL ?focus= 持久化、IPA setTabBarHidden 桥接、createRfb(grp+broadcast+ctrl)、断线重连 |
-| `createRfb` | noVNC RFB 工厂：scaleViewport、transparent 背景、viewOnly 无光标、移动端苹果风格光标、attachFarmGesture 挂多点手势、disconnect 码 4001/4003/4005 分别提示 |
+| `createRfb` | noVNC RFB 工厂：scaleViewport、transparent 背景、viewOnly/触屏不显示任何光标（_refreshCursor=clear 屏蔽服务器光标）、PC 聚焦/直控常驻自绘深灰圆+浅灰外圈覆盖层（pcRgba）、attachFarmGesture 挂多点手势、disconnect 码 4001/4003/4005 分别提示 |
 | `initTouchKeyboard` | iOS 软键盘双通道：compositionend 整段提交（type.paste）/ input 删除键（Backspace 直发）/ input 单 ASCII（kbdSendAscii 键值直发）/ keydown Enter |
 | `kbdSendAscii` | Shift 状态跟踪（连续大写保持按下、切小写才抬起、空闲 400ms 自动释放）+ 基础字符 ↓50ms↑ |
 | `toggleSync` / `toggleDirectMode` | 同步控制（grp viewOnly 订阅 + 广播接收）/ 直控模式（所有在线真实设备 ctrl=false 可输入连接，互不抢占） |
@@ -788,8 +789,7 @@ tun = {
 - **聚焦抢占语义**：主控连接始终带 grp+broadcast，勾选同步设备无需重建主控；新 ctrl 顶旧 ctrl 由网关 4001 处理
 - **剪贴板显式双向搬运**（2026-08-17 决策）：
   - 复制 = 拉：copyFromFocusedDevice → invokeCap('','id','clipboard.get') → farmWriteClipboardToControl（IPA 走原生桥 writeClipboard，浏览器走 navigator.clipboard.writeText 降级 execCommand('copy')）
-  - 粘贴 = 推：pasteToFocusedDevice / Ctrl+V 拦截 → readClipboardText → submitPasteText → invokeCap('','id','type.paste',{text})
-  - http 双 Ctrl+V：readClipboardText 不可用弹 showPasteFallbackModal，第二次 Ctrl+V（焦点在 input）经 paste 事件捕获自动注入
+  - 粘贴 = 推：pasteToFocusedDevice / Ctrl+V 拦截 → https 下 readClipboardText 直读 → submitPasteText → invokeCap('','id','type.paste',{text})；**http 下（PC/触屏统一，2026-08-18）一律弹输入浮层 showPasteFallbackModal**，浮层内 paste 事件（clipboardData 不要求安全上下文）或回车 → submitPasteText 自动注入并关闭；已废弃隐藏 textarea「第二次 Ctrl+V」方案（ensureFarmClipText 已删）
 - **容器模式**（?container=ipa + ?selfId=）：过滤自身卡片；document.body.dataset.container='ipa'；进入聚焦发 farmBridge.postMessage({type:'setTabBarHidden',hidden:true})，退出恢复
 
 **关键数据结构**：
@@ -813,7 +813,7 @@ kbdShiftHeld, kbdShiftTimer, kbdComposing, kbdJustComposed, kbdLastLen
 
 #### 5.2.2 web/caps.js — 前端契约唯一真相源
 
-**文件**：`trollvnc-farm/web/caps.js`（228 行）
+**文件**：`trollvnc-farm/web/caps.js`（227 行）
 
 **核心职责**：自包含定义按键/批量能力/手势/配置表单契约，封装网关 invoke/configs API。原则：无上报、无元数据表、无运行时发现；新增能力 = 设备端注册 executor + 此处加一条。
 
@@ -821,10 +821,10 @@ kbdShiftHeld, kbdShiftTimer, kbdComposing, kbdJustComposed, kbdLastLen
 
 | 常量 | 数量 | 用途 | 传输通道 |
 |---|---|---|---|
-| `KEY_DEFS` | 10 | 右侧按键直发（power/home/volup/mute/voldn/briup/bridn/snapshot/spotlight/keyboard） | RFB 直发（ks keysym / code DOM code / ptr 指针掩码）；每项 events:{click,double,triple,long,down,up} |
+| `KEY_DEFS` | 10 | 右侧按键直发（power/home/volup/mute/voldn/briup/bridn/snapshot/spotlight/keyboard） | RFB 直发（ks keysym / code DOM code / ptr 指针掩码）；每项 events:{click,long} 或 {click,down,up}（双击/三击=自然连点，显式 double/triple 走 BATCH_CAPS） |
 | `BATCH_CAPS` | 20 | 批量调用菜单（17 hid + service.restart + settings.generateKeys + settings.searchGateway） | invoke API；按 category 分组（hid/service/native） |
 | `GESTURE_DEFS` | 3 | 画布多点手势（pinch→touch.pinch / twotap→touch.twoFingerTap / threetap→touch.threeFingerTap） | invoke API（坐标 0-1 归一化） |
-| `CONFIG_DEFS` | **38 项** | 配置表单契约 | set API；每项含 reload: hot/restart/instant/gateway |
+| `CONFIG_DEFS` | **37 项** | 配置表单契约 | set API；每项含 reload: hot/restart/instant/gateway |
 | `CONFIG_BY_KEY` | Map | 按 key 索引 schema | — |
 | `CATEGORY_LABELS` | 8 类 | 批量菜单分组标题 | hid/touch/stylus/system/native/service/gateway/control |
 
@@ -891,13 +891,13 @@ main
   #opsMenu（移动端悬浮操作菜单）
 #kbdInput（fixed 全屏透明 input，iOS 软键盘输入源）
 #addModal / #editModal（order 排序号 + name）/ #tileMenu（编辑/删除）
-script app.js?v=113（type=module）
+script app.js?v=126（type=module）
 ```
 
 **关键设计**：
 - viewport 禁缩放 + viewport-fit=cover 适配刘海
 - #kbdInput 必须可视视口内（left:-9999px iOS 不弹键盘），故 fixed 全屏透明层，pointer-events:none 不挡画布
-- 引用 `?v=N` 缓存破坏：app.js?v=113、style.css?v=12、caps.js?v=7、rfb.js?v=2、gesturehandler.js?v=4
+- 引用 `?v=N` 缓存破坏：app.js?v=126、style.css?v=12；caps.js?v=7、rfb.js?v=2 版本号在 app.js 的 ESM import 处（gesture 逻辑在 `gesture.js`，无版本号）
 
 **CSS 关键约定**：
 - CSS 变量：`--bg/--panel/--panel2/--line/--text/--muted/--accent/--ok/--bad` + `--safe-top/right/bottom/left`
@@ -912,7 +912,7 @@ script app.js?v=113（type=module）
 
 所有端到端套件共享模式：随机端口隔离（FARM_PORT/REG_PORT/TUNNEL_PORT + FARM_DATA_DIR 临时目录 + FARM_TLS=0 + FARM_HOST=127.0.0.1，order-test 额外 FARM_MDNS=0）、spawn 网关子进程、waitFor 轮询就绪、check(name,cond) 断言、finally 杀子进程 + 清临时目录。
 
-**npm test 串行 9 个套件**（package.json 实际配置，AGENTS.md/说明文档.md 说 8 个）：
+**npm test 串行 9 个套件**（package.json 实际配置，三方文档已一致为 9）：
 
 | # | 文件 | 测什么 |
 |---|---|---|
@@ -920,7 +920,7 @@ script app.js?v=113（type=module）
 | 2 | `tunnel-test.js` | 隧道全链路：FakeDevice（register + openTunnel 握手 + 帧解析 + rfb.start/stop 自动 ack）；viewOnly 订阅收到 FT_DATA；viewOnly 上行可转发；ctrl 输入→FT_DATA；新 ctrl 顶掉旧 ctrl（4001）；broadcast 输入→目标设备隧道帧 |
 | 3 | `register-test.js` | P0 注册/心跳/命令：WS /ws/register 已废弃（4000）；TCP 注册带 manifest，能力字段被网关剥离不入库；invoke ack 往返；不 ack 设备 invoke→504；configs set ack；断开→离线→离线 invoke 504；TCP hello 保活；batch 端点可达 |
 | 4 | `dedupe-test.js` | 去重/身份合并：同 deviceId 重复注册仍 1 条、旧连接被关；manual+register 同 host:port 合并为 deviceId；已注册设备不被 manual 降级 |
-| 5 | `caps-test.js` | caps.js 自包含定义契约：BATCH_CAPS=20 且每项含 id/title/icon/category/params、含 service.restart；CONFIG_DEFS=38 且不含 Port$ 项且每项含 reload；KEY_DEFS=10；groupByCategory=3 组；GESTURE_DEFS=3 |
+| 5 | `caps-test.js` | caps.js 自包含定义契约：BATCH_CAPS=20 且每项含 id/title/icon/category/params、含 service.restart；CONFIG_DEFS=37 且不含 Port$ 项且每项含 reload；KEY_DEFS=10；groupByCategory=3 组；GESTURE_DEFS=3 |
 | 6 | `gesture-test.js` | gesture.js 契约：GESTURE_DEFS 与 resolveGesture 三态覆盖一致；normalizePoint 中心/越界钳制/无 rect 兜底；pinch scale>1/<1/钳制 [0.5,2.0]/≈1 跳过 null；未知类型 null |
 | 7 | `pending-replay-test.js` | 回归：会话 A 退出后 100ms 内（debounce rfb.stop 未下发）设备推旧残留帧→网关应缓冲不转发；debounce rfb.stop 到达；重进会话 B 触发 stop→start 重建；会话 B 600ms 窗口内不得收到旧残留数据 |
 | 8 | `press-test.js` | press.js 时序：volup 按下 down、抬起 up、不补 click；home 双击→home.double；单击窗口超时→click；按住 900ms→home.long；power 三击→power.triple |
@@ -1270,12 +1270,12 @@ node scripts/wait-ipa.mjs <runId>
 
 ## 11. 文档差异核对
 
-> 本节记录 Code Wiki（基于代码真相源）与 `AGENTS.md` / `说明文档.md` 的数量校准结果。两处差异已于 2026-08-17 修复，三方文档现已一致。
+> 本节记录 Code Wiki（基于代码真相源）与 `AGENTS.md` / `说明文档.md` 的数量校准结果。已校准项如下（2026-08-17 修正 8→9 套件；2026-08-18 因 ServerCursor 移除 38→37，三方一致）。
 
 | 项 | 修复前 | 代码真相源 | 修复状态 |
 |---|---|---|---|
 | 测试套件数 | 8（AGENTS.md / 说明文档.md） | **9**（package.json 串行 9 个，含 `gesture-test.js`） | ✅ 已修复：AGENTS.md L18、说明文档.md L58 同步为 9 套件，套件列表补 `gesture` |
-| CONFIG_DEFS 项数 | 37（AGENTS.md）/ 36（说明文档.md） | **38 项**（caps.js 实际 38，`caps-test.js` 断言 `=== 38`） | ✅ 已修复：AGENTS.md L30、说明文档.md L152 同步为 38 |
+| CONFIG_DEFS 项数 | 38（2026-08-17 校准）/ 37 | **37 项**（caps.js 实际 37，`caps-test.js` 断言 `=== 37`；2026-08-18 ServerCursor 移除由 38 回退 37） | ✅ 已修复：AGENTS.md L30、说明文档.md L153 同步为 37 |
 | BATCH_CAPS | 20（两文档一致） | 20（一致） | — 无需修复 |
 | KEY_DEFS | 10（两文档一致） | 10（一致） | — 无需修复 |
 | GESTURE_DEFS | 3（两文档一致） | 3（一致） | — 无需修复 |
