@@ -572,8 +572,10 @@ function finishBatch(menu) {
  * 布局对齐触控端悬浮菜单（2026-08-19）：纯「图标+名称」按钮垂直列表，无大标题/无分组标签；
  * 按键按钮复用控制台右侧按键的实现通道（attachPress 按压识别：单击/双击/三击/长按 → capId →
  * 批量 invoke）——批量态对 BATCH_CAPS 具多击能力的键补声明多击窗口（Home 双击 → home.double）；
- * 电源/截图键不入批量菜单（批量误触电源有锁屏风险）；批量配置入口已移至「设置」按钮（菜单不再
- * 重复）；菜单无取消按钮（点外部关闭，或点顶部「批量」变「取消」态退出）。
+ * 长按通道对齐控制台右侧：显式 .long 能力触发（Home 长按 → home.long）、按压式按键（音量/亮度/静音）
+ * 长按 = 按住连发基础能力（抬起停止）、键盘/搜索维持单击；电源/截图键不入批量菜单（批量误触电源有锁屏
+ * 风险）；批量配置入口已移至「设置」按钮（菜单不再重复）；菜单无取消按钮（点外部关闭，或点顶部「批量」
+ * 变「取消」态退出）。
  * @returns {void}
  */
 function showBatchMenu() {
@@ -594,25 +596,41 @@ function showBatchMenu() {
 
   // 按键按钮：与控制台右侧按键同一实现通道（attachPress 按压识别），剔除截图键（snapshot：批量
   // 下发无收集画面意义）与电源键（power：批量误触电源有锁屏/关机风险，2026-08-19）。
-  // 单击/双击/三击识别：右侧按键零延迟单击（iOS 自然连点），批量菜单为显式能力入口——对 BATCH_CAPS
-  // 存在对应 double/triple 能力的键（home.double）补声明多击窗口，双击命中显式能力、单击经 300ms
-  // 窗口判定；按压式按键（音量/亮度/静音 down/up）下按时发一次、抬起不重复下发（fallback 到 keyDef.key，
-  // 避免 down+up 双注入导致跳两格）。
+  // 长按连发状态（2026-08-19）：按压式按键（音量/亮度/静音）长按 = 按住持续下发基础能力，
+  // 对齐控制台右侧 HID down 按住 OS 自动重复的语义；抬起（up）即停止。
+  // 修复前：这些键 events 无 long 声明 → attachPress 不挂 800ms 长按定时器 → 长按无反应/回落单击。
+  let holdTimer = null;
+  const stopHold = () => { if (holdTimer) { clearInterval(holdTimer); holdTimer = null; } };
+  const startHold = (fn) => { stopHold(); holdTimer = setInterval(fn, 400); };
+
   const cleanups = [];
-  const detachAll = () => { for (const f of cleanups) { try { f(); } catch { /* noop */ } } };
+  const detachAll = () => {
+    stopHold(); // 菜单销毁时兜底停止长按连发（防定时器泄漏）
+    for (const f of cleanups) { try { f(); } catch { /* noop */ } }
+  };
   for (const k of KEY_DEFS) {
     if (k.key === 'snapshot' || k.key === 'power') continue;
     const b = document.createElement('button');
     b.className = 'batch-cap-btn';
     b.innerHTML = '<span class="cap-icon">' + (k.svg || escapeHtml(k.icon || '?')) + '</span><span class="cap-name">' + escapeHtml(k.title) + '</span>';
-    // 批量态按压事件：在 KEY_DEFS 事件基础上补声明 BATCH_CAPS 中的多击显式能力（如 home.double）
+    // 批量态按压事件：在 KEY_DEFS 事件基础上补声明 BATCH_CAPS 中的多击显式能力（如 home.double）。
+    // 长按通道对齐控制台：有显式 .long 能力（home.long）→ 触发显式能力；按压式按键（down/up，
+    // 音量/亮度/静音）→ '.hold' 按住连发；无 down/up 的键（键盘/搜索）维持单击（与控制台一致）
     const batchEvents = { ...k.events };
     if (BATCH_CAPS.some((c) => c.id === k.key + '.double')) batchEvents.double = k.key + '.double';
     if (BATCH_CAPS.some((c) => c.id === k.key + '.triple')) batchEvents.triple = k.key + '.triple';
+    const hasLongCap = BATCH_CAPS.some((c) => c.id === k.key + '.long');
+    if (hasLongCap) batchEvents.long = k.key + '.long';
+    else if (k.events && k.events.down) batchEvents.long = k.key + '.hold';
+    const baseMeta = BATCH_CAPS.find((c) => c.id === k.key);
     const bk = { ...k, events: batchEvents };
     cleanups.push(attachPress(b, bk, { invoke: (capId) => {
-      if (k.events && k.events.down && capId === k.events.up) return; // 按压式按键抬起不重复下发
-      const meta = BATCH_CAPS.find((c) => c.id === capId) || BATCH_CAPS.find((c) => c.id === k.key);
+      if (k.events && k.events.up && capId === k.events.up) { stopHold(); return; } // 抬起结束按住连发
+      if (batchEvents.long === k.key + '.hold' && capId === k.key + '.hold') {   // 长按 → 按住连发基础能力
+        if (baseMeta) startHold(() => doBatchInvoke(ids, baseMeta));
+        return;
+      }
+      const meta = BATCH_CAPS.find((c) => c.id === capId) || baseMeta;
       if (meta) doBatchInvoke(ids, meta);
     } }));
     menu.appendChild(b);
