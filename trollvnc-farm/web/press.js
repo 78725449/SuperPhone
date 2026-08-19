@@ -9,11 +9,13 @@ const LONG_MS = 800;
  * 挂载按压识别器：将 keyDef.events 声明的按压模式（click/double/triple/long/down/up）翻译为能力 id 调用
  * @param element 目标元素（需支持 addEventListener/removeEventListener，浏览器 DOM 或 Node EventTarget 均可）
  * @param keyDef 按键对象，格式 { key, title, icon, events: { click: capId, double: capId, triple: capId, long: capId, down: capId, up: capId } }
- * @param opts 选项对象 { invoke: async (capId) => {} }，capId 为 keyDef.events 中对应模式声明的能力 id
+ * @param opts 选项对象 { invoke: async (capId) => {}, longMs?: number }，capId 为 keyDef.events 中对应模式声明的能力 id；
+ *             longMs 可自定义长按判定阈值（默认 800ms，2026-08-19：批量连发场景需更快响应）
  * @returns {Function} 卸载函数；调用后移除事件监听，停止识别
  */
 export function attachPress(element, keyDef, opts = {}) {
   const events = keyDef.events || {};
+  const longMs = opts.longMs || LONG_MS;
   let isLong = false, longTimer = null, pressCount = 0, clickTimer = null;
 
   const fire = (name) => {
@@ -51,7 +53,7 @@ export function attachPress(element, keyDef, opts = {}) {
     clearTimeout(clickTimer);                        // 新一轮按压开始，作废 pending 多击窗口
     fire('down');                                    // down 类按键按下立即触发
     if (events.long) {
-      longTimer = setTimeout(() => { isLong = true; pressCount = 0; fire('long'); }, LONG_MS);
+      longTimer = setTimeout(() => { isLong = true; pressCount = 0; fire('long'); }, longMs);
     }
   };
 

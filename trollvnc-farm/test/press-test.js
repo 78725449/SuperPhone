@@ -66,6 +66,14 @@ function pressHold(el, t, holdMs) {
   await new Promise((r) => setTimeout(r, 400));
   check('power 双击识别为 power.double', calls.includes('power.double') && !calls.includes('power.triple'));
 
+  calls.length = 0;
+  const el7 = makeEl();
+  // 自定义 longMs（2026-08-19 批量连发手感优化）：默认 800ms，此处 300ms → 按住 400ms 即触发 long
+  attachPress(el7, { events: { click: 'v', long: 'v.hold' } }, { invoke: (id) => calls.push(id), longMs: 300 });
+  await pressHold(el7, 0, 400);
+  await new Promise((r) => setTimeout(r, 50));
+  check('longMs 自定义生效：短于默认 800ms 的按住触发 long', calls.includes('v.hold') && !calls.includes('v'));
+
   console.log(failures === 0 ? '\nALL PRESS TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 })();

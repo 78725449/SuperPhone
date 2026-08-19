@@ -598,10 +598,12 @@ function showBatchMenu() {
   // 下发无收集画面意义）与电源键（power：批量误触电源有锁屏/关机风险，2026-08-19）。
   // 长按连发状态（2026-08-19）：按压式按键（音量/亮度/静音）长按 = 按住持续下发基础能力，
   // 对齐控制台右侧 HID down 按住 OS 自动重复的语义；抬起（up）即停止。
-  // 修复前：这些键 events 无 long 声明 → attachPress 不挂 800ms 长按定时器 → 长按无反应/回落单击。
+  // 手感优化（2026-08-19）：长按判定 800→500ms（attachPress longMs）、连发间隔 400→200ms，
+  // 接近控制台 OS 重复速率（仍受 API 网络往返影响，属批量通道固有差异）。
+  // 修复前：这些键 events 无 long 声明 → attachPress 不挂长按定时器 → 长按无反应/回落单击。
   let holdTimer = null;
   const stopHold = () => { if (holdTimer) { clearInterval(holdTimer); holdTimer = null; } };
-  const startHold = (fn) => { stopHold(); holdTimer = setInterval(fn, 400); };
+  const startHold = (fn) => { stopHold(); holdTimer = setInterval(fn, 200); };
 
   const cleanups = [];
   const detachAll = () => {
@@ -632,7 +634,7 @@ function showBatchMenu() {
       }
       const meta = BATCH_CAPS.find((c) => c.id === capId) || baseMeta;
       if (meta) doBatchInvoke(ids, meta);
-    } }));
+    }, longMs: 500 })); // 长按判定 500ms（默认 800ms 太钝，批量连发需更快响应）
     menu.appendChild(b);
   }
   // 重启服务（2026-08-19：释放所有按键/硬件键盘锁/解锁已去除——type.paste 内部自带按键清理、
