@@ -29,6 +29,7 @@ trollvncserver_FILES += src/ScreenCapturer.mm
 trollvncserver_FILES += src/STHIDEventGenerator.mm
 trollvncserver_FILES += src/OhMyJetsam.mm
 trollvncserver_FILES += src/TRScreenHasher.mm
+trollvncserver_FILES += src/TRSelfSignedCert.mm
 
 trollvncserver_CFLAGS += -fobjc-arc
 trollvncserver_CFLAGS += -Wno-unknown-warning-option
@@ -87,6 +88,7 @@ trollvncserver_FRAMEWORKS += Foundation
 trollvncserver_FRAMEWORKS += IOKit
 trollvncserver_FRAMEWORKS += IOSurface
 trollvncserver_FRAMEWORKS += QuartzCore
+trollvncserver_FRAMEWORKS += Security
 trollvncserver_FRAMEWORKS += UIKit
 trollvncserver_FRAMEWORKS += UserNotifications
 
@@ -119,6 +121,8 @@ trollvncmanager_FILES += src/STHIDEventGenerator.mm
 trollvncmanager_FILES += src/ScreenCapturer.mm
 # 守护进程桥接函数的 Manager 降级实现（tvGetInflightStats/tvGetBonjourTXT/tvReloadConfigForKey）
 trollvncmanager_FILES += src/TRDaemonBridgeManager.mm
+# 自签证书生成（原 TRCapabilityRegistry 内实现抽出共享，trollvncmanager 与 trollvncserver 各自编译）
+trollvncmanager_FILES += src/TRSelfSignedCert.mm
 trollvncmanager_FRAMEWORKS += UIKit
 
 trollvncmanager_CFLAGS += -fobjc-arc

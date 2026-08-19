@@ -59,6 +59,15 @@
 #import "STHIDEventGenerator.h"
 #import "ScreenCapturer.h"
 #import "TRScreenHasher.h"
+#import "TRSelfSignedCert.h"
+#import <openssl/ssl.h>
+#import <openssl/err.h>
+#import <fcntl.h>
+#import <stdint.h>
+#import <stdlib.h>
+#import <string.h>
+#import <strings.h>
+#import <sys/stat.h>
 
 #define LocalizedString(key, comment, bundle, table)                                                                   \
     (NSLocalizedStringFromTableInBundle((key), (table), (bundle), (comment)) ?: (key))
@@ -119,8 +128,10 @@ static char *gAuthViewOnlyPasswdStr = NULL; // optional view-only password strin
 // HTTP server (LibVNCServer built-in web client)
 static int gHttpPort = 5801; // 端口固定不可调（5801 = 前端入口）
 static char *gHttpDirOverride = NULL;
+static char *gHttpDirPath = NULL;   // 5801 静态文件根目录（自建 HTTPS 服务器用，有证书时解析）
 static char *gSslCertPath = NULL;
 static char *gSslKeyPath = NULL;
+static SSL_CTX *gSslCtx = NULL;  // 5801/5802 HTTPS 共用 TLS 上下文（有有效证书时初始化，否则服务降级纯 http）
 
 // Bonjour / mDNS Auto-Discovery
 static BOOL gBonjourEnabled = YES; // publish _rfb._tcp (and optional _http._tcp)
@@ -465,6 +476,66 @@ static void parseFrameRateSpec(const char *spec) {
     gFpsMin = minV; gFpsPref = prefV; gFpsMax = maxV;
 }
 
+/** SSL 证书缺失/无效时自动生成（2026-08-19）
+ *  复用共享 TRGenerateSelfSignedCert（含 IP SAN：DNS:localhost + 各网卡 IPv4），
+ *  写 `~/Library/Preferences/com.82flex.trollvnc.ca-{cert,key}.pem`（0600）+ defaults。
+ *  已有有效证书（文件可读）时直接返回，不重复生成。
+ */
+static void tvEnsureCertificate(NSUserDefaults *prefs) {
+    BOOL hasValid = gSslCertPath && *gSslCertPath && gSslKeyPath && *gSslKeyPath &&
+                    access(gSslCertPath, R_OK) == 0 && access(gSslKeyPath, R_OK) == 0;
+    if (hasValid) return;
+
+    NSString *randomUUID = [[[NSUUID UUID] UUIDString] substringFromIndex:28];
+    NSString *commonName = [NSString stringWithFormat:@"SuperPhone %@", randomUUID];
+    NSString *certPEM = nil, *keyPEM = nil;
+    if (!TRGenerateSelfSignedCert(commonName, &certPEM, &keyPEM)) {
+        TVLog(@"-daemon: auto SSL cert generation failed; HTTPS disabled (5801/5802 stay plain http)");
+        return;
+    }
+    NSString *cacertPath =
+        [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.82flex.trollvnc.ca-cert.pem"];
+    NSString *cakeyPath =
+        [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.82flex.trollvnc.ca-key.pem"];
+    NSError *werr = nil;
+    BOOL ok = [certPEM writeToFile:cacertPath atomically:YES encoding:NSUTF8StringEncoding error:&werr];
+    if (ok) ok = [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions:@0600}
+                                                    ofItemAtPath:cacertPath error:&werr];
+    if (ok) ok = [keyPEM writeToFile:cakeyPath atomically:YES encoding:NSUTF8StringEncoding error:&werr];
+    if (ok) ok = [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions:@0600}
+                                                    ofItemAtPath:cakeyPath error:&werr];
+    if (!ok) {
+        TVLog(@"-daemon: auto SSL cert write failed: %@", werr.localizedDescription);
+        return;
+    }
+    if (gSslCertPath) free(gSslCertPath);
+    if (gSslKeyPath) free(gSslKeyPath);
+    gSslCertPath = strdup(cacertPath.fileSystemRepresentation);
+    gSslKeyPath = strdup(cakeyPath.fileSystemRepresentation);
+    [prefs setObject:cacertPath forKey:@"SslCertFile"];
+    [prefs setObject:cakeyPath forKey:@"SslKeyFile"];
+    [prefs synchronize];
+    TVLog(@"-daemon: auto-generated SSL cert (SAN: DNS:localhost + local IPs) -> %@", cacertPath);
+}
+
+/** 初始化全局 TLS 上下文（5801/5802 HTTPS 共用）
+ *  无有效证书返回 NULL（服务降级纯 http）；证书已由 tvEnsureCertificate 保证存在。
+ */
+static SSL_CTX *tvSslInitGlobal(void) {
+    if (!gSslCertPath || !gSslKeyPath || !*gSslCertPath || !*gSslKeyPath) return NULL;
+    if (access(gSslCertPath, R_OK) != 0 || access(gSslKeyPath, R_OK) != 0) return NULL;
+    SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
+    if (!ctx) return NULL;
+    if (SSL_CTX_use_certificate_file(ctx, gSslCertPath, SSL_FILETYPE_PEM) != 1 ||
+        SSL_CTX_use_PrivateKey_file(ctx, gSslKeyPath, SSL_FILETYPE_PEM) != 1) {
+        unsigned long e = ERR_get_error();
+        TVLog(@"TLS: cert/key load failed (err 0x%lx); HTTPS disabled", e);
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+    return ctx;
+}
+
 static void parseDaemonOptions(void) {
     NSDictionary *prefs = nil;
 
@@ -730,6 +801,11 @@ static void parseDaemonOptions(void) {
             gSslKeyPath = strdup(sslKey.fileSystemRepresentation);
         }
     }
+
+    // SSL 证书缺失/无效时自动生成（2026-08-19）：无感启用 HTTPS——参考网关 gen-cert.mjs
+    // 自动生成策略，复用共享 TRGenerateSelfSignedCert（含 IP SAN）。生成的证书写回 defaults
+    // 与磁盘，下次启动直接复用；生成失败/无证书时服务降级纯 http（5801/5802 行为不变）。
+    tvEnsureCertificate(prefs);
 
     // Passwords via environment (leveraging existing setupRfbClassicAuthentication).
     // Classic VNC authentication uses only first 8 chars; truncate here for clarity.
@@ -3303,7 +3379,7 @@ static NSDictionary *tvExtHandleClipboardGet(rfbClientPtr cl, NSDictionary *para
 static NSDictionary *tvExtHandleTypePaste(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleConfigGet(rfbClientPtr cl, NSDictionary *params);
 // HTTP 管理 API（5802）：首包可能已含部分 body，由 tvHttpApiHandleClient 复用
-static NSData *tvHttpApiReadBodyFromPartial(int fd, NSData *partial);
+static NSData *tvHttpApiReadBodyFromPartial(int fd, SSL *ssl, NSData *partial);
 
 /** 从 rfbClientPtr 读取一条扩展消息的 JSON payload
  *  注意：libvncserver 在 rfbProcessClientMessage 中已消费消息首字节（type，存入
@@ -3574,6 +3650,12 @@ static NSDictionary *tvExtHandleCapList(rfbClientPtr cl, NSDictionary *params) {
 
 #pragma mark - HTTP Management API (5802, 与 RFB 流隔离)
 
+// TLS 读写/握手辅助前向声明（定义见下方 "HTTPS 服务器" 区，5802 需在 gSslCtx 存在时支持 https）
+static ssize_t tvTlsRead(int fd, SSL *ssl, void *buf, size_t len);
+static ssize_t tvTlsWrite(int fd, SSL *ssl, const void *buf, size_t len);
+static SSL *tvTlsAccept(int fd);
+static int tvPeekTls(int fd);
+
 // 架构级方案（2026-08-17）：管理操作（剪贴板/type.paste/配置）改走独立 HTTP 端口 5802，
 // 与网关 REST 架构同构（管理走 HTTP、画面走 RFB），彻底消除 0x50/0x80 与 FBU 帧在
 // 5901 字节流上的竞争（type 125 根因：FBU 分片发送 + 客户端 _FBU.rects>0 消费窗口
@@ -3599,7 +3681,7 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
     return tvExtErr([NSString stringWithFormat:@"未知操作: %@", op ?: @""]);
 }
 
-static void tvHttpApiWriteResponse(int fd, NSDictionary *resp) {
+static void tvHttpApiWriteResponse(int fd, SSL *ssl, NSDictionary *resp) {
     NSData *json = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
     if (!json) json = [NSData dataWithBytes:"{}" length:2];
     NSMutableString *head = [NSMutableString stringWithString:
@@ -3613,12 +3695,22 @@ static void tvHttpApiWriteResponse(int fd, NSDictionary *resp) {
     [head appendFormat:@"Content-Length: %lu\r\n\r\n", (unsigned long)json.length];
     NSMutableData *out = [NSMutableData dataWithData:[head dataUsingEncoding:NSUTF8StringEncoding]];
     [out appendData:json];
-    (void)write(fd, out.bytes, out.length);
+    (void)tvTlsWrite(fd, ssl, out.bytes, out.length);
 }
 
 static void tvHttpApiHandleClient(int fd) {
+    // 2026-08-19：peek 分流——TLS(0x16) → https；否则明文（兼容未配证书的老页面）
+    SSL *ssl = NULL;
+    int tls = tvPeekTls(fd);
+    if (tls > 0) {
+        ssl = tvTlsAccept(fd);
+        if (!ssl) {
+            close(fd);
+            return;
+        }
+    }
     char first[2048];
-    ssize_t n = read(fd, first, sizeof(first) - 1);
+    ssize_t n = tvTlsRead(fd, ssl, first, sizeof(first) - 1);
     if (n > 0) {
         first[n] = '\0';
         NSString *requestLine = [[NSString stringWithUTF8String:first] componentsSeparatedByString:@"\r\n"].firstObject;
@@ -3628,33 +3720,37 @@ static void tvHttpApiHandleClient(int fd) {
                              @"Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n"
                              @"Access-Control-Allow-Headers: Content-Type\r\n"
                              @"Access-Control-Max-Age: 86400\r\nConnection: close\r\n\r\n";
-            (void)write(fd, resp.UTF8String, resp.length);
+            (void)tvTlsWrite(fd, ssl, resp.UTF8String, resp.length);
+            if (ssl) SSL_free(ssl);
             close(fd);
             return;
         }
         if ([requestLine hasPrefix:@"POST"]) {
             // 首包已含 head 开头，重组读取 body
             NSData *headData = [NSData dataWithBytes:first length:(NSUInteger)n];
-            NSData *body = tvHttpApiReadBodyFromPartial(fd, headData);
+            NSData *body = tvHttpApiReadBodyFromPartial(fd, ssl, headData);
             if (body) {
                 NSDictionary *req = [NSJSONSerialization JSONObjectWithData:body options:0 error:nil];
                 if ([req isKindOfClass:[NSDictionary class]]) {
                     NSDictionary *resp = tvHttpApiDispatch(req);
-                    tvHttpApiWriteResponse(fd, resp);
+                    tvHttpApiWriteResponse(fd, ssl, resp);
+                    if (ssl) SSL_free(ssl);
                     close(fd);
                     return;
                 }
             }
-            tvHttpApiWriteResponse(fd, tvExtErr(@"请求体解析失败"));
+            tvHttpApiWriteResponse(fd, ssl, tvExtErr(@"请求体解析失败"));
+            if (ssl) SSL_free(ssl);
             close(fd);
             return;
         }
     }
+    if (ssl) SSL_free(ssl);
     close(fd);
 }
 
 // 支持"首包已含部分 body"的读取：head 已消费，body 可能已部分到达
-static NSData *tvHttpApiReadBodyFromPartial(int fd, NSData *partial) {
+static NSData *tvHttpApiReadBodyFromPartial(int fd, SSL *ssl, NSData *partial) {
     NSRange sep = [partial rangeOfData:[NSData dataWithBytes:"\r\n\r\n" length:4] options:0 range:NSMakeRange(0, partial.length)];
     if (sep.location == NSNotFound) return nil;
     NSString *head = [[NSString alloc] initWithData:[partial subdataWithRange:NSMakeRange(0, sep.location)] encoding:NSUTF8StringEncoding];
@@ -3674,7 +3770,7 @@ static NSData *tvHttpApiReadBodyFromPartial(int fd, NSData *partial) {
     }
     while (body.length < (NSUInteger)bodyLen) {
         char b[2048];
-        ssize_t r = read(fd, b, sizeof(b));
+        ssize_t r = tvTlsRead(fd, ssl, b, sizeof(b));
         if (r <= 0) break;
         [body appendBytes:b length:(NSUInteger)r];
     }
@@ -3709,9 +3805,22 @@ static void *tvHttpApiServerMain(void *arg) {
             if (errno == EINTR) continue;
             break;
         }
-        tvHttpApiHandleClient(c);
+        // 2026-08-19：每连接独立线程处理（TLS 握手慢/异常连接不阻塞后续 API 请求）
+        pthread_t th;
+        if (pthread_create(&th, NULL, tvHttpApiClientThread, (void *)(intptr_t)c) != 0) {
+            close(c);
+        } else {
+            pthread_detach(th);
+        }
     }
     close(s);
+    return NULL;
+}
+
+/** 5802 单连接线程入口（fd 经 intptr_t 传递） */
+static void *tvHttpApiClientThread(void *arg) {
+    int fd = (int)(intptr_t)arg;
+    tvHttpApiHandleClient(fd);
     return NULL;
 }
 
@@ -3719,6 +3828,266 @@ static void startHttpApiServer(void) {
     pthread_t th;
     if (pthread_create(&th, NULL, tvHttpApiServerMain, NULL) != 0) {
         TVLog(@"HTTP API: thread create failed");
+        return;
+    }
+    pthread_detach(th);
+}
+
+#pragma mark - HTTPS 服务器（5801 自建 + 5802 TLS 支持，2026-08-19）
+
+// 背景：libvncserver 0.9.15 的 httpd（5801）不支持 TLS（httpd.c 无 SSL 代码，预编译库亦无 patch），
+// 且 5802 自实现 HTTP 线程原无 TLS。https 页面无法 fetch http 5802（mixed content）也无法连 ws 明文
+// 5901，故三处统一：5901 靠 libvncserver webSocketsCheck 自动支持 wss（配置证书即生效）；5801 由本
+// 服务器接管（TLS + 静态文件 + 明文 301 跳转）；5802 加 TLS（peek 分流明文/TLS，兼容老页面）。
+// 全部复用 SslCertFile/SslKeyFile 生成的证书（settings.generateKeys / 启动自动生成）。
+
+// ---- 读写/握手辅助（SSL 或明文双模式）----
+
+static ssize_t tvTlsRead(int fd, SSL *ssl, void *buf, size_t len) {
+    return ssl ? SSL_read(ssl, buf, (int)len) : read(fd, buf, len);
+}
+static ssize_t tvTlsWrite(int fd, SSL *ssl, const void *buf, size_t len) {
+    return ssl ? SSL_write(ssl, buf, (int)len) : write(fd, buf, len);
+}
+static SSL *tvTlsAccept(int fd) {
+    if (!gSslCtx) return NULL;
+    SSL *ssl = SSL_new(gSslCtx);
+    if (!ssl) return NULL;
+    SSL_set_fd(ssl, fd);
+    if (SSL_accept(ssl) != 1) {
+        SSL_free(ssl);
+        return NULL;
+    }
+    return ssl;
+}
+/** peek 首字节判断是否 TLS 握手（0x16 = TLS record）；返回 1=TLS / 0=非TLS / -1=错误 */
+static int tvPeekTls(int fd) {
+    char b;
+    ssize_t n = recv(fd, &b, 1, MSG_PEEK);
+    if (n <= 0) return -1;
+    return ((unsigned char)b == 0x16) ? 1 : 0;
+}
+
+// ---- 5801 静态文件服务 ----
+
+static const char *tvHttpMimeForPath(const char *path) {
+    const char *dot = strrchr(path, '.');
+    if (!dot) return "application/octet-stream";
+    if (strcasecmp(dot, ".vnc") == 0 || strcasecmp(dot, ".html") == 0 || strcasecmp(dot, ".htm") == 0)
+        return "text/html; charset=utf-8";
+    if (strcasecmp(dot, ".js") == 0 || strcasecmp(dot, ".mjs") == 0) return "application/javascript";
+    if (strcasecmp(dot, ".css") == 0) return "text/css; charset=utf-8";
+    if (strcasecmp(dot, ".json") == 0) return "application/json";
+    if (strcasecmp(dot, ".svg") == 0) return "image/svg+xml";
+    if (strcasecmp(dot, ".png") == 0) return "image/png";
+    if (strcasecmp(dot, ".ico") == 0) return "image/x-icon";
+    if (strcasecmp(dot, ".mp3") == 0) return "audio/mpeg";
+    if (strcasecmp(dot, ".oga") == 0) return "audio/ogg";
+    if (strcasecmp(dot, ".woff") == 0) return "font/woff";
+    if (strcasecmp(dot, ".ttf") == 0) return "font/ttf";
+    if (strcasecmp(dot, ".txt") == 0 || strcasecmp(dot, ".md") == 0) return "text/plain; charset=utf-8";
+    return "application/octet-stream";
+}
+
+/** 发送简单响应（404 等） */
+static void tvHttpSendSimple(int fd, SSL *ssl, const char *status, const char *mime, const char *body,
+                             size_t bodyLen) {
+    char head[512];
+    int hl = snprintf(head, sizeof(head),
+                      "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n", status,
+                      mime, bodyLen);
+    tvTlsWrite(fd, ssl, head, (size_t)hl);
+    tvTlsWrite(fd, ssl, body, bodyLen);
+}
+
+/** 从请求首行解析 URL path（GET /path HTTP/1.1 → /path；截断 ?query） */
+static void tvHttpParsePath(const char *reqLine, char *outPath, size_t outSize) {
+    outPath[0] = '\0';
+    if (!reqLine) return;
+    const char *sp1 = strchr(reqLine, ' ');
+    if (!sp1) return;
+    const char *p = sp1 + 1;
+    while (*p == ' ') p++;
+    const char *sp2 = strchr(p, ' ');
+    const char *q = strchr(p, '?');
+    size_t len = sp2 ? (size_t)(sp2 - p) : strlen(p);
+    if (q && (size_t)(q - p) < len) len = (size_t)(q - p);
+    if (len == 0 || len >= outSize) return;
+    memcpy(outPath, p, len);
+    outPath[len] = '\0';
+}
+
+/** 从请求缓冲找 Host 头（用于 301 跳转） */
+static void tvHttpHostHeader(const char *reqBuf, size_t bufLen, char *outHost, size_t outSize) {
+    outHost[0] = '\0';
+    const char *end = memmem(reqBuf, bufLen, "\r\n\r\n", 4);
+    if (!end) end = reqBuf + bufLen;
+    const char *line = reqBuf;
+    while (line < end) {
+        const char *nl = memmem(line, (size_t)(end - line), "\r\n", 2);
+        size_t lineLen = nl ? (size_t)(nl - line) : (size_t)(end - line);
+        if (lineLen > 5 && strncasecmp(line, "host:", 5) == 0) {
+            const char *v = line + 5;
+            while (v < line + lineLen && (*v == ' ' || *v == '\t')) v++;
+            size_t vlen = (size_t)(line + lineLen - v);
+            if (vlen >= outSize) vlen = outSize - 1;
+            memcpy(outHost, v, vlen);
+            outHost[vlen] = '\0';
+            return;
+        }
+        if (!nl) break;
+        line = nl + 2;
+    }
+}
+
+/** 安全解析并 serve 单个文件（200/404；Connection: close） */
+static void tvHttpServeFile(int fd, SSL *ssl, const char *docRoot, const char *urlPath) {
+    char rel[512];
+    snprintf(rel, sizeof(rel), "%s", (urlPath && urlPath[0]) ? urlPath : "/");
+    if (strcmp(rel, "/") == 0) strcpy(rel, "/index.vnc");
+    char full[1024];
+    snprintf(full, sizeof(full), "%s%s", docRoot, rel);
+    char resolved[1024];
+    if (!realpath(full, resolved) || strncmp(resolved, docRoot, strlen(docRoot)) != 0) {
+        tvHttpSendSimple(fd, ssl, "404 Not Found", "text/plain", "Not Found", 9);
+        return;
+    }
+    int f = open(resolved, O_RDONLY);
+    if (f < 0) {
+        tvHttpSendSimple(fd, ssl, "404 Not Found", "text/plain", "Not Found", 9);
+        return;
+    }
+    struct stat st;
+    if (fstat(f, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(f);
+        tvHttpSendSimple(fd, ssl, "404 Not Found", "text/plain", "Not Found", 9);
+        return;
+    }
+    const char *mime = tvHttpMimeForPath(resolved);
+    char head[512];
+    int hl = snprintf(head, sizeof(head),
+                      "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lld\r\nConnection: close\r\n"
+                      "Cache-Control: no-cache\r\n\r\n",
+                      mime, (long long)st.st_size);
+    tvTlsWrite(fd, ssl, head, (size_t)hl);
+    char buf[8192];
+    ssize_t r;
+    while ((r = read(f, buf, sizeof(buf))) > 0) tvTlsWrite(fd, ssl, buf, (size_t)r);
+    close(f);
+}
+
+/** 明文 http 请求 → 301 跳转 https（保留路径；对齐网关 httpRedirect） */
+static void tvHttpRedirectHttps(int fd) {
+    char buf[4096];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    if (n <= 0) {
+        close(fd);
+        return;
+    }
+    buf[n] = '\0';
+    char path[512];
+    tvHttpParsePath(buf, path, sizeof(path));
+    char host[256];
+    tvHttpHostHeader(buf, (size_t)n, host, sizeof(host));
+    char loc[768];
+    snprintf(loc, sizeof(loc), "https://%s%s", (host[0] ? host : "localhost"), path[0] ? path : "/");
+    char resp[1024];
+    int rl = snprintf(resp, sizeof(resp),
+                      "HTTP/1.1 301 Moved Permanently\r\nLocation: %s\r\nContent-Length: 0\r\n"
+                      "Connection: close\r\n\r\n",
+                      loc);
+    (void)write(fd, resp, (size_t)rl);
+    close(fd);
+}
+
+/** 单个 5801 连接：peek 分流 TLS（HTTPS 静态）/ 明文（301 到 https） */
+static void tvHttpsHandleClient(int fd) {
+    int tls = tvPeekTls(fd);
+    if (tls < 0) {
+        close(fd);
+        return;
+    }
+    if (!tls) {
+        tvHttpRedirectHttps(fd);
+        return;
+    }
+    SSL *ssl = tvTlsAccept(fd);
+    if (!ssl) {
+        close(fd);
+        return;
+    }
+    if (!gHttpDirPath) {
+        tvHttpSendSimple(fd, ssl, "500 Internal Server Error", "text/plain", "no docroot", 10);
+        SSL_free(ssl);
+        close(fd);
+        return;
+    }
+    char buf[4096];
+    ssize_t n = tvTlsRead(fd, ssl, buf, sizeof(buf) - 1);
+    if (n <= 0) {
+        SSL_free(ssl);
+        close(fd);
+        return;
+    }
+    buf[n] = '\0';
+    char path[512];
+    tvHttpParsePath(buf, path, sizeof(path));
+    tvHttpServeFile(fd, ssl, gHttpDirPath, path);
+    SSL_free(ssl);
+    close(fd);
+}
+
+static void *tvHttpsStaticServerMain(void *arg) {
+    (void)arg;
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) return NULL;
+    int one = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons((uint16_t)gHttpPort);
+    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        TVLog(@"HTTPS: bind :%d failed (%s)", gHttpPort, strerror(errno));
+        close(s);
+        return NULL;
+    }
+    if (listen(s, 8) != 0) {
+        TVLog(@"HTTPS: listen :%d failed (%s)", gHttpPort, strerror(errno));
+        close(s);
+        return NULL;
+    }
+    TVLog(@"HTTPS static server listening on :%d (TLS), dir=%s", gHttpPort, gHttpDirPath ?: "?");
+    for (;;) {
+        int c = accept(s, NULL, NULL);
+        if (c < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        // 每连接独立线程处理（TLS 握手慢/异常连接不阻塞后续连接）
+        pthread_t th;
+        if (pthread_create(&th, NULL, tvHttpsClientThread, (void *)(intptr_t)c) != 0) {
+            close(c);
+        } else {
+            pthread_detach(th);
+        }
+    }
+    close(s);
+    return NULL;
+}
+
+/** 5801 单连接线程入口（fd 经 intptr_t 传递） */
+static void *tvHttpsClientThread(void *arg) {
+    int fd = (int)(intptr_t)arg;
+    tvHttpsHandleClient(fd);
+    return NULL;
+}
+
+static void startHttpsStaticServer(void) {
+    pthread_t th;
+    if (pthread_create(&th, NULL, tvHttpsStaticServerMain, NULL) != 0) {
+        TVLog(@"HTTPS: thread create failed");
         return;
     }
     pthread_detach(th);
@@ -4586,38 +4955,47 @@ static void setupRfbCutTextHandlers(void) {
     TVLog(@"Clipboard: client->server handlers registered (extended clipboard)");
 }
 
+/** 解析 5801 静态文件根目录：优先 HttpDir override，否则相对可执行文件 ../share/trollvnc/webclients
+ *  @return strdup 的新字符串；失败返回 NULL（调用方负责 free）
+ */
+static char *tvResolveHttpDir(void) {
+    if (gHttpDirOverride && *gHttpDirOverride) return strdup(gHttpDirOverride);
+    NSString *exe = tvExecutablePath();
+    NSString *exeDir = [exe stringByDeletingLastPathComponent];
+    NSString *webRel;
+#ifdef THEBOOTSTRAP
+    webRel = @"./webclients";
+#else
+    webRel = @"../share/trollvnc/webclients";
+#endif
+    NSString *webPath = [[exeDir stringByAppendingPathComponent:webRel] stringByStandardizingPath];
+    const char *fs = [webPath fileSystemRepresentation];
+    return (fs && *fs) ? strdup(fs) : NULL;
+}
+
 static void setupRfbHttpServer(void) {
     // Built-in HTTP server settings (see rfb.h http* fields)
     gScreen->httpEnableProxyConnect = TRUE; // always allow CONNECT if HTTP is enabled
-    if (gHttpPort > 0) {
+    // 2026-08-19：有有效证书且 webclients 目录可解析 → 5801 由自建 HTTPS 服务器接管
+    // （libvncserver httpd 不支持 TLS），禁用其 httpd 避免端口冲突；否则保持 libvncserver
+    // httpd（纯 http，行为不变，含"证书存在但目录解析失败"的兜底）。
+    BOOL haveSsl = gSslCertPath && *gSslCertPath && gSslKeyPath && *gSslKeyPath &&
+                   access(gSslCertPath, R_OK) == 0 && access(gSslKeyPath, R_OK) == 0;
+    if (haveSsl) gHttpDirPath = tvResolveHttpDir();
+    BOOL useSelfHttps = (gHttpPort > 0 && haveSsl && gHttpDirPath);
+    if (gHttpPort > 0 && !useSelfHttps) {
         gScreen->httpPort = gHttpPort; // enable HTTP on specified port
         gScreen->http6Port = gHttpPort;
-        if (gHttpDirOverride) {
-            // Use override absolute path
-            gScreen->httpDir = strdup(gHttpDirOverride);
-            TVLog(@"HTTP server config: port=%d, dir=%s (override), proxyConnect=YES", gHttpPort, gHttpDirOverride);
-        } else {
-            // Compute httpDir relative to executable: ../share/trollvnc/webclients
-            do {
-                NSString *exe = tvExecutablePath();
-                NSString *exeDir = [exe stringByDeletingLastPathComponent];
-                NSString *webRel;
-#ifdef THEBOOTSTRAP
-                webRel = @"./webclients";
-#else
-                webRel = @"../share/trollvnc/webclients";
-#endif
-                NSString *webPath = [[exeDir stringByAppendingPathComponent:webRel] stringByStandardizingPath];
-                const char *fs = [webPath fileSystemRepresentation];
-                if (fs && *fs) {
-                    gScreen->httpDir = strdup(fs);
-                    TVLog(@"HTTP server config: port=%d, dir=%@, proxyConnect=YES", gHttpPort, webPath);
-                }
-            } while (0);
+        gScreen->httpDir = tvResolveHttpDir();
+        if (gScreen->httpDir) {
+            TVLog(@"HTTP server config: port=%d, dir=%s, proxyConnect=YES", gHttpPort, gScreen->httpDir);
         }
     } else {
-        gScreen->httpPort = 0;   // disabled
+        gScreen->httpPort = 0;   // disabled（有证书时由自建 HTTPS 服务器接管 5801）
         gScreen->httpDir = NULL; // do not set dir to avoid default startup
+        if (useSelfHttps) {
+            TVLog(@"HTTP server config: HTTPS(自建) port=%d, dir=%s", gHttpPort, gHttpDirPath ?: "(null)");
+        }
     }
 
     // SSL certificate and key (optional)
@@ -4937,6 +5315,10 @@ int main(int argc, const char *argv[]) {
         setupRfbHttpServer();
         setupRfbFileTransferExtension();
 
+        // 2026-08-19：证书（含 IP SAN）就绪后初始化全局 TLS 上下文（5801/5802 HTTPS 共用；
+        // 无证书返回 NULL，5801/5802 自动降级纯 http）
+        gSslCtx = tvSslInitGlobal();
+
         prepareBulletinManager();
         prepareScreenCapturer();
 
@@ -4945,6 +5327,11 @@ int main(int argc, const char *argv[]) {
 
         // 2026-08-17 架构级：管理操作走独立 HTTP 端口（5802），与 RFB 画面流隔离
         startHttpApiServer();
+        // 2026-08-19：有证书时 5801 由自建 HTTPS 静态服务器接管（TLS + 明文 301 跳转）；
+        // 内部依 gHttpDirPath/gSslCtx 判断，无证书时 libvncserver httpd 已接管 5801，此处不启动。
+        if (gSslCtx && gHttpDirPath) {
+            startHttpsStaticServer();
+        }
 
         installSignalHandlers();
         installTerminationHandlers();

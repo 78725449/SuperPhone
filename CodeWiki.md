@@ -88,9 +88,9 @@
 
 | 端口 | 角色 | 协议 | 说明 |
 |---|---|---|---|
-| 手机 **5901** | 原生双向控制通道 | RFB/VNC | 画面下行 + 操作上行；含 0x50/0x80 扩展消息命令通道 |
-| 手机 **5801** | 网页文件服务器 | HTTP | 只发 noVNC 页面；管理 API 在 5802 |
-| 手机 **5802** | 直连页管理 API | HTTP v3 | clipboard.get / type.paste / config.get / cap.list（trollvncserver 自实现轻量 API 服务器，与 RFB 流隔离，2026-08-17 起；**与网关 REST 同构**——管理 HTTP / 画面 RFB，复用 tvExtHandle* 纯函数） |
+| 手机 **5901** | 原生双向控制通道 | RFB/VNC | 画面下行 + 操作上行；含 0x50/0x80 扩展消息命令通道；配置证书后 WS 自动支持 wss（webSocketsCheck 首字节分流，明文不受影响） |
+| 手机 **5801** | 网页文件服务器 | HTTP/HTTPS | 只发 noVNC 页面；管理 API 在 5802；有证书时自建 HTTPS 服务器接管（TLS + 明文 301，2026-08-19） |
+| 手机 **5802** | 直连页管理 API | HTTP/HTTPS v3 | clipboard.get / type.paste / config.get / cap.list（trollvncserver 自实现轻量 API 服务器，与 RFB 流隔离，2026-08-17 起；**与网关 REST 同构**——管理 HTTP / 画面 RFB，复用 tvExtHandle* 纯函数；2026-08-19 起支持 TLS，peek 分流明文/TLS） |
 | 网关 **8080** | 控制台 | HTTP/HTTPS + WS | 外部经 frp/隧道到此，再由网关桥到 5901 |
 | 网关 **18081** | 注册/心跳 | TCP JSON 行 | 设备主动拨入 |
 | 网关 **18181** | 隧道 | TCP 帧（FT_） | 设备主动建立；无隧道 4003 拒绝 |
@@ -773,8 +773,8 @@ tun = {
 
 | 函数 | 作用 |
 |---|---|
-| `refreshDevices` | 拉 /api/devices，过滤 SELF_ID，注入 MOCK_DEVICES，按签名变化重算卡片比例；由 /ws/events 推送驱动（2026-08-18），6s 轮询降级为 WS 断线兜底（仅 visible） |
-| `connectEventsWS` | 订阅 /ws/events 设备变更推送：收到事件重拉 refreshDevices；断线退避重连（2s 起，上限 30s） |
+| `refreshDevices` | 拉 /api/devices，过滤 SELF_ID，注入 MOCK_DEVICES，按签名变化重算卡片比例；由 /ws/events 推送驱动（2026-08-18），轮询已移除（2026-08-19） |
+| `connectEventsWS` | 订阅 /ws/events 设备变更推送：收到事件重拉 refreshDevices；断线退避重连（2s 起，上限 30s）；死连接检测由后端心跳 ping/pong 负责（2026-08-19） |
 | `startWallRfb` | 卡片墙画面获取：每 ThumbInterval 秒调 screen.hash，变化才调 screenshot 拉帧；双速检测（变化 1s / 静止 1.5 倍退避至 15s 封顶）；无 RFB 持久连接 |
 | `createWallTile` | 创建卡片 DOM（含批量复选框、⋯ 菜单）；点击卡片进入聚焦/同步/批量不同分支 |
 | `enterFocus` / `exitFocus` | 聚焦大屏进出：URL ?focus= 持久化、IPA setTabBarHidden 桥接、createRfb(grp+broadcast+ctrl)、断线重连 |
@@ -926,7 +926,7 @@ script app.js?v=126（type=module）
 | 7 | `pending-replay-test.js` | 回归：会话 A 退出后 100ms 内（debounce rfb.stop 未下发）设备推旧残留帧→网关应缓冲不转发；debounce rfb.stop 到达；重进会话 B 触发 stop→start 重建；会话 B 600ms 窗口内不得收到旧残留数据 |
 | 8 | `press-test.js` | press.js 时序：volup 按下 down、抬起 up、不补 click；home 双击→home.double；单击窗口超时→click；按住 900ms→home.long；power 三击→power.triple |
 | 9 | `order-test.js` | 卡片墙 order 排序：注册 a/b/c 初始按 addedAt；PATCH b=1/a=3 → [b,a,c]；相同 order 按 id 字典序兜底；清除 order（null）回到注册时间段；order=-1/100000 拒绝 400 |
-| 10 | `events-test.js` | 设备变更推送（2026-08-18）：/ws/events 订阅后设备 register 上线收到 register 事件；DELETE 删除收到 delete 事件；事件为 {type,deviceId,ts} 轻量通知；非 /ws/events 连接不进入订阅集合 |
+| 10 | `events-test.js` | 设备变更推送（2026-08-18）：/ws/events 订阅后设备 register 上线收到 register 事件；DELETE 删除收到 delete 事件；事件为 {type,deviceId,ts} 轻量通知；非 /ws/events 连接不进入订阅集合；心跳 ping→pong（2026-08-19） |
 
 **辅助文件**（不属于 npm test）：
 - `fake-rfb-server.js`：smoke 用的假 VNC echo server
