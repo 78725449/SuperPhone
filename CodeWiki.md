@@ -526,7 +526,8 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 - **TVNCHotspotManager**：NEHotspotHelper 注册（保活兜底）；任何 hotspot 命令回调时拉起 VNC 服务
 - **TVNCListItemsController**：PSListItemsController 子类（仅设置主题色，用于 PSLinkListCell 子页）
 - **TVNCClientCell**：客户端列表 cell（ID + Host + Subtitle + View-Only badge）
-- **TVNCSliderCell**：自定义 PSTableCell（**2026-08-20 已弃用**——设置页滑杆改回系统 `cell=PSSliderCell`（原生支持 label/slider/值/format/isSegmented，iOS 15 渲染稳定），此类保留不再被 Root.plist 引用）
+- **TVNCButtonCell**：自定义 PSTableCell（UIButtonConfiguration filled 全宽按钮，标题居中白色加粗，点击经 `[specifier perform]` 触发 action；用于搜索/连接网关/重新生成证书——2026-08-20 新增，替代 PSButtonCell+cellForRow 改样式（后者 iOS 15 上不可靠/复用串状态））
+- **TVNCSliderCell**：自定义 PSTableCell（自建标题 UILabel + UISlider + 右侧值标签；2026-08-20 重新启用——系统 PSSliderCell 在 iOS 15 上不显示标题；布局：标题压缩阻力 300 可截断、值标签 46pt/13pt、间距 8，让位滑杆）
 - **TVNCSegmentCell**：自定义 PSTableCell（无标题，UISegmentedControl 占满整行；字符串值 ↔ 段索引双向转换；系统 PSSegmentCell 只认整数索引，2026-08-20 新增）
 - **自定义 cell 布局约定（2026-08-20 修复重叠）**：标题用 contentView 自建 UILabel，隐藏系统 textLabel/detailTextLabel（detailTextLabel 会被 PSTableCell 设为当前值如 "full"）——iOS 15 的 UITableViewCell/PSTableCell 对系统 label 有内置约束，手动再加约束会双约束冲突 → Auto Layout 破坏性布局 → 标题与控件互相覆盖；自建视图约束与系统布局完全隔离，layoutSubviews 兜底隐藏系统 label。选择器行（TVNCSegmentCell）无标题、控件占满整行
 - **StripedTextTableViewController**：通用文本日志查看器（dispatch_source VNODE 监听 + 反向 + maxRows + 搜索 + 分享 + 清空）

@@ -755,39 +755,13 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     PSSpecifier *specifier = [self specifierAtIndexPath:indexPath];
     NSString *key = [specifier propertyForKey:@"cell"];
     if ([key isEqualToString:@"PSButtonCell"]) {
+        // 2026-08-20：全宽按钮（搜索/连接网关/重新生成证书）已改用 cellClass=TVNCButtonCell 自定义渲染，
+        // 此处仅处理普通 PSButtonCell（查看日志/重置默认）的文字颜色。
         UITableViewCell *cell = [super tableView:tableView cellForRowAtIndexPath:indexPath];
-
         BOOL isDestructive =
             ([specifier propertyForKey:@"isDestructive"] && [[specifier propertyForKey:@"isDestructive"] boolValue]);
-        UIColor *textColor = isDestructive ? [UIColor systemRedColor] : self.primaryColor;
-        cell.textLabel.textColor = textColor;
-        cell.textLabel.highlightedTextColor = textColor;
-        // 2026-08-20 修复复用串状态：每次显式重置 textAlignment/font/分隔线，避免全宽按钮与普通行互相污染
-        BOOL isFull = [specifier propertyForKey:@"buttonStyle"] != nil;
-        cell.textLabel.textAlignment = isFull ? NSTextAlignmentCenter : NSTextAlignmentLeft;
-        cell.textLabel.font = isFull ? [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold]
-                                     : [UIFont systemFontOfSize:17.0];
-        cell.separatorInset = isFull ? UIEdgeInsetsZero : UIEdgeInsetsMake(0, 15, 0, 0);
-        // 背景视图用 tag 管理：复用 cell 时先移除旧背景再重建，防止叠加错乱
-        static const NSInteger kBtnBgTag = 0x5F5F;
-        UIView *oldBg = [cell.contentView viewWithTag:kBtnBgTag];
-        [oldBg removeFromSuperview];
-        if (isFull) {
-            UIView *bg = [[UIView alloc] init];
-            bg.tag = kBtnBgTag;
-            bg.translatesAutoresizingMaskIntoConstraints = NO;
-            bg.backgroundColor = [self.primaryColor colorWithAlphaComponent:0.12];
-            bg.layer.cornerRadius = 10.0;
-            bg.layer.masksToBounds = YES;
-            [cell.contentView addSubview:bg];
-            [cell.contentView sendSubviewToBack:bg];
-            [NSLayoutConstraint activateConstraints:@[
-                [bg.leadingAnchor constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.leadingAnchor],
-                [bg.trailingAnchor constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.trailingAnchor],
-                [bg.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:6],
-                [bg.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-6],
-            ]];
-        }
+        cell.textLabel.textColor = isDestructive ? [UIColor systemRedColor] : self.primaryColor;
+        cell.textLabel.highlightedTextColor = isDestructive ? [UIColor systemRedColor] : self.primaryColor;
         return cell;
     }
 

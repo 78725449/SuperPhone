@@ -78,26 +78,22 @@
 			<true/>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSButtonCell</string>
+			<key>cellClass</key>
+			<string>TVNCButtonCell</string>
 			<key>label</key>
 			<string>搜索网关</string>
 			<key>action</key>
 			<string>searchGateway</string>
-			<key>buttonStyle</key>
-			<string>full</string>
 			<key>visibleOnlyRelay</key>
 			<true/>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSButtonCell</string>
+			<key>cellClass</key>
+			<string>TVNCButtonCell</string>
 			<key>label</key>
 			<string>连接网关</string>
 			<key>action</key>
 			<string>connectGateway</string>
-			<key>buttonStyle</key>
-			<string>full</string>
 			<key>visibleOnlyBridge</key>
 			<true/>
 		</dict>
@@ -198,8 +194,8 @@
 			</array>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -278,8 +274,8 @@
 			<true/>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -300,8 +296,8 @@
 			<true/>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -320,8 +316,8 @@
 			<true/>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -356,8 +352,8 @@
 			<true/>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -378,8 +374,8 @@
 			<true/>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -424,8 +420,8 @@
 			<true/>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -466,8 +462,8 @@
 			<string>控制台呈现：卡片墙刷新、悬浮菜单、通知。</string>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -550,8 +546,8 @@
 			<string>advanced</string>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -698,14 +694,12 @@
 			<string>advanced</string>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSButtonCell</string>
+			<key>cellClass</key>
+			<string>TVNCButtonCell</string>
 			<key>label</key>
 			<string>重新生成证书</string>
 			<key>action</key>
 			<string>generateKeys</string>
-			<key>buttonStyle</key>
-			<string>full</string>
 			<key>collapseGroup</key>
 			<string>advanced</string>
 		</dict>
