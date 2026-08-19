@@ -558,10 +558,11 @@ function finishBatch(menu) {
 }
 
 /**
- * 弹出批量执行菜单：勾选设备后点顶部胶囊行「执行」触发。
+ * 弹出批量执行菜单：勾选设备后点顶部胶囊行「执行」触发（再点「执行」收起，开合二态）。
  * 布局对齐触控端悬浮菜单（2026-08-19）：纯「图标+名称」按钮垂直列表，无大标题/无分组标签；
  * 按键按钮复用控制台右侧按键的实现通道（attachPress 按压识别：单击/双击/三击/长按 → capId →
- * 批量 invoke），不再为 double/triple/long 设独立按钮；批量配置入口已移至「设置」按钮（菜单不再
+ * 批量 invoke）——批量态对 BATCH_CAPS 具多击能力的键补声明多击窗口（Home 双击 → home.double）；
+ * 电源/截图键不入批量菜单（批量误触电源有锁屏风险）；批量配置入口已移至「设置」按钮（菜单不再
  * 重复）；菜单无取消按钮（点外部关闭，或点顶部「批量」变「取消」态退出）。
  * @returns {void}
  */
@@ -581,17 +582,25 @@ function showBatchMenu() {
   menu.id = 'batchMenu';
   menu.className = 'batch-menu';
 
-  // 按键按钮：与控制台右侧按键同一实现通道（attachPress 按压识别），剔除截图键（snapshot：
-  // 批量下发无收集画面意义，BATCH_CAPS 亦无对应项）。按压式按键（音量/亮度/静音 down/up）下按时
-  // 发一次、抬起不重复下发（fallback 到 keyDef.key，避免 down+up 双注入导致跳两格）。
+  // 按键按钮：与控制台右侧按键同一实现通道（attachPress 按压识别），剔除截图键（snapshot：批量
+  // 下发无收集画面意义）与电源键（power：批量误触电源有锁屏/关机风险，2026-08-19）。
+  // 单击/双击/三击识别：右侧按键零延迟单击（iOS 自然连点），批量菜单为显式能力入口——对 BATCH_CAPS
+  // 存在对应 double/triple 能力的键（home.double）补声明多击窗口，双击命中显式能力、单击经 300ms
+  // 窗口判定；按压式按键（音量/亮度/静音 down/up）下按时发一次、抬起不重复下发（fallback 到 keyDef.key，
+  // 避免 down+up 双注入导致跳两格）。
   const cleanups = [];
   const detachAll = () => { for (const f of cleanups) { try { f(); } catch { /* noop */ } } };
   for (const k of KEY_DEFS) {
-    if (k.key === 'snapshot') continue;
+    if (k.key === 'snapshot' || k.key === 'power') continue;
     const b = document.createElement('button');
     b.className = 'batch-cap-btn';
     b.innerHTML = '<span class="cap-icon">' + (k.svg || escapeHtml(k.icon || '?')) + '</span><span class="cap-name">' + escapeHtml(k.title) + '</span>';
-    cleanups.push(attachPress(b, k, { invoke: (capId) => {
+    // 批量态按压事件：在 KEY_DEFS 事件基础上补声明 BATCH_CAPS 中的多击显式能力（如 home.double）
+    const batchEvents = { ...k.events };
+    if (BATCH_CAPS.some((c) => c.id === k.key + '.double')) batchEvents.double = k.key + '.double';
+    if (BATCH_CAPS.some((c) => c.id === k.key + '.triple')) batchEvents.triple = k.key + '.triple';
+    const bk = { ...k, events: batchEvents };
+    cleanups.push(attachPress(b, bk, { invoke: (capId) => {
       if (k.events && k.events.down && capId === k.events.up) return; // 按压式按键抬起不重复下发
       const meta = BATCH_CAPS.find((c) => c.id === capId) || BATCH_CAPS.find((c) => c.id === k.key);
       if (meta) doBatchInvoke(ids, meta);
@@ -620,12 +629,13 @@ function showBatchMenu() {
     const menuH = 320; // 估算菜单高度（用于下方空间判断）
     const below = r.bottom + 8;
     const top = (below + menuH <= window.innerHeight) ? below : Math.max(8, r.top - 8 - menuH);
-    menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 280 - 8)) + 'px';
+    menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 240 - 8)) + 'px';
     menu.style.top = top + 'px';
   }
 
   document.body.appendChild(menu);
-  // 点击外部关闭并退出批量模式（批量操作组件区 #batchBar/#batchBtn 除外，避免误关）
+  // 点击外部关闭并退出批量模式（批量操作组件区 #batchBar/#batchBtn 除外，避免误关）；
+  // 处理器引用存 menu.__outsideHandler，供「执行」按钮再点收起时移除（防收起后残留误关）
   setTimeout(() => {
     const handler = (e) => {
       if (!e.target.closest('#batchMenu') && !e.target.closest('#batchBtn') && !e.target.closest('#batchBar')) {
@@ -633,6 +643,7 @@ function showBatchMenu() {
         document.removeEventListener('click', handler);
       }
     };
+    menu.__outsideHandler = handler;
     document.addEventListener('click', handler);
   }, 0);
 }
@@ -2700,8 +2711,17 @@ window.addEventListener('resize', applyCardWBounds);
 $('batchBarSelectAll').addEventListener('change', (e) => {
   if (e.target.checked) selectAll(); else deselectAll();
 });
-// 执行：弹出批量操作菜单（执行候选仅限在线设备）
-$('batchBarExec').addEventListener('click', () => showBatchMenu());
+// 执行：点一次展开批量菜单，再点一次收起（2026-08-19 开合二态；收起仅移除菜单、不退批量模式）
+$('batchBarExec').addEventListener('click', () => {
+  const menu = document.getElementById('batchMenu');
+  if (menu) {
+    if (typeof menu.__outsideHandler === 'function') document.removeEventListener('click', menu.__outsideHandler);
+    if (typeof menu.__detach === 'function') { try { menu.__detach(); } catch { /* noop */ } }
+    menu.remove();
+  } else {
+    showBatchMenu();
+  }
+});
 // 设置：直接打开批量配置面板（候选仅限在线设备）
 $('batchBarSettings').addEventListener('click', () => {
   const ids = Array.from(selectedDevices).filter((id) => {
