@@ -94,10 +94,12 @@
     // 布局：标题靠左（空间不足时可截断）、valueLabel 靠右、slider 填充中间。
     // 2026-08-20 调节阀加长：标题压缩阻力降为低值（300，可截断），间距 12→8，
     // slider 保持默认压缩阻力（750）——空间不足时牺牲标题宽度、滑杆优先保持最长。
+    // 2026-08-20 修复"滑杆被宽度限制"：slider.leading 从 GreaterThanOrEqual 改为固定 Equal——
+    // 不等式 + UISlider 固有宽度会导致轨道不拉伸、只占中间一段；固定 leading 让 slider 明确从标题右侧铺到值标签。
     NSMutableArray *constraints = [NSMutableArray array];
     [constraints addObject:[_titleLabel.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor]];
     [constraints addObject:[_titleLabel.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor]];
-    [constraints addObject:[_slider.leadingAnchor constraintGreaterThanOrEqualToAnchor:_titleLabel.trailingAnchor constant:8]];
+    [constraints addObject:[_slider.leadingAnchor constraintEqualToAnchor:_titleLabel.trailingAnchor constant:8]];
     if (_valueLabel) {
         // Value label on the right
         [constraints addObject:[_valueLabel.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor]];

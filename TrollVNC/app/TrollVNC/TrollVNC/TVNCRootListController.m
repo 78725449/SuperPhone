@@ -208,7 +208,11 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     NSMutableArray *visible = [NSMutableArray arrayWithCapacity:all.count];
     for (PSSpecifier *sp in all) {
         NSString *cg = [sp propertyForKey:@"collapseGroup"];
-        BOOL isCollapseHeader = ([[sp propertyForKey:@"cell"] isEqualToString:@"PSButtonCell"] && cg != nil);
+        // 2026-08-20：折叠组头识别需同时兼容 cell=PSButtonCell 与 cellClass=TVNCButtonCell
+        // （「重新生成证书」已改 cellClass=TVNCButtonCell，无 cell 键，否则被误判为折叠子项而隐藏）
+        BOOL isCollapseHeader = (cg != nil &&
+                                 ([[sp propertyForKey:@"cell"] isEqualToString:@"PSButtonCell"] ||
+                                  [[sp propertyForKey:@"cellClass"] isEqualToString:@"TVNCButtonCell"]));
         // 折叠组的子项：组被折叠则隐藏
         if (cg != nil && !isCollapseHeader && [_collapsedGroups containsObject:cg]) continue;
         // 底层传输参数：仅 custom 模式显示
