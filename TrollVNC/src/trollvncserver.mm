@@ -3979,6 +3979,30 @@ static void tvHttpServeFile(int fd, SSL *ssl, const char *docRoot, const char *u
         return;
     }
     const char *mime = tvHttpMimeForPath(resolved);
+    // .vnc（index.vnc）含 $PORT 模板占位符：libvncserver httpd 在 serve 时替换为 VNC 端口
+    // （gPort），自建服务器需同样处理（2026-08-19），否则 JS 报 "$PORT is not defined"。
+    size_t rlen = strlen(resolved);
+    BOOL isVncTmpl = (rlen > 4 && strcmp(resolved + rlen - 4, ".vnc") == 0);
+    if (isVncTmpl) {
+        NSMutableData *data = [NSMutableData data];
+        char buf[8192];
+        ssize_t r;
+        while ((r = read(f, buf, sizeof(buf))) > 0) [data appendBytes:buf length:(NSUInteger)r];
+        close(f);
+        NSString *content = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if (!content) content = @"";
+        content = [content stringByReplacingOccurrencesOfString:@"$PORT"
+                                                     withString:[NSString stringWithFormat:@"%d", gPort]];
+        NSData *out = [content dataUsingEncoding:NSUTF8StringEncoding];
+        char head[512];
+        int hl = snprintf(head, sizeof(head),
+                          "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lu\r\nConnection: close\r\n"
+                          "Cache-Control: no-cache\r\n\r\n",
+                          mime, (unsigned long)out.length);
+        tvTlsWrite(fd, ssl, head, (size_t)hl);
+        tvTlsWrite(fd, ssl, out.bytes, out.length);
+        return;
+    }
     char head[512];
     int hl = snprintf(head, sizeof(head),
                       "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lld\r\nConnection: close\r\n"
