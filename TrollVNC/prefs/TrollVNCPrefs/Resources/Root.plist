@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+﻿<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -17,7 +17,7 @@
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSSegmentControlCell</string>
+			<string>PSSegmentCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -97,7 +97,7 @@
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSSegmentControlCell</string>
+			<string>PSSegmentCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -157,7 +157,7 @@
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSSegmentControlCell</string>
+			<string>PSSegmentCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -203,7 +203,7 @@
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSSegmentControlCell</string>
+			<string>PSSegmentCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -479,7 +479,7 @@
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSSegmentControlCell</string>
+			<string>PSSegmentCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>

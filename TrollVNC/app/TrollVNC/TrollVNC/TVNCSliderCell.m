@@ -75,26 +75,51 @@
 - (void)setupConstraints {
     UILayoutGuide *margins = self.contentView.layoutMarginsGuide;
 
-    if (_valueLabel) {
-        // Slider + Value Label layout
-        [NSLayoutConstraint activateConstraints:@[
-            // Value label on the right
-            [_valueLabel.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor],
-            [_valueLabel.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-            [_valueLabel.widthAnchor constraintEqualToConstant:_valueLabelWidth],
+    // 2026-08-20：支持 label（设置页滑杆带标题，如「缩放」「滚轮步进」）。
+    // PSTableCell 的 super init 已按 specifier 的 label 设置 self.textLabel.text，
+    // 此处为它补约束：textLabel 靠左，slider 从 label 右侧开始，valueLabel 靠右。
+    UILabel *label = self.textLabel;
+    BOOL hasLabel = (label.text.length > 0);
 
+    if (hasLabel) {
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+    }
+
+    if (_valueLabel) {
+        NSMutableArray *constraints = [NSMutableArray array];
+        // Value label on the right
+        [constraints addObject:[_valueLabel.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor]];
+        [constraints addObject:[_valueLabel.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor]];
+        [constraints addObject:[_valueLabel.widthAnchor constraintEqualToConstant:_valueLabelWidth]];
+
+        if (hasLabel) {
+            // label 靠左，与 valueLabel 对齐；slider 填充 label 与 valueLabel 之间
+            [constraints addObject:[label.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor]];
+            [constraints addObject:[label.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor]];
+            [constraints addObject:[label.trailingAnchor constraintLessThanOrEqualToAnchor:_slider.leadingAnchor constant:-12]];
+            [constraints addObject:[_slider.leadingAnchor constraintEqualToAnchor:label.trailingAnchor constant:12]];
+            [_slider setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+        } else {
             // Slider fills remaining space
-            [_slider.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor],
-            [_slider.trailingAnchor constraintEqualToAnchor:_valueLabel.leadingAnchor constant:-12],
-            [_slider.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-        ]];
+            [constraints addObject:[_slider.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor]];
+        }
+        [constraints addObject:[_slider.trailingAnchor constraintEqualToAnchor:_valueLabel.leadingAnchor constant:-12]];
+        [constraints addObject:[_slider.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor]];
+        [NSLayoutConstraint activateConstraints:constraints];
     } else {
-        // Slider only layout
-        [NSLayoutConstraint activateConstraints:@[
-            [_slider.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor],
-            [_slider.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor],
-            [_slider.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-        ]];
+        NSMutableArray *constraints = [NSMutableArray array];
+        if (hasLabel) {
+            [constraints addObject:[label.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor]];
+            [constraints addObject:[label.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor]];
+            [constraints addObject:[label.trailingAnchor constraintLessThanOrEqualToAnchor:_slider.leadingAnchor constant:-12]];
+            [constraints addObject:[_slider.leadingAnchor constraintEqualToAnchor:label.trailingAnchor constant:12]];
+            [_slider setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+        } else {
+            [constraints addObject:[_slider.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor]];
+        }
+        [constraints addObject:[_slider.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor]];
+        [constraints addObject:[_slider.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor]];
+        [NSLayoutConstraint activateConstraints:constraints];
     }
 
     // Fixed height constraint
