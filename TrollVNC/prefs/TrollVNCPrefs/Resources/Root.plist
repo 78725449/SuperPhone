@@ -16,8 +16,8 @@
 			<string>网关中继：本机注册到网关并建立隧道（可被控制）；桥接控制：本机仅作为控制端连接网关，不注册、不开隧道。</string>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSegmentCell</string>
+			<key>cellClass</key>
+			<string>TVNCSegmentCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -65,14 +65,6 @@
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSButtonCell</string>
-			<key>label</key>
-			<string>搜索网关</string>
-			<key>action</key>
-			<string>searchGateway</string>
-		</dict>
-		<dict>
-			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
@@ -82,6 +74,16 @@
 			<string>自动发现（Bonjour）</string>
 			<key>default</key>
 			<true/>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>搜索网关</string>
+			<key>action</key>
+			<string>searchGateway</string>
 			<key>visibleOnlyRelay</key>
 			<true/>
 		</dict>
@@ -96,8 +98,8 @@
 			<string>经典 VNC 认证只认密码前 8 位。</string>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSegmentCell</string>
+			<key>cellClass</key>
+			<string>TVNCSegmentCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -156,8 +158,8 @@
 			<string>模式一键调优；选「自定义」才显示 6 项底层传输参数（● 需重启）。</string>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSegmentCell</string>
+			<key>cellClass</key>
+			<string>TVNCSegmentCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -202,30 +204,30 @@
 			<string>%.2f</string>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSegmentCell</string>
+			<key>cellClass</key>
+			<string>TVNCSegmentCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
 			<string>FrameRateSpec</string>
 			<key>label</key>
-			<string>帧率</string>
+			<string>帧率 ●</string>
 			<key>default</key>
 			<string>60</string>
 			<key>validValues</key>
 			<array>
+				<string>15</string>
 				<string>30</string>
 				<string>60</string>
-				<string>30-60</string>
-				<string>120</string>
+				<string>15-60</string>
 				<string>custom</string>
 			</array>
 			<key>validTitles</key>
 			<array>
+				<string>15</string>
 				<string>30</string>
 				<string>60</string>
-				<string>30-60</string>
-				<string>120</string>
+				<string>动态</string>
 				<string>自定义</string>
 			</array>
 		</dict>
@@ -237,12 +239,16 @@
 			<key>key</key>
 			<string>FrameRateSpecCustom</string>
 			<key>label</key>
-			<string>自定义帧率</string>
-			<key>placeholder</key>
-			<string>如 60 或 30-60 或 30:60:120</string>
+			<string>自定义帧率 ●</string>
+			<key>default</key>
+			<integer>30</integer>
+			<key>isNumeric</key>
+			<true/>
 			<key>noAutoCorrect</key>
 			<true/>
-			<key>hidden</key>
+			<key>placeholder</key>
+			<string>1-240</string>
+			<key>visibleOnlyFrameRateCustom</key>
 			<true/>
 		</dict>
 		<dict>
@@ -478,8 +484,8 @@
 			<true/>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSegmentCell</string>
+			<key>cellClass</key>
+			<string>TVNCSegmentCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>

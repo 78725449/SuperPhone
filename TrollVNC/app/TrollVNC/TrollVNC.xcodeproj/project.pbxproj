@@ -27,6 +27,8 @@
 		615EFE9F2F1602D700187EAF /* CoreServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 615EFE9E2F1602D700187EAF /* CoreServices.framework */; };
 		61B0DD082EB13BEF004CC42B /* TVNCSliderCell.m in Sources */ = {isa = PBXBuildFile; fileRef = 61B0DD072EB13BEF004CC42B /* TVNCSliderCell.m */; };
 		61B0DD092EB13BEF004CC42B /* TVNCSliderCell.m in Sources */ = {isa = PBXBuildFile; fileRef = 61B0DD072EB13BEF004CC42B /* TVNCSliderCell.m */; };
+		D0B1B2C3D4E5F60718293A01 /* TVNCSegmentCell.m in Sources */ = {isa = PBXBuildFile; fileRef = D0B1B2C3D4E5F60718293A04 /* TVNCSegmentCell.m */; };
+		D0B1B2C3D4E5F60718293A02 /* TVNCSegmentCell.m in Sources */ = {isa = PBXBuildFile; fileRef = D0B1B2C3D4E5F60718293A04 /* TVNCSegmentCell.m */; };
 		61C756672E65B72E00B2B371 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 61C756662E65B72E00B2B371 /* NetworkExtension.framework */; };
 		61C756B82E65BDAC00B2B371 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 61C7569B2E65BDAC00B2B371 /* Assets.xcassets */; };
 		61C756BE2E65BDAC00B2B371 /* Preferences.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 61C756A82E65BDAC00B2B371 /* Preferences.tbd */; };
@@ -66,6 +68,8 @@
 		615EFE9E2F1602D700187EAF /* CoreServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreServices.framework; path = System/Library/Frameworks/CoreServices.framework; sourceTree = SDKROOT; };
 		61B0DD062EB13BEF004CC42B /* TVNCSliderCell.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCSliderCell.h; sourceTree = "<group>"; };
 		61B0DD072EB13BEF004CC42B /* TVNCSliderCell.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCSliderCell.m; sourceTree = "<group>"; };
+		D0B1B2C3D4E5F60718293A03 /* TVNCSegmentCell.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCSegmentCell.h; sourceTree = "<group>"; };
+		D0B1B2C3D4E5F60718293A04 /* TVNCSegmentCell.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCSegmentCell.m; sourceTree = "<group>"; };
 		61C756662E65B72E00B2B371 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
 		61C756992E65BDAC00B2B371 /* AppDelegate.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AppDelegate.h; sourceTree = "<group>"; };
 		61C7569A2E65BDAC00B2B371 /* AppDelegate.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = AppDelegate.m; sourceTree = "<group>"; };
@@ -221,6 +225,8 @@
 				61C756B42E65BDAC00B2B371 /* TVNCServiceCoordinator.m */,
 				61B0DD062EB13BEF004CC42B /* TVNCSliderCell.h */,
 				61B0DD072EB13BEF004CC42B /* TVNCSliderCell.m */,
+				D0B1B2C3D4E5F60718293A03 /* TVNCSegmentCell.h */,
+				D0B1B2C3D4E5F60718293A04 /* TVNCSegmentCell.m */,
 				CC17D9B82EC79DA1005C275A /* ZTSelfSignedCertificate.h */,
 				CC17D9B92EC79DA1005C275A /* ZTSelfSignedCertificate.m */,
 				AA01000000000000000000A5 /* TVNCAppStore.h */,
@@ -395,6 +401,7 @@
 				AA01000000000000000000A1 /* TVNCAppStore.m in Sources */,
 				AA01000000000000000000A3 /* TVNCGatewayClient.m in Sources */,
 				61B0DD092EB13BEF004CC42B /* TVNCSliderCell.m in Sources */,
+				D0B1B2C3D4E5F60718293A02 /* TVNCSegmentCell.m in Sources */,
 				CC91EF972E6EF165002F5B2A /* TVNCListItemsController.m in Sources */,
 				61C756C62E65BDAC00B2B371 /* TVNCServiceCoordinator.m in Sources */,
 			);
@@ -416,6 +423,7 @@
 				615401B92EB1180C009FDD6F /* TVNCRootListController.m in Sources */,
 				615401BA2EB1180C009FDD6F /* TVNCClientListController.m in Sources */,
 				61B0DD082EB13BEF004CC42B /* TVNCSliderCell.m in Sources */,
+				D0B1B2C3D4E5F60718293A01 /* TVNCSegmentCell.m in Sources */,
 				615401BB2EB1180C009FDD6F /* TVNCListItemsController.m in Sources */,
 				615401BC2EB1180C009FDD6F /* TVNCServiceCoordinator.m in Sources */,
 				AA01000000000000000000A2 /* TVNCAppStore.m in Sources */,

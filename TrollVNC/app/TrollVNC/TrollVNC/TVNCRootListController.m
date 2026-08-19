@@ -81,7 +81,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 @property(nonatomic, strong) PSSpecifier *certSpecifier;
 @property(nonatomic, strong) PSSpecifier *keysSpecifier;
 @property(nonatomic, strong) PSSpecifier *exportCertSpecifier;
-@property(nonatomic, strong) PSSpecifier *frameRateSpecSpecifier; // FrameRateSpec 分段控件（自定义帧率写回用）
+@property(nonatomic, strong) PSSpecifier *frameRateSpecSpecifier; // 2026-08-20：帧率=自定义时联动 FrameRateSpecCustom 输入框显隐
 @property(nonatomic, strong) NSNetServiceBrowser *gatewayBrowser;
 @property(nonatomic, strong) NSMutableArray<NSNetService *> *gatewayServices;
 @property(nonatomic, assign) BOOL gatewaySearchShown;
@@ -186,19 +186,21 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
  * - 折叠组（collapseGroup）子项：组在 collapsedGroups 中则隐藏；组头按钮（cell=PSButtonCell
  *   且带 collapseGroup）保留，标题带 ▸/▾ 指示状态
  * - visibleOnlyCustom：仅 PerformanceMode=custom 时显示（4 项底层传输参数）
- * - FrameRateSpecCustom：仅 FrameRateSpec=自定义（custom）时显示
  * - visibleOnlyRelay（2026-08-20）：仅 ConnectionMode=relay（网关中继）时显示（自动发现仅被控端有意义）
  * - visibleOnlyAccessFull / visibleOnlyAccessReadonly（2026-08-20）：按访问模式显示对应密码
  * @returns {NSMutableArray} 过滤后的显示列表（可变，供 _specifiers 直接持有）
  */
 - (NSMutableArray<PSSpecifier *> *)_visibleSpecifiersFrom:(NSArray<PSSpecifier *> *)all {
-    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    // 2026-08-20：设置写入域为 com.82flex.trollvnc（PSSpecifier defaults），
+    // 必须用同一 suite 读取——standardUserDefaults 对应 App bundle（com.82flex.TrollVNCApp）读不到，
+    // 导致 ConnectionMode/AccessMode/PerformanceMode 显隐判断恒为默认值（模式切换菜单不变化）。
+    NSUserDefaults *ud = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
     NSString *pm = [ud stringForKey:@"PerformanceMode"] ?: @"balanced";
-    NSString *frs = [ud stringForKey:@"FrameRateSpec"];
     NSString *connMode = [ud stringForKey:@"ConnectionMode"] ?: @"relay";
     NSString *accessMode = [ud stringForKey:@"AccessMode"] ?: @"full";
+    NSString *fps = [ud stringForKey:@"FrameRateSpec"] ?: @"60";
     BOOL customPM = [pm isEqualToString:@"custom"];
-    BOOL customFRS = [frs isEqualToString:@"custom"];
+    BOOL customFRS = [fps isEqualToString:@"custom"];
     BOOL relay = [connMode isEqualToString:@"relay"];
     BOOL accessFull = [accessMode isEqualToString:@"full"];
     BOOL accessReadonly = [accessMode isEqualToString:@"readonly"];
@@ -211,9 +213,8 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
         if (cg != nil && !isCollapseHeader && [_collapsedGroups containsObject:cg]) continue;
         // 底层传输参数：仅 custom 模式显示
         if ([sp propertyForKey:@"visibleOnlyCustom"] && !customPM) continue;
-        // 自定义帧率输入：仅选「自定义」段时显示
-        NSString *key = [sp propertyForKey:@"key"];
-        if ([key isEqualToString:@"FrameRateSpecCustom"] && !customFRS) continue;
+        // 自定义帧率输入：仅帧率=自定义显示
+        if ([sp propertyForKey:@"visibleOnlyFrameRateCustom"] && !customFRS) continue;
         // 自动发现：仅网关中继（relay）模式显示——桥接控制不注册，无发现意义
         if ([sp propertyForKey:@"visibleOnlyRelay"] && !relay) continue;
         // 访问密码：仅完全访问模式显示；只读密码：仅只读模式显示
@@ -249,9 +250,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 /**
  * 配置值写入拦截（2026-08-19 动态显隐联动 + restart 重启确认，两职责合并防止重复方法声明）：
  * - PerformanceMode 变更 → 刷新（custom 才显示 4 项底层参数）
- * - FrameRateSpec 变更 → 刷新（选「自定义」段才显示自定义输入框；"custom" 为 UI 状态，
- *   设备端 parseFrameRateSpec 对非数字安全回退 0=未指定）
- * - FrameRateSpecCustom 提交 → 写回 FrameRateSpec（用户输入的真实帧率格式）
+ * - FrameRateSpec 变更 → 刷新（帧率五档：15/30/60/动态/自定义，动态=15-60 范围自适应；自定义=显示输入框）
  * - Notifications 变更（2026-08-20）→ 同步写底层 SingleNotifEnabled/ClientNotifsEnabled
  *   （与 TRCapabilityRegistry setConfig 对称，保证 currentConfigs 反推一致）+ 弹重启确认
  * - restart 级 key 变更 → 防抖弹重启确认框（替代原 Apply 按钮）
@@ -262,14 +261,27 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     NSString *key = [spec propertyForKey:@"key"];
     if ([key isEqualToString:@"PerformanceMode"] || [key isEqualToString:@"FrameRateSpec"] ||
         [key isEqualToString:@"ConnectionMode"] || [key isEqualToString:@"AccessMode"]) {
+        if ([key isEqualToString:@"PerformanceMode"]) {
+            // 2026-08-20：设置页改画质模式需与 TRCapabilityRegistry setConfig 对称——按预设写底层参数，
+            // 否则只写 PerformanceMode 枚举、TileSize 等不变，画质模式实际不生效（trollvncserver 不读枚举）。
+            NSString *mode = [value isKindOfClass:[NSString class]] ? value : @"balanced";
+            NSDictionary *presets = @{
+                @"balanced":   @{@"TileSize": @32, @"MaxRects": @512, @"FullscreenThresholdPercent": @50, @"AsyncSwap": @NO},
+                @"quality":     @{@"TileSize": @64, @"MaxRects": @2048, @"FullscreenThresholdPercent": @80, @"AsyncSwap": @NO},
+                @"performance": @{@"TileSize": @16, @"MaxRects": @128, @"FullscreenThresholdPercent": @30, @"AsyncSwap": @YES},
+                @"custom":      @{}
+            };
+            NSDictionary *preset = presets[mode];
+            if (preset) {
+                NSUserDefaults *defs = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+                for (NSString *k in preset) {
+                    [defs setObject:preset[k] forKey:k];
+                }
+                [defs synchronize];
+            }
+        }
         _specifiers = [self _visibleSpecifiersFrom:_allSpecifiers];
         [self reloadSpecifiers];
-    } else if ([key isEqualToString:@"FrameRateSpecCustom"]) {
-        // 用户提交自定义帧率：把真实值写到 FrameRateSpec（覆盖"custom" UI 状态）
-        if (value && [value isKindOfClass:[NSString class]] && [value length] > 0 &&
-            _frameRateSpecSpecifier) {
-            [super setPreferenceValue:value specifier:_frameRateSpecSpecifier];
-        }
     } else if ([key isEqualToString:@"Notifications"]) {
         // 通知模式枚举 → 映射底层开关（trollvncserver 启动时读底层开关生效）
         NSString *mode = [value isKindOfClass:[NSString class]] ? value : @"all";
@@ -357,6 +369,8 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
             @"BindHost", @"FullPassword", @"ViewOnlyPassword",
             @"TileSize", @"MaxRects", @"AsyncSwap",
             @"ConnectionMode", // 2026-08-20：切换网关中继/桥接控制需重启服务生效（注册/隧道行为变化）
+            @"PerformanceMode", // 2026-08-20：画质模式预设含 restart 级底层参数（TileSize/MaxRects/AsyncSwap），需重启生效
+            @"FrameRateSpec", // 2026-08-20：设置页无热重载通道（服务端不监听 defaults），改帧率须重启才生效，与 ● 标记一致
         ]];
     });
     return keys;

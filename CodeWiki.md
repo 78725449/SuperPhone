@@ -554,7 +554,7 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 - **分叉约束**：源码与 `app/TrollVNC/TrollVNC/` 内同名文件是**分叉副本**，互不引用（AGENTS.md 已知约束）
 
 **Resources/Root.plist 分组（2026-08-20 定稿）**：连接（含 ConnectionMode 网关中继/桥接控制） / 安全（含 AccessMode 完全访问/只读） / 画质 / 交互 / 显示 / 高级（折叠） / 关于
-**关键配置项**（端口固定不出现）：GatewayHost / GatewayToken / searchGateway / ConnectionMode / BonjourEnabled（仅中继）/ AccessMode / FullPassword（仅完全访问）/ ViewOnlyPassword（仅只读）/ PerformanceMode（流畅/智能/画质/自定义）/ Scale / FrameRateSpec / OrientationSync / TileSize（仅自定义）/ MaxRects（仅自定义）/ FullscreenThresholdPercent（仅自定义）/ AsyncSwap（仅自定义）/ DeferWindowSec（仅自定义）/ MaxInflight（仅自定义）/ NaturalScroll / WheelStepPx / AutoAssistEnabled / ThumbInterval / FabAutoCollapse / Notifications / BindHost / KeepAliveSec（连接保活）/ ModifierMap / OrientationPadFix / WatchdogThrottleInterval / WatchdogExitTimeout / KeyLogging / generateKeys / viewLogs / resetDefaults
+**关键配置项**（端口固定不出现）：GatewayHost / GatewayToken / searchGateway / ConnectionMode / BonjourEnabled（仅中继）/ AccessMode / FullPassword（仅完全访问）/ ViewOnlyPassword（仅只读）/ PerformanceMode（流畅/智能/画质/自定义）/ Scale / FrameRateSpec（15/30/60/动态/自定义，自定义联动 FrameRateSpecCustom）/ OrientationSync / TileSize（仅自定义）/ MaxRects（仅自定义）/ FullscreenThresholdPercent（仅自定义）/ AsyncSwap（仅自定义）/ DeferWindowSec（仅自定义）/ MaxInflight（仅自定义）/ NaturalScroll / WheelStepPx / AutoAssistEnabled / ThumbInterval / FabAutoCollapse / Notifications / BindHost / KeepAliveSec（连接保活）/ ModifierMap / OrientationPadFix / WatchdogThrottleInterval / WatchdogExitTimeout / KeyLogging / generateKeys / viewLogs / resetDefaults
 
 ---
 

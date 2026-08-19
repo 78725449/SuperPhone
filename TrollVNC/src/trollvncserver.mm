@@ -476,6 +476,20 @@ static void parseFrameRateSpec(const char *spec) {
     gFpsMin = minV; gFpsPref = prefV; gFpsMax = maxV;
 }
 
+/** 解析 FrameRateSpec 前处理「custom」占位值（2026-08-20）：
+ *  设置页帧率五档（15/30/60/动态/自定义）中「自定义」= custom 字符串，
+ *  具体数值存于 FrameRateSpecCustom；返回可解析的数值字符串，无自定义值时返回 nil（保持现有帧率不变）。 */
+static NSString *TVResolvedFrameRateSpec(id prefs, NSString *fpsSpec) {
+    if (![fpsSpec isEqualToString:@"custom"]) {
+        return fpsSpec;
+    }
+    id custom = [prefs objectForKey:@"FrameRateSpecCustom"];
+    if ([custom isKindOfClass:[NSString class]] && [(NSString *)custom length] > 0) {
+        return custom;
+    }
+    return nil;
+}
+
 /** SSL 证书缺失/无效时自动生成（2026-08-19）
  *  复用共享 TRGenerateSelfSignedCert（含 IP SAN：DNS:localhost + 各网卡 IPv4），
  *  写 `~/Library/Preferences/com.82flex.trollvnc.ca-{cert,key}.pem`（0600）+ defaults。
@@ -781,8 +795,9 @@ static void parseDaemonOptions(void) {
             gModMapScheme = 0;
     }
 
-    // Frame rate spec (validate and normalize) — 复用 parseFrameRateSpec（Phase 4.4 统一解析）
-    NSString *fpsSpec = [prefs objectForKey:@"FrameRateSpec"];
+    // Frame rate spec (validate and normalize) — 复用 parseFrameRateSpec（Phase 4.4 统一解析）；
+    // 帧率=自定义（custom）时回退读 FrameRateSpecCustom 数值（2026-08-20 设置页五档）
+    NSString *fpsSpec = TVResolvedFrameRateSpec(prefs, [prefs objectForKey:@"FrameRateSpec"]);
     if ([fpsSpec isKindOfClass:[NSString class]] && fpsSpec.length > 0) {
         parseFrameRateSpec(fpsSpec.UTF8String ?: "");
     }
@@ -3242,8 +3257,9 @@ int tvReloadConfigForKey(const char *key) {
         maybeResizeFramebufferForRotation(rotQ); // 重建 framebuffer（gWidth/gHeight 变化）
         rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
     } else if ([k isEqualToString:@"FrameRateSpec"]) {
-        // 复用 parseFrameRateSpec（支持 min:pref:max / min-max / 单值三种格式 + 校验）
-        NSString *spec = [p stringForKey:@"FrameRateSpec"];
+        // 复用 parseFrameRateSpec（支持 min:pref:max / min-max / 单值三种格式 + 校验）；
+        // 自定义=custom 时回退读 FrameRateSpecCustom（2026-08-20 设置页五档）
+        NSString *spec = TVResolvedFrameRateSpec(p, [p stringForKey:@"FrameRateSpec"]);
         if (spec.length) parseFrameRateSpec(spec.UTF8String ?: "");
     } else if ([k isEqualToString:@"OrientationSync"]) {
         gOrientationSyncEnabled = [p boolForKey:@"OrientationSync"];
