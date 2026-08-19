@@ -74,10 +74,15 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 @property(nonatomic, strong) PSSpecifier *certSpecifier;
 @property(nonatomic, strong) PSSpecifier *keysSpecifier;
 @property(nonatomic, strong) PSSpecifier *exportCertSpecifier;
+@property(nonatomic, strong) PSSpecifier *frameRateSpecSpecifier; // FrameRateSpec 分段控件（自定义帧率写回用）
 @property(nonatomic, strong) NSNetServiceBrowser *gatewayBrowser;
 @property(nonatomic, strong) NSMutableArray<NSNetService *> *gatewayServices;
 @property(nonatomic, assign) BOOL gatewaySearchShown;
 @property(nonatomic, assign) BOOL restartConfirmVisible; // restart 级配置变更后的重启确认框是否已展示（防重复弹窗）
+
+// 设置页折叠组（2026-08-19）：_allSpecifiers 完整列表 / _collapsedGroups 已折叠组（默认全折叠）
+@property(nonatomic, strong) NSArray<PSSpecifier *> *allSpecifiers;
+@property(nonatomic, strong) NSMutableSet<NSString *> *collapsedGroups;
 
 
 @end
@@ -149,13 +154,100 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
                 _certSpecifier = specifier;
             } else if ([keyName isEqualToString:@"SslKeyFile"]) {
                 _keysSpecifier = specifier;
+            } else if ([keyName isEqualToString:@"FrameRateSpec"]) {
+                _frameRateSpecSpecifier = specifier;
             }
         }
 
-        _specifiers = specifiers;
+        if (![self hasManagedConfiguration]) {
+            // 2026-08-19 折叠组：保存完整列表，显示列表由 _visibleSpecifiers 过滤
+            _allSpecifiers = specifiers;
+            if (!_collapsedGroups) {
+                _collapsedGroups = [NSMutableSet setWithObjects:@"performance", @"advanced", nil];
+            }
+            _specifiers = [self _visibleSpecifiersFrom:specifiers];
+        } else {
+            _specifiers = specifiers;
+        }
     }
 
     return _specifiers;
+}
+
+/**
+ * 由完整 specifiers 计算显示列表（2026-08-19 折叠组 + 动态显隐）：
+ * - 折叠组（collapseGroup）子项：组在 collapsedGroups 中则隐藏；组头按钮（cell=PSButtonCell
+ *   且带 collapseGroup）保留，标题带 ▸/▾ 指示状态
+ * - visibleOnlyCustom：仅 PerformanceMode=custom 时显示（4 项底层传输参数）
+ * - FrameRateSpecCustom：仅 FrameRateSpec=自定义（custom）时显示
+ * @returns {NSArray} 过滤后的显示列表
+ */
+- (NSArray *)_visibleSpecifiersFrom:(NSArray<PSSpecifier *> *)all {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSString *pm = [ud stringForKey:@"PerformanceMode"] ?: @"balanced";
+    NSString *frs = [ud stringForKey:@"FrameRateSpec"];
+    BOOL customPM = [pm isEqualToString:@"custom"];
+    BOOL customFRS = [frs isEqualToString:@"custom"];
+
+    NSMutableArray *visible = [NSMutableArray arrayWithCapacity:all.count];
+    for (PSSpecifier *sp in all) {
+        NSString *cg = [sp propertyForKey:@"collapseGroup"];
+        BOOL isCollapseHeader = ([[sp propertyForKey:@"cell"] isEqualToString:@"PSButtonCell"] && cg != nil);
+        // 折叠组的子项：组被折叠则隐藏
+        if (cg != nil && !isCollapseHeader && [_collapsedGroups containsObject:cg]) continue;
+        // 底层传输参数：仅 custom 模式显示
+        if ([sp propertyForKey:@"visibleOnlyCustom"] && !customPM) continue;
+        // 自定义帧率输入：仅选「自定义」段时显示
+        NSString *key = [sp propertyForKey:@"key"];
+        if ([key isEqualToString:@"FrameRateSpecCustom"] && !customFRS) continue;
+        // 折叠组头：标题附展开/收起指示（以 label 为基准重建，避免箭头叠加）
+        if (isCollapseHeader) {
+            NSString *marker = [_collapsedGroups containsObject:cg] ? @"▸" : @"▾";
+            NSString *label = [sp propertyForKey:@"label"] ?: [sp name];
+            [sp setName:[NSString stringWithFormat:@"%@  %@", label, marker]];
+        }
+        [visible addObject:sp];
+    }
+    return visible;
+}
+
+/**
+ * 折叠组头点击（2026-08-19）：切换组展开/收起并刷新列表。
+ * @param {PSSpecifier} spec 组头按钮 specifier（plist 中带 collapseGroup 属性）
+ */
+- (void)toggleCollapseGroup:(PSSpecifier *)spec {
+    NSString *cg = [spec propertyForKey:@"collapseGroup"];
+    if (!cg) return;
+    if ([_collapsedGroups containsObject:cg]) {
+        [_collapsedGroups removeObject:cg];
+    } else {
+        [_collapsedGroups addObject:cg];
+    }
+    _specifiers = [self _visibleSpecifiersFrom:_allSpecifiers];
+    [self reloadSpecifiers];
+}
+
+/**
+ * 配置值写入拦截（2026-08-19 动态显隐联动）：
+ * - PerformanceMode 变更 → 刷新（custom 才显示 4 项底层参数）
+ * - FrameRateSpec 变更 → 刷新（选「自定义」段才显示自定义输入框；"custom" 为 UI 状态，
+ *   设备端 parseFrameRateSpec 对非数字安全回退 0=未指定）
+ * - FrameRateSpecCustom 提交 → 写回 FrameRateSpec（用户输入的真实帧率格式）
+ */
+- (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)spec {
+    [super setPreferenceValue:value specifier:spec];
+    if ([self hasManagedConfiguration]) return; // 托管页无折叠/联动，避免 _allSpecifiers 为空清空列表
+    NSString *key = [spec propertyForKey:@"key"];
+    if ([key isEqualToString:@"PerformanceMode"] || [key isEqualToString:@"FrameRateSpec"]) {
+        _specifiers = [self _visibleSpecifiersFrom:_allSpecifiers];
+        [self reloadSpecifiers];
+    } else if ([key isEqualToString:@"FrameRateSpecCustom"]) {
+        // 用户提交自定义帧率：把真实值写到 FrameRateSpec（覆盖"custom" UI 状态）
+        if (value && [value isKindOfClass:[NSString class]] && [value length] > 0 &&
+            _frameRateSpecSpecifier) {
+            [super setPreferenceValue:value specifier:_frameRateSpecSpecifier];
+        }
+    }
 }
 
 // Add Apply button in nav bar

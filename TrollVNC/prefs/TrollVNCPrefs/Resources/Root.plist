@@ -6,6 +6,7 @@
 	<string>设置</string>
 	<key>items</key>
 	<array>
+		<!-- ============ 网关 ============ -->
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
@@ -48,30 +49,15 @@
 			<key>action</key>
 			<string>searchGateway</string>
 		</dict>
+
+		<!-- ============ 连接 ============ -->
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>直连参数</string>
+			<string>连接</string>
 			<key>footerText</key>
 			<string>局域网直连：手机作为 VNC 服务器，客户端主动连接（端口固定 5801/5901 不可调整）。</string>
-		</dict>
-		
-		
-		
-		<dict>
-			<key>cell</key>
-			<string>PSEditTextCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>BindHost</string>
-			<key>label</key>
-			<string>绑定地址</string>
-			<key>placeholder</key>
-			<string>留空则绑定所有网卡</string>
-			<key>noAutoCorrect</key>
-			<true/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -85,6 +71,8 @@
 			<key>default</key>
 			<true/>
 		</dict>
+
+		<!-- ============ 安全 ============ -->
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
@@ -129,13 +117,15 @@
 			<key>default</key>
 			<false/>
 		</dict>
+
+		<!-- ============ 画面 ============ -->
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>画面与性能</string>
+			<string>画面</string>
 			<key>footerText</key>
-			<string>画面采集与传输：缩放比例、帧率、方向同步与偏移、服务器光标、卡片墙缩略图间隔。</string>
+			<string>画面采集与传输：缩放比例、帧率、方向同步、卡片墙缩略图间隔。</string>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -157,16 +147,46 @@
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSEditTextCell</string>
+			<string>PSSegmentControlCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
 			<string>FrameRateSpec</string>
 			<key>label</key>
 			<string>帧率</string>
+			<key>default</key>
+			<string>60</string>
+			<key>validValues</key>
+			<array>
+				<string>30</string>
+				<string>60</string>
+				<string>30-60</string>
+				<string>120</string>
+				<string>custom</string>
+			</array>
+			<key>validTitles</key>
+			<array>
+				<string>30</string>
+				<string>60</string>
+				<string>30-60</string>
+				<string>120</string>
+				<string>自定义</string>
+			</array>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSEditTextCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>FrameRateSpecCustom</string>
+			<key>label</key>
+			<string>自定义帧率</string>
 			<key>placeholder</key>
 			<string>如 60 或 30-60 或 30:60:120</string>
 			<key>noAutoCorrect</key>
+			<true/>
+			<key>hidden</key>
 			<true/>
 		</dict>
 		<dict>
@@ -180,43 +200,6 @@
 			<string>同步界面方向</string>
 			<key>default</key>
 			<true/>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSLinkListCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>OrientationPadFix</string>
-			<key>label</key>
-			<string>方向偏移</string>
-			<key>detail</key>
-			<string>TVNCListItemsController</string>
-			<key>default</key>
-			<integer>0</integer>
-			<key>shortTitles</key>
-			<array>
-				<string>0°</string>
-				<string>90°</string>
-				<string>180°</string>
-				<string>270°</string>
-			</array>
-			<key>validTitles</key>
-			<array>
-				<string>Disabled</string>
-				<string>90° Clockwise</string>
-				<string>180°</string>
-				<string>270° Clockwise</string>
-			</array>
-			<key>validValues</key>
-			<array>
-				<integer>0</integer>
-				<integer>1</integer>
-				<integer>2</integer>
-				<integer>3</integer>
-			</array>
-			<key>staticTextMessage</key>
-			<string>对采集画面施加固定旋转偏移，适用于默认方向非标准的机型。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -235,6 +218,16 @@
 			<true/>
 			<key>placeholder</key>
 			<string>5</string>
+		</dict>
+
+		<!-- ============ 交互 ============ -->
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>交互</string>
+			<key>footerText</key>
+			<string>控制台交互：悬浮菜单、滚动方向、修饰键映射、辅助触控、滚轮步长。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -265,124 +258,6 @@
 			<true/>
 			<key>placeholder</key>
 			<string>1000</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>label</key>
-			<string>进阶（画面）</string>
-			<key>footerText</key>
-			<string>一般无需修改：窗口延迟(秒)、最大在途帧、拼块尺寸(px)、全屏阈值(%)、最大矩形数、非阻塞交换。</string>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>DeferWindowSec</string>
-			<key>default</key>
-			<real>0.015</real>
-			<key>min</key>
-			<real>0.0</real>
-			<key>max</key>
-			<real>0.5</real>
-			<key>showValue</key>
-			<true/>
-			<key>format</key>
-			<string>%.3fs</string>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>MaxInflight</string>
-			<key>default</key>
-			<integer>2</integer>
-			<key>min</key>
-			<real>0.0</real>
-			<key>max</key>
-			<real>8.0</real>
-			<key>isSegmented</key>
-			<true/>
-			<key>segmentCount</key>
-			<integer>8</integer>
-			<key>showValue</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>TileSize</string>
-			<key>default</key>
-			<integer>32</integer>
-			<key>min</key>
-			<real>8.0</real>
-			<key>max</key>
-			<real>128.0</real>
-			<key>showValue</key>
-			<true/>
-			<key>format</key>
-			<string>%.0fpx</string>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>FullscreenThresholdPercent</string>
-			<key>default</key>
-			<integer>0</integer>
-			<key>min</key>
-			<real>0.0</real>
-			<key>max</key>
-			<real>100.0</real>
-			<key>showValue</key>
-			<true/>
-			<key>format</key>
-			<string>%.0f%%</string>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>MaxRects</string>
-			<key>default</key>
-			<integer>256</integer>
-			<key>min</key>
-			<real>1.0</real>
-			<key>max</key>
-			<real>4096.0</real>
-			<key>showValue</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>AsyncSwap</string>
-			<key>label</key>
-			<string>非阻塞交换</string>
-			<key>default</key>
-			<false/>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>label</key>
-			<string>输入</string>
-			<key>footerText</key>
-			<string>输入映射与滚轮行为：自然滚动、修饰键映射、辅助触控、滚轮步长与调节。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -457,6 +332,168 @@
 			<key>format</key>
 			<string>%.0fpx</string>
 		</dict>
+
+		<!-- ============ 性能（折叠组，默认折叠；custom 模式才显示 4 项底层参数） ============ -->
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>性能</string>
+			<key>action</key>
+			<string>toggleCollapseGroup:</string>
+			<key>collapseGroup</key>
+			<string>performance</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSegmentControlCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>PerformanceMode</string>
+			<key>label</key>
+			<string>性能模式</string>
+			<key>default</key>
+			<string>balanced</string>
+			<key>validValues</key>
+			<array>
+				<string>balanced</string>
+				<string>quality</string>
+				<string>performance</string>
+				<string>custom</string>
+			</array>
+			<key>validTitles</key>
+			<array>
+				<string>均衡</string>
+				<string>画质</string>
+				<string>性能</string>
+				<string>自定义</string>
+			</array>
+			<key>collapseGroup</key>
+			<string>performance</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>AsyncSwap</string>
+			<key>label</key>
+			<string>非阻塞交换</string>
+			<key>default</key>
+			<false/>
+			<key>collapseGroup</key>
+			<string>performance</string>
+			<key>visibleOnlyCustom</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>TileSize</string>
+			<key>default</key>
+			<integer>32</integer>
+			<key>min</key>
+			<real>8.0</real>
+			<key>max</key>
+			<real>128.0</real>
+			<key>showValue</key>
+			<true/>
+			<key>format</key>
+			<string>%.0fpx</string>
+			<key>collapseGroup</key>
+			<string>performance</string>
+			<key>visibleOnlyCustom</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>FullscreenThresholdPercent</string>
+			<key>default</key>
+			<integer>0</integer>
+			<key>min</key>
+			<real>0.0</real>
+			<key>max</key>
+			<real>100.0</real>
+			<key>showValue</key>
+			<true/>
+			<key>format</key>
+			<string>%.0f%%</string>
+			<key>collapseGroup</key>
+			<string>performance</string>
+			<key>visibleOnlyCustom</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>MaxRects</string>
+			<key>default</key>
+			<integer>256</integer>
+			<key>min</key>
+			<real>1.0</real>
+			<key>max</key>
+			<real>4096.0</real>
+			<key>showValue</key>
+			<true/>
+			<key>collapseGroup</key>
+			<string>performance</string>
+			<key>visibleOnlyCustom</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>DeferWindowSec</string>
+			<key>default</key>
+			<real>0.015</real>
+			<key>min</key>
+			<real>0.0</real>
+			<key>max</key>
+			<real>0.5</real>
+			<key>showValue</key>
+			<true/>
+			<key>format</key>
+			<string>%.3fs</string>
+			<key>collapseGroup</key>
+			<string>performance</string>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>MaxInflight</string>
+			<key>default</key>
+			<integer>2</integer>
+			<key>min</key>
+			<real>0.0</real>
+			<key>max</key>
+			<real>8.0</real>
+			<key>isSegmented</key>
+			<true/>
+			<key>segmentCount</key>
+			<integer>8</integer>
+			<key>showValue</key>
+			<true/>
+			<key>collapseGroup</key>
+			<string>performance</string>
+		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSEditTextCell</string>
@@ -470,14 +507,36 @@
 			<string>step=48,coalesce=0.03,...</string>
 			<key>noAutoCorrect</key>
 			<true/>
+			<key>collapseGroup</key>
+			<string>performance</string>
+		</dict>
+
+		<!-- ============ 高级（折叠组，默认折叠） ============ -->
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>高级</string>
+			<key>action</key>
+			<string>toggleCollapseGroup:</string>
+			<key>collapseGroup</key>
+			<string>advanced</string>
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSGroupCell</string>
+			<string>PSEditTextCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>BindHost</string>
 			<key>label</key>
-			<string>高级</string>
-			<key>footerText</key>
-			<string>内网自用一般保持默认：保活间隔、HTTP 文档目录、SSL 证书/私钥、生成自签证书、键盘事件日志。</string>
+			<string>绑定地址</string>
+			<key>placeholder</key>
+			<string>留空则绑定所有网卡</string>
+			<key>noAutoCorrect</key>
+			<true/>
+			<key>collapseGroup</key>
+			<string>advanced</string>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -496,6 +555,8 @@
 			<true/>
 			<key>format</key>
 			<string>%.0fs</string>
+			<key>collapseGroup</key>
+			<string>advanced</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -510,6 +571,8 @@
 			<string>/absolute/path</string>
 			<key>noAutoCorrect</key>
 			<true/>
+			<key>collapseGroup</key>
+			<string>advanced</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -521,9 +584,11 @@
 			<key>label</key>
 			<string>SSL 证书文件</string>
 			<key>placeholder</key>
-			<string>/path/to/cert.pem</string>
+			<string>留空=自动生成自签证书</string>
 			<key>noAutoCorrect</key>
 			<true/>
+			<key>collapseGroup</key>
+			<string>advanced</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -535,17 +600,60 @@
 			<key>label</key>
 			<string>SSL 私钥文件</string>
 			<key>placeholder</key>
-			<string>/path/to/key.pem</string>
+			<string>留空=自动生成自签证书</string>
 			<key>noAutoCorrect</key>
 			<true/>
+			<key>collapseGroup</key>
+			<string>advanced</string>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSButtonCell</string>
 			<key>label</key>
-			<string>生成证书…</string>
+			<string>重新生成证书</string>
 			<key>action</key>
 			<string>generateKeys</string>
+			<key>collapseGroup</key>
+			<string>advanced</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkListCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>OrientationPadFix</string>
+			<key>label</key>
+			<string>方向偏移</string>
+			<key>detail</key>
+			<string>TVNCListItemsController</string>
+			<key>default</key>
+			<integer>0</integer>
+			<key>shortTitles</key>
+			<array>
+				<string>0°</string>
+				<string>90°</string>
+				<string>180°</string>
+				<string>270°</string>
+			</array>
+			<key>validTitles</key>
+			<array>
+				<string>Disabled</string>
+				<string>90° Clockwise</string>
+				<string>180°</string>
+				<string>270° Clockwise</string>
+			</array>
+			<key>validValues</key>
+			<array>
+				<integer>0</integer>
+				<integer>1</integer>
+				<integer>2</integer>
+				<integer>3</integer>
+			</array>
+			<key>staticTextMessage</key>
+			<string>对采集画面施加固定旋转偏移，适用于默认方向非标准的机型（采集/触摸方向异常时纠偏）。</string>
+			<key>collapseGroup</key>
+			<string>advanced</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -558,7 +666,11 @@
 			<string>记录键盘事件</string>
 			<key>default</key>
 			<false/>
+			<key>collapseGroup</key>
+			<string>advanced</string>
 		</dict>
+
+		<!-- ============ 关于与诊断 ============ -->
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
@@ -588,3 +700,4 @@
 	</array>
 </dict>
 </plist>
+

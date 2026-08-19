@@ -425,7 +425,7 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
 @media (max-width: 900px) {
   #workspace { flex-direction: column; align-items: stretch; } /* stretch 修复 #wall 宽度收缩为内容宽（此前 242px → 卡片被压小） */
   /* 移动端 header 精简：仅保留布局切换 + 批量操作（与 IPA 控制端顶部导航一致），PC 端组件全部隐藏 */
-  .zoom, #btnRefresh, #directBtn, #btnAdd, .meta { display: none; }
+  .zoom, #btnRefresh, #directBtn, .meta { display: none; }
   header { gap: 8px; }
   .focus-ops { display: none; }          /* 操作移到悬浮菜单 */
   .fab { display: flex; }

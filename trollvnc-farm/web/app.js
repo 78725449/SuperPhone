@@ -306,9 +306,10 @@ function createWallTile(d) {
     if (e.target.closest('.tile-checkbox')) return;
     const dev = inst.device;
     if (dev.mock) { alert('虚拟设备仅用于布局预览，不可控制'); return; }
+    // 批量选择模式：点卡片=切换选中（与复选框一致），不进入卡片控制（2026-08-19 用户拍板）
+    if (batchMode) { toggleSelect(d.id); return; }
     if (directMode) return; // 直控模式：点击卡片直达 RFB 控制（canvas 输入事件由 noVNC 处理），不聚焦、无悬停提示
     if (syncMode) { toggleSync(d.id); return; } // 同步选择模式：点卡片切换同步（选中态=边框高亮+同步中）
-    if (batchMode) exitBatchMode(); // 批量模式下点卡片聚焦：退出批量选择
     enterFocus(dev); // 离线设备由 enterFocus 收编进连接态浮层（不再弹 alert）
   });
   tile.querySelector('.tmore').addEventListener('click', (e) => {
@@ -2075,6 +2076,22 @@ function createRfb(container, device, opts = {}, statusEl = null) {
       },
     });
   }
+  // 聚焦画布帧尺寸变化跟随（2026-08-19）：设备横/竖屏切换 → noVNC _resize（桌面尺寸变化
+  // 统一入口，含 ExtendedDesktopSize/DesktopSize 伪编码）→ 画布内容自动切换，但聚焦面板宽度
+  // 由 fitFocusPanel 按 _fb_width/_fb_height 计算，仅在 connect 后算过一次——实例级 patch
+  // _resize，帧尺寸变化后重算面板宽度，画布容器跟随设备方向。仅 ctrl 聚焦会话需要
+  // （直控/同步画布在固定比例卡片内 contain，与卡片墙显示方向解耦，不跟随）。
+  if (!opts.viewOnly && opts.ctrl && rfb._resize) {
+    const origResize = rfb._resize.bind(rfb);
+    rfb._resize = (w, h) => {
+      origResize(w, h);
+      if (focus && focus.rfb === rfb) {
+        requestAnimationFrame(() => {
+          if (focus && focus.rfb === rfb) fitFocusPanel();
+        });
+      }
+    };
+  }
   // PC 端聚焦/直控画面：常驻深灰圆+浅灰外圈覆盖层（2026-08-18，见上方光标策略分支）。
   // 状态用红/蓝圆点表示（蓝=已连接，红=已断开/失败），不再显示文字
   const setStatus = (s) => {
@@ -2270,23 +2287,9 @@ function closeRfb(rfb) {
 }
 
 // ---------- 设备管理 ----------
-function openAdd() {
-  $('addTitle').textContent = '添加设备';
-  ['fName', 'fHost', 'fGroup', 'fNote'].forEach((i) => ($(i).value = ''));
-  $('fPort').value = 5901;
-  $('addModal').classList.remove('hidden');
-  $('btnSaveDevice').onclick = async () => {
-    await api('/api/devices', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: $('fName').value, host: $('fHost').value,
-        port: Number($('fPort').value), group: $('fGroup').value, note: $('fNote').value,
-      }),
-    });
-    $('addModal').classList.add('hidden');
-    await refreshDevices();
-  };
-}
+// 2026-08-19：手动「添加设备」已完全去除——控制端设备列表仅保留 source=register 隧道设备
+// （直连 host 设备模式已废弃，统一走网关隧道），添加 host:port 手动设备无控制意义。
+// 后端 POST /api/devices 保留（隧道测试依赖其验证"无隧道拒绝 4003"），仅前端入口移除。
 /**
  * 显示卡片右下角⋯菜单（2026-08-15：仅保留「编辑」「删除」——用户拍板去除全部参数/能力/更多参数设置）
  * 编辑：改名（设备名）+ 改 ID（排序号）；删除：清除设备记录并移除卡片（直接删除无确认）。
@@ -2651,7 +2654,6 @@ window.addEventListener('resize', applyCardWBounds);
 
 // ---------- init ----------
 $('btnRefresh').onclick = () => refreshDevices().catch(() => showLogin());
-$('btnAdd').onclick = openAdd;
 // 直控按钮：进入/退出直控模式（竞态二态，激活变色）
 $('directBtn').addEventListener('click', (e) => {
   e.stopPropagation();
@@ -2664,7 +2666,6 @@ $('batchBtn').addEventListener('click', (e) => {
   if (selectedDevices.size === 0) { exitBatchMode(); return; }
   showBatchMenu();
 });
-$('btnCancelAdd').onclick = () => $('addModal').classList.add('hidden');
 document.addEventListener('click', (e) => {
   if (!e.target.closest('#tileMenu')) $('tileMenu').classList.add('hidden');
 });

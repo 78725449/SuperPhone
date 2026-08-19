@@ -30,7 +30,6 @@
     <button id="btnRefresh" title="刷新设备状态">刷新</button>
     <button id="directBtn" class="direct-bar" title="直控模式：所有设备开启推流，卡片上直接点击控制">直控</button>
     <button id="batchBtn" class="batch-bar" title="批量操作：点击进入多选模式（卡片出现复选框），勾选后再次点击弹出批量菜单">批量操作</button>
-    <button id="btnAdd" class="primary" title="手动添加设备">+ 添加设备</button>
   </div>
 </header>
 
@@ -92,22 +91,6 @@
        tabindex="-1" aria-label="键盘输入（控制被控设备）"
        style="position:fixed;left:0;top:0;width:100%;height:100%;opacity:0.01;color:transparent;background:transparent;border:0;caret-color:transparent;z-index:1;pointer-events:none;" />
 
-<!-- 添加/编辑设备 -->
-<div id="addModal" class="modal hidden">
-  <div class="modal-card">
-    <h3 id="addTitle">添加设备</h3>
-    <label>名称 <input id="fName" placeholder="如：iPhone 15" /></label>
-    <label>IP / 主机 <input id="fHost" placeholder="192.168.1.23" /></label>
-    <label>端口 <input id="fPort" type="number" value="5901" /></label>
-    <label>分组（可选） <input id="fGroup" placeholder="如：demo" /></label>
-    <label>备注 <input id="fNote" placeholder="可选" /></label>
-    <div class="modal-btns">
-      <button id="btnSaveDevice" class="primary">保存</button>
-      <button id="btnCancelAdd">取消</button>
-    </div>
-  </div>
-</div>
-
 <!-- 编辑设备（2026-08-15：改名 + 改 ID 排序号；ID 不显示，仅决定卡片从左到右、从上到下排列位置） -->
 <div id="editModal" class="modal hidden">
   <div class="modal-card">
@@ -124,6 +107,6 @@
 <!-- 设备卡片小菜单 -->
 <div id="tileMenu" class="tile-menu hidden"></div>
 
-<script type="module" src="app.js?v=133"></script>
+<script type="module" src="app.js?v=134"></script>
 </body>
 </html>
