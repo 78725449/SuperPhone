@@ -947,30 +947,14 @@ function initTouchKeyboard() {
   // 回车/换行/发送：iOS 单行 input 按 return 不触发 input（不插换行），只派发 keydown(13)，
   // 故不能用 input 的 insertLineBreak（单行 input 永不触发）。捕获 Enter → 发 XK_Return，
   // 由被控端按聚焦场景识别为发送/换行/搜索。
-  // 非打印键（2026-08-19，PC 物理键盘浮层接管后补全；外接键盘的触屏设备同样受益）：
-  // 方向键/Tab/Esc/Delete 不产生 input 事件，keydown 直转 keysym。刻意不含 Home/End/
-  // PageUp/PageDown——设备端 XK_Home=物理 Home 键（回桌面），PC 打字按 Home 期望"行首"
-  // 会造成意外退桌面，宁缺毋滥。
-  const KBD_KEYSYMS = {
-    ArrowLeft: 0xff51, ArrowUp: 0xff52, ArrowRight: 0xff53, ArrowDown: 0xff54,
-    Tab: 0xff09, Escape: 0xff1b, Delete: 0xffff,
-  };
+  // 2026-08-19 回退记录：曾为 PC 键盘浮层接管扩展方向键/Tab/Esc/Delete 直转 keysym，
+  // 实测点画面后焦点会转移给 canvas（浏览器 mousedown 默认行为），浮层与 noVNC 原生
+  // 键盘两路径混走行为不定——PC 键盘回归 noVNC 原生映射（点画布即聚焦，原生支持全键），
+  // 本通道维持触控软键盘专用的 Enter 转发。
   kbi.addEventListener('keydown', (e) => {
-    // IME 组合期间放行（2026-08-19 PC 中文输入法）：选候选词的方向键/确认 Enter 归 IME
-    // （keyCode=229），误发设备会打断候选导航；组合文本由 compositionend 整段提交
-    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter' || e.keyCode === 13) {
       e.preventDefault();
       kbdSendSpecial(0xff0d, 'Enter'); // XK_Return
-      return;
-    }
-    // Ctrl/Meta 组合键放行：交给 document 级 handler / 浏览器默认（Ctrl+V 粘贴经
-    // input 分流转发，见 initTouchKeyboard 注释——不拦截避免双通道）
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    const ks = KBD_KEYSYMS[e.key];
-    if (ks !== undefined) {
-      e.preventDefault(); // 阻止 input 内光标移动/焦点跳出的默认行为
-      kbdSendSpecial(ks, null);
     }
   });
 
@@ -1366,9 +1350,6 @@ async function enterFocus(d) {
   fRfb.addEventListener('connect', () => {
     focusReconnectAttempts = 0; // 重连成功：复位重试计数
     setFocusOverlay(false, null); // 隐藏连接浮层
-    // PC 端自动接管键盘（2026-08-19）：物理键盘/中文 IME 无感进入 kbdInput 分流通道
-    // （触控端不自动——软键盘必须显式点「键盘」键调起，维持现有交互）
-    if (!isTouchable()) focusKbdInput();
     setTimeout(fitFocusPanel, 300);
   });
   // 聚焦主控画面断线自动重连（2026-08-14）：iOS 后台挂起/切应用导致 WS 断开（1006）后画面黑屏，
@@ -2057,22 +2038,6 @@ function createRfb(container, device, opts = {}, statusEl = null) {
         setTimeout(() => { try { rfb.sendKey(0xff50, 'Home', false); } catch (e) { /* 静默 */ } }, 60);
       },
     });
-  }
-  // PC 端键盘浮层接管（2026-08-19）：物理键盘与中文 IME 经 #kbdInput 分流（与触控端同一
-  // 通道，复用 initTouchKeyboard 的 input/composition 分流），替代 noVNC 原生 Keyboard
-  // keydown 映射（其不处理 IME，中文打字只能靠 Ctrl+V）。仅聚焦会话（ctrl）启用：
-  // 直控/同步画布不设 focusOnClick=false，维持原生键盘（分流通道取 focus.rfb，直控无 focus）。
-  if (!opts.viewOnly && opts.ctrl && !isTouchable()) {
-    rfb.focusOnClick = false; // 点画布不再 canvas.focus()，防抢走 kbdInput 焦点
-    // 点画布=恢复控制输入：焦点落在非输入元素（body 等）时送回 kbdInput，
-    // 保证 PC 打字永不因点画面而断流；模态框/输入框内不抢焦点
-    const onCanvasDown = () => {
-      const ae = document.activeElement;
-      if (ae && ae.closest && ae.closest('input, textarea')) return;
-      if (ae && ae.isContentEditable) return;
-      focusKbdInput();
-    };
-    rfb._canvas.addEventListener('mousedown', onCanvasDown);
   }
   // PC 端聚焦/直控画面：常驻深灰圆+浅灰外圈覆盖层（2026-08-18，见上方光标策略分支）。
   // 状态用红/蓝圆点表示（蓝=已连接，红=已断开/失败），不再显示文字
