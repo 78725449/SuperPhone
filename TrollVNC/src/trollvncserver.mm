@@ -3979,40 +3979,28 @@ static void tvHttpServeFile(int fd, SSL *ssl, const char *docRoot, const char *u
         return;
     }
     const char *mime = tvHttpMimeForPath(resolved);
-    // .vnc（index.vnc）含 $PORT 模板占位符：libvncserver httpd 在 serve 时替换为 VNC 端口
-    // （gPort），自建服务器需同样处理（2026-08-19），否则 JS 报 "$PORT is not defined"。
-    size_t rlen = strlen(resolved);
-    BOOL isVncTmpl = (rlen > 4 && strcmp(resolved + rlen - 4, ".vnc") == 0);
-    if (isVncTmpl) {
-        NSMutableData *data = [NSMutableData data];
-        char buf[8192];
-        ssize_t r;
-        while ((r = read(f, buf, sizeof(buf))) > 0) [data appendBytes:buf length:(NSUInteger)r];
-        close(f);
-        NSString *content = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-        if (!content) content = @"";
+    // 统一读入内存（webclients 文件均不大；.vnc 模板需整体替换后再发送）
+    NSMutableData *data = [NSMutableData data];
+    char buf[8192];
+    ssize_t r;
+    while ((r = read(f, buf, sizeof(buf))) > 0) [data appendBytes:buf length:(NSUInteger)r];
+    close(f);
+    NSData *out = data;
+    // $PORT 模板替换（内容驱动，不依赖后缀判断）：libvncserver httpd 对 index.vnc 做同款
+    // 替换（$PORT → VNC 端口 gPort），自建服务器必须一致，否则 JS 报 "$PORT is not defined"。
+    NSString *content = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (content && [content containsString:@"$PORT"]) {
         content = [content stringByReplacingOccurrencesOfString:@"$PORT"
                                                      withString:[NSString stringWithFormat:@"%d", gPort]];
-        NSData *out = [content dataUsingEncoding:NSUTF8StringEncoding];
-        char head[512];
-        int hl = snprintf(head, sizeof(head),
-                          "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lu\r\nConnection: close\r\n"
-                          "Cache-Control: no-cache\r\n\r\n",
-                          mime, (unsigned long)out.length);
-        tvTlsWrite(fd, ssl, head, (size_t)hl);
-        tvTlsWrite(fd, ssl, out.bytes, out.length);
-        return;
+        out = [content dataUsingEncoding:NSUTF8StringEncoding];
     }
     char head[512];
     int hl = snprintf(head, sizeof(head),
-                      "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lld\r\nConnection: close\r\n"
-                      "Cache-Control: no-cache\r\n\r\n",
-                      mime, (long long)st.st_size);
+                      "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lu\r\nConnection: close\r\n"
+                      "Cache-Control: no-store\r\n\r\n",
+                      mime, (unsigned long)out.length);
     tvTlsWrite(fd, ssl, head, (size_t)hl);
-    char buf[8192];
-    ssize_t r;
-    while ((r = read(f, buf, sizeof(buf))) > 0) tvTlsWrite(fd, ssl, buf, (size_t)r);
-    close(f);
+    tvTlsWrite(fd, ssl, out.bytes, out.length);
 }
 
 /** 明文 http 请求 → 301 跳转 https（保留路径；对齐网关 httpRedirect） */
