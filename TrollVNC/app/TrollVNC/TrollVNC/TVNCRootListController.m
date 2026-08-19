@@ -36,6 +36,13 @@
 #import "TVNCUtil.h"
 #import "ZTSelfSignedCertificate.h"
 
+// PSSpecifier 的 name/setName: 为私有属性，bootstrap 方案（xcodebuild + iPhoneOS16.5.sdk）头未声明，
+// 本地补声明使折叠组头标题重建可见（运行时真实存在，2026-08-19）
+@interface PSSpecifier (TVNCCollapseAccessors)
+- (NSString *)name;
+- (void)setName:(NSString *)name;
+@end
+
 NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     if (!host)
         return YES;

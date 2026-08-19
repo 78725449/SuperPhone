@@ -1212,7 +1212,9 @@ function buildActionBtn(op, name, title, svgPaths, cls) {
 }
 
 /**
- * 显示右上角 toast（动作级日志，与控制台/5801 同构）：fixed 右上角 + 安全区，三态上色，500ms 同文案去重。
+ * 显示顶部居中 toast（动作级日志，与控制台/5801 同构）：fixed 顶部水平居中 + 安全区，三态上色，
+ * 500ms 同文案去重。2026-08-19 由右上角改顶部居中——右上角会挡住顶栏按钮（直控/批量/布局）；
+ * 顶部居中区域在 PC/移动端均为空白区，天然避开顶栏按钮与批量胶囊行。
  * @param {string} msg  文案（两段式「动作 + 结果/原因」，前缀 ✓/✗ 由调用方带上）
  * @param {string} type success|error|info（默认 info）
  * @returns {void}
@@ -1239,12 +1241,12 @@ function toast(msg, type = 'info') {
   el.style.cssText =
     'position:fixed;' +
     'top:calc(env(safe-area-inset-top, 0px) + 12px);' +
-    'right:calc(env(safe-area-inset-right, 0px) + 14px);' +
-    'z-index:999;max-width:min(72vw, 340px);' +
+    'left:50%;transform:translateX(-50%);' +   // 顶部水平居中（避开顶栏左右按钮/批量胶囊行）
+    'z-index:999;max-width:min(80vw, 420px);' +
     'background:rgba(20,26,40,.92);color:' + cfg.color + ';' +
     'padding:10px 14px;border-radius:10px;border-left:3px solid ' + cfg.color + ';' +
     'font:13px/1.4 system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.4);' +
-    'pointer-events:none;transition:opacity .25s;';
+    'pointer-events:none;transition:opacity .25s;text-align:center;';
   el.style.opacity = '1';
   if (farmToastTimer) clearTimeout(farmToastTimer);
   farmToastTimer = setTimeout(() => { el.style.opacity = '0'; }, cfg.ms);
