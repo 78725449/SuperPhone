@@ -39,19 +39,15 @@
     self.detailTextLabel.hidden = YES;
     self.selectionStyle = UITableViewCellSelectionStyleNone;
 
-    UIButtonConfiguration *cfg = [UIButtonConfiguration filledButtonConfiguration];
-    cfg.cornerStyle = UIButtonConfigurationCornerStyleMedium;
-    cfg.baseBackgroundColor = [UIColor colorWithRed:35 / 255.0 green:158 / 255.0 blue:171 / 255.0 alpha:1.0];
-    cfg.baseForegroundColor = [UIColor whiteColor];
-    cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *_Nonnull(
-        NSDictionary<NSAttributedStringKey, id> *_Nonnull attrs) {
-        NSMutableDictionary *a = [attrs mutableCopy];
-        a[NSFontAttributeName] = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
-        return a;
-    };
-
-    _button = [UIButton buttonWithConfiguration:cfg];
+    // 2026-08-20：不用 UIButtonConfiguration（iOS 15+ API，Theos 编译目标低于 iOS 15 会 -Werror 报错），
+    // 改用 iOS 15 之前就兼容的 UIButton + setTitle/backgroundColor/cornerRadius
+    _button = [UIButton buttonWithType:UIButtonTypeCustom];
     _button.translatesAutoresizingMaskIntoConstraints = NO;
+    _button.titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+    [_button setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    [_button setBackgroundColor:[UIColor colorWithRed:35 / 255.0 green:158 / 255.0 blue:171 / 255.0 alpha:1.0]];
+    _button.layer.cornerRadius = 10.0;
+    _button.layer.masksToBounds = YES;
     [_button addTarget:self action:@selector(buttonTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.contentView addSubview:_button];
 
@@ -71,9 +67,7 @@
     if (!specifier) {
         return;
     }
-    UIButtonConfiguration *cfg = _button.configuration;
-    cfg.title = [specifier propertyForKey:@"label"];
-    _button.configuration = cfg;
+    [_button setTitle:[specifier propertyForKey:@"label"] forState:UIControlStateNormal];
 }
 
 - (void)setSpecifier:(PSSpecifier *)specifier {
