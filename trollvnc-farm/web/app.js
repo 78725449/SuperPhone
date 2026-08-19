@@ -1834,6 +1834,10 @@ function startDirectRfb(d) {
  */
 function toggleDirectMode() {
   if (directMode) { exitDirectMode(); return; }
+  // 2026-08-19：进入直控前先退出聚焦大屏、布局重置为卡片墙——避免"正大屏操作一台设备时点直控，
+  // 布局仍是大屏"的问题（直控语义 = 卡片墙直达控制，需完整墙视图）
+  if (focus) exitFocus();
+  if (layoutMode !== 'grid') applyLayout('grid');
   directMode = true;
   const wall = $('wall');
   if (wall) wall.classList.add('direct-mode');
