@@ -3,7 +3,7 @@
 import RFB from '/novnc/core/rfb.js?v=2';
 import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=7';
 import { attachPress } from './press.js';
-import { attachFarmGesture, resolveGesture } from './gesture.js';
+import { attachFarmGesture, attachRightHome, resolveGesture } from './gesture.js';
 
 const $ = (id) => document.getElementById(id);
 const isMobile = () => window.matchMedia('(max-width: 900px)').matches;
@@ -202,7 +202,7 @@ async function refreshDevices() {
 }
 
 // 设备列表变更推送订阅（2026-08-18）：后端经 /ws/events 广播设备上线/离线/删除/改名/排序，
-// 前端收到后重拉 /api/devices，替代 6s 轮询（轮询保留为 WS 断线兜底）。
+// 前端收到后重拉 /api/devices，替代 6s 轮询（2026-08-19 轮询已移除）。
 // 事件通知+前端重拉：后端只推 {type, deviceId}，前端统一 refreshDevices 拉全量，保证一致性。
 let eventsWS = null;
 let eventsWSRetry = 0;
@@ -213,7 +213,8 @@ function connectEventsWS() {
   eventsWS.onmessage = () => { refreshDevices().catch(() => {}); };
   eventsWS.onclose = () => {
     eventsWS = null;
-    // WS 断线退避重连（2s 起，上限 30s）；期间由 6s 轮询兜底
+    // WS 断线退避重连（2s 起，上限 30s）；死连接检测由后端心跳 ping/pong 负责
+    // （长连接被 NAT/代理静默掐断时 TCP 层无感知，后端 terminate 会触发这里的 onclose）
     const delay = Math.min(2000 * Math.pow(2, eventsWSRetry++), 30000);
     setTimeout(connectEventsWS, delay);
   };
@@ -2022,6 +2023,18 @@ function createRfb(container, device, opts = {}, statusEl = null) {
       },
     });
   }
+  // 鼠标右键 = Home 键（2026-08-19，对齐按键区 Home 键语义）：拦截 noVNC 原生右键
+  // （0x4→设备端 menuDown），统一走 RFB 直发 0xff50；单击立即发、双击/三击=自然连点
+  // 由被控端系统层识别。触控端（移动端布局/直控/同步）与 PC 端聚焦画布共用此语义。
+  if (!opts.viewOnly && rfb._canvas) {
+    attachRightHome(rfb, {
+      send: () => {
+        if (!rfb._farmConnected) return; // 与按键区一致：仅 RFB 直发通道就绪时发送
+        try { rfb.sendKey(0xff50, 'Home', true); } catch (e) { /* noVNC API 异常静默忽略 */ }
+        setTimeout(() => { try { rfb.sendKey(0xff50, 'Home', false); } catch (e) { /* 静默 */ } }, 60);
+      },
+    });
+  }
   // PC 端聚焦/直控画面：常驻深灰圆+浅灰外圈覆盖层（2026-08-18，见上方光标策略分支）。
   // 状态用红/蓝圆点表示（蓝=已连接，红=已断开/失败），不再显示文字
   const setStatus = (s) => {
@@ -2736,9 +2749,7 @@ window.addEventListener('resize', fitFocusPanel);
   try {
     await refreshDevices();
     restoreFocusFromUrl(); // 2026-08-14：刷新后自动恢复当前操作的设备画面（URL ?focus=）
-    connectEventsWS(); // 2026-08-18：设备变更推送订阅（替代轮询为主通道）
-    // 6s 轮询降级为 WS 断线兜底：仅页面可见时拉取，保证 WS 异常时设备列表仍能更新
-    setInterval(() => { if (document.visibilityState === 'visible') refreshDevices().catch(() => {}); }, 6000);
+    connectEventsWS(); // 2026-08-18：设备变更推送订阅（2026-08-19 移除 6s 轮询，WS 心跳保活由后端负责）
   } catch (e) {
     if (e.message === 'unauthorized') showLogin();
   }

@@ -86,6 +86,11 @@ try {
   sub = await openEvents();
   check('/ws/events 订阅成功', true);
 
+  // 心跳：发 JSON ping → 应收到 pong（2026-08-19 移除轮询后由心跳保活检测死连接）
+  sub.ws.send(JSON.stringify({ type: 'ping' }));
+  await waitFor(() => sub.events.some((e) => e.type === 'pong'));
+  check('心跳 ping 收到 pong 应答', sub.events.some((e) => e.type === 'pong'));
+
   // 设备 register 上线 → 应收到 register 事件
   reg = await openReg('dev-evt');
   await waitFor(async () => (await getDevices()).some((d) => d.id === 'dev-evt' && d.online === true));

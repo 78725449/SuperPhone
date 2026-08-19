@@ -1205,6 +1205,22 @@ function notifyDevicesChanged(type, deviceId) {
     }
   }
 }
+// 心跳保活（2026-08-19）：移除前端轮询后 WS 为唯一更新通道。长连接空闲时可能被
+// NAT/代理静默掐断（TCP 层无感知，前后端都不触发断线），此处每 25s 主动 ping，
+// pong 未回（isAlive 仍 false）判定死连接 → terminate → 前端 onclose 退避重连，
+// 避免设备列表永久过期（浏览器按 RFC 6455 自动应答 ping 帧，前端无需任何逻辑）。
+setInterval(() => {
+  for (const ws of eventClients) {
+    if (ws.readyState !== 1) { eventClients.delete(ws); continue; }
+    if (!ws.isAlive) {
+      try { ws.terminate(); } catch { /* noop */ }
+      eventClients.delete(ws);
+      continue;
+    }
+    ws.isAlive = false;
+    try { ws.ping(); } catch { /* noop */ }
+  }
+}, 25000);
 
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, 'http://' + (req.headers.host || 'localhost'));
@@ -1216,6 +1232,14 @@ wss.on('connection', (ws, req) => {
 
   // 设备列表变更订阅端点（2026-08-18）：前端长连接，替代 6s 轮询
   if (url.pathname === '/ws/events') {
+    ws.isAlive = true; // 心跳保活标记（浏览器自动回 pong 帧）
+    ws.on('pong', () => { ws.isAlive = true; });
+    ws.on('message', (data) => { // 兼容前端 JSON ping → pong（双保险）
+      try {
+        const m = JSON.parse(String(data));
+        if (m && m.type === 'ping') ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
+      } catch { /* 非 JSON 消息忽略 */ }
+    });
     eventClients.add(ws);
     ws.on('close', () => eventClients.delete(ws));
     ws.on('error', () => eventClients.delete(ws));

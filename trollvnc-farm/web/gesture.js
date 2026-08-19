@@ -76,3 +76,43 @@ export function attachFarmGesture(canvas, opts = {}) {
   canvas.addEventListener('farmgesture', handler);
   return () => canvas.removeEventListener('farmgesture', handler);
 }
+
+/**
+ * 鼠标右键 = Home 键（2026-08-19）：在画布上挂右键识别层，与按键区 Home 键语义一致
+ * （单击立即发、双击/三击=自然连点由被控端系统层识别，无 300ms 判定延迟）。
+ * 通过 capture 阶段拦截 noVNC 原生右键（其 0x4 掩码 → 设备端 menuDown 链路），
+ * 统一改走 Home 键的 RFB 直发（0xff50），使右键获得与 Home 键按钮完全一致的多击行为，
+ * 并让触控端（移动端布局 / 直控 / 同步）与 PC 端共用同一语义。
+ * @param {RFB} rfb noVNC 实例（需已绑定画布）
+ * @param {{send?: Function}} opts send() 每次右键点击发送一次 Home（默认 rfb.sendKey 0xff50，60ms 按住）
+ * @returns {Function} 卸载函数
+ */
+export function attachRightHome(rfb, opts = {}) {
+  const cv = rfb && rfb._canvas;
+  if (!cv || typeof cv.addEventListener !== 'function') return () => {};
+  const send = opts.send || (() => {
+    try { rfb.sendKey(0xff50, 'Home', true); } catch (e) { /* noVNC API 异常静默忽略 */ }
+    setTimeout(() => { try { rfb.sendKey(0xff50, 'Home', false); } catch (e) { /* 静默 */ } }, 60);
+  });
+  // capture 阶段拦截右键按下：阻止 noVNC 原生右键处理（0x4→设备端 menuDown），
+  // 避免与下方 contextmenu 的 Home 直发双重触发（每次右键两次 Home）。
+  // stopImmediatePropagation 阻止同节点目标阶段 listener（含 noVNC handleMouse / focusCanvas）。
+  const onDown = (e) => {
+    if (e.button === 2) {
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    }
+  };
+  // contextmenu 在右键按下+抬起后触发（每次右键恰好一次），作为 Home 发送时机；
+  // 双击/三击 = 快速连点多次 contextmenu → 多次独立立即发送，iOS 系统层识别多击。
+  const onCtx = (e) => {
+    e.preventDefault();
+    send();
+  };
+  cv.addEventListener('mousedown', onDown, true);
+  cv.addEventListener('contextmenu', onCtx);
+  return () => {
+    cv.removeEventListener('mousedown', onDown, true);
+    cv.removeEventListener('contextmenu', onCtx);
+  };
+}

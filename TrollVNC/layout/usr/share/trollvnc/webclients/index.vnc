@@ -380,6 +380,22 @@ import RFB from './novnc/core/rfb.js';
       var p = window.prompt('请输入 VNC 密码：');
       if (p) rfb.sendCredentials({ password: p });
     });
+    // 鼠标右键 = Home 键（2026-08-19，对齐网关控制台）：capture 阶段拦截 noVNC 原生右键
+    // （0x4→设备端 menuDown），统一走 Home 键 RFB 直发（0xff50）；单击立即发、
+    // 双击/三击=自然连点由被控端系统层识别（与按键区 Home 键按压语义一致，无 300ms 判定延迟）。
+    (function () {
+      var cv = rfb._canvas;
+      if (!cv) return;
+      function onDown(e) {
+        if (e.button === 2) { e.stopImmediatePropagation(); e.preventDefault(); }
+      }
+      function onCtx(e) {
+        e.preventDefault();
+        if (isConnected) tapKey(0xff50, 'Home');
+      }
+      cv.addEventListener('mousedown', onDown, true);
+      cv.addEventListener('contextmenu', onCtx);
+    })();
     // 断开/失败：软键盘由 kbInput blur 自动收起（input 事件驱动方案无 Keyboard 实例，无需 ungrab）
   }
 
