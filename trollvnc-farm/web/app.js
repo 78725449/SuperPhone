@@ -392,7 +392,7 @@ function startWallRfb(inst) {
       // inst.rfb 可能已被 stopWallRfb 置 null（竞态：在途 tick 与卡片停止交错）——加空值保护
       if (!inst.paused && inst.rfb && !inst.rfb.closed) {
         // 双速检测（与 IPA 控制端一致）：变化后快检 1s；静止按 1.5 倍退避至 15s 封顶
-        const base = Number((inst.device.configs && inst.device.configs.ThumbInterval) || 5) || 5;
+        const base = Number((inst.device.configs && inst.device.configs.ThumbInterval) || 3) || 3;
         let next;
         if (changed) next = 1;
         else next = Math.min(Math.max(base * Math.pow(1.5, (inst.rfb.silent || 0) - 1), base), 15);

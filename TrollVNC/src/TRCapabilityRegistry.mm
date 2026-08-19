@@ -1224,9 +1224,9 @@ static NSDictionary *TRSearchGatewaySync(void) {
         NSDictionary *defs = @{
             @"Scale": @1.0, @"OrientationPadFix": @0,
             @"DeferWindowSec": @0.015, @"MaxInflight": @2, @"TileSize": @32,
-            @"FullscreenThresholdPercent": @0, @"MaxRects": @256,
-            @"WheelStepPx": @48.0, @"KeepAliveSec": @0,
-            @"ThumbInterval": @5,
+            @"FullscreenThresholdPercent": @50, @"MaxRects": @512,
+            @"WheelStepPx": @48.0, @"KeepAliveSec": @30,
+            @"ThumbInterval": @3,
             @"FabAutoCollapse": @YES,
         };
         return defs[key] ?: @0;

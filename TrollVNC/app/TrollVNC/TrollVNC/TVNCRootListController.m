@@ -201,6 +201,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     BOOL customPM = [pm isEqualToString:@"custom"];
     BOOL customFRS = [fps isEqualToString:@"custom"];
     BOOL relay = [connMode isEqualToString:@"relay"];
+    BOOL bridge = [connMode isEqualToString:@"bridge"];
     BOOL accessFull = [accessMode isEqualToString:@"full"];
     BOOL accessReadonly = [accessMode isEqualToString:@"readonly"];
 
@@ -216,6 +217,8 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
         if ([sp propertyForKey:@"visibleOnlyFrameRateCustom"] && !customFRS) continue;
         // 自动发现：仅网关中继（relay）模式显示——桥接控制不注册，无发现意义
         if ([sp propertyForKey:@"visibleOnlyRelay"] && !relay) continue;
+        // 连接网关按钮：仅桥接控制（bridge）模式显示——纯控制端连网关入口
+        if ([sp propertyForKey:@"visibleOnlyBridge"] && !bridge) continue;
         // 访问密码：仅完全访问模式显示；只读密码：仅只读模式显示
         if ([sp propertyForKey:@"visibleOnlyAccessFull"] && !accessFull) continue;
         if ([sp propertyForKey:@"visibleOnlyAccessReadonly"] && !accessReadonly) continue;
@@ -758,6 +761,25 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
             ([specifier propertyForKey:@"isDestructive"] && [[specifier propertyForKey:@"isDestructive"] boolValue]);
         cell.textLabel.textColor = isDestructive ? [UIColor systemRedColor] : self.primaryColor;
         cell.textLabel.highlightedTextColor = isDestructive ? [UIColor systemRedColor] : self.primaryColor;
+        // 2026-08-20：buttonStyle=full → 全宽居中按钮（圆角填充背景，用于搜索/连接网关）
+        if ([specifier propertyForKey:@"buttonStyle"]) {
+            cell.textLabel.textAlignment = NSTextAlignmentCenter;
+            cell.textLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+            cell.separatorInset = UIEdgeInsetsZero;
+            UIView *bg = [[UIView alloc] init];
+            bg.translatesAutoresizingMaskIntoConstraints = NO;
+            bg.backgroundColor = [self.primaryColor colorWithAlphaComponent:0.12];
+            bg.layer.cornerRadius = 10.0;
+            bg.layer.masksToBounds = YES;
+            [cell.contentView addSubview:bg];
+            [cell.contentView sendSubviewToBack:bg];
+            [NSLayoutConstraint activateConstraints:@[
+                [bg.leadingAnchor constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.leadingAnchor],
+                [bg.trailingAnchor constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.trailingAnchor],
+                [bg.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:6],
+                [bg.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-6],
+            ]];
+        }
         return cell;
     }
 
@@ -800,6 +822,19 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 
 
 #pragma mark - Gateway Search (internal farm)
+
+/// 2026-08-20：桥接控制模式的「连接网关」按钮——用当前填写的网关地址/令牌直接建立连接
+/// （触发 manager 级重启，trollvncmanager 重新拉起读取新配置；纯控制端不注册/不开隧道）
+- (void)connectGateway {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSString *host = [defaults stringForKey:@"GatewayHost"];
+    if (!host.length) {
+        [self showGatewayMessage:@"请先填写网关地址，再点击「连接网关」"];
+        return;
+    }
+    [self showGatewayMessage:[NSString stringWithFormat:@"正在连接网关 %@…", host]];
+    [self _scheduleManagerRestart];
+}
 
 - (void)searchGateway {
     if (self.gatewayBrowser) {

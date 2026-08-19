@@ -526,9 +526,9 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 - **TVNCHotspotManager**：NEHotspotHelper 注册（保活兜底）；任何 hotspot 命令回调时拉起 VNC 服务
 - **TVNCListItemsController**：PSListItemsController 子类（仅设置主题色，用于 PSLinkListCell 子页）
 - **TVNCClientCell**：客户端列表 cell（ID + Host + Subtitle + View-Only badge）
-- **TVNCSliderCell**：自定义 PSTableCell（自建标题 UILabel + UISlider + 右侧值标签；2026-08-20 加长滑杆：值标签 50→46pt/13pt 字体、间距 12→8、标题压缩阻力降为 300 可截断——空间不足时牺牲标题让位滑杆）
+- **TVNCSliderCell**：自定义 PSTableCell（**2026-08-20 已弃用**——设置页滑杆改回系统 `cell=PSSliderCell`（原生支持 label/slider/值/format/isSegmented，iOS 15 渲染稳定），此类保留不再被 Root.plist 引用）
 - **TVNCSegmentCell**：自定义 PSTableCell（无标题，UISegmentedControl 占满整行；字符串值 ↔ 段索引双向转换；系统 PSSegmentCell 只认整数索引，2026-08-20 新增）
-- **自定义 cell 布局约定（2026-08-20 修复重叠）**：标题用 contentView 自建 UILabel，隐藏系统 textLabel/detailTextLabel（detailTextLabel 会被 PSTableCell 设为当前值如 "full"）——iOS 15 的 UITableViewCell/PSTableCell 对系统 label 有内置约束，手动再加约束会双约束冲突 → Auto Layout 破坏性布局 → 标题与控件互相覆盖；自建视图约束与系统布局完全隔离，layoutSubviews 兜底隐藏系统 label。选择器行（TVNCSegmentCell）无标题、控件占满整行；滑杆行标题压缩阻力低（300，可截断）让位滑杆
+- **自定义 cell 布局约定（2026-08-20 修复重叠）**：标题用 contentView 自建 UILabel，隐藏系统 textLabel/detailTextLabel（detailTextLabel 会被 PSTableCell 设为当前值如 "full"）——iOS 15 的 UITableViewCell/PSTableCell 对系统 label 有内置约束，手动再加约束会双约束冲突 → Auto Layout 破坏性布局 → 标题与控件互相覆盖；自建视图约束与系统布局完全隔离，layoutSubviews 兜底隐藏系统 label。选择器行（TVNCSegmentCell）无标题、控件占满整行
 - **StripedTextTableViewController**：通用文本日志查看器（dispatch_source VNODE 监听 + 反向 + maxRows + 搜索 + 分享 + 清空）
 - **ZTSelfSignedCertificate**：调 Security.framework 私有 API `SecGenerateSelfSignedCertificate` 生成自签 CA 证书（RSA 2048 / CA:TRUE pathLen=0）
 - **TRTask.m / TaskProcess+ObjC.swift**：进程 spawn 工具（posix_spawn + 私有 persona API 实现 root 身份切换）

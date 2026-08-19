@@ -97,8 +97,8 @@ static int gFpsMax = 0;
 static double gDeferWindowSec = 0.015;      // Coalescing window; 0 disables deferral
 static int gMaxInflightUpdates = 2;         // Max concurrent client encodes; drop frames if >= this
 static int gTileSize = 32;                  // Tile size for dirty detection (pixels)
-static int gFullscreenThresholdPercent = 0; // If changed tiles exceed this %, update full screen
-static int gMaxRectsLimit = 256;            // Max rects before falling back to bbox/fullscreen
+static int gFullscreenThresholdPercent = 50; // If changed tiles exceed this %, update full screen（2026-08-20 默认对齐 balanced 预设）
+static int gMaxRectsLimit = 512;            // Max rects before falling back to bbox/fullscreen（2026-08-20 默认对齐 balanced 预设）
 static BOOL gAsyncSwapEnabled = NO;         // Enable non-blocking swap (may cause tearing)
 
 // Wheel scroll coalescing state (async, non-blocking)
@@ -623,6 +623,9 @@ static void parseDaemonOptions(void) {
             v = 300.0;
         }
         gKeepAliveSec = v;
+    } else {
+        // 2026-08-20：默认 30s（有客户端连接时周期性 HID 唤醒防息屏）；0=关闭
+        gKeepAliveSec = 30.0;
     }
 
     NSNumber *scaleN = [prefs objectForKey:@"Scale"];

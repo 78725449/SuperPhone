@@ -84,7 +84,21 @@
 			<string>搜索网关</string>
 			<key>action</key>
 			<string>searchGateway</string>
+			<key>buttonStyle</key>
+			<string>full</string>
 			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>连接网关</string>
+			<key>action</key>
+			<string>connectGateway</string>
+			<key>buttonStyle</key>
+			<string>full</string>
+			<key>visibleOnlyBridge</key>
 			<true/>
 		</dict>
 
@@ -184,8 +198,8 @@
 			</array>
 		</dict>
 		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
+			<key>cell</key>
+			<string>PSSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -264,8 +278,8 @@
 			<true/>
 		</dict>
 		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
+			<key>cell</key>
+			<string>PSSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -286,8 +300,8 @@
 			<true/>
 		</dict>
 		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
+			<key>cell</key>
+			<string>PSSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -295,7 +309,7 @@
 			<key>label</key>
 			<string>最大矩形数 ●</string>
 			<key>default</key>
-			<integer>256</integer>
+			<integer>512</integer>
 			<key>min</key>
 			<real>1.0</real>
 			<key>max</key>
@@ -306,8 +320,8 @@
 			<true/>
 		</dict>
 		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
+			<key>cell</key>
+			<string>PSSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -315,7 +329,7 @@
 			<key>label</key>
 			<string>脏区阈值</string>
 			<key>default</key>
-			<integer>0</integer>
+			<integer>50</integer>
 			<key>min</key>
 			<real>0.0</real>
 			<key>max</key>
@@ -342,8 +356,8 @@
 			<true/>
 		</dict>
 		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
+			<key>cell</key>
+			<string>PSSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -364,8 +378,8 @@
 			<true/>
 		</dict>
 		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
+			<key>cell</key>
+			<string>PSSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -410,8 +424,8 @@
 			<true/>
 		</dict>
 		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
+			<key>cell</key>
+			<string>PSSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -452,8 +466,8 @@
 			<string>控制台呈现：卡片墙刷新、悬浮菜单、通知。</string>
 		</dict>
 		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
+			<key>cell</key>
+			<string>PSSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -461,7 +475,7 @@
 			<key>label</key>
 			<string>卡片墙刷新间隔</string>
 			<key>default</key>
-			<integer>5</integer>
+			<integer>3</integer>
 			<key>min</key>
 			<real>1.0</real>
 			<key>max</key>
@@ -536,8 +550,8 @@
 			<string>advanced</string>
 		</dict>
 		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
+			<key>cell</key>
+			<string>PSSliderCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
@@ -545,7 +559,7 @@
 			<key>label</key>
 			<string>连接保活</string>
 			<key>default</key>
-			<real>0.0</real>
+			<real>30.0</real>
 			<key>min</key>
 			<real>0.0</real>
 			<key>max</key>
@@ -690,6 +704,8 @@
 			<string>重新生成证书</string>
 			<key>action</key>
 			<string>generateKeys</string>
+			<key>buttonStyle</key>
+			<string>full</string>
 			<key>collapseGroup</key>
 			<string>advanced</string>
 		</dict>
