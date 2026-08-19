@@ -180,9 +180,9 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
  *   且带 collapseGroup）保留，标题带 ▸/▾ 指示状态
  * - visibleOnlyCustom：仅 PerformanceMode=custom 时显示（4 项底层传输参数）
  * - FrameRateSpecCustom：仅 FrameRateSpec=自定义（custom）时显示
- * @returns {NSArray} 过滤后的显示列表
+ * @returns {NSMutableArray} 过滤后的显示列表（可变，供 _specifiers 直接持有）
  */
-- (NSArray *)_visibleSpecifiersFrom:(NSArray<PSSpecifier *> *)all {
+- (NSMutableArray<PSSpecifier *> *)_visibleSpecifiersFrom:(NSArray<PSSpecifier *> *)all {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     NSString *pm = [ud stringForKey:@"PerformanceMode"] ?: @"balanced";
     NSString *frs = [ud stringForKey:@"FrameRateSpec"];
@@ -228,15 +228,16 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 }
 
 /**
- * 配置值写入拦截（2026-08-19 动态显隐联动）：
+ * 配置值写入拦截（2026-08-19 动态显隐联动 + restart 重启确认，两职责合并防止重复方法声明）：
  * - PerformanceMode 变更 → 刷新（custom 才显示 4 项底层参数）
  * - FrameRateSpec 变更 → 刷新（选「自定义」段才显示自定义输入框；"custom" 为 UI 状态，
  *   设备端 parseFrameRateSpec 对非数字安全回退 0=未指定）
  * - FrameRateSpecCustom 提交 → 写回 FrameRateSpec（用户输入的真实帧率格式）
+ * - restart 级 key 变更 → 防抖弹重启确认框（替代原 Apply 按钮）
  */
 - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)spec {
     [super setPreferenceValue:value specifier:spec];
-    if ([self hasManagedConfiguration]) return; // 托管页无折叠/联动，避免 _allSpecifiers 为空清空列表
+    if ([self hasManagedConfiguration]) return; // 托管页无折叠/联动/重启确认，避免 _allSpecifiers 为空清空列表
     NSString *key = [spec propertyForKey:@"key"];
     if ([key isEqualToString:@"PerformanceMode"] || [key isEqualToString:@"FrameRateSpec"]) {
         _specifiers = [self _visibleSpecifiersFrom:_allSpecifiers];
@@ -247,6 +248,9 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
             _frameRateSpecSpecifier) {
             [super setPreferenceValue:value specifier:_frameRateSpecSpecifier];
         }
+    }
+    if (key && [[self _restartRequiredKeys] containsObject:key]) {
+        [self _scheduleRestartConfirm];
     }
 }
 
@@ -301,21 +305,6 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 }
 
 #pragma mark - Actions
-
-// 覆写配置写入：restart 级 key 变更后防抖弹重启确认框（替代原 Apply 按钮）
-- (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
-    [super setPreferenceValue:value specifier:specifier];
-
-    // Managed 配置下不干预（MDM 覆盖）
-    if ([self hasManagedConfiguration]) {
-        return;
-    }
-
-    NSString *key = [specifier propertyForKey:@"key"];
-    if (key && [[self _restartRequiredKeys] containsObject:key]) {
-        [self _scheduleRestartConfirm];
-    }
-}
 
 /**
  * 需要重启服务才能生效的配置键（与 CONFIG_DEFS reload=restart 对齐）
