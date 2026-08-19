@@ -392,8 +392,12 @@ import RFB from './novnc/core/rfb.js';
       function onDown(e) {
         if (e.button === 2) { e.stopImmediatePropagation(); e.preventDefault(); }
       }
+      // 触屏来源记录（防御，对齐网关）：Android 长按触发 contextmenu 不发 Home；iOS 不触发
+      var lastPointerType = 'mouse';
+      cv.addEventListener('pointerdown', function (e) { lastPointerType = e.pointerType || 'mouse'; }, true);
       function onCtx(e) {
         e.preventDefault();
+        if (lastPointerType === 'touch') return;
         if (isConnected) tapKey(0xff50, 'Home');
       }
       cv.addEventListener('mousedown', onDown, true);
@@ -825,6 +829,9 @@ import RFB from './novnc/core/rfb.js';
       Tab: 0xff09, Escape: 0xff1b, Delete: 0xffff
     };
     kbInput.addEventListener('keydown', function (e) {
+      // IME 组合期间放行（2026-08-19 PC 中文输入法，对齐网关）：选词方向键/确认 Enter
+      // 归 IME（keyCode=229），组合文本由 compositionend 整段提交
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === 'Enter' || e.keyCode === 13) {
         e.preventDefault();
         kbdSendSpecial(0xff0d, 'Enter'); // XK_Return

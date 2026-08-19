@@ -103,10 +103,15 @@ export function attachRightHome(rfb, opts = {}) {
       e.preventDefault();
     }
   };
+  // 触屏来源记录（防御）：Android 长按画布会触发 contextmenu，若不区分会误发 Home；
+  // iOS（WKWebView/Safari）长按不触发 contextmenu，纯防御性排除。
+  let lastPointerType = 'mouse';
+  cv.addEventListener('pointerdown', (e) => { lastPointerType = e.pointerType || 'mouse'; }, true);
   // contextmenu 在右键按下+抬起后触发（每次右键恰好一次），作为 Home 发送时机；
   // 双击/三击 = 快速连点多次 contextmenu → 多次独立立即发送，iOS 系统层识别多击。
   const onCtx = (e) => {
     e.preventDefault();
+    if (lastPointerType === 'touch') return; // 触屏长按来源：只挡菜单，不发 Home
     send();
   };
   cv.addEventListener('mousedown', onDown, true);

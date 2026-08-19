@@ -956,6 +956,9 @@ function initTouchKeyboard() {
     Tab: 0xff09, Escape: 0xff1b, Delete: 0xffff,
   };
   kbi.addEventListener('keydown', (e) => {
+    // IME 组合期间放行（2026-08-19 PC 中文输入法）：选候选词的方向键/确认 Enter 归 IME
+    // （keyCode=229），误发设备会打断候选导航；组合文本由 compositionend 整段提交
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter' || e.keyCode === 13) {
       e.preventDefault();
       kbdSendSpecial(0xff0d, 'Enter'); // XK_Return
