@@ -481,7 +481,7 @@ static void parseFrameRateSpec(const char *spec) {
  *  写 `~/Library/Preferences/com.82flex.trollvnc.ca-{cert,key}.pem`（0600）+ defaults。
  *  已有有效证书（文件可读）时直接返回，不重复生成。
  */
-static void tvEnsureCertificate(NSUserDefaults *prefs) {
+static void tvEnsureCertificate(NSDictionary *prefs) {
     BOOL hasValid = gSslCertPath && *gSslCertPath && gSslKeyPath && *gSslKeyPath &&
                     access(gSslCertPath, R_OK) == 0 && access(gSslKeyPath, R_OK) == 0;
     if (hasValid) return;
@@ -512,9 +512,11 @@ static void tvEnsureCertificate(NSUserDefaults *prefs) {
     if (gSslKeyPath) free(gSslKeyPath);
     gSslCertPath = strdup(cacertPath.fileSystemRepresentation);
     gSslKeyPath = strdup(cakeyPath.fileSystemRepresentation);
-    [prefs setObject:cacertPath forKey:@"SslCertFile"];
-    [prefs setObject:cakeyPath forKey:@"SslKeyFile"];
-    [prefs synchronize];
+    (void)prefs;
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    [ud setObject:cacertPath forKey:@"SslCertFile"];
+    [ud setObject:cakeyPath forKey:@"SslKeyFile"];
+    [ud synchronize];
     TVLog(@"-daemon: auto-generated SSL cert (SAN: DNS:localhost + local IPs) -> %@", cacertPath);
 }
 
@@ -3777,6 +3779,10 @@ static NSData *tvHttpApiReadBodyFromPartial(int fd, SSL *ssl, NSData *partial) {
     return body.length > 0 ? body : nil;
 }
 
+static void *tvHttpApiServerMain(void *arg);
+/** 5802 单连接线程入口（fd 经 intptr_t 传递） */
+static void *tvHttpApiClientThread(void *arg);
+
 static void *tvHttpApiServerMain(void *arg) {
     (void)arg;
     int s = socket(AF_INET, SOCK_STREAM, 0);
@@ -3920,11 +3926,11 @@ static void tvHttpParsePath(const char *reqLine, char *outPath, size_t outSize) 
 /** 从请求缓冲找 Host 头（用于 301 跳转） */
 static void tvHttpHostHeader(const char *reqBuf, size_t bufLen, char *outHost, size_t outSize) {
     outHost[0] = '\0';
-    const char *end = memmem(reqBuf, bufLen, "\r\n\r\n", 4);
+    const char *end = (const char *)memmem(reqBuf, bufLen, "\r\n\r\n", 4);
     if (!end) end = reqBuf + bufLen;
     const char *line = reqBuf;
     while (line < end) {
-        const char *nl = memmem(line, (size_t)(end - line), "\r\n", 2);
+        const char *nl = (const char *)memmem(line, (size_t)(end - line), "\r\n", 2);
         size_t lineLen = nl ? (size_t)(nl - line) : (size_t)(end - line);
         if (lineLen > 5 && strncasecmp(line, "host:", 5) == 0) {
             const char *v = line + 5;
@@ -4036,6 +4042,10 @@ static void tvHttpsHandleClient(int fd) {
     SSL_free(ssl);
     close(fd);
 }
+
+static void *tvHttpsStaticServerMain(void *arg);
+/** 5801 单连接线程入口（fd 经 intptr_t 传递） */
+static void *tvHttpsClientThread(void *arg);
 
 static void *tvHttpsStaticServerMain(void *arg) {
     (void)arg;
