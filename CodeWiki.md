@@ -879,9 +879,10 @@ kbdShiftHeld, kbdShiftTimer, kbdComposing, kbdJustComposed, kbdLastLen
 ```
 header
   #meta 设备统计（无 h1 标题，2026-08-19 移除）
-  .actions: cardwRange（卡片宽度滑杆 160-400px）
-            layoutBtn + layoutMenu（宫格/列表两档，PC/移动端共用；宫格态显调节阀）
-            directBtn
+  .actions: directBtn
+            batchBtn
+            layoutBtn + layoutMenu（宫格/列表两档，PC/移动端共用、最右侧；调节阀 #cardwRange 在菜单内
+            宫格选项下方，仅宫格态显示——2026-08-19）
 批量操作（顶部入口，2026-08-19）：#batchBtn.batch-bar（顶部「批量」，直控右侧；批量模式变「取消」激活态承担退出）
             点击后屏幕墙顶部出现全宽圆角胶囊 #batchBar（main 首子级 in-flow，无取消按钮）：
             [✓ 全选][已选 N 台] ...... [执行][设置]，执行弹 #batchMenu（锚定执行按钮向下展开）、设置弹配置面板
@@ -895,7 +896,7 @@ main
   #opsMenu（移动端悬浮操作菜单）
 #kbdInput（fixed 全屏透明 input，iOS 软键盘输入源）
 #editModal（order 排序号 + name）/ #tileMenu（编辑/删除/旋转）
-script app.js?v=158（type=module）
+script app.js?v=159（type=module）
 ```
 
 **关键设计**：

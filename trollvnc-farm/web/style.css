@@ -69,8 +69,9 @@ button {
 button:hover { border-color: var(--accent); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.danger { color: #ff9d9d; }
-.zoom { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
-.zoom input[type="range"] { width: 110px; accent-color: var(--accent); cursor: pointer; }
+/* 卡片宽度调节阀（2026-08-19 起位于布局下拉菜单内、宫格选项下方；宫格态显示，JS .hidden 控制） */
+.zoom { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); padding: 6px 12px; white-space: nowrap; }
+.zoom input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); cursor: pointer; }
 .zoom #cardwVal { min-width: 46px; text-align: right; }
 
 main {
@@ -246,7 +247,7 @@ main {
   background: var(--panel2); border: 1px solid var(--line); border-radius: 12px;
   box-shadow: 0 8px 28px rgba(0,0,0,.35); padding: 6px;
   display: flex; flex-direction: column; gap: 2px;
-  min-width: 140px;
+  min-width: 230px; /* 容纳宫格下方卡片宽度调节阀（2026-08-19） */
 }
 .layout-menu.hidden { display: none; }
 .layout-menu .lopt {

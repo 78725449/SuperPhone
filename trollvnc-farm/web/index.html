@@ -5,30 +5,32 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>控制台</title>
 <link rel="icon" href="data:," />
-<link rel="stylesheet" href="style.css?v=27" />
+<link rel="stylesheet" href="style.css?v=29" />
 </head>
 <body>
 <header>
   <div id="meta" class="meta"></div>
   <div class="actions">
-    <label class="zoom" title="拖动调整设备卡片宽度（像素）：最小值=每行15列，最大值=每行5列，卡片从左到右逐行自适应平铺填满">
-      卡片
-      <input type="range" id="cardwRange" min="160" max="400" step="5" value="280" />
-      <span id="cardwVal">280px</span>
-    </label>
-    <!-- 布局切换：宫格 / 列表 两档（PC/移动端共用同一布局按钮；宫格 = PC 多列自适应 + 调节阀 / 移动端双列，
-         列表 = 单列行式；选中宫格时 PC 顶栏显示卡片宽度调节阀） -->
+    <button id="directBtn" class="direct-bar" title="直控模式：所有设备开启推流，卡片上直接点击控制">直控</button>
+    <button id="batchBtn" class="batch-bar" title="批量：点击进入多选模式（墙区顶部出现全选操作条）">批量</button>
+    <!-- 布局切换：宫格 / 列表 两档（PC/移动端共用，位于顶栏最右侧；宫格 = PC 多列自适应 + 调节阀 / 移动端双列，
+         列表 = 单列行式；选中宫格时下拉菜单中其下方显示卡片宽度调节阀） -->
     <div class="layout-switch">
       <button id="layoutBtn" class="layout-btn" title="布局切换（宫格/列表）">
         <svg id="layoutIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg>
       </button>
       <div id="layoutMenu" class="layout-menu hidden">
         <div class="lopt sel" data-l="grid">宫格<span class="chk">✓</span></div>
+        <!-- 卡片宽度调节阀：仅宫格态显示（位于宫格选项下方），拖动调整设备卡片宽度（像素）：
+             最小值=每行15列，最大值=每行5列，卡片从左到右逐行自适应平铺填满 -->
+        <label class="zoom" title="拖动调整设备卡片宽度（像素）：最小值=每行15列，最大值=每行5列，卡片从左到右逐行自适应平铺填满">
+          卡片
+          <input type="range" id="cardwRange" min="160" max="400" step="5" value="280" />
+          <span id="cardwVal">280px</span>
+        </label>
         <div class="lopt" data-l="list">列表<span class="chk">✓</span></div>
       </div>
     </div>
-    <button id="directBtn" class="direct-bar" title="直控模式：所有设备开启推流，卡片上直接点击控制">直控</button>
-    <button id="batchBtn" class="batch-bar" title="批量：点击进入多选模式（墙区顶部出现全选操作条）">批量</button>
   </div>
 </header>
 
@@ -119,6 +121,6 @@
 <!-- 设备卡片小菜单 -->
   <div id="tileMenu" class="tile-menu hidden"></div>
 
-  <script type="module" src="app.js?v=158"></script>
+  <script type="module" src="app.js?v=159"></script>
 </body>
 </html>

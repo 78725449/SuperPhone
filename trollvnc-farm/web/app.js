@@ -2773,7 +2773,7 @@ const layoutBtn = $('layoutBtn');
 const layoutMenu = $('layoutMenu');
 const layoutIcon = $('layoutIcon');
 const wallEl = $('wall');
-const zoomLabel = document.querySelector('.zoom'); // PC 顶栏卡片宽度调节阀（宫格态显示）
+const zoomLabel = document.querySelector('.zoom'); // 卡片宽度调节阀（位于布局下拉菜单内宫格选项下方，宫格态显示）
 // 布局状态持久化：'grid'（宫格：PC 多列自适应 + 调节阀 / 移动端双列）/ 'list'（单列列表行）
 let layoutMode = localStorage.getItem('farm_layout') || 'grid';
 // 布局切换图标：grid=四宫格 / list=三横线
