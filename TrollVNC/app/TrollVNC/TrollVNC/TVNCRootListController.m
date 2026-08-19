@@ -759,14 +759,22 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 
         BOOL isDestructive =
             ([specifier propertyForKey:@"isDestructive"] && [[specifier propertyForKey:@"isDestructive"] boolValue]);
-        cell.textLabel.textColor = isDestructive ? [UIColor systemRedColor] : self.primaryColor;
-        cell.textLabel.highlightedTextColor = isDestructive ? [UIColor systemRedColor] : self.primaryColor;
-        // 2026-08-20：buttonStyle=full → 全宽居中按钮（圆角填充背景，用于搜索/连接网关）
-        if ([specifier propertyForKey:@"buttonStyle"]) {
-            cell.textLabel.textAlignment = NSTextAlignmentCenter;
-            cell.textLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
-            cell.separatorInset = UIEdgeInsetsZero;
+        UIColor *textColor = isDestructive ? [UIColor systemRedColor] : self.primaryColor;
+        cell.textLabel.textColor = textColor;
+        cell.textLabel.highlightedTextColor = textColor;
+        // 2026-08-20 修复复用串状态：每次显式重置 textAlignment/font/分隔线，避免全宽按钮与普通行互相污染
+        BOOL isFull = [specifier propertyForKey:@"buttonStyle"] != nil;
+        cell.textLabel.textAlignment = isFull ? NSTextAlignmentCenter : NSTextAlignmentLeft;
+        cell.textLabel.font = isFull ? [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold]
+                                     : [UIFont systemFontOfSize:17.0];
+        cell.separatorInset = isFull ? UIEdgeInsetsZero : UIEdgeInsetsMake(0, 15, 0, 0);
+        // 背景视图用 tag 管理：复用 cell 时先移除旧背景再重建，防止叠加错乱
+        static const NSInteger kBtnBgTag = 0x5F5F;
+        UIView *oldBg = [cell.contentView viewWithTag:kBtnBgTag];
+        [oldBg removeFromSuperview];
+        if (isFull) {
             UIView *bg = [[UIView alloc] init];
+            bg.tag = kBtnBgTag;
             bg.translatesAutoresizingMaskIntoConstraints = NO;
             bg.backgroundColor = [self.primaryColor colorWithAlphaComponent:0.12];
             bg.layer.cornerRadius = 10.0;
@@ -789,35 +797,15 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 - (void)tableView:(UITableView *)tableView
       willDisplayCell:(UITableViewCell *)cell
     forRowAtIndexPath:(NSIndexPath *)indexPath {
-    PSSpecifier *specifier = [self specifierAtIndexPath:indexPath];
-    NSString *key = [specifier propertyForKey:@"cell"];
-    if ([key isEqualToString:@"PSSliderCell"]) {
-        // Find any UILabel in the cell's content view recursively
-        UILabel *label = [self findLabelInView:cell.contentView];
-        if (label) {
-            // Do something with the label
-            [label sizeToFit];
-        }
-    }
+    // 2026-08-20：移除 PSSliderCell 的 findLabelInView+sizeToFit hack——
+    // 系统 PSSliderCell 自带 Auto Layout，sizeToFit 会收缩标题 label 导致标题丢失/错乱。
+    (void)tableView;
+    (void)cell;
+    (void)indexPath;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     return [super tableView:tableView titleForFooterInSection:section];
-}
-
-#pragma mark - Helper Methods
-
-- (UILabel *)findLabelInView:(UIView *)view {
-    for (UIView *subview in view.subviews) {
-        if ([subview isKindOfClass:[UILabel class]]) {
-            return (UILabel *)subview;
-        }
-        UILabel *label = [self findLabelInView:subview];
-        if (label) {
-            return label;
-        }
-    }
-    return nil;
 }
 
 
