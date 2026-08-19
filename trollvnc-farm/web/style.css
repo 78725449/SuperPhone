@@ -233,6 +233,9 @@ main {
   /* 无线列：按容器宽度自适应列数（auto-fill），1fr 拉伸填满整行、从左到右逐行平铺，
      第一行排满自动换到第二行；卡片拉伸填满列（width:auto）保证紧挨无空隙 */
   #wall { grid-template-columns: repeat(auto-fill, minmax(var(--card-w), 1fr)) !important; }
+  /* 列表视图 PC 端固定每行 2 个（2026-08-19）：否则 auto-fill(~280px) 在宽屏铺出多列把行压小；
+     移动端不受此影响（≤900px 仍单列 1fr） */
+  #wall.wall-list { grid-template-columns: repeat(2, 1fr) !important; }
   .wall-grid .tile { width: auto; }
 }
 .layout-btn {
@@ -345,7 +348,9 @@ main {
   pointer-events: none;
   box-shadow: 0 2px 8px rgba(0, 0, 0, .4);
 }
-.tile.focused-tile { display: none; }
+/* 聚焦中设备的墙卡片隐藏（2026-08-19 加 !important：列表视图 #wall.wall-list .tile 含 ID 选择器
+   specificity 更高会覆盖 display:none，导致聚焦设备卡片残留在屏幕墙） */
+#wall .tile.focused-tile { display: none !important; }
 .tile.tile-offline { opacity: .55; }
 .tile.tile-offline .tv { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; }
 .offline-ph {
