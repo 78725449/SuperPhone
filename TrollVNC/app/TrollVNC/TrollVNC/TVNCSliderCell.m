@@ -19,6 +19,7 @@
 #import <Preferences/PSSpecifier.h>
 
 @implementation TVNCSliderCell {
+    UILabel *_titleLabel;
     UISlider *_slider;
     UILabel *_valueLabel;
     NSString *_formatString;
@@ -33,6 +34,18 @@
     if (!self) {
         return nil;
     }
+
+    // 2026-08-20 修复重叠：不用系统的 textLabel 承载标题。
+    // iOS 15 的 UITableViewCell/PSTableCell 对 textLabel 有内置约束（leading/centerY 等），
+    // 若再手动给 textLabel 加约束会双约束冲突 → Auto Layout 破坏性布局 → 标题与滑杆互相覆盖。
+    // 改为 contentView 自建 UILabel，约束只作用于自建视图，与系统布局完全隔离。
+    self.textLabel.hidden = YES;
+
+    _titleLabel = [[UILabel alloc] init];
+    _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    _titleLabel.numberOfLines = 1;
+    _titleLabel.lineBreakMode = NSLineBreakByClipping;
+    [self.contentView addSubview:_titleLabel];
 
     // Read custom value label width (default 50)
     NSNumber *labelWidthNum = [specifier propertyForKey:@"valueLabelWidth"];
@@ -75,19 +88,12 @@
 - (void)setupConstraints {
     UILayoutGuide *margins = self.contentView.layoutMarginsGuide;
 
-    // 2026-08-20：支持 label（设置页滑杆带标题，如「缩放」「滚轮步进」）。
-    // PSTableCell 的 super init 已按 specifier 的 label 设置 self.textLabel.text。
-    // 布局：label 靠左（固有宽度，不压缩）、valueLabel 靠右、slider 填充中间。
-    // 2026-08-20 修复：不再同时约束 label.trailing <= slider.leading-12 与
-    // slider.leading = label.trailing+12（两者冲突致 Auto Layout 告警/轨道盖文字）。
-    UILabel *label = self.textLabel;
-    BOOL hasLabel = (label.text.length > 0);
-
-    if (hasLabel) {
-        label.translatesAutoresizingMaskIntoConstraints = NO;
-    }
-
+    // 布局：标题靠左（固有宽度，不压缩）、valueLabel 靠右、slider 填充中间。
+    // 空间不足时标题优先保留、slider 允许压缩（单向 >= 约束，无双向冲突）。
     NSMutableArray *constraints = [NSMutableArray array];
+    [constraints addObject:[_titleLabel.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor]];
+    [constraints addObject:[_titleLabel.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor]];
+    [constraints addObject:[_slider.leadingAnchor constraintGreaterThanOrEqualToAnchor:_titleLabel.trailingAnchor constant:12]];
     if (_valueLabel) {
         // Value label on the right
         [constraints addObject:[_valueLabel.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor]];
@@ -97,17 +103,15 @@
     } else {
         [constraints addObject:[_slider.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor]];
     }
-    if (hasLabel) {
-        // label 靠左，slider 从 label 右侧 12pt 开始（单向约束，无冲突）
-        [constraints addObject:[label.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor]];
-        [constraints addObject:[label.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor]];
-        [constraints addObject:[_slider.leadingAnchor constraintEqualToAnchor:label.trailingAnchor constant:12]];
-        [_slider setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
-    } else {
-        [constraints addObject:[_slider.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor]];
-    }
     [constraints addObject:[_slider.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor]];
     [NSLayoutConstraint activateConstraints:constraints];
+
+    [_titleLabel setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                                 forAxis:UILayoutConstraintAxisHorizontal];
+    [_slider setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
+                                             forAxis:UILayoutConstraintAxisHorizontal];
+    [_slider setContentHuggingPriority:UILayoutPriorityDefaultLow
+                               forAxis:UILayoutConstraintAxisHorizontal];
 
     // Fixed height constraint
     [NSLayoutConstraint activateConstraints:@[
@@ -119,6 +123,8 @@
     if (!specifier) {
         return;
     }
+
+    _titleLabel.text = [specifier propertyForKey:@"label"];
 
     _formatString = [specifier propertyForKey:@"format"];
 
@@ -157,6 +163,13 @@
 
 - (void)setSpecifier:(PSSpecifier *)specifier {
     [super setSpecifier:specifier];
+    self.textLabel.hidden = YES;
+    [self _syncWithSpecifier:specifier];
+}
+
+- (void)refreshCellContentsWithSpecifier:(PSSpecifier *)specifier {
+    [super refreshCellContentsWithSpecifier:specifier];
+    self.textLabel.hidden = YES;
     [self _syncWithSpecifier:specifier];
 }
 
@@ -195,15 +208,11 @@
     }
 }
 
-- (void)refreshCellContentsWithSpecifier:(PSSpecifier *)specifier {
-    [super refreshCellContentsWithSpecifier:specifier];
-    [self _syncWithSpecifier:specifier];
-}
-
 - (void)prepareForReuse {
     [super prepareForReuse];
     _slider.value = _slider.minimumValue;
-    [self updateValueLabel];
+    _titleLabel.text = nil;
+    _valueLabel.text = nil;
 }
 
 @end

@@ -524,7 +524,9 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 - **TVNCHotspotManager**：NEHotspotHelper 注册（保活兜底）；任何 hotspot 命令回调时拉起 VNC 服务
 - **TVNCListItemsController**：PSListItemsController 子类（仅设置主题色，用于 PSLinkListCell 子页）
 - **TVNCClientCell**：客户端列表 cell（ID + Host + Subtitle + View-Only badge）
-- **TVNCSliderCell**：自定义 PSTableCell（UISlider + 可选 value label，用于 Scale/DeferWindowSec/MaxInflight 等）
+- **TVNCSliderCell**：自定义 PSTableCell（自建标题 UILabel + UISlider + 可选 value label，用于 Scale/DeferWindowSec/MaxInflight 等）
+- **TVNCSegmentCell**：自定义 PSTableCell（自建标题 UILabel + UISegmentedControl，字符串值 ↔ 段索引双向转换；系统 PSSegmentCell 只认整数索引，2026-08-20 新增）
+- **自定义 cell 布局约定（2026-08-20 修复重叠）**：标题用 contentView 自建 UILabel，隐藏系统 textLabel——iOS 15 的 UITableViewCell/PSTableCell 对 textLabel 有内置约束，手动再加约束会双约束冲突 → Auto Layout 破坏性布局 → 标题与控件互相覆盖（滑杆盖字/分段盖标题）；自建视图约束与系统布局完全隔离；空间不足时标题高压缩阻力优先保留、控件低压缩阻力允许压缩（窄屏 5 段不溢出）
 - **StripedTextTableViewController**：通用文本日志查看器（dispatch_source VNODE 监听 + 反向 + maxRows + 搜索 + 分享 + 清空）
 - **ZTSelfSignedCertificate**：调 Security.framework 私有 API `SecGenerateSelfSignedCertificate` 生成自签 CA 证书（RSA 2048 / CA:TRUE pathLen=0）
 - **TRTask.m / TaskProcess+ObjC.swift**：进程 spawn 工具（posix_spawn + 私有 persona API 实现 root 身份切换）
@@ -549,7 +551,7 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 
 **路径**：`TrollVNC/prefs/TrollVNCPrefs/`
 **核心职责**：Preferences.app 加载的设置面板（独立安装到非 bootstrap 设备时使用，与 App 内嵌 TVNCRootListController 共享代码）。
-- `TrollVNCPrefs_FILES` = 7 个 .m：TVNCClientCell / TVNCClientListController / TVNCListItemsController / TVNCRootListController / TVNCSliderCell / StripedTextTableViewController / ZTSelfSignedCertificate
+- `TrollVNCPrefs_FILES` = 8 个 .m：TVNCClientCell / TVNCClientListController / TVNCListItemsController / TVNCRootListController / TVNCSegmentCell / TVNCSliderCell / StripedTextTableViewController / ZTSelfSignedCertificate
 - `INSTALL_TARGET_PROCESSES = Preferences`、`PRIVATE_FRAMEWORKS = Preferences`、`INSTALL_PATH = /Library/PreferenceBundles`
 - **分叉约束**：源码与 `app/TrollVNC/TrollVNC/` 内同名文件是**分叉副本**，互不引用（AGENTS.md 已知约束）
 
