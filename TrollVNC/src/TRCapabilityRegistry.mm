@@ -642,6 +642,40 @@ static NSDictionary *TRSearchGatewaySync(void) {
         }
         return @{@"ok":@YES};
     }];
+    [self _registerControl:@"device.rename" title:@"修改设备名" icon:@"🏷️" route:TRCapRouteNative params:@[@"name"] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+        // 真实修改 iOS 设备名（2026-08-19）：写 MobileGestalt UserAssignedDeviceName（明文 key，
+        // 系统设置同名写入点）→ 更新 DesktopName 触发重注册上报新名 → 重启 SpringBoard 全系统生效。
+        // 需越狱/TrollStore 环境（platform-application + no-container 访问系统偏好）；改名后屏幕黑一下、
+        // 前台 App 被杀，本 daemon 独立存活（隧道/VNC 不断），SpringBoard 重启后 UIDevice.name 即新名。
+        NSString *name = [[p objectForKey:@"name"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (!name.length || name.length > 64) {
+            *e = [NSError errorWithDomain:@"TRCap" code:96 userInfo:@{NSLocalizedDescriptionKey:@"设备名须为 1-64 字符"}];
+            return nil;
+        }
+        // 1) 写 MobileGestalt 偏好域（/var/mobile/Library/Preferences/com.apple.MobileGestalt.plist，
+        //    mobile 用户拥有，经 cfprefsd 通道保证一致性；SpringBoard 重启后 UIDevice.name 即新名）
+        CFPreferencesSetAppValue(CFSTR("UserAssignedDeviceName"), (__bridge CFStringRef)name, CFSTR("com.apple.MobileGestalt"));
+        if (!CFPreferencesAppSynchronize(CFSTR("com.apple.MobileGestalt"))) {
+            *e = [NSError errorWithDomain:@"TRCap" code:95 userInfo:@{NSLocalizedDescriptionKey:@"写入 MobileGestalt 偏好失败（权限不足？）"}];
+            return nil;
+        }
+        // 2) 同步桌面名 → NSUserDefaultsDidChangeNotification → TRGatewayClient 清 _deviceName 缓存并重注册（上报新名）
+        NSUserDefaults *defs = [[NSUserDefaults alloc] initWithSuiteName:kDefaultsSuite];
+        [defs setObject:name forKey:@"DesktopName"];
+        [defs synchronize];
+        // 3) 重启 SpringBoard 生效（异步；killall 多路径候选，子进程执行）
+        pid_t pid = fork();
+        if (pid == 0) {
+            static const char *kKillallPaths[] = {
+                "/usr/bin/killall", "/usr/local/bin/killall", "/var/jb/usr/bin/killall", NULL
+            };
+            for (int i = 0; kKillallPaths[i]; i++) {
+                execl(kKillallPaths[i], "killall", "SpringBoard", (char *)NULL);
+            }
+            _exit(127);
+        }
+        return @{@"ok":@YES, @"name":name};
+    }];
 }
 
 /**

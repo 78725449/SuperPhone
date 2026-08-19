@@ -5,11 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>控制台</title>
 <link rel="icon" href="data:," />
-<link rel="stylesheet" href="style.css?v=12" />
+<link rel="stylesheet" href="style.css?v=27" />
 </head>
 <body>
 <header>
-  <h1>控制台</h1>
   <div id="meta" class="meta"></div>
   <div class="actions">
     <label class="zoom" title="拖动调整设备卡片宽度（像素）：最小值=每行15列，最大值=每行5列，卡片从左到右逐行自适应平铺填满">
@@ -27,13 +26,25 @@
         <div class="lopt" data-l="list">列表<span class="chk">✓</span></div>
       </div>
     </div>
-    <button id="btnRefresh" title="刷新设备状态">刷新</button>
     <button id="directBtn" class="direct-bar" title="直控模式：所有设备开启推流，卡片上直接点击控制">直控</button>
-    <button id="batchBtn" class="batch-bar" title="批量操作：点击进入多选模式（卡片出现复选框），勾选后再次点击弹出批量菜单">批量操作</button>
+    <button id="batchBtn" class="batch-bar" title="批量：点击进入多选模式（墙区顶部出现全选操作条）">批量</button>
   </div>
 </header>
 
 <main>
+  <!-- 批量操作胶囊行（2026-08-19）：点击顶部「批量」进入多选模式后出现，位于屏幕墙顶部（与屏幕等宽圆角）；
+       [✓ 全选][已选 N 台] ...... [执行][设置]；退出 = 顶部「批量」按钮变「取消」态点击退出 -->
+  <div id="batchBar">
+    <label class="batch-bar-sel" title="全选/取消全选在线设备">
+      <input type="checkbox" id="batchBarSelectAll" />
+      <span>全选</span>
+    </label>
+    <span id="batchBarCount">已选 0 台</span>
+    <span class="batch-bar-actions">
+      <button id="batchBarExec" title="对选中设备执行批量操作">执行</button>
+      <button id="batchBarSettings" title="批量调整选中设备配置">设置</button>
+    </span>
+  </div>
   <div id="workspace">
     <!-- 左：放大后的设备画面（点击卡片后出现，此区域才可操作） -->
     <section id="focusPanel" class="focus-panel hidden">
@@ -105,8 +116,8 @@
 </div>
 
 <!-- 设备卡片小菜单 -->
-<div id="tileMenu" class="tile-menu hidden"></div>
+  <div id="tileMenu" class="tile-menu hidden"></div>
 
-<script type="module" src="app.js?v=134"></script>
+  <script type="module" src="app.js?v=157"></script>
 </body>
 </html>

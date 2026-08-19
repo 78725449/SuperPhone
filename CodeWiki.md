@@ -782,7 +782,7 @@ tun = {
 | `initTouchKeyboard` | iOS 软键盘双通道：compositionend 整段提交（type.paste）/ input 删除键（Backspace 直发）/ input 单 ASCII（kbdSendAscii 键值直发）/ keydown Enter |
 | `kbdSendAscii` | Shift 状态跟踪（连续大写保持按下、切小写才抬起、空闲 400ms 自动释放）+ 基础字符 ↓50ms↑ |
 | `toggleSync` / `toggleDirectMode` | 同步控制（grp viewOnly 订阅 + 广播接收）/ 直控模式（所有在线真实设备 ctrl=false 可输入连接，互不抢占） |
-| `showBatchMenu` / `showBatchConfigPanel` | 批量菜单（BATCH_CAPS 按 category 分组 + 批量配置面板 + 批量重启二次确认） |
+| `showBatchMenu` / `showBatchConfigPanel` | 批量执行菜单（纯按钮列表对齐 opsMenu：按键复用 attachPress 按压识别同右侧按键，+ service.restart 重启；releasekeys/hwlock/hwunlock/批量重启已去除——重启服务替代重启、粘贴内部自带按键清理）+ 批量配置面板；执行候选仅限在线设备；菜单锚定「执行」按钮向下展开 |
 | `scheduleFocusReconnect` / `reconnectFocusRfb` | 聚焦画面断线重连（首立即、后续 2s 间隔，上限 8 次；1000/1001/4001 不重连；visibilitychange 回前台触发） |
 
 **关键模式**：
@@ -878,10 +878,13 @@ kbdShiftHeld, kbdShiftTimer, kbdComposing, kbdJustComposed, kbdLastLen
 **HTML 结构**：
 ```
 header
-  h1 标题 + #meta 设备统计
+  #meta 设备统计（无 h1 标题，2026-08-19 移除）
   .actions: cardwRange（卡片宽度滑杆 160-400px）
             layoutBtn + layoutMenu（卡片/列表两档，PC 隐藏移动端主用）
-            btnRefresh / directBtn / batchBtn / btnAdd
+            directBtn
+批量操作（顶部入口，2026-08-19）：#batchBtn.batch-bar（顶部「批量」，直控右侧；批量模式变「取消」激活态承担退出）
+            点击后屏幕墙顶部出现全宽圆角胶囊 #batchBar（main 首子级 in-flow，无取消按钮）：
+            [✓ 全选][已选 N 台] ...... [执行][设置]，执行弹 #batchMenu（锚定执行按钮向下展开）、设置弹配置面板
 main
   #workspace
     #focusPanel: .focus-head(状态点+标题) + #focusScreen>#focusStage + #focusStatusOv(连接浮层)
@@ -891,14 +894,14 @@ main
   #fab（移动端 WiFi 信号悬浮按钮，可拖动）
   #opsMenu（移动端悬浮操作菜单）
 #kbdInput（fixed 全屏透明 input，iOS 软键盘输入源）
-#editModal（order 排序号 + name）/ #tileMenu（编辑/删除/横竖屏显示）
-script app.js?v=134（type=module）
+#editModal（order 排序号 + name）/ #tileMenu（编辑/删除/旋转）
+script app.js?v=157（type=module）
 ```
 
 **关键设计**：
 - viewport 禁缩放 + viewport-fit=cover 适配刘海
 - #kbdInput 必须可视视口内（left:-9999px iOS 不弹键盘），故 fixed 全屏透明层，pointer-events:none 不挡画布
-- 引用 `?v=N` 缓存破坏：app.js?v=134、style.css?v=12；caps.js?v=7、rfb.js?v=2 版本号在 app.js 的 ESM import 处（gesture 逻辑在 `gesture.js`，无版本号）
+- 引用 `?v=N` 缓存破坏：app.js?v=157、style.css?v=27；caps.js?v=9、rfb.js?v=2 版本号在 app.js 的 ESM import 处（gesture 逻辑在 `gesture.js`，无版本号）
 
 **CSS 关键约定**：
 - CSS 变量：`--bg/--panel/--panel2/--line/--text/--muted/--accent/--ok/--bad` + `--safe-top/right/bottom/left`

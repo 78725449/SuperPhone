@@ -1,7 +1,7 @@
 // SuperPhone 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
 // rfb.js?v=2：noVNC 核心为 server 内存 patch，URL 带版本号强制浏览器重新拉取 patch 后的内容避免旧缓存
 import RFB from '/novnc/core/rfb.js?v=2';
-import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, batchRestart, groupByCategory, CATEGORY_LABELS, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=7';
+import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=9';
 import { attachPress } from './press.js';
 import { attachFarmGesture, attachRightHome, resolveGesture } from './gesture.js';
 
@@ -209,7 +209,12 @@ let eventsWSRetry = 0;
 function connectEventsWS() {
   try { if (eventsWS) eventsWS.close(); } catch { /* noop */ }
   eventsWS = new WebSocket(wsUrl('/ws/events'));
-  eventsWS.onopen = () => { eventsWSRetry = 0; };
+  eventsWS.onopen = () => {
+    eventsWSRetry = 0;
+    // 重连成功后补拉全量：WS 断线期间的事件已错过（事件即推即弃，无重放），
+    // 主动 refreshDevices 补齐（取代已移除的手动刷新按钮，2026-08-19）
+    refreshDevices().catch(() => {});
+  };
   eventsWS.onmessage = () => { refreshDevices().catch(() => {}); };
   eventsWS.onclose = () => {
     eventsWS = null;
@@ -237,8 +242,9 @@ function setTileOrient(id, orient) {
   localStorage.setItem(TILE_ORIENT_KEY, JSON.stringify(m));
 }
 /**
- * 应用卡片显示方向：横屏偏好 → 该卡片 --tile-pb 用设备比例倒置（(w/h)*100%）；否则移除
- * inline 回全局统一比例。仅卡片视图（.wall-grid）生效——列表视图 padding 已被覆盖为固定行高。
+ * 应用卡片显示方向：横屏偏好 → 该卡片 --tile-pb 用设备比例倒置（(w/h)*100%），缩略图
+ * 旋转 90° 铺满横容器（--tile-land-h 供 CSS 反算旋转前布局盒）；否则移除 inline 回全局
+ * 统一比例。仅卡片视图（.wall-grid）生效——列表视图 padding 已被覆盖为固定行高。
  * @param {HTMLElement} tile 卡片元素
  * @param {object} d 设备对象
  * @returns {void}
@@ -246,12 +252,16 @@ function setTileOrient(id, orient) {
 function applyTileOrient(tile, d) {
   if (!tile) return;
   if (getTileOrient(d.id) !== 'landscape') {
+    tile.classList.remove('orient-land');
     tile.style.removeProperty('--tile-pb');
+    tile.style.removeProperty('--tile-land-h');
     return;
   }
   const w = (d.screen && d.screen.width) || 1080;
   const h = (d.screen && d.screen.height) || 1920;
+  tile.classList.add('orient-land');
   tile.style.setProperty('--tile-pb', ((w / h) * 100).toFixed(4) + '%');
+  tile.style.setProperty('--tile-land-h', (w / h).toFixed(4));
 }
 
 function createWallTile(d) {
@@ -417,6 +427,7 @@ function stopWallRfb(inst) {
 function toggleSelect(deviceId) {
   const dev = devices.find((d) => d.id === deviceId);
   if (dev && dev.mock) return; // 虚拟设备仅预览布局，不可加入批量操作
+  if (dev && !dev.online) return; // 离线设备不可选中（2026-08-19：全选/单选均只允许在线设备）
   if (selectedDevices.has(deviceId)) {
     selectedDevices.delete(deviceId);
   } else {
@@ -431,16 +442,19 @@ function toggleSelect(deviceId) {
 }
 
 /**
- * 全选当前可见设备：将所有在线（含离线）的墙卡片对应的设备加入 selectedDevices
+ * 全选当前可见的在线设备：跳过离线与虚拟设备（2026-08-19：只允许选中在线真实设备）
  * @returns {void}
  */
 function selectAll() {
-  for (const d of devices) selectedDevices.add(d.id);
+  for (const d of devices) {
+    if (!d.online || d.mock) continue;
+    selectedDevices.add(d.id);
+  }
   for (const [id, inst] of wallInstances) {
-    if (inst.checkbox) {
-      inst.checkbox.checked = true;
-      inst.tile.classList.add('tile-selected');
-    }
+    if (!inst.checkbox) continue;
+    const on = devices.some((d) => d.id === id && d.online && !d.mock);
+    inst.checkbox.checked = on;
+    inst.tile.classList.toggle('tile-selected', on);
   }
   updateBatchBar();
 }
@@ -463,28 +477,53 @@ function deselectAll() {
 let batchMode = false; // 批量选择模式：点击"批量操作"进入，卡片出现复选框
 
 /**
- * 更新批量操作按钮文案（竞态二态）：
- *   未进入批量模式 → "批量操作"；已进入且未勾选 → "取消"；已勾选 N 台 → "批量操作 (N)"
+ * 更新批量操作组件（2026-08-19 顶部入口形态）：
+ *   平时 = 顶部「批量」按钮 #batchBtn（直控右侧，移动端保留）；点击进入多选模式后，按钮变「取消」
+ *   激活态（承担退出入口），墙区顶部出现全宽圆角胶囊行 #batchBar（[✓ 全选][已选 N 台] ...... [执行][设置]）。
+ *   两者互斥显隐，并由 updateBatchBarExt 同步全选复选框状态与已选计数。
  * @returns {void}
  */
 function updateBatchBar() {
-  const btn = $('batchBtn');
-  if (!btn) return;
-  const n = selectedDevices.size;
-  if (!batchMode) btn.textContent = '批量操作';
-  else if (n > 0) btn.textContent = `批量操作 (${n})`;
-  else btn.textContent = '取消';
-  btn.classList.toggle('batch-mode-active', batchMode);
+  const entry = $('batchBtn');
+  const bar = $('batchBar');
+  if (entry) {
+    const active = batchMode;
+    entry.classList.toggle('batch-bar-active', active);
+    entry.textContent = active ? '取消' : '批量';
+    entry.title = active ? '取消：退出批量选择模式' : '批量：点击进入多选模式（墙区顶部出现全选操作条）';
+  }
+  if (bar) bar.classList.toggle('active', batchMode);
+  updateBatchBarExt();
+}
+
+/**
+ * 更新批量悬浮条（#batchBar）：全选按钮两态文案（全部在线设备已选中 → "取消全选"）+
+ * 已选计数。由 updateBatchBar 每次选中变化时调用。
+ * @returns {void}
+ */
+function updateBatchBarExt() {
+  const cb = $('batchBarSelectAll');
+  const cnt = $('batchBarCount');
+  if (cb) {
+    const online = devices.filter((d) => d.online && !d.mock);
+    cb.checked = batchMode && online.length > 0 && online.every((d) => selectedDevices.has(d.id));
+  }
+  if (cnt) cnt.textContent = `已选 ${selectedDevices.size} 台`;
 }
 
 /**
  * 进入批量选择模式：所有卡片显示左上角复选框（CSS .batch-mode 驱动）
  * @returns {void}
  */
+let _fabHiddenForBatch = false; // 批量模式隐藏 FAB 前的可见状态（退出时恢复）
+
 function enterBatchMode() {
   batchMode = true;
   const wall = $('wall');
   if (wall) wall.classList.add('batch-mode');
+  // 展开全宽条会遮挡右下角 FAB，批量模式临时隐藏，退出恢复
+  const fab = $('fab');
+  if (fab && !fab.classList.contains('hidden')) { _fabHiddenForBatch = true; fab.classList.add('hidden'); }
   updateBatchBar();
 }
 
@@ -496,6 +535,8 @@ function exitBatchMode() {
   batchMode = false;
   const wall = $('wall');
   if (wall) wall.classList.remove('batch-mode');
+  const fab = $('fab');
+  if (fab && _fabHiddenForBatch) { fab.classList.remove('hidden'); _fabHiddenForBatch = false; }
   selectedDevices.clear();
   for (const inst of wallInstances.values()) {
     if (inst.checkbox) inst.checkbox.checked = false;
@@ -510,18 +551,27 @@ function exitBatchMode() {
  * @returns {void}
  */
 function finishBatch(menu) {
+  // 先 detach 菜单内挂载的按压识别（防定时器泄漏，2026-08-19），再移除菜单
+  if (menu && typeof menu.__detach === 'function') { try { menu.__detach(); } catch { /* noop */ } }
   if (menu && menu.parentNode) menu.remove();
   exitBatchMode();
 }
 
 /**
- * 弹出批量操作菜单：勾选设备后点击"批量操作"按钮触发
- * 菜单包含三个分组：批量调用能力 / 批量调整配置 / 批量重启（需二次确认）
+ * 弹出批量执行菜单：勾选设备后点顶部胶囊行「执行」触发。
+ * 布局对齐触控端悬浮菜单（2026-08-19）：纯「图标+名称」按钮垂直列表，无大标题/无分组标签；
+ * 按键按钮复用控制台右侧按键的实现通道（attachPress 按压识别：单击/双击/三击/长按 → capId →
+ * 批量 invoke），不再为 double/triple/long 设独立按钮；批量配置入口已移至「设置」按钮（菜单不再
+ * 重复）；菜单无取消按钮（点外部关闭，或点顶部「批量」变「取消」态退出）。
  * @returns {void}
  */
 function showBatchMenu() {
-  const ids = Array.from(selectedDevices);
-  if (ids.length === 0) { alert('请先勾选至少一台设备'); return; }
+  // 执行候选仅保留在线真实设备（2026-08-19：离线/虚拟设备不可参与批量操作）
+  const ids = Array.from(selectedDevices).filter((id) => {
+    const d = devices.find((x) => x.id === id);
+    return d && d.online && !d.mock;
+  });
+  if (ids.length === 0) { alert('没有可操作的在线设备'); exitBatchMode(); return; }
 
   // 关闭已存在菜单
   const old = document.getElementById('batchMenu');
@@ -530,78 +580,55 @@ function showBatchMenu() {
   const menu = document.createElement('div');
   menu.id = 'batchMenu';
   menu.className = 'batch-menu';
-  menu.innerHTML = `<div class="batch-menu-title">批量操作（${ids.length} 台）</div>`;
 
-  // 1) 全选/取消全选
-  const selectRow = document.createElement('div');
-  selectRow.className = 'batch-menu-row';
-  const selAll = document.createElement('button');
-  selAll.textContent = '全选';
-  const deselAll = document.createElement('button');
-  deselAll.textContent = '取消全选';
-  selAll.addEventListener('click', () => { selectAll(); menu.remove(); });
-  deselAll.addEventListener('click', () => { deselectAll(); menu.remove(); });
-  selectRow.appendChild(selAll);
-  selectRow.appendChild(deselAll);
-  menu.appendChild(selectRow);
-
-  // 2) 批量调用能力（2026-08-13：BATCH_CAPS 静态定义，按 category 分组渲染）
-  const capList = document.createElement('div');
-  capList.className = 'batch-menu-section';
-  capList.innerHTML = '<div class="batch-menu-sec-title">批量调用能力</div>';
-  const grouped = groupByCategory(BATCH_CAPS);
-  for (const [cat, metas] of grouped) {
-    const grpTitle = document.createElement('div');
-    grpTitle.className = 'cap-group-title';
-    grpTitle.textContent = CATEGORY_LABELS[cat] || cat || '其它';
-    capList.appendChild(grpTitle);
-    for (const meta of metas) {
-      const b = document.createElement('button');
-      b.className = 'batch-cap-btn';
-      b.innerHTML = '<span class="cap-icon">' + escapeHtml(meta.icon || '?') + '</span><span class="cap-name">' + escapeHtml(meta.title || meta.id) + '</span>';
-      b.addEventListener('click', () => doBatchInvoke(ids, meta));
-      capList.appendChild(b);
-    }
+  // 按键按钮：与控制台右侧按键同一实现通道（attachPress 按压识别），剔除截图键（snapshot：
+  // 批量下发无收集画面意义，BATCH_CAPS 亦无对应项）。按压式按键（音量/亮度/静音 down/up）下按时
+  // 发一次、抬起不重复下发（fallback 到 keyDef.key，避免 down+up 双注入导致跳两格）。
+  const cleanups = [];
+  const detachAll = () => { for (const f of cleanups) { try { f(); } catch { /* noop */ } } };
+  for (const k of KEY_DEFS) {
+    if (k.key === 'snapshot') continue;
+    const b = document.createElement('button');
+    b.className = 'batch-cap-btn';
+    b.innerHTML = '<span class="cap-icon">' + (k.svg || escapeHtml(k.icon || '?')) + '</span><span class="cap-name">' + escapeHtml(k.title) + '</span>';
+    cleanups.push(attachPress(b, k, { invoke: (capId) => {
+      if (k.events && k.events.down && capId === k.events.up) return; // 按压式按键抬起不重复下发
+      const meta = BATCH_CAPS.find((c) => c.id === capId) || BATCH_CAPS.find((c) => c.id === k.key);
+      if (meta) doBatchInvoke(ids, meta);
+    } }));
+    menu.appendChild(b);
   }
-  menu.appendChild(capList);
+  // 重启服务（2026-08-19：释放所有按键/硬件键盘锁/解锁已去除——type.paste 内部自带按键清理、
+  // 键盘锁为单台硬件键盘维护操作，不适合批量下发）
+  const restartMeta = BATCH_CAPS.find((c) => c.id === 'service.restart');
+  if (restartMeta) {
+    const b = document.createElement('button');
+    b.className = 'batch-cap-btn';
+    b.innerHTML = '<span class="cap-icon">' + (restartMeta.svg || escapeHtml(restartMeta.icon || '?')) + '</span><span class="cap-name">' + escapeHtml(restartMeta.title || restartMeta.id) + '</span>';
+    b.addEventListener('click', () => doBatchInvoke(ids, restartMeta));
+    menu.appendChild(b);
+  }
 
-  // 3) 批量调整配置（CONFIG_DEFS 静态表单定义）
-  const cfgBtn = document.createElement('button');
-  cfgBtn.className = 'batch-menu-row-item';
-  cfgBtn.innerHTML = '<span class="cap-icon">⚙</span><span class="cap-name">批量调整配置</span>';
-  cfgBtn.addEventListener('click', () => { finishBatch(menu); showBatchConfigPanel(ids); });
-  menu.appendChild(cfgBtn);
+  // 卸载钩子：菜单销毁时 detach 按压识别（防定时器泄漏）
+  menu.__detach = detachAll;
 
-  // 4) 批量重启（危险操作，需二次确认）
-  const restartBtn = document.createElement('button');
-  restartBtn.className = 'batch-menu-row-item danger';
-  restartBtn.innerHTML = '<span class="cap-icon">🔄</span><span class="cap-name">批量重启</span>';
-  restartBtn.addEventListener('click', async () => {
-    if (!confirm(`确认批量重启选中的 ${ids.length} 台设备？`)) return;
-    finishBatch(menu);
-    try {
-      const r = await batchRestart('', ids);
-      const fails = (r.results || []).filter((x) => !x.ok);
-      if (fails.length === 0) alert(`已对 ${ids.length} 台设备下发重启`);
-      else alert(`部分设备重启失败：\n${fails.map((x) => `${x.deviceId}: ${x.error || ''}`).join('\n')}`);
-    } catch (e) {
-      alert(`批量重启失败：${e.message}`);
-    }
-  });
-  menu.appendChild(restartBtn);
-
-  // 关闭按钮
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'batch-menu-close';
-  closeBtn.textContent = '取消';
-  closeBtn.addEventListener('click', () => finishBatch(menu));
-  menu.appendChild(closeBtn);
+  // 锚定「执行」按钮向下展开（2026-08-19）：左边缘对齐执行按钮左边缘、顶部贴按钮下方；
+  // 下方空间不足时自动改向上展开（执行按钮贴底时），钳制防溢出屏幕
+  const execBtn = $('batchBarExec');
+  if (execBtn) {
+    const r = execBtn.getBoundingClientRect();
+    const menuH = 320; // 估算菜单高度（用于下方空间判断）
+    const below = r.bottom + 8;
+    const top = (below + menuH <= window.innerHeight) ? below : Math.max(8, r.top - 8 - menuH);
+    menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 280 - 8)) + 'px';
+    menu.style.top = top + 'px';
+  }
 
   document.body.appendChild(menu);
-  // 点击外部关闭并退出批量模式
+  // 点击外部关闭并退出批量模式（批量操作组件区 #batchBar/#batchBtn 除外，避免误关）
   setTimeout(() => {
     const handler = (e) => {
-      if (!e.target.closest('#batchMenu') && !e.target.closest('#batchBtn')) {
+      if (!e.target.closest('#batchMenu') && !e.target.closest('#batchBtn') && !e.target.closest('#batchBar')) {
         finishBatch(menu);
         document.removeEventListener('click', handler);
       }
@@ -2309,16 +2336,19 @@ function showTileMenu(tile, d, x, y) {
   editBtn.addEventListener('click', () => { m.classList.add('hidden'); openEditModal(d); });
   m.appendChild(editBtn);
 
-  // 横/竖屏显示切换（2026-08-19）：仅卡片视图有意义（列表视图固定行高，比例不生效）。
-  // 切换该卡片在墙上的显示比例：横屏=设备 screen 比例倒置；恢复=跟随全局统一比例。
+  // 旋转（横/竖屏显示切换，2026-08-19）：仅卡片视图有意义（列表视图固定行高，比例不生效）。
+  // 切换该卡片在墙上的显示比例：横屏=设备 screen 比例倒置 + 缩略图旋转铺满；恢复=跟随全局统一比例。
   // 聚焦画面始终实时跟随设备方向（fitFocusPanel 用实时帧尺寸），不受此偏好影响。
+  // 图标=旋转箭头（逆时针循环，贴合「旋转」语义），文字固定「旋转」。
   if (layoutMode === 'grid') {
-    const isLand = getTileOrient(d.id) === 'landscape';
     const orientBtn = document.createElement('button');
-    orientBtn.innerHTML = `<span class="cap-icon">🖼️</span><span class="cap-name">${isLand ? '恢复竖屏显示' : '切换横屏显示'}</span>`;
+    // 图标=旋转箭头（逆时针循环，贴合「旋转」语义），文字固定「旋转」
+    const orientIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>';
+    orientBtn.innerHTML = `<span class="cap-icon">${orientIcon}</span><span class="cap-name">旋转</span>`;
     orientBtn.addEventListener('click', () => {
       m.classList.add('hidden');
-      setTileOrient(d.id, isLand ? 'portrait' : 'landscape');
+      // 每次点击读取最新方向状态（菜单可被多次打开，勿用缓存值）
+      setTileOrient(d.id, getTileOrient(d.id) === 'landscape' ? 'portrait' : 'landscape');
       applyTileOrient(tile, d);
     });
     m.appendChild(orientBtn);
@@ -2355,7 +2385,10 @@ function openEditModal(d) {
 }
 
 /**
- * 保存编辑：ID（0-99999 整数或空=清除）+ 名称（非空）→ PATCH 网关 → 刷新设备墙。
+ * 保存编辑：ID（0-99999 整数或空=清除）+ 名称（非空）。
+ * 真实改名（2026-08-19）：设备在线时先 invoke device.rename（写 MobileGestalt + 重启 SpringBoard
+ * 生效），成功后再 PATCH 网关记录，保证记录与设备实际名一致（注册不会覆盖回旧名）；
+ * 离线设备仅更新网关记录并提示（上线后以设备实际名为准）。
  * @returns {Promise<void>}
  */
 async function saveEditModal() {
@@ -2369,10 +2402,17 @@ async function saveEditModal() {
   const name = $('fEditName').value.trim();
   if (!name) { toast('✗ 名称不能为空', 'error'); return; }
   const devId = editModalDevice.id;
+  const devOnline = !!editModalDevice.online;
   try {
+    if (devOnline) {
+      const r = await invokeCap('', devId, 'device.rename', { name });
+      if (!r || r.ok !== true) {
+        throw new Error((r && ((r.ack && r.ack.error) || r.error)) || '设备改名失败');
+      }
+    }
     await api(`/api/devices/${encodeURIComponent(devId)}`, { method: 'PATCH', body: JSON.stringify({ name, order }) });
     $('editModal').classList.add('hidden');
-    toast(`✓ 已更新「${name}」`, 'success');
+    toast(devOnline ? `✓ 已改设备名为「${name}」` : `✓ 已更新记录「${name}」（设备离线，未改底层名）`, 'success');
     editModalDevice = null;
     await refreshDevices();
   } catch (e) {
@@ -2653,18 +2693,40 @@ $('cardwRange').addEventListener('input', () => {
 window.addEventListener('resize', applyCardWBounds);
 
 // ---------- init ----------
-$('btnRefresh').onclick = () => refreshDevices().catch(() => showLogin());
+// 2026-08-19：手动「刷新」按钮已移除——设备列表实时性由 /ws/events 事件驱动（onmessage 重拉 +
+// WS 断线重连 onopen 补拉全量），无手动刷新入口
+// 展开态全宽操作条（进入批量模式后显示，2026-08-19）：
+// 全选复选框：勾选=全选在线设备，取消勾选=取消全选
+$('batchBarSelectAll').addEventListener('change', (e) => {
+  if (e.target.checked) selectAll(); else deselectAll();
+});
+// 执行：弹出批量操作菜单（执行候选仅限在线设备）
+$('batchBarExec').addEventListener('click', () => showBatchMenu());
+// 设置：直接打开批量配置面板（候选仅限在线设备）
+$('batchBarSettings').addEventListener('click', () => {
+  const ids = Array.from(selectedDevices).filter((id) => {
+    const d = devices.find((x) => x.id === id);
+    return d && d.online && !d.mock;
+  });
+  if (ids.length === 0) { alert('没有可操作的在线设备'); return; }
+  showBatchConfigPanel(ids);
+});
+// 取消：退出批量选择模式（由顶部「批量」按钮变「取消」态承担，见 #batchBtn 绑定；胶囊行已无取消按钮）
 // 直控按钮：进入/退出直控模式（竞态二态，激活变色）
 $('directBtn').addEventListener('click', (e) => {
   e.stopPropagation();
   toggleDirectMode();
 });
-// 批量操作按钮：未进入批量模式 → 进入（卡片出现复选框）；已进入且无勾选 → 退出；已勾选 → 弹出批量菜单
+// 顶部「批量」按钮（直控右侧）：平时点击进入多选模式（墙区顶部出现全宽胶囊条）；批量模式下变「取消」
+// 激活态，点击退出多选模式（若执行菜单开着一并关闭）
 $('batchBtn').addEventListener('click', (e) => {
   e.stopPropagation();
-  if (!batchMode) { enterBatchMode(); return; }
-  if (selectedDevices.size === 0) { exitBatchMode(); return; }
-  showBatchMenu();
+  if (batchMode) {
+    const menu = document.getElementById('batchMenu');
+    if (menu) finishBatch(menu); else exitBatchMode();
+  } else {
+    enterBatchMode();
+  }
 });
 document.addEventListener('click', (e) => {
   if (!e.target.closest('#tileMenu')) $('tileMenu').classList.add('hidden');

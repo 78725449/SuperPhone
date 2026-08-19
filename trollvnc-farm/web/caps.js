@@ -60,7 +60,8 @@ export const BATCH_CAPS = [
   { id: 'hwlock',        title: '硬件键盘锁', icon: '🔒', category: 'hid', params: [] },
   { id: 'hwunlock',      title: '硬件键盘解锁', icon: '🔓', category: 'hid', params: [] },
   { id: 'releasekeys',   title: '释放所有按键', icon: '🙊', category: 'hid', params: [] },
-  { id: 'service.restart', title: '重启服务', icon: '🔄', category: 'service', params: [] },
+  { id: 'service.restart', title: '重启', icon: '🔄', category: 'service', params: [],
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>' },
   { id: 'settings.generateKeys', title: '生成证书', icon: '🔐', category: 'native', params: [] },
   { id: 'settings.searchGateway', title: '搜索网关', icon: '🔍', category: 'native', params: [] },
 ];

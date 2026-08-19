@@ -73,10 +73,15 @@ button.danger { color: #ff9d9d; }
 .zoom input[type="range"] { width: 110px; accent-color: var(--accent); cursor: pointer; }
 .zoom #cardwVal { min-width: 46px; text-align: right; }
 
-main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(safe-area-inset-bottom)); overflow: hidden; }
+main {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column; /* 批量胶囊行（顶部）+ workspace 纵向堆叠（2026-08-19） */
+  padding: 14px; padding-bottom: calc(14px + env(safe-area-inset-bottom));
+  overflow: hidden;
+}
 
 /* 工作区：三栏（放大画面 | 操作列 | 其它设备墙） */
-#workspace { display: flex; align-items: flex-start; gap: 0; height: 100%; }
+#workspace { display: flex; align-items: flex-start; gap: 0; flex: 1 1 auto; min-height: 0; }
 
 /* 左：放大后的设备画面 */
 .focus-panel {
@@ -262,6 +267,35 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
 #wall.direct-mode .tile:hover { transform: none; }
 #wall.direct-mode .tile canvas { pointer-events: auto; cursor: none; }
 .tile .tv { position: absolute; inset: 0; }
+/* 批量模式胶囊操作行（2026-08-19）：点击顶部「批量」进入多选后出现，位于屏幕墙顶部（main 首子级，
+   in-flow 全宽圆角，不遮卡片）；全选=复选框两态（勾选=全选在线、取消=取消全选）+ 已选计数 + 执行/设置；
+   退出由顶部「批量」按钮变「取消」态承担（胶囊行不再有取消按钮）；
+   与右下角移动端 FAB 不冲突（批量模式下 FAB 隐藏） */
+#batchBar {
+  display: none;
+  align-items: center; gap: 12px;
+  padding: 8px 16px;
+  margin-bottom: 12px;
+  border-radius: 999px;
+  background: var(--panel2); border: 1px solid var(--line);
+  box-shadow: 0 2px 12px rgba(0,0,0,.3);
+  box-sizing: border-box;
+}
+#batchBar.active { display: flex; }
+#batchBar .batch-bar-sel {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 14px; color: var(--text); cursor: pointer; user-select: none;
+}
+#batchBar .batch-bar-sel input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+#batchBarCount { font-size: 13px; color: var(--muted); white-space: nowrap; }
+#batchBar .batch-bar-actions { margin-left: auto; display: flex; gap: 8px; }
+#batchBar .batch-bar-actions button {
+  border: none; border-radius: 999px; padding: 6px 14px;
+  font-size: 13px; cursor: pointer; background: var(--panel);
+  color: var(--text); white-space: nowrap;
+}
+#batchBar #batchBarExec { background: var(--accent); color: #fff; }
+
 /* 直控/同步推流 canvas：noVNC scaleViewport 等比缩放后可能窄于/矮于卡片（设备比例 ≠ 卡片 9:16），
    居中放置实现与截图缩略图一致的 contain 效果（四周留黑边）；点击坐标经 getBoundingClientRect 正确映射 */
 .tile canvas {
@@ -274,6 +308,18 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
   position: absolute; left: 0; top: 0; width: 100%; height: 100%;
   object-fit: contain;              /* 完整显示画面（不同比例设备留黑边），保证卡片统一规格 */
   pointer-events: none; background: #000;
+}
+/* 横屏显示偏好（2026-08-19）：缩略图逆时针旋转 90° 铺满横容器——竖屏截图旋转后比例与横
+   容器互倒（容器宽高比 h/w，旋转后 w/h）。布局盒按 --tile-land-h 反算为竖盒（宽=容器高）
+   再旋转，视觉恰为容器尺寸填满。rotate(-90deg) 为逆时针（实测 90deg 内容上下颠倒）。
+   盒比例=原图比例时 cover 无裁切；截图比例与上报不符时裁边防拉伸。 */
+.wall-grid .tile.orient-land .thumb {
+  left: 50%; top: 50%;
+  width: calc(100% * var(--tile-land-h));
+  height: auto;
+  aspect-ratio: var(--tile-land-h);
+  transform: translate(-50%, -50%) rotate(-90deg);
+  object-fit: cover;
 }
 .tile .tile-bar {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 4;
@@ -365,7 +411,13 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
   display: flex; flex-direction: column; gap: 4px; min-width: 120px;
   max-height: 80vh; overflow-y: auto;
 }
-.tile-menu button { text-align: left; }
+.tile-menu button {
+  width: 100%;
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; text-align: left; white-space: nowrap;
+}
+.tile-menu .cap-icon { font-size: 16px; line-height: 1; flex: 0 0 auto; }
+.tile-menu .cap-name { font-size: 14px; }
 
 /* 卡片 ⋯ 菜单「有意义参数」快捷项（悬停/点击展开编辑） */
 .qp-item { position: relative; }
@@ -425,7 +477,7 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
 @media (max-width: 900px) {
   #workspace { flex-direction: column; align-items: stretch; } /* stretch 修复 #wall 宽度收缩为内容宽（此前 242px → 卡片被压小） */
   /* 移动端 header 精简：仅保留布局切换 + 批量操作（与 IPA 控制端顶部导航一致），PC 端组件全部隐藏 */
-  .zoom, #btnRefresh, #directBtn, .meta { display: none; }
+  .zoom, #directBtn, .meta { display: none; }
   header { gap: 8px; }
   .focus-ops { display: none; }          /* 操作移到悬浮菜单 */
   .fab { display: flex; }
@@ -512,7 +564,8 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
 }
 .direct-bar:hover { border-color: var(--accent); }
 .direct-bar.direct-active { background: var(--accent); color: #fff; }
-/* 批量操作按钮：嵌在顶部 actions 区域，勾选≥1 台时显示 */
+/* 顶部「批量」入口按钮（2026-08-19）：直控按钮右侧；批量模式变「取消」激活态（.batch-bar-active），
+   点击退出多选模式 */
 .batch-bar {
   background: var(--panel2);
   border: 1px solid var(--accent);
@@ -521,11 +574,10 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
   padding: 6px 12px;
   font-size: 13px;
   cursor: pointer;
+  white-space: nowrap;
 }
 .batch-bar:hover { background: var(--accent); color: #fff; }
-/* 批量模式激活态（按钮显示"取消"/"批量操作 (N)"） */
-.batch-bar.batch-mode-active { background: var(--accent); color: #fff; }
-.batch-bar.hidden { display: none !important; }
+.batch-bar.batch-bar-active { background: var(--accent); color: #fff; }
 
 /* 卡片左上角 checkbox：默认隐藏，仅批量模式（.batch-mode）下显示，半透明背景圆角 */
 .tile-checkbox {
@@ -549,47 +601,21 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
   outline-offset: -2px;
 }
 
-/* 批量操作菜单：纵向列表，浮动定位 */
+/* 批量执行菜单：锚定「执行」按钮位置向下展开（2026-08-19），right/bottom 由 JS 按按钮实测定位 */
 .batch-menu {
   position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
   z-index: 85;
-  width: min(360px, 92vw);
-  max-height: 80vh;
+  width: min(280px, 88vw); /* 收窄：操作条按钮同宽级，窄于原 360px */
+  max-height: 60vh;
   overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 12px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, .55);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, .55);
   padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-.batch-menu-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--accent);
-  margin-bottom: 4px;
-}
-.batch-menu-row {
-  display: flex;
-  gap: 6px;
-}
-.batch-menu-row button { flex: 1; }
-.batch-menu-section {
-  border-top: 1px solid var(--line);
-  padding-top: 6px;
-  margin-top: 2px;
-}
-.batch-menu-sec-title {
-  font-size: 12px;
-  color: var(--muted);
-  margin-bottom: 4px;
-  text-transform: uppercase;
-  letter-spacing: .5px;
 }
 .batch-cap-btn {
   display: flex;
@@ -601,20 +627,6 @@ main { flex: 1; min-height: 0; padding: 14px; padding-bottom: calc(14px + env(sa
   width: 100%;
 }
 .batch-cap-btn .cap-icon { font-size: 18px; }
-.batch-menu-row-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  text-align: left;
-  padding: 8px 10px;
-  font-size: 14px;
-  width: 100%;
-}
-.batch-menu-row-item.danger { color: #ff9d9d; }
-.batch-menu-close {
-  margin-top: 6px;
-  width: 100%;
-}
 
 /* ========== Phase 10.3：能力菜单 category 分组渲染 ========== */
 /* 分组标题：小字、灰色、上下间距 */
