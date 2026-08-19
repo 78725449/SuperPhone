@@ -341,6 +341,9 @@ import RFB from './novnc/core/rfb.js';
       isConnected = true;
       startSigPoll();
       setStatus('已连接，等待画面…', true);
+      // PC 端自动接管键盘（2026-08-19，对齐网关控制台）：物理键盘/中文 IME 无感进入
+      // kbInput 分流通道（触屏设备不自动——软键盘必须显式点「键盘」键调起）
+      if (!isTouch) focusKbInput();
       // 2026-08-17 v3：管理通道已由页面加载时经 HTTP 初始化（不依赖 RFB 连接）
       // 检测是否真的收到画面帧（区分"连上但黑帧"与"连不上"）
       var gotFrame = false;
@@ -396,6 +399,19 @@ import RFB from './novnc/core/rfb.js';
       cv.addEventListener('mousedown', onDown, true);
       cv.addEventListener('contextmenu', onCtx);
     })();
+    // PC 端键盘浮层接管（2026-08-19，对齐网关控制台）：物理键盘与中文 IME 经 #kbInput 分流
+    // （与触控端同一通道，复用 initKbInput 的 input/composition 分流），替代 noVNC 原生
+    // Keyboard keydown 映射（其不处理 IME）。触屏设备保持现状（「键盘」键显式调起软键盘）。
+    if (!isTouch) {
+      rfb.focusOnClick = false; // 点画布不再 canvas.focus()，防抢走 kbInput 焦点
+      // 点画布=恢复控制输入：焦点落在非输入元素（body 等）时送回 kbInput
+      rfb._canvas.addEventListener('mousedown', function () {
+        var ae = document.activeElement;
+        if (ae && ae.closest && ae.closest('input, textarea')) return;
+        if (ae && ae.isContentEditable) return;
+        focusKbInput();
+      });
+    }
     // 断开/失败：软键盘由 kbInput blur 自动收起（input 事件驱动方案无 Keyboard 实例，无需 ungrab）
   }
 
@@ -800,10 +816,26 @@ import RFB from './novnc/core/rfb.js';
     });
     // 回车/换行/发送：iOS 单行 input 按 return 不触发 input（不插换行），只派发 keydown(13)。
     // 捕获 Enter → 发 XK_Return，由被控端按聚焦场景识别为发送/换行/搜索。
+    // 非打印键（2026-08-19，PC 物理键盘浮层接管后补全，对齐网关控制台；外接触屏键盘受益）：
+    // 方向键/Tab/Esc/Delete 不产生 input 事件，keydown 直转 keysym。刻意不含 Home/End/
+    // PageUp/PageDown——设备端 XK_Home=物理 Home 键（回桌面），PC 打字按 Home 期望"行首"
+    // 会造成意外退桌面，宁缺毋滥。
+    var KBD_KEYSYMS = {
+      ArrowLeft: 0xff51, ArrowUp: 0xff52, ArrowRight: 0xff53, ArrowDown: 0xff54,
+      Tab: 0xff09, Escape: 0xff1b, Delete: 0xffff
+    };
     kbInput.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' || e.keyCode === 13) {
         e.preventDefault();
         kbdSendSpecial(0xff0d, 'Enter'); // XK_Return
+        return;
+      }
+      // Ctrl/Meta 组合键放行：交给 document 级 handler / 浏览器默认（不拦截避免双通道）
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      var ks = KBD_KEYSYMS[e.key];
+      if (ks !== undefined) {
+        e.preventDefault(); // 阻止 input 内光标移动/焦点跳出的默认行为
+        kbdSendSpecial(ks, null);
       }
     });
   }
