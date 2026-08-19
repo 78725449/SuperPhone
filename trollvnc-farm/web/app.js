@@ -2768,16 +2768,14 @@ $('opsMenu').addEventListener('pointerdown', (e) => {
   if (e.target.closest && e.target.closest('button')) scheduleFabAutoCollapse();
 });
 
-// ===== 布局切换：卡片（宫格）/ 列表 两档（借鉴 IPA 控制端布局按钮，PC 端隐藏、移动端主用） =====
+// ===== 布局切换：宫格 / 列表 两档（PC 与移动端共用同一布局按钮，2026-08-19） =====
 const layoutBtn = $('layoutBtn');
 const layoutMenu = $('layoutMenu');
 const layoutIcon = $('layoutIcon');
 const wallEl = $('wall');
-// 布局状态持久化：'grid'（卡片宫格，比例自适应）/ 'list'（单列列表行）；PC 端恒为卡片宫格（布局按钮仅移动端可见）
-let layoutMode = 'grid';
-if (window.matchMedia('(max-width: 900px)').matches) {
-  layoutMode = localStorage.getItem('farm_layout') || 'grid';
-}
+const zoomLabel = document.querySelector('.zoom'); // PC 顶栏卡片宽度调节阀（宫格态显示）
+// 布局状态持久化：'grid'（宫格：PC 多列自适应 + 调节阀 / 移动端双列）/ 'list'（单列列表行）
+let layoutMode = localStorage.getItem('farm_layout') || 'grid';
 // 布局切换图标：grid=四宫格 / list=三横线
 const LAYOUT_ICONS = {
   grid: '<rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/>',
@@ -2823,9 +2821,9 @@ function applyAutoTileRatio() {
 }
 
 /**
- * 应用布局到设备墙：'grid'（卡片宫格）/ 'list'（单列列表行）。
- * 卡片视图走 grid 平铺（PC auto-fill 多列 / 移动端 2 列）+ --tile-pb 比例自适应；
- * 列表视图为单列行式（固定行高，不参与比例自适应）。
+ * 应用布局到设备墙：'grid'（宫格）/ 'list'（单列列表行）。
+ * 宫格走 grid 平铺（PC auto-fill 多列 / 移动端 2 列）+ --tile-pb 比例自适应，并显示 PC 顶栏调节阀；
+ * 列表为单列行式（固定行高，不参与比例自适应），隐藏调节阀。
  * @param {string} mode - 'grid' | 'list'
  * @returns {void}
  */
@@ -2835,12 +2833,14 @@ function applyLayout(mode) {
   wallEl.classList.toggle('wall-grid', mode === 'grid');
   wallEl.classList.toggle('wall-list', mode === 'list');
   layoutIcon.innerHTML = LAYOUT_ICONS[mode] || LAYOUT_ICONS.grid;
+  // 卡片宽度调节阀：仅宫格态显示（PC 顶栏；移动端本就由媒体查询隐藏，无影响）
+  if (zoomLabel) zoomLabel.classList.toggle('hidden', mode !== 'grid');
   layoutMenu.querySelectorAll('.lopt').forEach((o) => {
     o.classList.toggle('sel', o.dataset.l === mode);
   });
 }
 
-// 初始化：读取上次布局（卡片/列表）；grid 下由多数设备比例自适应覆盖 --tile-pb
+// 初始化：读取上次布局（宫格/列表）；grid 下由多数设备比例自适应覆盖 --tile-pb
 applyLayout(layoutMode);
 
 layoutBtn.addEventListener('click', (e) => {

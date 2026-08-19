@@ -880,7 +880,7 @@ kbdShiftHeld, kbdShiftTimer, kbdComposing, kbdJustComposed, kbdLastLen
 header
   #meta 设备统计（无 h1 标题，2026-08-19 移除）
   .actions: cardwRange（卡片宽度滑杆 160-400px）
-            layoutBtn + layoutMenu（卡片/列表两档，PC 隐藏移动端主用）
+            layoutBtn + layoutMenu（宫格/列表两档，PC/移动端共用；宫格态显调节阀）
             directBtn
 批量操作（顶部入口，2026-08-19）：#batchBtn.batch-bar（顶部「批量」，直控右侧；批量模式变「取消」激活态承担退出）
             点击后屏幕墙顶部出现全宽圆角胶囊 #batchBar（main 首子级 in-flow，无取消按钮）：
@@ -895,13 +895,13 @@ main
   #opsMenu（移动端悬浮操作菜单）
 #kbdInput（fixed 全屏透明 input，iOS 软键盘输入源）
 #editModal（order 排序号 + name）/ #tileMenu（编辑/删除/旋转）
-script app.js?v=157（type=module）
+script app.js?v=158（type=module）
 ```
 
 **关键设计**：
 - viewport 禁缩放 + viewport-fit=cover 适配刘海
 - #kbdInput 必须可视视口内（left:-9999px iOS 不弹键盘），故 fixed 全屏透明层，pointer-events:none 不挡画布
-- 引用 `?v=N` 缓存破坏：app.js?v=157、style.css?v=27；caps.js?v=9、rfb.js?v=2 版本号在 app.js 的 ESM import 处（gesture 逻辑在 `gesture.js`，无版本号）
+- 引用 `?v=N` 缓存破坏：app.js?v=158、style.css?v=28；caps.js?v=9、rfb.js?v=2 版本号在 app.js 的 ESM import 处（gesture 逻辑在 `gesture.js`，无版本号）
 
 **CSS 关键约定**：
 - CSS 变量：`--bg/--panel/--panel2/--line/--text/--muted/--accent/--ok/--bad` + `--safe-top/right/bottom/left`

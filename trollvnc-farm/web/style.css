@@ -226,9 +226,9 @@ main {
 
 /* 布局切换按钮 + 下拉菜单 */
 .layout-switch { position: relative; display: inline-flex; }
-/* 电脑端控制台：去除宫格布局切换按钮（移动端保留），设备墙固定平铺、从左到右逐行显示 */
+/* 电脑端控制台：宫格墙自动列数平铺（auto-fill 从左到右逐行，1fr 拉伸填满整行）；
+   布局按钮 PC/移动端共用；宫格态显调节阀、列表态隐藏（JS 在 applyLayout 切换 .zoom.hidden） */
 @media (min-width: 901px) {
-  .layout-switch { display: none; }
   /* 无线列：按容器宽度自适应列数（auto-fill），1fr 拉伸填满整行、从左到右逐行平铺，
      第一行排满自动换到第二行；卡片拉伸填满列（width:auto）保证紧挨无空隙 */
   #wall { grid-template-columns: repeat(auto-fill, minmax(var(--card-w), 1fr)) !important; }
