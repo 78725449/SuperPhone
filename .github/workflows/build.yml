@@ -58,6 +58,8 @@ env:
   FINALPACKAGE: 1
   HOMEBREW_NO_AUTO_UPDATE: 1
   HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
+  # 2026-08-20：Homebrew tap-trust 政策（aws/tap 等未信任 tap 拒装）——全局跳过 trust 检查
+  HOMEBREW_NO_REQUIRE_TAP_TRUST: 1
 
 jobs:
   build:
@@ -76,9 +78,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # 2026-08-20：Homebrew 新版本要求 tap trust（aws/tap 等未信任 tap 会拒装）——
-          # 跳过 trust 检查，否则 brew install 退出码 2 导致编译失败
-          export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
+          # 2026-08-20：Homebrew tap-trust 政策（runner 预装 aws/tap 等未信任 tap 会拒装）
+          # 双保险：移除未信任 tap + 全局 HOMEBREW_NO_REQUIRE_TAP_TRUST=1（见顶层 env）
+          brew untap aws/tap 2>/dev/null || true
           # Install xcbeautify for build output formatting
           # Install ldid for iOS code signing
           # Install 7zip for compression
