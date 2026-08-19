@@ -76,6 +76,9 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # 2026-08-20：Homebrew 新版本要求 tap trust（aws/tap 等未信任 tap 会拒装）——
+          # 跳过 trust 检查，否则 brew install 退出码 2 导致编译失败
+          export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
           # Install xcbeautify for build output formatting
           # Install ldid for iOS code signing
           # Install 7zip for compression
