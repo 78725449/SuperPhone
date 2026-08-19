@@ -221,6 +221,39 @@ function connectEventsWS() {
   eventsWS.onerror = () => { try { eventsWS.close(); } catch { /* noop */ } };
 }
 
+// 卡片墙横/竖屏显示偏好（2026-08-19）：按设备持久化（localStorage），仅影响该卡片在墙上的
+// 显示比例。语义：竖屏=跟随全局统一比例（所有卡片一样大，现状）；横屏=设备 screen 比例倒置
+// （inline --tile-pb 覆盖全局）。聚焦画面不受此影响——始终用设备实时帧尺寸自动适配方向。
+const TILE_ORIENT_KEY = 'farm_tile_orient';
+function getTileOrientMap() {
+  try { return JSON.parse(localStorage.getItem(TILE_ORIENT_KEY) || '{}'); } catch { return {}; }
+}
+function getTileOrient(id) {
+  return getTileOrientMap()[id] || 'portrait';
+}
+function setTileOrient(id, orient) {
+  const m = getTileOrientMap();
+  if (orient === 'portrait') delete m[id]; else m[id] = orient;
+  localStorage.setItem(TILE_ORIENT_KEY, JSON.stringify(m));
+}
+/**
+ * 应用卡片显示方向：横屏偏好 → 该卡片 --tile-pb 用设备比例倒置（(w/h)*100%）；否则移除
+ * inline 回全局统一比例。仅卡片视图（.wall-grid）生效——列表视图 padding 已被覆盖为固定行高。
+ * @param {HTMLElement} tile 卡片元素
+ * @param {object} d 设备对象
+ * @returns {void}
+ */
+function applyTileOrient(tile, d) {
+  if (!tile) return;
+  if (getTileOrient(d.id) !== 'landscape') {
+    tile.style.removeProperty('--tile-pb');
+    return;
+  }
+  const w = (d.screen && d.screen.width) || 1080;
+  const h = (d.screen && d.screen.height) || 1920;
+  tile.style.setProperty('--tile-pb', ((w / h) * 100).toFixed(4) + '%');
+}
+
 function createWallTile(d) {
   const tile = document.createElement('div');
   tile.className = 'tile' + (d.online ? '' : ' tile-offline') + (d.mock ? ' tile-mock' : '');
@@ -250,6 +283,9 @@ function createWallTile(d) {
   if (d.screen && d.screen.width && d.screen.height) {
     tile.dataset.wh = d.screen.width + 'x' + d.screen.height;
   }
+  // 卡片墙横/竖屏显示偏好（2026-08-19）：按设备持久化，仅影响该卡片在墙上的显示比例
+  // （竖屏=跟随全局统一比例；横屏=设备 screen 比例倒置）。聚焦画面始终实时跟随设备方向。
+  applyTileOrient(tile, d);
   if (d.online) {
     tv.innerHTML = '<div class="offline-ph">连接中…</div>';
     startWallRfb(inst);
@@ -2269,6 +2305,21 @@ function showTileMenu(tile, d, x, y) {
   editBtn.innerHTML = '<span class="cap-icon">✏️</span><span class="cap-name">编辑</span>';
   editBtn.addEventListener('click', () => { m.classList.add('hidden'); openEditModal(d); });
   m.appendChild(editBtn);
+
+  // 横/竖屏显示切换（2026-08-19）：仅卡片视图有意义（列表视图固定行高，比例不生效）。
+  // 切换该卡片在墙上的显示比例：横屏=设备 screen 比例倒置；恢复=跟随全局统一比例。
+  // 聚焦画面始终实时跟随设备方向（fitFocusPanel 用实时帧尺寸），不受此偏好影响。
+  if (layoutMode === 'grid') {
+    const isLand = getTileOrient(d.id) === 'landscape';
+    const orientBtn = document.createElement('button');
+    orientBtn.innerHTML = `<span class="cap-icon">🖼️</span><span class="cap-name">${isLand ? '恢复竖屏显示' : '切换横屏显示'}</span>`;
+    orientBtn.addEventListener('click', () => {
+      m.classList.add('hidden');
+      setTileOrient(d.id, isLand ? 'portrait' : 'landscape');
+      applyTileOrient(tile, d);
+    });
+    m.appendChild(orientBtn);
+  }
 
   // 删除：清除该设备记录并移除卡片（2026-08-15：直接删除，无二次确认——用户拍板）
   const delBtn = document.createElement('button');
