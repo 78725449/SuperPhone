@@ -663,10 +663,11 @@ async function doBatchInvoke(ids, meta) {
   try {
     const r = await batchInvoke('', ids, meta.id, params);
     const fails = (r.results || []).filter((x) => !x.ok);
-    if (fails.length === 0) alert(`已对 ${ids.length} 台设备下发「${meta.title || meta.id}」`);
-    else alert(`部分设备执行失败：\n${fails.map((x) => `${x.deviceId}: ${x.error || ''}`).join('\n')}`);
+    // 2026-08-19：批量结果用页内 toast（非阻塞，不再弹系统 alert 挡住其他区域操作）
+    if (fails.length === 0) toast(`✓ 已对 ${ids.length} 台设备下发「${meta.title || meta.id}」`, 'success');
+    else toast(`✗ 部分设备执行失败：${fails.map((x) => `${x.deviceId}: ${x.error || ''}`).join('，')}`, 'error');
   } catch (e) {
-    alert(`批量调用「${meta.title || meta.id}」失败：${e.message}`);
+    toast(`✗ 批量调用「${meta.title || meta.id}」失败：${e.message}`, 'error');
   }
 }
 
@@ -727,14 +728,15 @@ async function showBatchConfigPanel(ids) {
       try {
         const r = await batchSetConfigs('', ids, cfg);
         const fails = (r.results || []).filter((x) => x.results && Object.values(x.results).some((v) => !v.ok));
+        // 2026-08-19：批量配置结果同样走页内 toast，非阻塞
         if (fails.length === 0) {
           modal.remove();
-          alert(`已对 ${ids.length} 台设备下发配置`);
+          toast(`✓ 已对 ${ids.length} 台设备下发配置`, 'success');
         } else {
-          alert(`部分设备配置失败：\n${fails.map((x) => x.deviceId).join('\n')}`);
+          toast(`✗ 部分设备配置失败：${fails.map((x) => x.deviceId).join('，')}`, 'error');
         }
       } catch (e) {
-        alert(`批量保存失败：${e.message}`);
+        toast(`✗ 批量保存失败：${e.message}`, 'error');
       }
     };
   }

@@ -896,13 +896,13 @@ main
   #opsMenu（移动端悬浮操作菜单）
 #kbdInput（fixed 全屏透明 input，iOS 软键盘输入源）
 #editModal（order 排序号 + name）/ #tileMenu（编辑/删除/旋转）
-script app.js?v=160（type=module）
+script app.js?v=161（type=module）
 ```
 
 **关键设计**：
 - viewport 禁缩放 + viewport-fit=cover 适配刘海
 - #kbdInput 必须可视视口内（left:-9999px iOS 不弹键盘），故 fixed 全屏透明层，pointer-events:none 不挡画布
-- 引用 `?v=N` 缓存破坏：app.js?v=158、style.css?v=28；caps.js?v=9、rfb.js?v=2 版本号在 app.js 的 ESM import 处（gesture 逻辑在 `gesture.js`，无版本号）
+- 引用 `?v=N` 缓存破坏：app.js?v=161、style.css?v=30；caps.js?v=9、rfb.js?v=2 版本号在 app.js 的 ESM import 处（gesture 逻辑在 `gesture.js`，无版本号）
 
 **CSS 关键约定**：
 - CSS 变量：`--bg/--panel/--panel2/--line/--text/--muted/--accent/--ok/--bad` + `--safe-top/right/bottom/left`
