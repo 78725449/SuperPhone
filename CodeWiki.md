@@ -782,7 +782,7 @@ tun = {
 | `initTouchKeyboard` | iOS 软键盘双通道：compositionend 整段提交（type.paste）/ input 删除键（Backspace 直发）/ input 单 ASCII（kbdSendAscii 键值直发）/ keydown Enter |
 | `kbdSendAscii` | Shift 状态跟踪（连续大写保持按下、切小写才抬起、空闲 400ms 自动释放）+ 基础字符 ↓50ms↑ |
 | `toggleSync` / `toggleDirectMode` | 同步控制（grp viewOnly 订阅 + 广播接收）/ 直控模式（所有在线真实设备 ctrl=false 可输入连接，互不抢占） |
-| `showBatchMenu` / `showBatchConfigPanel` | 批量执行菜单（纯按钮列表对齐 opsMenu：按键复用 attachPress 按压识别同右侧按键——批量态补声明 BATCH_CAPS 多击能力如 home.double，电源/截图键不入菜单，+ service.restart 重启；releasekeys/hwlock/hwunlock/批量重启已去除）+ 批量配置面板；执行候选仅限在线设备；菜单锚定「执行」按钮向下展开、「执行」点一次展开再点收起、点外部仅关菜单（closeBatchMenu 不退批量模式——胶囊行仅顶部「取消」收起） |
+| `showBatchMenu` / `showBatchConfigPanel` | 批量执行菜单（纯按钮列表对齐 opsMenu：按键复用 attachPress 按压识别同右侧按键——批量态补声明 BATCH_CAPS 多击能力如 home.double，电源/截图键不入菜单，+ service.restart 重启；releasekeys/hwlock/hwunlock/批量重启已去除）+ 批量配置面板（**按 reload 策略分区：即时生效/热重载/网关设置/需重启生效（警示色），2026-08-19**）；执行候选仅限在线设备；菜单锚定「执行」按钮向下展开、「执行」点一次展开再点收起、点外部仅关菜单（closeBatchMenu 不退批量模式——胶囊行仅顶部「取消」收起） |
 | `scheduleFocusReconnect` / `reconnectFocusRfb` | 聚焦画面断线重连（首立即、后续 2s 间隔，上限 8 次；1000/1001/4001 不重连；visibilitychange 回前台触发） |
 
 **关键模式**：
@@ -896,13 +896,13 @@ main
   #opsMenu（移动端悬浮操作菜单）
 #kbdInput（fixed 全屏透明 input，iOS 软键盘输入源）
 #editModal（order 排序号 + name）/ #tileMenu（编辑/删除/旋转）
-script app.js?v=162（type=module）
+script app.js?v=163（type=module）
 ```
 
 **关键设计**：
 - viewport 禁缩放 + viewport-fit=cover 适配刘海
 - #kbdInput 必须可视视口内（left:-9999px iOS 不弹键盘），故 fixed 全屏透明层，pointer-events:none 不挡画布
-- 引用 `?v=N` 缓存破坏：app.js?v=162、style.css?v=31；caps.js?v=9、rfb.js?v=2 版本号在 app.js 的 ESM import 处（gesture 逻辑在 `gesture.js`，无版本号）
+- 引用 `?v=N` 缓存破坏：app.js?v=163、style.css?v=32；caps.js?v=9、rfb.js?v=2 版本号在 app.js 的 ESM import 处（gesture 逻辑在 `gesture.js`，无版本号）
 
 **CSS 关键约定**：
 - CSS 变量：`--bg/--panel/--panel2/--line/--text/--muted/--accent/--ok/--bad` + `--safe-top/right/bottom/left`

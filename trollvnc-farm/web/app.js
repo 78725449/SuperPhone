@@ -704,19 +704,34 @@ async function showBatchConfigPanel(ids) {
     empty.textContent = '选中设备未上报可配置项';
     card.appendChild(empty);
   } else {
-    const sec = document.createElement('div');
-    sec.className = 'cfg-section';
+    // 按 reload 生效策略分区（2026-08-19）：instant/hot/gateway/restart 顺序渲染，restart 级加警示
+    const RELOAD_GROUPS = [
+      { key: 'instant', title: '即时生效' },
+      { key: 'hot',     title: '热重载生效' },
+      { key: 'gateway', title: '网关设置' },
+      { key: 'restart', title: '需重启生效', danger: true },
+    ];
     const inputs = {};
-    for (const schema of schemaMap.values()) {
-      const row = document.createElement('label');
-      row.className = 'cfg-row';
-      row.textContent = schema.title || schema.key;
-      const inp = buildConfigInput(schema, undefined);
-      inputs[schema.key] = inp;
-      row.appendChild(inp);
-      sec.appendChild(row);
+    for (const g of RELOAD_GROUPS) {
+      const groupSchemas = Array.from(schemaMap.values()).filter((s) => s.reload === g.key);
+      if (groupSchemas.length === 0) continue;
+      const sec = document.createElement('div');
+      sec.className = 'cfg-section';
+      const title = document.createElement('div');
+      title.className = 'cfg-sec-title' + (g.danger ? ' danger' : '');
+      title.textContent = g.title;
+      sec.appendChild(title);
+      for (const schema of groupSchemas) {
+        const row = document.createElement('label');
+        row.className = 'cfg-row';
+        row.textContent = schema.title || schema.key;
+        const inp = buildConfigInput(schema, undefined);
+        inputs[schema.key] = inp;
+        row.appendChild(inp);
+        sec.appendChild(row);
+      }
+      card.appendChild(sec);
     }
-    card.appendChild(sec);
 
     const btns = document.createElement('div');
     btns.className = 'modal-btns';

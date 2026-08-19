@@ -461,6 +461,7 @@ main {
 /* Phase 4.7：配置面板（二级菜单，按 reload 分区） */
 .cfg-section { margin-bottom: 12px; }
 .cfg-sec-title { font-size: 12px; font-weight: 700; color: var(--accent); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .5px; }
+.cfg-sec-title.danger { color: var(--bad); } /* 需重启生效分组：警示色（2026-08-19） */
 .cfg-row { display: flex; flex-direction: column; gap: 3px; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
 .cfg-row input, .cfg-row select {
   background: var(--panel2); border: 1px solid var(--line); color: var(--text);
