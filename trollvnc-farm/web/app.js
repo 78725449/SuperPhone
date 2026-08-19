@@ -546,14 +546,24 @@ function exitBatchMode() {
 }
 
 /**
- * 关闭批量菜单并退出批量模式（批量操作完成/取消时调用）
+ * 关闭批量菜单：仅移除菜单与其挂载的按压识别/外部点击处理器（防定时器泄漏），
+ * 不退批量模式——胶囊行保持展开（2026-08-19：胶囊行仅在点击顶部「取消」时收起）
+ * @param {HTMLElement} menu 批量菜单元素
+ * @returns {void}
+ */
+function closeBatchMenu(menu) {
+  if (menu && typeof menu.__outsideHandler === 'function') document.removeEventListener('click', menu.__outsideHandler);
+  if (menu && typeof menu.__detach === 'function') { try { menu.__detach(); } catch { /* noop */ } }
+  if (menu && menu.parentNode) menu.remove();
+}
+
+/**
+ * 关闭批量菜单并退出批量模式（仅顶部「取消」按钮路径调用）
  * @param {HTMLElement} menu 批量菜单元素
  * @returns {void}
  */
 function finishBatch(menu) {
-  // 先 detach 菜单内挂载的按压识别（防定时器泄漏，2026-08-19），再移除菜单
-  if (menu && typeof menu.__detach === 'function') { try { menu.__detach(); } catch { /* noop */ } }
-  if (menu && menu.parentNode) menu.remove();
+  closeBatchMenu(menu);
   exitBatchMode();
 }
 
@@ -572,7 +582,7 @@ function showBatchMenu() {
     const d = devices.find((x) => x.id === id);
     return d && d.online && !d.mock;
   });
-  if (ids.length === 0) { alert('没有可操作的在线设备'); exitBatchMode(); return; }
+  if (ids.length === 0) { toast('没有可操作的在线设备', 'error'); return; }
 
   // 关闭已存在菜单
   const old = document.getElementById('batchMenu');
@@ -634,12 +644,12 @@ function showBatchMenu() {
   }
 
   document.body.appendChild(menu);
-  // 点击外部关闭并退出批量模式（批量操作组件区 #batchBar/#batchBtn 除外，避免误关）；
-  // 处理器引用存 menu.__outsideHandler，供「执行」按钮再点收起时移除（防收起后残留误关）
+  // 点击外部仅关闭菜单、不退批量模式（胶囊行保持展开，仅顶部「取消」可收起——2026-08-19）；
+  // 处理器引用存 menu.__outsideHandler，供 closeBatchMenu 移除（防残留误关）
   setTimeout(() => {
     const handler = (e) => {
       if (!e.target.closest('#batchMenu') && !e.target.closest('#batchBtn') && !e.target.closest('#batchBar')) {
-        finishBatch(menu);
+        closeBatchMenu(menu);
         document.removeEventListener('click', handler);
       }
     };
@@ -2716,13 +2726,7 @@ $('batchBarSelectAll').addEventListener('change', (e) => {
 // 执行：点一次展开批量菜单，再点一次收起（2026-08-19 开合二态；收起仅移除菜单、不退批量模式）
 $('batchBarExec').addEventListener('click', () => {
   const menu = document.getElementById('batchMenu');
-  if (menu) {
-    if (typeof menu.__outsideHandler === 'function') document.removeEventListener('click', menu.__outsideHandler);
-    if (typeof menu.__detach === 'function') { try { menu.__detach(); } catch { /* noop */ } }
-    menu.remove();
-  } else {
-    showBatchMenu();
-  }
+  if (menu) closeBatchMenu(menu); else showBatchMenu();
 });
 // 设置：直接打开批量配置面板（候选仅限在线设备）
 $('batchBarSettings').addEventListener('click', () => {
@@ -2730,7 +2734,7 @@ $('batchBarSettings').addEventListener('click', () => {
     const d = devices.find((x) => x.id === id);
     return d && d.online && !d.mock;
   });
-  if (ids.length === 0) { alert('没有可操作的在线设备'); return; }
+  if (ids.length === 0) { toast('没有可操作的在线设备', 'error'); return; }
   showBatchConfigPanel(ids);
 });
 // 取消：退出批量选择模式（由顶部「批量」按钮变「取消」态承担，见 #batchBtn 绑定；胶囊行已无取消按钮）

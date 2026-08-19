@@ -606,7 +606,7 @@ main {
 .batch-menu {
   position: fixed;
   z-index: 85;
-  width: min(240px, 88vw); /* 2026-08-19 再收窄：电源/截图键已不入菜单，240px 容纳图标+名称 */
+  width: min(120px, 88vw); /* 2026-08-19 再窄一半：240→120px 紧凑列表（图标+短名），屏宽不足时随视口收窄 */
   max-height: 60vh;
   overflow-y: auto;
   background: var(--panel);
