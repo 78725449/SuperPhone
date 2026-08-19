@@ -90,7 +90,7 @@
 |---|---|---|---|
 | 手机 **5901** | 原生双向控制通道 | RFB/VNC | 画面下行 + 操作上行；含 0x50/0x80 扩展消息命令通道 |
 | 手机 **5801** | 网页文件服务器 | HTTP | 只发 noVNC 页面；管理 API 在 5802 |
-| 手机 **5802** | 直连页管理 API | HTTP v3 | clipboard.get / type.paste / config.get / cap.list（trollvncserver 自实现轻量 API 服务器，与 RFB 流隔离，2026-08-17 起） |
+| 手机 **5802** | 直连页管理 API | HTTP v3 | clipboard.get / type.paste / config.get / cap.list（trollvncserver 自实现轻量 API 服务器，与 RFB 流隔离，2026-08-17 起；**与网关 REST 同构**——管理 HTTP / 画面 RFB，复用 tvExtHandle* 纯函数） |
 | 网关 **8080** | 控制台 | HTTP/HTTPS + WS | 外部经 frp/隧道到此，再由网关桥到 5901 |
 | 网关 **18081** | 注册/心跳 | TCP JSON 行 | 设备主动拨入 |
 | 网关 **18181** | 隧道 | TCP 帧（FT_） | 设备主动建立；无隧道 4003 拒绝 |
