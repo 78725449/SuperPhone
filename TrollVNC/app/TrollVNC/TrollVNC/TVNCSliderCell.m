@@ -39,7 +39,9 @@
     // iOS 15 的 UITableViewCell/PSTableCell 对 textLabel 有内置约束（leading/centerY 等），
     // 若再手动给 textLabel 加约束会双约束冲突 → Auto Layout 破坏性布局 → 标题与滑杆互相覆盖。
     // 改为 contentView 自建 UILabel，约束只作用于自建视图，与系统布局完全隔离。
+    // detailTextLabel 会被 PSTableCell 设为当前值（如 "full"），一并隐藏。
     self.textLabel.hidden = YES;
+    self.detailTextLabel.hidden = YES;
 
     _titleLabel = [[UILabel alloc] init];
     _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -53,7 +55,8 @@
     if (labelWidthNum && [labelWidthNum isKindOfClass:[NSNumber class]]) {
         _valueLabelWidth = [labelWidthNum floatValue];
     } else {
-        _valueLabelWidth = 50.0;
+        // 2026-08-20 调节阀加长：值标签默认 50→46，字体 13pt，进一步让位给滑杆
+        _valueLabelWidth = 46.0;
     }
 
     // Create slider
@@ -69,7 +72,7 @@
         _valueLabel = [[UILabel alloc] init];
         _valueLabel.translatesAutoresizingMaskIntoConstraints = NO;
         _valueLabel.textAlignment = NSTextAlignmentRight;
-        _valueLabel.font = [UIFont monospacedDigitSystemFontOfSize:[UIFont systemFontSize] weight:UIFontWeightRegular];
+        _valueLabel.font = [UIFont monospacedDigitSystemFontOfSize:13.0 weight:UIFontWeightRegular];
         _valueLabel.textColor = [UIColor secondaryLabelColor];
         _valueLabel.numberOfLines = 1;
         _valueLabel.lineBreakMode = NSLineBreakByClipping;
@@ -88,29 +91,30 @@
 - (void)setupConstraints {
     UILayoutGuide *margins = self.contentView.layoutMarginsGuide;
 
-    // 布局：标题靠左（固有宽度，不压缩）、valueLabel 靠右、slider 填充中间。
-    // 空间不足时标题优先保留、slider 允许压缩（单向 >= 约束，无双向冲突）。
+    // 布局：标题靠左（空间不足时可截断）、valueLabel 靠右、slider 填充中间。
+    // 2026-08-20 调节阀加长：标题压缩阻力降为低值（300，可截断），间距 12→8，
+    // slider 保持默认压缩阻力（750）——空间不足时牺牲标题宽度、滑杆优先保持最长。
     NSMutableArray *constraints = [NSMutableArray array];
     [constraints addObject:[_titleLabel.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor]];
     [constraints addObject:[_titleLabel.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor]];
-    [constraints addObject:[_slider.leadingAnchor constraintGreaterThanOrEqualToAnchor:_titleLabel.trailingAnchor constant:12]];
+    [constraints addObject:[_slider.leadingAnchor constraintGreaterThanOrEqualToAnchor:_titleLabel.trailingAnchor constant:8]];
     if (_valueLabel) {
         // Value label on the right
         [constraints addObject:[_valueLabel.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor]];
         [constraints addObject:[_valueLabel.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor]];
         [constraints addObject:[_valueLabel.widthAnchor constraintEqualToConstant:_valueLabelWidth]];
-        [constraints addObject:[_slider.trailingAnchor constraintEqualToAnchor:_valueLabel.leadingAnchor constant:-12]];
+        [constraints addObject:[_slider.trailingAnchor constraintEqualToAnchor:_valueLabel.leadingAnchor constant:-8]];
     } else {
         [constraints addObject:[_slider.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor]];
     }
     [constraints addObject:[_slider.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor]];
     [NSLayoutConstraint activateConstraints:constraints];
 
-    [_titleLabel setContentCompressionResistancePriority:UILayoutPriorityRequired
+    [_titleLabel setContentCompressionResistancePriority:(UILayoutPriority)300
                                                  forAxis:UILayoutConstraintAxisHorizontal];
-    [_slider setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
+    [_slider setContentCompressionResistancePriority:UILayoutPriorityDefaultHigh
                                              forAxis:UILayoutConstraintAxisHorizontal];
-    [_slider setContentHuggingPriority:UILayoutPriorityDefaultLow
+    [_slider setContentHuggingPriority:(UILayoutPriority)250
                                forAxis:UILayoutConstraintAxisHorizontal];
 
     // Fixed height constraint
@@ -164,13 +168,22 @@
 - (void)setSpecifier:(PSSpecifier *)specifier {
     [super setSpecifier:specifier];
     self.textLabel.hidden = YES;
+    self.detailTextLabel.hidden = YES;
     [self _syncWithSpecifier:specifier];
 }
 
 - (void)refreshCellContentsWithSpecifier:(PSSpecifier *)specifier {
     [super refreshCellContentsWithSpecifier:specifier];
     self.textLabel.hidden = YES;
+    self.detailTextLabel.hidden = YES;
     [self _syncWithSpecifier:specifier];
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    // 兜底：PSListController/PSTableCell 可能在刷新时重新显示系统 label
+    self.textLabel.hidden = YES;
+    self.detailTextLabel.hidden = YES;
 }
 
 - (void)updateValueLabel {

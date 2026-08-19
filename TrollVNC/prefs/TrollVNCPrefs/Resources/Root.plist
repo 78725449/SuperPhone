@@ -211,7 +211,7 @@
 			<key>key</key>
 			<string>FrameRateSpec</string>
 			<key>label</key>
-			<string>帧率 ●</string>
+			<string>帧率</string>
 			<key>default</key>
 			<string>60</string>
 			<key>validValues</key>
@@ -239,7 +239,7 @@
 			<key>key</key>
 			<string>FrameRateSpecCustom</string>
 			<key>label</key>
-			<string>自定义帧率 ●</string>
+			<string>自定义帧率</string>
 			<key>default</key>
 			<integer>30</integer>
 			<key>isNumeric</key>

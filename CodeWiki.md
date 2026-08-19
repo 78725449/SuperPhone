@@ -193,7 +193,8 @@ New project/
 | `tvExtWriteResponse(cl, resp)` | L3313 | 构造 0x80 响应帧（8B 头 + JSON），在 `cl->sendMutex` 锁内整帧写出（防与 FBU 帧交错） |
 | `tvExtHandleCapHello(cl, params)` | L3448 | 管理客户端豁免：`mgmt=YES` 时 `isMgmtClient=YES`、`gClientCount--`、`viewOnly=TRUE` |
 | `tvExtHandleTypePaste(cl, params)` | L3484 | 剪贴板写入 + Cmd+V 注入：setStringForPasteInput → releaseEveryKeys → COMMAND↓ → v↓ → v↑ → COMMAND↑ |
-| `tvReloadConfigForKey(key)` | L3124 | 配置热重载：支持 Scale/FrameRateSpec/OrientationSync/...；返回 0=成功 / -1=未知 / -2=无效 |
+| `tvReloadConfigForKey(key)` | L3247 | 配置热重载：支持 Scale/FrameRateSpec/OrientationSync/DeferWindowSec/MaxInflight/KeepAliveSec/WheelStepPx/ModifierMap/FullscreenThresholdPercent；**2026-08-20 改按 suite `com.82flex.trollvnc` 读取**（原 standardUserDefaults 无 bundle 进程读不到设置页值）；返回 0=成功 / -1=未知 / -2=无效 |
+| `tvApplyPrefsChanged` / `tvInstallPrefsChangedListener` | L3310 / L3341 | **设置页热重载通道（2026-08-20）**：notify 监听 `com.82flex.trollvnc.prefs-changed` → 重读 suite 热重载 hot/instant 配置（含 Notifications 映射底层开关、OrientationPadFix 重建 framebuffer、NaturalScroll/AutoAssistEnabled/KeyLogging 全局变量） |
 | `tvGetInflightStats(void)` / `tvGetBonjourTXT(void)` | L3103 / L3108 | 公开统计访问，供 sys.* 能力调用 |
 
 **0x50/0x80 扩展操作（14 个 op）**：`cap.hello` / `cap.list` / `screen.hash` / `screen.diff` / `screen.waitStable` / `clients.count` / `clients.list` / `clients.disconnect` / `clients.block` / `clients.unblock` / `clients.blocked.list` / `clipboard.get` / `type.paste` / `config.get`
@@ -497,13 +498,14 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 
 #### 4.2.6 TVNCRootListController — 设置 Tab
 
-**核心职责**：PSRootController 子类；加载 Root.plist 或 ManagedRoot.plist；restart 级配置变更防抖弹重启确认；自签 CA 证书生成/导出；网关 Bonjour 搜索；查看日志 / 重置默认。
+**核心职责**：PSRootController 子类；加载 Root.plist 或 ManagedRoot.plist；restart 级配置变更防抖自动重启服务；自签 CA 证书生成/导出；网关 Bonjour 搜索；查看日志 / 重置默认。
 
 **关键方法**：
 - `specifiers` — 优先 ManagedRoot.plist（hasManagedConfiguration），否则 Root.plist
-- `setPreferenceValue:specifier:` — 覆写；restart 级 key 变更时调 _scheduleRestartConfirm
-- `_restartRequiredKeys` — BindHost/FullPassword/ViewOnlyPassword/TileSize/MaxRects/AsyncSwap/HttpDir/SslCertFile/SslKeyFile
-- `_scheduleRestartConfirm` / `_maybeConfirmRestart` — 400ms 防抖；校验 BindHost IPv4/IPv6 literal；弹重启确认框
+- `setPreferenceValue:specifier:` — 覆写；restart 级 key 变更时调 _scheduleAutoRestart；**2026-08-20 起所有写入后 `notify_post(TVNC_NOTIFY_PREFS_CHANGED)` 触发设置页热重载通道**（帧率/通知/缩放等即时生效）
+- `_restartRequiredKeys` — BindHost/FullPassword/ViewOnlyPassword/TileSize/MaxRects/AsyncSwap/PerformanceMode（2026-08-20 起移除 ConnectionMode——协调器 3s 轮询自动生效、FrameRateSpec——热重载生效）
+- `_managerRestartKeys` — GatewayHost/GatewayToken/BonjourEnabled/WatchdogThrottleInterval/WatchdogExitTimeout（2026-08-20：生效对象在 manager 进程 → kill trollvncmanager 由协调器 3s 自动拉起；`_scheduleManagerRestart`/`_managerRestartNow` 防抖调度；saveGateway 保存网关同样触发）
+- `_scheduleAutoRestart` / `_autoRestartNow` — 400ms 防抖；校验 BindHost IPv4/IPv6 literal；TVNCRestartVNCService() 自动重启（2026-08-20 由确认弹窗改为自动重启，不再弹框打断）
 - `navigationController:willShowViewController:animated:` — 根页隐藏导航栏 / 子页显示
 - `_reallyGenerateKeys` — 调 ZTSelfSignedCertificate.generateWithCommonName → 写 cacertPath/cakeyPath（0600）
 - `viewLogs` — StripedTextTableViewController 打开 `<jbroot>/tmp/trollvnc-stderr.log`
@@ -524,9 +526,9 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 - **TVNCHotspotManager**：NEHotspotHelper 注册（保活兜底）；任何 hotspot 命令回调时拉起 VNC 服务
 - **TVNCListItemsController**：PSListItemsController 子类（仅设置主题色，用于 PSLinkListCell 子页）
 - **TVNCClientCell**：客户端列表 cell（ID + Host + Subtitle + View-Only badge）
-- **TVNCSliderCell**：自定义 PSTableCell（自建标题 UILabel + UISlider + 可选 value label，用于 Scale/DeferWindowSec/MaxInflight 等）
-- **TVNCSegmentCell**：自定义 PSTableCell（自建标题 UILabel + UISegmentedControl，字符串值 ↔ 段索引双向转换；系统 PSSegmentCell 只认整数索引，2026-08-20 新增）
-- **自定义 cell 布局约定（2026-08-20 修复重叠）**：标题用 contentView 自建 UILabel，隐藏系统 textLabel——iOS 15 的 UITableViewCell/PSTableCell 对 textLabel 有内置约束，手动再加约束会双约束冲突 → Auto Layout 破坏性布局 → 标题与控件互相覆盖（滑杆盖字/分段盖标题）；自建视图约束与系统布局完全隔离；空间不足时标题高压缩阻力优先保留、控件低压缩阻力允许压缩（窄屏 5 段不溢出）
+- **TVNCSliderCell**：自定义 PSTableCell（自建标题 UILabel + UISlider + 右侧值标签；2026-08-20 加长滑杆：值标签 50→46pt/13pt 字体、间距 12→8、标题压缩阻力降为 300 可截断——空间不足时牺牲标题让位滑杆）
+- **TVNCSegmentCell**：自定义 PSTableCell（无标题，UISegmentedControl 占满整行；字符串值 ↔ 段索引双向转换；系统 PSSegmentCell 只认整数索引，2026-08-20 新增）
+- **自定义 cell 布局约定（2026-08-20 修复重叠）**：标题用 contentView 自建 UILabel，隐藏系统 textLabel/detailTextLabel（detailTextLabel 会被 PSTableCell 设为当前值如 "full"）——iOS 15 的 UITableViewCell/PSTableCell 对系统 label 有内置约束，手动再加约束会双约束冲突 → Auto Layout 破坏性布局 → 标题与控件互相覆盖；自建视图约束与系统布局完全隔离，layoutSubviews 兜底隐藏系统 label。选择器行（TVNCSegmentCell）无标题、控件占满整行；滑杆行标题压缩阻力低（300，可截断）让位滑杆
 - **StripedTextTableViewController**：通用文本日志查看器（dispatch_source VNODE 监听 + 反向 + maxRows + 搜索 + 分享 + 清空）
 - **ZTSelfSignedCertificate**：调 Security.framework 私有 API `SecGenerateSelfSignedCertificate` 生成自签 CA 证书（RSA 2048 / CA:TRUE pathLen=0）
 - **TRTask.m / TaskProcess+ObjC.swift**：进程 spawn 工具（posix_spawn + 私有 persona API 实现 root 身份切换）
@@ -1152,7 +1154,7 @@ length:4B (big-endian)
 
 ### 8.2 端到端数据流
 
-1. **配置写入路径**：用户在 TVNCRootListController 设置页修改 → NSUserDefaults suite `com.82flex.trollvnc` → restart 级 key 触发 `_scheduleRestartConfirm` → `TVNCRestartVNCService()` kill trollvncserver → launchd 自动重启 → trollvncserver 读取最新 defaults
+1. **配置写入路径**：用户在 TVNCRootListController 设置页修改 → NSUserDefaults suite `com.82flex.trollvnc` → **2026-08-20 起写后 `notify_post("com.82flex.trollvnc.prefs-changed")` → trollvncserver `tvApplyPrefsChanged` 热重载 hot/instant 配置（帧率/通知/缩放等即时生效）**；restart 级 key（密码/BindHost/TileSize/MaxRects/AsyncSwap/PerformanceMode 预设）触发 `_scheduleAutoRestart` → `TVNCRestartVNCService()` kill trollvncserver → launchd 自动重启 → trollvncserver 读取最新 defaults；ConnectionMode 不重启（TVNCServiceCoordinator 3s 轮询自动生效）
 2. **服务启动路径**：AppDelegate → TVNCServiceCoordinator.registerServiceMonitor → 3s 定时探活 127.0.0.1:46751 → 失败时 spawnService（TRTask posix_spawn trollvncmanager 以 root 身份）→ trollvncmanager 再拉起 trollvncserver。**2026-08-20 桥接控制（ConnectionMode=bridge）**：`ensureServiceRunning` 不 spawn，且**若此前以中继运行（manager 存活）则向 trollvncmanager 发 SIGTERM 停止**（stopService 经 TVNCEnumerateProcesses）——本机仅作控制端连网关，省注册+隧道+后台保活全部开销（探活/后台刷新均空转）
 3. **网关注册路径**：trollvncmanager → TCP 18081 注册到 trollvnc-farm 网关 → 网关设备目录含 selfId → TVNCAppStore.fetchWithRetry 拉取 /api/devices → isRegistered 匹配 selfId → 状态 = Registered → Hero 卡片绿"已连接"
 4. **控制 Tab 路径**：TVNCConsoleWebViewController.buildConsoleURL → `https://{host}:8080/?container=ipa&token=&selfId=` → WKWebView 加载 → farmBridge 桥（writeClipboard / setTabBarHidden）

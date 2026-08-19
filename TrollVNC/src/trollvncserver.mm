@@ -33,6 +33,7 @@
 #import <mach-o/dyld.h>
 #import <netinet/in.h>
 #import <netinet/tcp.h>
+#import <notify.h>
 #import <pthread.h>
 #import <rfb/keysym.h>
 // libvncserver 预编译库启用 LIBZ（rfbconfig.h 声明），rfb.h 不引入 rfbconfig.h，
@@ -3247,7 +3248,9 @@ NSDictionary *tvGetBonjourTXT(void) {
 int tvReloadConfigForKey(const char *key) {
     if (!key) return -1;
     NSString *k = [NSString stringWithUTF8String:key];
-    NSUserDefaults *p = [NSUserDefaults standardUserDefaults];
+    // 2026-08-20 修复：设置页/网关写入 com.82flex.trollvnc suite 域，
+    // standardUserDefaults（无 bundle 进程 = 自身域）读不到 → 改按 suite 读取，否则热重载取到空值。
+    NSUserDefaults *p = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
     int rotQ = gRotationQuad.load();
 
     if ([k isEqualToString:@"Scale"]) {
@@ -3297,6 +3300,67 @@ int tvReloadConfigForKey(const char *key) {
         return -1; // 未知 key 或非 trollvncserver 管理的 key
     }
     return 0;
+}
+
+/** 设置页热重载通道回调（2026-08-20）：
+ *  App（TVNCRootListController）改配置写 defaults 后 notify_post("com.82flex.trollvnc.prefs-changed")，
+ *  本进程收到后重读 suite 并热重载 hot/instant 级配置（帧率/通知/缩放等即时生效，无需重启）。
+ *  restart 级配置（密码/TileSize/MaxRects/AsyncSwap 等）不在热重载范围，仍走重启路径。
+ */
+static void tvApplyPrefsChanged(void) {
+    @autoreleasepool {
+        NSUserDefaults *p = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+        // Notifications（instant）：重读枚举并映射底层开关（与启动逻辑一致）
+        NSString *notifMode = [p objectForKey:@"Notifications"];
+        if ([notifMode isKindOfClass:[NSString class]] && notifMode.length > 0) {
+            if ([notifMode isEqualToString:@"connectOnly"]) {
+                gUserSingleNotifsEnabled = NO;
+                gUserClientNotifsEnabled = YES;
+            } else if ([notifMode isEqualToString:@"silent"]) {
+                gUserSingleNotifsEnabled = NO;
+                gUserClientNotifsEnabled = NO;
+            } else { // all
+                gUserSingleNotifsEnabled = YES;
+                gUserClientNotifsEnabled = YES;
+            }
+        }
+        // hot 级配置：逐 key 调 tvReloadConfigForKey（已按 suite 读取）
+        static const char *hotKeys[] = {
+            "Scale", "FrameRateSpec", "OrientationSync", "DeferWindowSec",
+            "MaxInflight", "KeepAliveSec", "WheelStepPx", "ModifierMap",
+            "FullscreenThresholdPercent"
+        };
+        for (size_t i = 0; i < sizeof(hotKeys) / sizeof(hotKeys[0]); i++) {
+            tvReloadConfigForKey(hotKeys[i]);
+        }
+        // 2026-08-20 补全 hot/instant 全局变量（tvReloadConfigForKey 未覆盖，设置页改了需即时生效）：
+        // OrientationPadFix（重建 framebuffer）/ NaturalScroll / AutoAssistEnabled / KeyLogging
+        NSNumber *orientFixN = [p objectForKey:@"OrientationPadFix"];
+        if ([orientFixN isKindOfClass:[NSNumber class]]) {
+            int v = orientFixN.intValue;
+            gOrientationFixQuad = (v >= 0 && v <= 3) ? v : 0;
+            maybeResizeFramebufferForRotation(gRotationQuad.load());
+            rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
+        }
+        NSNumber *naturalN = [p objectForKey:@"NaturalScroll"];
+        if ([naturalN isKindOfClass:[NSNumber class]]) gWheelNaturalDir = naturalN.boolValue;
+        NSNumber *assistN = [p objectForKey:@"AutoAssistEnabled"];
+        if ([assistN isKindOfClass:[NSNumber class]]) gAutoAssistEnabled = assistN.boolValue;
+        NSNumber *keyLogN = [p objectForKey:@"KeyLogging"];
+        if ([keyLogN isKindOfClass:[NSNumber class]]) gKeyEventLogging = keyLogN.boolValue;
+        TVLog(@"-daemon: prefs-changed -> hot reload applied");
+    }
+}
+
+/** 注册设置页热重载通道监听（main 初始化时调用一次） */
+static void tvInstallPrefsChangedListener(void) {
+    static int token = 0;
+    notify_register_dispatch("com.82flex.trollvnc.prefs-changed", &token,
+                             dispatch_get_main_queue(), ^(int t) {
+        (void)t;
+        tvApplyPrefsChanged();
+    });
+    TVLog(@"-daemon: prefs-changed listener installed");
 }
 
 static void stopBonjour(void) {
@@ -5387,6 +5451,9 @@ int main(int argc, const char *argv[]) {
 
         installSignalHandlers();
         installTerminationHandlers();
+
+        // 2026-08-20：设置页热重载通道（App notify_post → 本进程热重载 hot/instant 配置）
+        tvInstallPrefsChangedListener();
     }
 
     CFRunLoopRun();

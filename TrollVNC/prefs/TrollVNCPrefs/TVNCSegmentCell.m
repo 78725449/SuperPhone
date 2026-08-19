@@ -19,7 +19,6 @@
 #import <Preferences/PSSpecifier.h>
 
 @implementation TVNCSegmentCell {
-    UILabel *_titleLabel;
     UISegmentedControl *_control;
     NSArray<NSString *> *_validValues;
 }
@@ -32,40 +31,26 @@
         return nil;
     }
 
-    // 2026-08-20 修复重叠：不用系统的 textLabel 承载标题。
-    // iOS 15 的 UITableViewCell/PSTableCell 对 textLabel 有内置约束（leading/centerY 等），
-    // 若再手动给 textLabel 加约束会双约束冲突 → Auto Layout 破坏性布局 → 标题与控件互相覆盖。
-    // 改为 contentView 自建 UILabel，约束只作用于自建视图，与系统布局完全隔离。
+    // 2026-08-20 选择器行不显示标题：整行只放 UISegmentedControl（用户确认）。
+    // 彻底隐藏系统的 textLabel/detailTextLabel（iOS 15 PSTableCell 会把
+    // detailTextLabel 设为当前值，如 "full"，且对 textLabel 有内置约束——若手动加约束
+    // 会双约束冲突 → Auto Layout 破坏性布局 → 重叠）。layoutSubviews 再兜底一次。
     self.textLabel.hidden = YES;
-
-    _titleLabel = [[UILabel alloc] init];
-    _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    _titleLabel.numberOfLines = 1;
-    _titleLabel.lineBreakMode = NSLineBreakByClipping;
-    [self.contentView addSubview:_titleLabel];
+    self.detailTextLabel.hidden = YES;
 
     _control = [[UISegmentedControl alloc] init];
     _control.translatesAutoresizingMaskIntoConstraints = NO;
     [_control addTarget:self action:@selector(segmentChanged:) forControlEvents:UIControlEventValueChanged];
     [self.contentView addSubview:_control];
 
-    // 布局对齐系统 PSSegmentCell：标题靠左、分段控件靠右。
-    // 空间不足时标题优先保留（高压缩阻力）、控件允许压缩（低压缩阻力），避免窄屏溢出/重叠。
+    // 控件占满整行（左右贴 margins），无标题 → 无并排元素 → 无重叠
     UILayoutGuide *margins = self.contentView.layoutMarginsGuide;
     [NSLayoutConstraint activateConstraints:@[
-        [_titleLabel.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor],
-        [_titleLabel.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-        [_control.leadingAnchor constraintGreaterThanOrEqualToAnchor:_titleLabel.trailingAnchor constant:12],
+        [_control.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor],
         [_control.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor],
         [_control.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
         [self.contentView.heightAnchor constraintGreaterThanOrEqualToConstant:44.0],
     ]];
-    [_titleLabel setContentCompressionResistancePriority:UILayoutPriorityRequired
-                                                 forAxis:UILayoutConstraintAxisHorizontal];
-    [_control setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
-                                              forAxis:UILayoutConstraintAxisHorizontal];
-    [_control setContentHuggingPriority:UILayoutPriorityDefaultLow
-                                forAxis:UILayoutConstraintAxisHorizontal];
 
     [self _syncWithSpecifier:specifier];
     return self;
@@ -75,8 +60,6 @@
     if (!specifier) {
         return;
     }
-
-    _titleLabel.text = [specifier propertyForKey:@"label"];
 
     NSArray *values = [specifier propertyForKey:@"validValues"];
     NSArray *titles = [specifier propertyForKey:@"validTitles"];
@@ -119,14 +102,19 @@
 
 - (void)setSpecifier:(PSSpecifier *)specifier {
     [super setSpecifier:specifier];
-    self.textLabel.hidden = YES;
     [self _syncWithSpecifier:specifier];
 }
 
 - (void)refreshCellContentsWithSpecifier:(PSSpecifier *)specifier {
     [super refreshCellContentsWithSpecifier:specifier];
-    self.textLabel.hidden = YES;
     [self _syncWithSpecifier:specifier];
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    // 兜底：PSListController/PSTableCell 可能在刷新时重新显示系统 label
+    self.textLabel.hidden = YES;
+    self.detailTextLabel.hidden = YES;
 }
 
 - (void)segmentChanged:(UISegmentedControl *)control {
@@ -141,7 +129,6 @@
 - (void)prepareForReuse {
     [super prepareForReuse];
     _control.selectedSegmentIndex = UISegmentedControlNoSegment;
-    _titleLabel.text = nil;
 }
 
 @end
