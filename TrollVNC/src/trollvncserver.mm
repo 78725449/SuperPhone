@@ -3951,10 +3951,19 @@ static void tvHttpServeFile(int fd, SSL *ssl, const char *docRoot, const char *u
     char rel[512];
     snprintf(rel, sizeof(rel), "%s", (urlPath && urlPath[0]) ? urlPath : "/");
     if (strcmp(rel, "/") == 0) strcpy(rel, "/index.vnc");
+    // 浏览器 favicon 探测：webclients 无 favicon.ico，返回 204 消除 404 噪声（index.vnc 已用 data: favicon）
+    if (strcmp(rel, "/favicon.ico") == 0) {
+        tvHttpSendSimple(fd, ssl, "204 No Content", "text/plain", "", 0);
+        return;
+    }
     char full[1024];
     snprintf(full, sizeof(full), "%s%s", docRoot, rel);
+    // docRoot 与目标一并 realpath 再比较前缀：iOS 上 /var 是 /private/var 的符号链接，
+    // 若只用未解析的 docRoot 做 strncmp，resolved 已展开符号链接而 docRoot 未展开 → 全部 404。
     char resolved[1024];
-    if (!realpath(full, resolved) || strncmp(resolved, docRoot, strlen(docRoot)) != 0) {
+    char rootResolved[1024];
+    if (!realpath(docRoot, rootResolved) || !realpath(full, resolved) ||
+        strncmp(resolved, rootResolved, strlen(rootResolved)) != 0) {
         tvHttpSendSimple(fd, ssl, "404 Not Found", "text/plain", "Not Found", 9);
         return;
     }
