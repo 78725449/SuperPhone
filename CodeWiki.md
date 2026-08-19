@@ -553,8 +553,8 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 - `INSTALL_TARGET_PROCESSES = Preferences`、`PRIVATE_FRAMEWORKS = Preferences`、`INSTALL_PATH = /Library/PreferenceBundles`
 - **分叉约束**：源码与 `app/TrollVNC/TrollVNC/` 内同名文件是**分叉副本**，互不引用（AGENTS.md 已知约束）
 
-**Resources/Root.plist 分组**：网关 / 直连参数 / 安全 / 画面与性能 / 进阶（画面）/ 输入 / 高级 / 关于与诊断
-**关键配置项**（端口固定不出现）：GatewayHost / GatewayToken / searchGateway / BindHost / BonjourEnabled / FullPassword / ViewOnlyPassword / ViewOnly / Scale / FrameRateSpec / OrientationSync / OrientationPadFix / ThumbInterval / FabAutoCollapse / FabCollapseMs / DeferWindowSec / MaxInflight / TileSize / FullscreenThresholdPercent / MaxRects / AsyncSwap / NaturalScroll / ModifierMap / AutoAssistEnabled / WheelStepPx / WheelTuning / KeepAliveSec / HttpDir / SslCertFile / SslKeyFile / generateKeys / KeyLogging / viewLogs / resetDefaults
+**Resources/Root.plist 分组（2026-08-20 定稿）**：连接（含 ConnectionMode 网关中继/桥接控制） / 安全（含 AccessMode 完全访问/只读） / 画质 / 交互 / 显示 / 高级（折叠） / 关于
+**关键配置项**（端口固定不出现）：GatewayHost / GatewayToken / searchGateway / ConnectionMode / BonjourEnabled（仅中继）/ AccessMode / FullPassword（仅完全访问）/ ViewOnlyPassword（仅只读）/ PerformanceMode（流畅/智能/画质/自定义）/ Scale / FrameRateSpec / OrientationSync / TileSize（仅自定义）/ MaxRects（仅自定义）/ FullscreenThresholdPercent（仅自定义）/ AsyncSwap（仅自定义）/ DeferWindowSec（仅自定义）/ MaxInflight（仅自定义）/ NaturalScroll / WheelStepPx / AutoAssistEnabled / ThumbInterval / FabAutoCollapse / Notifications / BindHost / KeepAliveSec（连接保活）/ ModifierMap / OrientationPadFix / WatchdogThrottleInterval / WatchdogExitTimeout / KeyLogging / generateKeys / viewLogs / resetDefaults
 
 ---
 
@@ -825,7 +825,7 @@ kbdShiftHeld, kbdShiftTimer, kbdComposing, kbdJustComposed, kbdLastLen
 | `KEY_DEFS` | 10 | 右侧按键直发（power/home/volup/mute/voldn/briup/bridn/snapshot/spotlight/keyboard） | RFB 直发（ks keysym / code DOM code / ptr 指针掩码）；每项 events:{click,long} 或 {click,down,up}（双击/三击=自然连点，显式 double/triple 走 BATCH_CAPS） |
 | `BATCH_CAPS` | 20 | 批量调用菜单（17 hid + service.restart + settings.generateKeys + settings.searchGateway） | invoke API；按 category 分组（hid/service/native） |
 | `GESTURE_DEFS` | 3 | 画布多点手势（pinch→touch.pinch / twotap→touch.twoFingerTap / threetap→touch.threeFingerTap） | invoke API（坐标 0-1 归一化） |
-| `CONFIG_DEFS` | **37 项** | 配置表单契约 | set API；每项含 reload: hot/restart/instant/gateway |
+| `CONFIG_DEFS` | **29 项** | 配置表单契约 | set API；每项含 reload: hot/restart/instant/gateway |
 | `CONFIG_BY_KEY` | Map | 按 key 索引 schema | — |
 | `CATEGORY_LABELS` | 8 类 | 批量菜单分组标题 | hid/touch/stylus/system/native/service/gateway/control |
 
@@ -925,7 +925,7 @@ script app.js?v=167（type=module）
 | 2 | `tunnel-test.js` | 隧道全链路：FakeDevice（register + openTunnel 握手 + 帧解析 + rfb.start/stop 自动 ack）；viewOnly 订阅收到 FT_DATA；viewOnly 上行可转发；ctrl 输入→FT_DATA；新 ctrl 顶掉旧 ctrl（4001）；broadcast 输入→目标设备隧道帧 |
 | 3 | `register-test.js` | P0 注册/心跳/命令：WS /ws/register 已废弃（4000）；TCP 注册带 manifest，能力字段被网关剥离不入库；invoke ack 往返；不 ack 设备 invoke→504；configs set ack；断开→离线→离线 invoke 504；TCP hello 保活；batch 端点可达 |
 | 4 | `dedupe-test.js` | 去重/身份合并：同 deviceId 重复注册仍 1 条、旧连接被关；manual+register 同 host:port 合并为 deviceId；已注册设备不被 manual 降级 |
-| 5 | `caps-test.js` | caps.js 自包含定义契约：BATCH_CAPS=20 且每项含 id/title/icon/category/params、含 service.restart；CONFIG_DEFS=37 且不含 Port$ 项且每项含 reload；KEY_DEFS=10；groupByCategory=3 组；GESTURE_DEFS=3 |
+| 5 | `caps-test.js` | caps.js 自包含定义契约：BATCH_CAPS=20 且每项含 id/title/icon/category/params、含 service.restart；CONFIG_DEFS=29 且不含 Port$ 项且每项含 reload；KEY_DEFS=10；groupByCategory=3 组；GESTURE_DEFS=3 |
 | 6 | `gesture-test.js` | gesture.js 契约：GESTURE_DEFS 与 resolveGesture 三态覆盖一致；normalizePoint 中心/越界钳制/无 rect 兜底；pinch scale>1/<1/钳制 [0.5,2.0]/≈1 跳过 null；未知类型 null |
 | 7 | `pending-replay-test.js` | 回归：会话 A 退出后 100ms 内（debounce rfb.stop 未下发）设备推旧残留帧→网关应缓冲不转发；debounce rfb.stop 到达；重进会话 B 触发 stop→start 重建；会话 B 600ms 窗口内不得收到旧残留数据 |
 | 8 | `press-test.js` | press.js 时序：volup 按下 down、抬起 up、不补 click；home 双击→home.double；单击窗口超时→click；按住 900ms→home.long；power 三击→power.triple |
@@ -1151,7 +1151,7 @@ length:4B (big-endian)
 ### 8.2 端到端数据流
 
 1. **配置写入路径**：用户在 TVNCRootListController 设置页修改 → NSUserDefaults suite `com.82flex.trollvnc` → restart 级 key 触发 `_scheduleRestartConfirm` → `TVNCRestartVNCService()` kill trollvncserver → launchd 自动重启 → trollvncserver 读取最新 defaults
-2. **服务启动路径**：AppDelegate → TVNCServiceCoordinator.registerServiceMonitor → 3s 定时探活 127.0.0.1:46751 → 失败时 spawnService（TRTask posix_spawn trollvncmanager 以 root 身份）→ trollvncmanager 再拉起 trollvncserver
+2. **服务启动路径**：AppDelegate → TVNCServiceCoordinator.registerServiceMonitor → 3s 定时探活 127.0.0.1:46751 → 失败时 spawnService（TRTask posix_spawn trollvncmanager 以 root 身份）→ trollvncmanager 再拉起 trollvncserver。**2026-08-20 桥接控制（ConnectionMode=bridge）**：`ensureServiceRunning` 不 spawn，且**若此前以中继运行（manager 存活）则向 trollvncmanager 发 SIGTERM 停止**（stopService 经 TVNCEnumerateProcesses）——本机仅作控制端连网关，省注册+隧道+后台保活全部开销（探活/后台刷新均空转）
 3. **网关注册路径**：trollvncmanager → TCP 18081 注册到 trollvnc-farm 网关 → 网关设备目录含 selfId → TVNCAppStore.fetchWithRetry 拉取 /api/devices → isRegistered 匹配 selfId → 状态 = Registered → Hero 卡片绿"已连接"
 4. **控制 Tab 路径**：TVNCConsoleWebViewController.buildConsoleURL → `https://{host}:8080/?container=ipa&token=&selfId=` → WKWebView 加载 → farmBridge 桥（writeClipboard / setTabBarHidden）
 5. **客户端列表路径**：TVNCClientListController → TVNCControlConnect 127.0.0.1:5901 RFB 3.8 握手 + cap.hello（mgmt=YES 豁免）→ TVNCControlInvoke clients.list / clients.disconnect / clients.block / clients.unblock
@@ -1281,7 +1281,7 @@ node scripts/wait-ipa.mjs <runId>
 | 项 | 修复前 | 代码真相源 | 修复状态 |
 |---|---|---|---|
 | 测试套件数 | 8（AGENTS.md / 说明文档.md） | **10**（package.json 串行 10 个，含 `gesture-test.js`、`events-test.js`） | ✅ 已修复：AGENTS.md、说明文档.md 同步为 10 套件，套件列表补 `gesture`、`events` |
-| CONFIG_DEFS 项数 | 38（2026-08-17 校准）/ 37 | **37 项**（caps.js 实际 37，`caps-test.js` 断言 `=== 37`；2026-08-18 ServerCursor 移除由 38 回退 37） | ✅ 已修复：AGENTS.md L30、说明文档.md L153 同步为 37 |
+| CONFIG_DEFS 项数 | 38（2026-08-17 校准）/ 37 | **37 项**（caps.js 实际 37，`caps-test.js` 断言 `=== 37`；2026-08-18 ServerCursor 移除由 38 回退 37） | ✅ 已修复：AGENTS.md L30、说明文档.md L153 同步为 37。**2026-08-20 配置治理删 8 项 → 29**（caps-test 断言 `=== 29`），说明文档/CodeWiki 已同步 |
 | BATCH_CAPS | 20（两文档一致） | 20（一致） | — 无需修复 |
 | KEY_DEFS | 10（两文档一致） | 10（一致） | — 无需修复 |
 | GESTURE_DEFS | 3（两文档一致） | 3（一致） | — 无需修复 |

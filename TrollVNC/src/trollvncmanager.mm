@@ -277,6 +277,17 @@ int main(int argc, const char *argv[]) {
         [gWatchDog setThrottleInterval:5.0];
         [gWatchDog setKeepAlive:@YES];
 
+        // 2026-08-20：设置页补齐 Watchdog 配置——启动时从 defaults 读取覆盖默认值（与 CONFIG_DEFS 对齐）
+        NSUserDefaults *wdDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+        NSNumber *exitTimeoutN = [wdDefaults objectForKey:@"WatchdogExitTimeout"];
+        if ([exitTimeoutN isKindOfClass:[NSNumber class]]) {
+            [gWatchDog setExitTimeOut:exitTimeoutN.doubleValue];
+        }
+        NSNumber *throttleN = [wdDefaults objectForKey:@"WatchdogThrottleInterval"];
+        if ([throttleN isKindOfClass:[NSNumber class]]) {
+            [gWatchDog setThrottleInterval:throttleN.doubleValue];
+        }
+
         NSError *argError = nil;
         BOOL validated = [gWatchDog validateConfigurationWithError:&argError];
         if (!validated) {

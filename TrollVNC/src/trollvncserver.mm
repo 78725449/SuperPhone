@@ -757,6 +757,21 @@ static void parseDaemonOptions(void) {
     if ([clientNotifsN isKindOfClass:[NSNumber class]])
         gUserClientNotifsEnabled = clientNotifsN.boolValue;
 
+    // 2026-08-20：设置页补齐通知模式——若配置了 Notifications 枚举则映射到底层开关（优先于旧底层开关）
+    NSString *notifMode = [prefs objectForKey:@"Notifications"];
+    if ([notifMode isKindOfClass:[NSString class]] && notifMode.length > 0) {
+        if ([notifMode isEqualToString:@"connectOnly"]) {
+            gUserSingleNotifsEnabled = NO;
+            gUserClientNotifsEnabled = YES;
+        } else if ([notifMode isEqualToString:@"silent"]) {
+            gUserSingleNotifsEnabled = NO;
+            gUserClientNotifsEnabled = NO;
+        } else { // all
+            gUserSingleNotifsEnabled = YES;
+            gUserClientNotifsEnabled = YES;
+        }
+    }
+
     // Modifier mapping
     NSString *modMap = [prefs objectForKey:@"ModifierMap"];
     if ([modMap isKindOfClass:[NSString class]]) {
@@ -770,12 +785,6 @@ static void parseDaemonOptions(void) {
     NSString *fpsSpec = [prefs objectForKey:@"FrameRateSpec"];
     if ([fpsSpec isKindOfClass:[NSString class]] && fpsSpec.length > 0) {
         parseFrameRateSpec(fpsSpec.UTF8String ?: "");
-    }
-
-    // Wheel tuning (advanced)
-    NSString *wheelTuning = [prefs objectForKey:@"WheelTuning"];
-    if ([wheelTuning isKindOfClass:[NSString class]] && wheelTuning.length > 0) {
-        parseWheelOptions(wheelTuning.UTF8String);
     }
 
     // HTTP dir override and SSL (require absolute paths)
@@ -3258,10 +3267,6 @@ int tvReloadConfigForKey(const char *key) {
         gWheelStepPx = v;
         // 同步更新 max step（与初始化逻辑一致，避免热重载后 max 仍为旧值）
         gWheelMaxStepPx = fmax(2.0 * gWheelStepPx, 96.0) * 1.0;
-    } else if ([k isEqualToString:@"WheelTuning"]) {
-        // 高级滚轮调优串（如 "step=48,natural=1,coalesce=0.03"），复用 parseWheelOptions
-        NSString *tuning = [p stringForKey:@"WheelTuning"];
-        if (tuning.length) parseWheelOptions(tuning.UTF8String);
     } else if ([k isEqualToString:@"ModifierMap"]) {
         // 修饰键映射方案：std(0) / altcmd(1)
         NSString *m = [p stringForKey:@"ModifierMap"];
@@ -3601,7 +3606,7 @@ static NSDictionary *tvExtHandleTypePaste(rfbClientPtr cl, NSDictionary *params)
 }
 
 /** 处理 config.get：按 key 返回设备配置值（前端 UI 行为参数读取，白名单防任意读）。
- *  - params.keys 数组（如 @[@"FabAutoCollapse", @"FabCollapseMs"]），未知 key 返回 null
+ *  - params.keys 数组（如 @[@"FabAutoCollapse"]），未知 key 返回 null
  *  - 与 TRCapabilityRegistry._registerConfig 同源（NSUserDefaults + 默认值），5801 页面经此
  *    读取控制台 FAB 同款配置（菜单自动收起等），保证两端行为一致 */
 static NSDictionary *tvExtHandleConfigGet(rfbClientPtr cl, NSDictionary *params) {
@@ -3615,11 +3620,11 @@ static NSDictionary *tvExtHandleConfigGet(rfbClientPtr cl, NSDictionary *params)
     for (id k in keys) {
         if (![k isKindOfClass:[NSString class]]) continue;
         // 白名单：仅暴露控制端 UI 行为参数，不暴露密码/证书等敏感配置
-        if ([k isEqualToString:@"FabAutoCollapse"] || [k isEqualToString:@"FabCollapseMs"]) {
+        if ([k isEqualToString:@"FabAutoCollapse"]) {
             id v = [d objectForKey:k];
             if (v == nil) {
                 // 与 TRCapabilityRegistry 默认值回退一致
-                v = [k isEqualToString:@"FabAutoCollapse"] ? @YES : @1000;
+                v = @YES;
             }
             values[k] = v;
         } else {

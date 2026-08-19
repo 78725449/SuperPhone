@@ -2627,7 +2627,7 @@ function initFab() {
 
 // ---------- FAB 菜单自动收起（2026-08-17 语义改造：点击菜单按键后收起，不再从展开时计时）----------
 // 配置跟随设备（App 设置页 → 网关 configs 同步）：聚焦设备优先，无聚焦时取设备墙任一注册设备。
-// FabAutoCollapse=点击按键后是否收起（默认开启）；FabCollapseMs=点击按键后延迟 ms 收起（默认 1000ms）。
+// FabAutoCollapse=点击按键后是否收起（默认开启）；收起延时固定 1000ms（FabCollapseMs 已移除，2026-08-20）。
 // instant reload 即时生效。
 let fabCollapseTimer = null;
 function fabCollapseConfigs() {
@@ -2635,7 +2635,7 @@ function fabCollapseConfigs() {
   const c = (dev && dev.configs) || {};
   return {
     auto: c.FabAutoCollapse !== false,                       // 默认开启
-    ms: Math.min(10000, Math.max(100, Number(c.FabCollapseMs) || 1000)),
+    ms: 1000,                                                // 固定收起延时（原 FabCollapseMs 配置已移除）
   };
 }
 function cancelFabAutoCollapse() {
@@ -2829,8 +2829,8 @@ document.addEventListener('pointerdown', (e) => {
     cancelFabAutoCollapse();
   }
 });
-// 2026-08-17 点击菜单按键后按 FabCollapseMs 延迟收起（展开时不再定时收起——点开必为按键）。
-// pointerdown 先于按键自身的 press/click 处理派发，延迟到 FabCollapseMs 后收起不打断操作。
+// 2026-08-17 点击菜单按键后延迟收起（展开时不再定时收起——点开必为按键；延时固定 1000ms）。
+// pointerdown 先于按键自身的 press/click 处理派发，延迟到收起延时后不打断操作。
 $('opsMenu').addEventListener('pointerdown', (e) => {
   if (e.target.closest && e.target.closest('button')) scheduleFabAutoCollapse();
 });

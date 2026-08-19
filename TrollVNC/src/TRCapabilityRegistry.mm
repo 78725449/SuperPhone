@@ -966,9 +966,10 @@ static NSDictionary *TRSearchGatewaySync(void) {
     [self _registerConfig:@"MaxInflight" title:@"最大并行帧" type:@"number" min:@0 max:@8 step:@1 reload:TRConfigReloadHot];
     // Phase 8.3：PerformanceMode 枚举合并（替代 TileSize/MaxRects/FullscreenThresholdPercent/AsyncSwap 独立配置）
     // 4 项底层参数仍保留注册，仅在 custom 模式下由设置页 UI 暴露（visibleWhen 标记）
-    [self _registerConfig:@"PerformanceMode" title:@"性能模式" type:@"enum"
-        enumValues:@[@"balanced", @"quality", @"performance", @"custom"]
-        enumTitles:@[@"均衡", @"画质", @"性能", @"自定义"] reload:TRConfigReloadHot];
+    // 2026-08-20：显示名三档化（流畅/智能/画质/自定义）+ 顺序按光谱排列，内部枚举值不变
+    [self _registerConfig:@"PerformanceMode" title:@"画质模式" type:@"enum"
+        enumValues:@[@"performance", @"balanced", @"quality", @"custom"]
+        enumTitles:@[@"流畅", @"智能", @"画质", @"自定义"] reload:TRConfigReloadHot];
     [self _registerConfig:@"TileSize" title:@"分块大小" type:@"number" min:@8 max:@128 step:@1 reload:TRConfigReloadRestart];
     [self _registerConfig:@"FullscreenThresholdPercent" title:@"脏区阈值" type:@"number" min:@0 max:@100 step:@1 reload:TRConfigReloadHot];
     [self _registerConfig:@"MaxRects" title:@"最大矩形数" type:@"number" min:@1 max:@4096 step:@1 reload:TRConfigReloadRestart];
@@ -977,14 +978,12 @@ static NSDictionary *TRSearchGatewaySync(void) {
     [self _registerConfig:@"ThumbInterval" title:@"卡片墙帧获取间隔(秒)" type:@"number" min:@1 max:@60 step:@1 reload:TRConfigReloadInstant];
     // 2026-08-17：控制台 FAB 悬浮菜单自动收起（App 设置页 → 网关 configs 同步，前端即时读取）
     [self _registerConfig:@"FabAutoCollapse" title:@"悬浮菜单自动收起" type:@"bool" reload:TRConfigReloadInstant];
-    [self _registerConfig:@"FabCollapseMs" title:@"悬浮菜单收起延时(毫秒)" type:@"number" min:@100 max:@10000 step:@100 reload:TRConfigReloadInstant];
     // 输入
     [self _registerConfig:@"NaturalScroll" title:@"自然滚动" type:@"bool" reload:TRConfigReloadInstant];
     [self _registerConfig:@"ModifierMap" title:@"修饰键映射" type:@"enum"
         enumValues:@[@"std",@"altcmd"] enumTitles:@[@"标准",@"Alt→Cmd"] reload:TRConfigReloadHot];
     [self _registerConfig:@"AutoAssistEnabled" title:@"辅助触控" type:@"bool" reload:TRConfigReloadInstant];
     [self _registerConfig:@"WheelStepPx" title:@"滚轮步进" type:@"number" min:@0 max:@1000 step:@1 reload:TRConfigReloadHot];
-    [self _registerConfig:@"WheelTuning" title:@"滚轮调优" type:@"string" reload:TRConfigReloadHot];
     // 安全
     [self _registerConfig:@"ViewOnly" title:@"全局只读" type:@"bool" reload:TRConfigReloadInstant];
     [self _registerConfig:@"FullPassword" title:@"完全访问密码" type:@"password" reload:TRConfigReloadRestart];
@@ -992,13 +991,9 @@ static NSDictionary *TRSearchGatewaySync(void) {
     // 连接（端口固定不可调：5901/5801/18081 写死，不注册 Port/HttpPort/GatewayPort）
     [self _registerConfig:@"BindHost" title:@"绑定地址" type:@"string" reload:TRConfigReloadRestart];
     [self _registerConfig:@"BonjourEnabled" title:@"自动发现" type:@"bool" reload:TRConfigReloadGateway];
-    [self _registerConfig:@"HttpDir" title:@"HTTP 根目录" type:@"string" reload:TRConfigReloadRestart];
-    // Phase 8.1 补齐：网关与 SSL（服务开关 / 网关接入 / SSL 证书）
-    [self _registerConfig:@"Enabled" title:@"服务启用" type:@"bool" reload:TRConfigReloadRestart];
+    // 网关接入（服务开关 Enabled / HTTP 目录 HttpDir / SSL 路径已移除——启动即启用、目录与证书自动管理）
     [self _registerConfig:@"GatewayHost" title:@"网关地址" type:@"string" reload:TRConfigReloadGateway];
     [self _registerConfig:@"GatewayToken" title:@"网关令牌" type:@"password" reload:TRConfigReloadGateway];
-    [self _registerConfig:@"SslCertFile" title:@"SSL证书文件" type:@"string" reload:TRConfigReloadRestart];
-    [self _registerConfig:@"SslKeyFile" title:@"SSL私钥文件" type:@"string" reload:TRConfigReloadRestart];
     // 高级
     [self _registerConfig:@"KeepAliveSec" title:@"保活间隔" type:@"number" min:@0 max:@300 step:@1 reload:TRConfigReloadHot];
     // Phase 8.2：Notifications 枚举合并（替代 SingleNotifEnabled/ClientNotifsEnabled 独立开关）
@@ -1006,11 +1001,9 @@ static NSDictionary *TRSearchGatewaySync(void) {
         enumValues:@[@"all", @"connectOnly", @"silent"]
         enumTitles:@[@"全部通知", @"仅连接通知", @"静默"] reload:TRConfigReloadInstant];
     [self _registerConfig:@"KeyLogging" title:@"键盘日志" type:@"bool" reload:TRConfigReloadInstant];
-    // 附录 E：Watchdog / HID 活属性配置（hot 级别，setConfig 时即时应用到对象属性）
+    // 附录 E：Watchdog 活属性配置（hot 级别，setConfig 时即时应用到对象属性；崩溃自动重启底层已实现不暴露）
     [self _registerConfig:@"WatchdogThrottleInterval" title:@"重启节流间隔" type:@"number" min:@1 max:@300 step:@1 reload:TRConfigReloadHot];
-    [self _registerConfig:@"WatchdogKeepAlive" title:@"崩溃自动重启" type:@"bool" reload:TRConfigReloadHot];
     [self _registerConfig:@"WatchdogExitTimeout" title:@"退出超时" type:@"number" min:@1 max:@60 step:@1 reload:TRConfigReloadHot];
-    [self _registerConfig:@"HIDKeepAliveInterval" title:@"HID防休眠间隔" type:@"number" min:@0 max:@300 step:@1 reload:TRConfigReloadHot];
 }
 
 /** 注册配置 schema 表项（内部辅助） */
@@ -1234,7 +1227,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
             @"FullscreenThresholdPercent": @0, @"MaxRects": @256,
             @"WheelStepPx": @48.0, @"KeepAliveSec": @0,
             @"ThumbInterval": @5,
-            @"FabAutoCollapse": @YES, @"FabCollapseMs": @1000,
+            @"FabAutoCollapse": @YES,
         };
         return defs[key] ?: @0;
     }
@@ -1242,11 +1235,13 @@ static NSDictionary *TRSearchGatewaySync(void) {
         NSDictionary *defs = @{
             @"FrameRateSpec": @"60", @"ModifierMap": @"std",
             @"GatewayHost": @"", @"GatewayToken": @"",
-            @"SslCertFile": @"", @"SslKeyFile": @"",
         };
         return defs[key] ?: @"";
     }
     if ([cap.type isEqualToString:@"enum"]) {
+        // 2026-08-20：PerformanceMode 默认值特判为 balanced（智能）——批次 4 改 enumValues 顺序
+        // 后 firstObject 变 performance（流畅），但默认档语义是「智能」，避免未设置时上报偏移
+        if ([key isEqualToString:@"PerformanceMode"]) return @"balanced";
         return cap.enumValues.firstObject ?: @0;
     }
     return nil;
@@ -1369,15 +1364,11 @@ static NSDictionary *TRSearchGatewaySync(void) {
         // hot 级别：先尝试 trollvncserver 的 key（更新 C 全局变量 + framebuffer 重建等）
         int rc = tvReloadConfigForKey(key.UTF8String);
         if (rc != 0) {
-            // 非 trollvncserver 管理的 hot key → Watchdog/HID 活属性即时应用（附录 E）
+            // 非 trollvncserver 管理的 hot key → Watchdog 活属性即时应用（附录 E）
             TRWatchDog *wd = [TRGatewayClient sharedClient].watchdog;
             if (wd) {
                 if ([key isEqualToString:@"WatchdogThrottleInterval"]) wd.throttleInterval = [value doubleValue];
-                else if ([key isEqualToString:@"WatchdogKeepAlive"]) wd.keepAlive = @([value boolValue]);
                 else if ([key isEqualToString:@"WatchdogExitTimeout"]) wd.exitTimeOut = [value doubleValue];
-            }
-            if ([key isEqualToString:@"HIDKeepAliveInterval"]) {
-                [STHIDEventGenerator sharedGenerator].keepAliveInterval = [value doubleValue];
             }
         }
     } else if (cap.reload == TRConfigReloadRestart) {

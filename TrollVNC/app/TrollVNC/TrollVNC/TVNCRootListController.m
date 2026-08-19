@@ -187,14 +187,21 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
  *   且带 collapseGroup）保留，标题带 ▸/▾ 指示状态
  * - visibleOnlyCustom：仅 PerformanceMode=custom 时显示（4 项底层传输参数）
  * - FrameRateSpecCustom：仅 FrameRateSpec=自定义（custom）时显示
+ * - visibleOnlyRelay（2026-08-20）：仅 ConnectionMode=relay（网关中继）时显示（自动发现仅被控端有意义）
+ * - visibleOnlyAccessFull / visibleOnlyAccessReadonly（2026-08-20）：按访问模式显示对应密码
  * @returns {NSMutableArray} 过滤后的显示列表（可变，供 _specifiers 直接持有）
  */
 - (NSMutableArray<PSSpecifier *> *)_visibleSpecifiersFrom:(NSArray<PSSpecifier *> *)all {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     NSString *pm = [ud stringForKey:@"PerformanceMode"] ?: @"balanced";
     NSString *frs = [ud stringForKey:@"FrameRateSpec"];
+    NSString *connMode = [ud stringForKey:@"ConnectionMode"] ?: @"relay";
+    NSString *accessMode = [ud stringForKey:@"AccessMode"] ?: @"full";
     BOOL customPM = [pm isEqualToString:@"custom"];
     BOOL customFRS = [frs isEqualToString:@"custom"];
+    BOOL relay = [connMode isEqualToString:@"relay"];
+    BOOL accessFull = [accessMode isEqualToString:@"full"];
+    BOOL accessReadonly = [accessMode isEqualToString:@"readonly"];
 
     NSMutableArray *visible = [NSMutableArray arrayWithCapacity:all.count];
     for (PSSpecifier *sp in all) {
@@ -207,6 +214,11 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
         // 自定义帧率输入：仅选「自定义」段时显示
         NSString *key = [sp propertyForKey:@"key"];
         if ([key isEqualToString:@"FrameRateSpecCustom"] && !customFRS) continue;
+        // 自动发现：仅网关中继（relay）模式显示——桥接控制不注册，无发现意义
+        if ([sp propertyForKey:@"visibleOnlyRelay"] && !relay) continue;
+        // 访问密码：仅完全访问模式显示；只读密码：仅只读模式显示
+        if ([sp propertyForKey:@"visibleOnlyAccessFull"] && !accessFull) continue;
+        if ([sp propertyForKey:@"visibleOnlyAccessReadonly"] && !accessReadonly) continue;
         // 折叠组头：标题附展开/收起指示（以 label 为基准重建，避免箭头叠加）
         if (isCollapseHeader) {
             NSString *marker = [_collapsedGroups containsObject:cg] ? @"▸" : @"▾";
@@ -240,13 +252,16 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
  * - FrameRateSpec 变更 → 刷新（选「自定义」段才显示自定义输入框；"custom" 为 UI 状态，
  *   设备端 parseFrameRateSpec 对非数字安全回退 0=未指定）
  * - FrameRateSpecCustom 提交 → 写回 FrameRateSpec（用户输入的真实帧率格式）
+ * - Notifications 变更（2026-08-20）→ 同步写底层 SingleNotifEnabled/ClientNotifsEnabled
+ *   （与 TRCapabilityRegistry setConfig 对称，保证 currentConfigs 反推一致）+ 弹重启确认
  * - restart 级 key 变更 → 防抖弹重启确认框（替代原 Apply 按钮）
  */
 - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)spec {
     [super setPreferenceValue:value specifier:spec];
     if ([self hasManagedConfiguration]) return; // 托管页无折叠/联动/重启确认，避免 _allSpecifiers 为空清空列表
     NSString *key = [spec propertyForKey:@"key"];
-    if ([key isEqualToString:@"PerformanceMode"] || [key isEqualToString:@"FrameRateSpec"]) {
+    if ([key isEqualToString:@"PerformanceMode"] || [key isEqualToString:@"FrameRateSpec"] ||
+        [key isEqualToString:@"ConnectionMode"] || [key isEqualToString:@"AccessMode"]) {
         _specifiers = [self _visibleSpecifiersFrom:_allSpecifiers];
         [self reloadSpecifiers];
     } else if ([key isEqualToString:@"FrameRateSpecCustom"]) {
@@ -255,6 +270,23 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
             _frameRateSpecSpecifier) {
             [super setPreferenceValue:value specifier:_frameRateSpecSpecifier];
         }
+    } else if ([key isEqualToString:@"Notifications"]) {
+        // 通知模式枚举 → 映射底层开关（trollvncserver 启动时读底层开关生效）
+        NSString *mode = [value isKindOfClass:[NSString class]] ? value : @"all";
+        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+        if ([mode isEqualToString:@"connectOnly"]) {
+            [defaults setObject:@NO forKey:@"SingleNotifEnabled"];
+            [defaults setObject:@YES forKey:@"ClientNotifsEnabled"];
+        } else if ([mode isEqualToString:@"silent"]) {
+            [defaults setObject:@NO forKey:@"SingleNotifEnabled"];
+            [defaults setObject:@NO forKey:@"ClientNotifsEnabled"];
+        } else { // all
+            [defaults setObject:@YES forKey:@"SingleNotifEnabled"];
+            [defaults setObject:@YES forKey:@"ClientNotifsEnabled"];
+        }
+        [defaults synchronize];
+        [self _scheduleRestartConfirm]; // 通知行为由 trollvncserver 启动读取，需重启生效
+        return;
     }
     if (key && [[self _restartRequiredKeys] containsObject:key]) {
         [self _scheduleRestartConfirm];
@@ -324,7 +356,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
         keys = [NSSet setWithArray:@[
             @"BindHost", @"FullPassword", @"ViewOnlyPassword",
             @"TileSize", @"MaxRects", @"AsyncSwap",
-            @"HttpDir", @"SslCertFile", @"SslKeyFile",
+            @"ConnectionMode", // 2026-08-20：切换网关中继/桥接控制需重启服务生效（注册/隧道行为变化）
         ]];
     });
     return keys;

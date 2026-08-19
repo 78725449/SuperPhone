@@ -17,6 +17,7 @@
 
 #import "TVNCServiceCoordinator.h"
 #import "TRTask.h"
+#import "TVNCUtil.h"
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -215,6 +216,20 @@ NSString *TVNCDeviceUDID(void) {
 }
 
 - (void)ensureServiceRunning {
+    // 2026-08-20 桥接控制模式：本机仅作为控制端连接网关，不注册/不开隧道。
+    // 若此前以网关中继运行（trollvncmanager 已 spawn 且注册+隧道存活），需主动停止，
+    // 否则切换后注册/隧道仍继续，与「桥接控制不注册」语义冲突。
+    NSString *connMode = [_userDefaults stringForKey:@"ConnectionMode"];
+    if (connMode.length && [connMode isEqualToString:@"bridge"]) {
+        if ([self _isServiceRunning]) {
+            [self stopService];
+        }
+        if (_serviceRunning) {
+            _serviceRunning = NO;
+            [[NSNotificationCenter defaultCenter] postNotificationName:TVNCServiceStatusDidChangeNotification object:self];
+        }
+        return;
+    }
     BOOL running = [self _isServiceRunning];
     if (!running) {
         [self checkPrebootDependencies];
@@ -224,6 +239,17 @@ NSString *TVNCDeviceUDID(void) {
         _serviceRunning = running;
         [[NSNotificationCenter defaultCenter] postNotificationName:TVNCServiceStatusDidChangeNotification object:self];
     }
+}
+
+/// 停止本地服务：向 trollvncmanager 发 SIGTERM（其处理 SIGTERM 退出并连带 watchdog/子进程）。
+/// trollvncserver 由 watchdog 管辖，manager 退出时一并清理；启动器（launchd）不自动重启 manager。
+- (void)stopService {
+    TVNCEnumerateProcesses(^(pid_t pid, NSString *executablePath, BOOL *stop) {
+        if ([executablePath.lastPathComponent isEqualToString:@"trollvncmanager"]) {
+            kill(pid, SIGTERM);
+            *stop = YES;
+        }
+    });
 }
 
 - (BOOL)_isServiceRunning {
