@@ -21,6 +21,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 /**
  * 全宽按钮 cell（2026-08-20）：用于搜索/连接网关、重新生成证书。
+ * 仅负责渲染（自建 UILabel 标题 + 圆角背景）；点击交系统 PSListController
+ * didSelect → [specifier perform] 触发 action。
+ * 注意：不可手动调 [specifier target]/[specifier action]（PSSpecifier 无此 getter）。
  * 与 app/TrollVNC/TrollVNC/TVNCButtonCell 为分叉副本，互不引用。
  */
 @interface TVNCButtonCell : PSTableCell
