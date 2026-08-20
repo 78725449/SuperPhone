@@ -46,6 +46,12 @@ BOOL tvncVerboseLoggingEnabled = NO;
 
 static TRWatchDog *gWatchDog = nil;
 
+// 2026-08-21：trollvncserver 崩溃日志路径（watchdog 重定向的 stdout/stderr 文件）。
+// 由 main 在计算 jailbreak root 后赋值，供日志 HTTP 端点（5803）远程读取——manager 常驻，
+// 即使 trollvncserver 崩溃循环，日志端点仍可用（5801/5802/5901 均随 server 失效）。
+static NSString *gLogStdoutPath = nil;
+static NSString *gLogStderrPath = nil;
+
 static void mSignalAction(int signal, struct __siginfo *info, void *context) {
     if (signal == SIGCHLD) {
         int unused;
@@ -225,6 +231,121 @@ static void openLocalDummyService(uint16_t port) {
     fprintf(stderr, "[dummy-listener] listening on 127.0.0.1:%u\n", (unsigned)port);
 }
 
+// 2026-08-21：远程日志端点（局域网 0.0.0.0:5803）。GET /stderr 返回 trollvncserver 崩溃日志
+// 尾部 64KB、GET /stdout 返回 stdout 尾部 64KB。独立于 trollvncserver（随其崩溃仍可用），
+// 供 AI/脚本远程读取崩溃日志定位根因。无鉴权（仅内网，与 5802 管理 API 同等级别）。
+static const uint16_t kLogHttpPort = 5803;
+
+static NSString *tvReadLogTail(NSString *path, NSUInteger maxBytes) {
+    if (!path) return @"";
+    NSFileHandle *fh = [NSFileHandle fileHandleForReadingAtPath:path];
+    if (!fh) return @"(log file not found)";
+    unsigned long long size = [fh seekToEndOfFile];
+    unsigned long long off = (size > maxBytes) ? (size - maxBytes) : 0;
+    [fh seekToFileOffset:off];
+    NSData *data = [fh readDataToEndOfFile];
+    [fh closeFile];
+    NSString *s = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (!s) s = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+    return s ?: @"";
+}
+
+static void tvLogHttpWriteRaw(int fd, const char *head, NSData *body) {
+    NSMutableData *out = [NSMutableData dataWithBytes:head length:strlen(head)];
+    [out appendData:body];
+    ssize_t written = 0;
+    while (written < (ssize_t)out.length) {
+        ssize_t n = write(fd, out.bytes + written, out.length - written);
+        if (n <= 0) break;
+        written += n;
+    }
+}
+
+static void tvLogHttpHandleClient(int cfd) {
+    char buf[1024];
+    ssize_t n = recv(cfd, buf, sizeof(buf) - 1, 0);
+    if (n <= 0) { close(cfd); return; }
+    buf[n] = '\0';
+    NSString *reqLine = [[[NSString stringWithUTF8String:buf] componentsSeparatedByString:@"\r\n"] firstObject];
+    NSString *path = nil;
+    if ([reqLine hasPrefix:@"GET "]) {
+        NSArray *parts = [reqLine componentsSeparatedByString:@" "];
+        if (parts.count >= 2) path = parts[1];
+    }
+    NSString *logPath = nil;
+    if ([path isEqualToString:@"/stderr"]) {
+        logPath = gLogStderrPath;
+    } else if ([path isEqualToString:@"/stdout"]) {
+        logPath = gLogStdoutPath;
+    }
+    if (!logPath) {
+        const char *notFound = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n";
+        (void)send(cfd, notFound, strlen(notFound), 0);
+        close(cfd);
+        return;
+    }
+    NSString *content = tvReadLogTail(logPath, 64 * 1024);
+    NSData *body = [content dataUsingEncoding:NSUTF8StringEncoding];
+    char head[256];
+    snprintf(head, sizeof(head),
+             "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n"
+             "Access-Control-Allow-Origin: *\r\nConnection: close\r\nContent-Length: %lu\r\n\r\n",
+             (unsigned long)body.length);
+    tvLogHttpWriteRaw(cfd, head, body);
+    close(cfd);
+}
+
+static void openLogHttpService(void) {
+    static int sLogFD = -1;
+    static dispatch_source_t sLogSource = nil;
+    if (sLogFD != -1 || sLogSource) return;
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return;
+    int yes = 1;
+    (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags != -1) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_len = sizeof(addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(kLogHttpPort);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        fprintf(stderr, "[log-http] bind 0.0.0.0:%u failed: %s\n", (unsigned)kLogHttpPort, strerror(errno));
+        close(fd);
+        return;
+    }
+    if (listen(fd, 8) < 0) {
+        fprintf(stderr, "[log-http] listen failed: %s\n", strerror(errno));
+        close(fd);
+        return;
+    }
+
+    sLogFD = fd;
+    sLogSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)fd, 0, dispatch_get_main_queue());
+    if (!sLogSource) { close(fd); sLogFD = -1; return; }
+    dispatch_source_set_event_handler(sLogSource, ^{
+        while (1) {
+            int cfd = accept(fd, NULL, NULL);
+            if (cfd < 0) break;
+            // 读日志是轻量 IO，但为不阻塞 manager 主 runloop（watchdog 心跳依赖），
+            // 每连接独立线程处理（与 5802 每连接线程同策略）。
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                tvLogHttpHandleClient(cfd);
+            });
+        }
+    });
+    dispatch_source_set_cancel_handler(sLogSource, ^{
+        if (sLogFD != -1) { close(sLogFD); sLogFD = -1; }
+    });
+    dispatch_resume(sLogSource);
+    fprintf(stderr, "[log-http] listening on 0.0.0.0:%u (stderr/stdout tail)\n", (unsigned)kLogHttpPort);
+}
+
 int main(int argc, const char *argv[]) {
     if (!argv || !argv[0] || argv[0][0] != '/') {
         fprintf(stderr, "This program must be run from an absolute path\n");
@@ -315,6 +436,10 @@ int main(int argc, const char *argv[]) {
 
         NSString *stdoutPath = [rootPath stringByAppendingPathComponent:@"tmp/trollvnc-stdout.log"];
         NSString *stderrPath = [rootPath stringByAppendingPathComponent:@"tmp/trollvnc-stderr.log"];
+
+        // 供日志端点（5803）远程读取
+        gLogStdoutPath = stdoutPath;
+        gLogStderrPath = stderrPath;
 
         [gWatchDog setStandardOutputPath:stdoutPath];
         [gWatchDog setStandardErrorPath:stderrPath];
@@ -410,6 +535,10 @@ int main(int argc, const char *argv[]) {
     // Open a passive local probe port for clients to detect availability.
     // IPv4 127.0.0.1:46751, no response; accept and close.
     openLocalDummyService(kTvAlivePort);
+
+    // 2026-08-21：远程日志端点（局域网 5803）——trollvncserver 崩溃循环时 5801/5802/5901
+    // 均不可用，仅 manager 常驻可提供崩溃日志（stderr/stdout 尾部），供 AI/脚本远程定位根因。
+    openLogHttpService();
 
     // 2026-08-20 双通知自治模型：App（mobile 沙盒）对 root 进程 kill 恒 EPERM，
     // 旧「App 枚举进程发信号」的停止/重启通路从未生效。改为 manager 订阅跨进程通知自治：
