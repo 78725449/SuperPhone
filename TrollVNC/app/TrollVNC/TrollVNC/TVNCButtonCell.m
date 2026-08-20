@@ -102,7 +102,11 @@
     }
     // 2026-08-20 修复闪退：action 为无参方法（generateKeys/searchGateway/connectGateway），
     // 必须无参调用——用 [specifier perform] 内部是 performSelector:withObject: 带参调用无参方法会崩溃。
+    // ARC 对未知 selector 的 performSelector 报 -Warc-performSelector-leaks（-Werror 拦截），局部抑制
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
     [target performSelector:action];
+#pragma clang diagnostic pop
 }
 
 @end
