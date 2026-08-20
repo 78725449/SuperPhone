@@ -32,7 +32,9 @@
 #import <string.h>
 
 #import "StripedTextTableViewController.h"
+#import "TVNCGatewayClient.h"
 #import "TVNCRootListController.h"
+#import "TVNCServiceCoordinator.h"
 #import "TVNCUtil.h"
 #import "ZTSelfSignedCertificate.h"
 
@@ -264,13 +266,15 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 }
 
 /**
- * 配置值写入拦截（2026-08-19 动态显隐联动；2026-08-20 热重载通道 + 自动重启，两职责合并）：
+ * 配置值写入拦截（2026-08-19 动态显隐联动；2026-08-20 热重载通道 + 自动重启 + manager 自治）：
  * - PerformanceMode 变更 → 刷新（custom 才显示 4 项底层参数）+ 预设写底层参数 → 自动重启（预设含 restart 级）
  * - FrameRateSpec 变更 → 刷新（帧率五档：15/30/60/动态/自定义，动态=15-60 范围自适应；自定义=显示输入框）+ 热重载
  * - Notifications 变更（2026-08-20）→ 同步写底层 SingleNotifEnabled/ClientNotifsEnabled
  *   （与 TRCapabilityRegistry setConfig 对称，保证 currentConfigs 反推一致）+ 热重载即时生效
- * - 所有写入后 notify_post(TVNC_NOTIFY_PREFS_CHANGED) → trollvncserver 热重载 hot/instant 配置（帧率/通知/缩放等不重启）
- * - restart 级 key（密码/BindHost/TileSize/MaxRects/AsyncSwap/PerformanceMode 预设）→ 防抖自动重启服务
+ * - 所有写入后 notify_post(TVNC_NOTIFY_PREFS_CHANGED)，双接收方跨进程自治：
+ *   trollvncserver 热重载 hot/instant 配置；trollvncmanager 处理桥接自退/网关配置重连/watchdog 参数热调
+ * - restart 级 key（密码/BindHost/TileSize/MaxRects/AsyncSwap/BonjourEnabled/PerformanceMode 预设）
+ *   → 防抖自动重启（restart-service 通知 → manager watchdog 重启 server）
  */
 - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)spec {
     [super setPreferenceValue:value specifier:spec];
@@ -318,12 +322,12 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     }
     if (key && [[self _restartRequiredKeys] containsObject:key]) {
         [self _scheduleAutoRestart];
-    } else if (key && [[self _managerRestartKeys] containsObject:key]) {
-        // 2026-08-20：gateway/watchdog 配置 → manager 级重启（kill 后协调器 3s 内重新 spawn）
-        [self _scheduleManagerRestart];
     }
-    // 2026-08-20 设置页热重载通道：写 defaults 后通知 trollvncserver 热重载 hot/instant 配置
-    // （帧率/通知/缩放等即时生效）；restart 级配置由上方 _scheduleAutoRestart 重启生效，notify 无副作用。
+    // 2026-08-20 设置页通知通道（双接收方，均跨进程自治）：
+    // - trollvncserver：热重载 hot/instant 配置（帧率/通知等即时生效）
+    // - trollvncmanager：桥接模式自退；网关地址/令牌变更重读配置并重连（原 manager 重启级
+    //   配置 GatewayHost/Token/Watchdog* 即时生效，无需 kill 重启——沙盒内 kill root 恒 EPERM）
+    // restart 级配置由上方 _scheduleAutoRestart（restart-service 通知）重启生效。
     notify_post(TVNC_NOTIFY_PREFS_CHANGED);
 }
 
@@ -393,6 +397,9 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
             // 2026-08-20 根因修复：Scale/OrientationPadFix 会重建 framebuffer，不能热重载
             // （热重载在非 RFB 线程 free 旧 buffer → 与后台 rfbRunEventLoop 竞态崩溃），改 restart 级
             @"Scale", @"OrientationPadFix",
+            // 2026-08-20：BonjourEnabled 为 server 启动期标志（reload 不注销已注册服务），
+            // 原 manager 重启级 → 归入 server 重启级（watchdog 重启生效）
+            @"BonjourEnabled",
             // 2026-08-20 起不再触发重启：
             // - ConnectionMode：TVNCServiceCoordinator 每 3s 轮询自动生效（relay→拉起 / bridge→停服务），重启是冗余中断
             // - FrameRateSpec：hot 级，设置页热重载通道（notify → trollvncserver tvApplyPrefsChanged）即时生效
@@ -403,21 +410,11 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     return keys;
 }
 
-/// 需重启 trollvncmanager 的配置键（2026-08-20）：生效对象在 manager 进程（启动时读取），
-/// server 热重载回调无法应用 → kill manager 后由 TVNCServiceCoordinator 3s 轮询重新 spawn。
-/// - gateway 级：GatewayHost/GatewayToken（manager 经 env 读取）/ BonjourEnabled（server 但统一走此路径）
-/// - watchdog 级：WatchdogThrottleInterval/WatchdogExitTimeout（TRWatchDog 属性，manager 启动时读 defaults）
-- (NSSet<NSString *> *)_managerRestartKeys {
-    static NSSet<NSString *> *keys = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        keys = [NSSet setWithArray:@[
-            @"GatewayHost", @"GatewayToken", @"BonjourEnabled",
-            @"WatchdogThrottleInterval", @"WatchdogExitTimeout",
-        ]];
-    });
-    return keys;
-}
+/// 2026-08-20：原「需重启 trollvncmanager 的配置键」机制整体移除——App 沙盒内 kill root
+/// 进程恒 EPERM，该通路从未生效。新归属：
+/// - GatewayHost/GatewayToken/WatchdogThrottleInterval/WatchdogExitTimeout：
+///   prefs-changed 通知 → manager 自治（重读配置/重连注册/watchdog 属性热调），即时生效
+/// - BonjourEnabled：归入 _restartRequiredKeys（server 启动期标志，经 watchdog 重启生效）
 
 /// 防抖：连续修改多个 restart 配置时合并为一次重启（400ms 窗口）
 - (void)_scheduleAutoRestart {
@@ -457,25 +454,6 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     }
 
     TVNCRestartVNCService();
-    [_notificationGenerator notificationOccurred:UINotificationFeedbackTypeSuccess];
-    [self.view endEditing:YES];
-}
-
-/// 防抖：gateway/watchdog 配置变更合并为一次 manager 重启（400ms 窗口）
-- (void)_scheduleManagerRestart {
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(_managerRestartNow) object:nil];
-    [self performSelector:@selector(_managerRestartNow) withObject:nil afterDelay:0.4];
-}
-
-/// 重启 trollvncmanager（2026-08-20）：kill 后 TVNCServiceCoordinator 每 3s 探活自动重新
-/// spawn（读最新 env + defaults，连带 trollvncserver 重启）——gateway/watchdog 配置即时生效。
-- (void)_managerRestartNow {
-    TVNCEnumerateProcesses(^(pid_t pid, NSString *executablePath, BOOL *stop) {
-        if ([executablePath.lastPathComponent isEqualToString:@"trollvncmanager"]) {
-            kill(pid, SIGTERM);
-            *stop = YES;
-        }
-    });
     [_notificationGenerator notificationOccurred:UINotificationFeedbackTypeSuccess];
     [self.view endEditing:YES];
 }
@@ -821,8 +799,10 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 
 #pragma mark - Gateway Search (internal farm)
 
-/// 2026-08-20：桥接控制模式的「连接网关」按钮——用当前填写的网关地址/令牌直接建立连接
-/// （触发 manager 级重启，trollvncmanager 重新拉起读取新配置；纯控制端不注册/不开隧道）
+/// 2026-08-20 双模式的「连接网关」按钮（幂等 ensure 语义，不碰进程重启）：
+/// - 桥接控制：纯 App 级——用当前配置拉取设备目录验证网关可达，反馈设备数
+/// - 网关中继：ensureServiceRunning——manager 死则立即 spawn（读最新 defaults，不等 3s 轮询）；
+///   活则交给 manager 的 prefs-changed 自治（重读配置/重连），无需 kill 重启（沙盒内恒 EPERM）
 - (void)connectGateway {
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
     NSString *host = [defaults stringForKey:@"GatewayHost"];
@@ -831,7 +811,22 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
         return;
     }
     [self showGatewayMessage:[NSString stringWithFormat:@"正在连接网关 %@…", host]];
-    [self _scheduleManagerRestart];
+    NSString *connMode = [defaults stringForKey:@"ConnectionMode"] ?: @"relay";
+    if ([connMode isEqualToString:@"bridge"]) {
+        __weak typeof(self) weakSelf = self;
+        [[TVNCGatewayClient sharedClient] fetchDevicesWithCompletion:^(NSArray<NSDictionary *> *devices, NSError *error) {
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            if (devices) {
+                [self showGatewayMessage:[NSString stringWithFormat:@"网关可达 · %ld 台设备", (long)devices.count]];
+            } else {
+                [self showGatewayMessage:[NSString stringWithFormat:@"网关不可达：%@",
+                    error.localizedDescription ?: @"未知错误"]];
+            }
+        }];
+    } else {
+        [[TVNCServiceCoordinator sharedCoordinator] ensureServiceRunning];
+    }
 }
 
 - (void)searchGateway {
@@ -916,8 +911,9 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     [defaults synchronize];
     [self showGatewayMessage:[NSString stringWithFormat:@"已设置网关 %@:%d", host, 18081]];
     [self reloadSpecifiers];
-    // 2026-08-20：网关地址变更 → manager 级重启（重新注册到新网关）
-    [self _scheduleManagerRestart];
+    // 2026-08-20：网关地址变更 → prefs-changed 通知（manager 自治：worker 检测 host 变更后
+    // 断开重连注册到新网关；此路径绕过 setPreferenceValue，须显式发通知）
+    notify_post(TVNC_NOTIFY_PREFS_CHANGED);
 }
 
 - (NSString *)ipAddressOfService:(NSNetService *)service {

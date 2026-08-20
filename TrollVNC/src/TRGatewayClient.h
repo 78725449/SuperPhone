@@ -24,6 +24,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// 停止连接与重连
 - (void)stop;
 
+/// 外部进程（App 设置页）配置变更通知（2026-08-20）：标记重发 register，
+/// worker 线程 ≤5s 内拾取；网关地址变更由 worker 检测后主动断开重连（见 _connectAndRun）。
+/// 由 trollvncmanager 的 prefs-changed darwin 通知处理链调用。
+- (void)noteExternalPrefsChanged;
+
 /// 设置服务重启处理器（由 trollvncmanager 注入，restart 命令触发）
 /// @param handler 返回 YES 表示重启已发起
 @property(nonatomic, copy, nullable) BOOL (^restartHandler)(void);

@@ -529,9 +529,10 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 - (void)refreshStatus {
     TVNCGatewayState st = [TVNCAppStore sharedStore].gatewayState;
 
-    // 第 1 行右侧：状态点（绿=已注册 / 黄=连接中 / 红=不可达 / 灰=未连接）+ 状态文字
+    // 第 1 行右侧：状态点（绿=已注册或桥接可达 / 黄=连接中 / 红=不可达 / 灰=未连接）+ 状态文字
     switch (st) {
         case TVNCGatewayStateRegistered:
+        case TVNCGatewayStateBridgeConnected: // 桥接模式：网关可达即「已连接」（本机不注册）
             self.heroStatusDot.backgroundColor = [UIColor systemGreenColor];
             self.heroStatusLabel.text = @"已连接";
             break;
@@ -553,6 +554,9 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     switch (st) {
         case TVNCGatewayStateRegistered:
             self.connectStateLabel.text = @"已注册到网关，隧道已建立";
+            break;
+        case TVNCGatewayStateBridgeConnected:
+            self.connectStateLabel.text = @"桥接控制 · 网关可达";
             break;
         case TVNCGatewayStateServiceUp:
             self.connectStateLabel.text = @"正在连接网关…";

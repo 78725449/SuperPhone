@@ -17,6 +17,7 @@ typedef NS_ENUM(NSInteger, TVNCGatewayState) {
     TVNCGatewayStateServiceUp,       // 服务进程在跑、拉取进行中（网关可达性未定）
     TVNCGatewayStateRegistered,      // 网关设备目录已含 selfDeviceId（真注册成功）
     TVNCGatewayStateDisconnected,    // 网关不可达/拉取失败
+    TVNCGatewayStateBridgeConnected = 4, // 桥接控制模式：网关可达（本机不注册，无注册完成判定）
 };
 
 /// 网关状态变化通知（object = TVNCAppStore）
@@ -32,6 +33,10 @@ FOUNDATION_EXPORT NSNotificationName const TVNCDeviceDirectoryDidUpdateNotificat
 
 /// 当前网关连接状态（默认 Idle）
 @property (nonatomic, assign, readonly) TVNCGatewayState gatewayState;
+
+/// 当前是否桥接控制模式（ConnectionMode=bridge：本机仅控制端，不注册/不开隧道）。
+/// 动态读取（不缓存），与设置页实时一致；默认 relay。
+@property (nonatomic, assign, readonly) BOOL isBridgeMode;
 
 /// 确保设备目录就绪（懒加载）：缓存有效（<60s）直接复用；无效则拉取并结果驱动重试。
 /// 页面（连接页）出现时调用，幂等。

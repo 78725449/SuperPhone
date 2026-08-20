@@ -67,6 +67,13 @@ static const NSInteger kRetryMaxCount = 8;
     [self fetchWithRetry];
 }
 
+- (BOOL)isBridgeMode {
+    // App（mobile 用户）直接读 mobile 域——设置页写入处，无需跨域兜底
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSString *mode = [d stringForKey:@"ConnectionMode"];
+    return [mode isEqualToString:@"bridge"];
+}
+
 - (BOOL)isRegistered {
     // 动态读取（不缓存）：设备端 trollvncmanager 以 root 生成 UUID 于 root 用户域，见 TVNCReadSelfDeviceId
     NSString *did = TVNCReadSelfDeviceId();
@@ -116,6 +123,11 @@ static const NSInteger kRetryMaxCount = 8;
             if (directoryChanged) {
                 [[NSNotificationCenter defaultCenter] postNotificationName:TVNCDeviceDirectoryDidUpdateNotification
                                                                     object:strongSelf];
+            }
+            // 桥接控制模式（2026-08-20）：本机不注册，网关可达即目标状态（无注册完成判定，不重试）
+            if ([strongSelf isBridgeMode]) {
+                [strongSelf setGatewayState:TVNCGatewayStateBridgeConnected];
+                return;
             }
             if ([strongSelf isRegistered]) {
                 [strongSelf setGatewayState:TVNCGatewayStateRegistered]; // 注册完成：真「已连接」

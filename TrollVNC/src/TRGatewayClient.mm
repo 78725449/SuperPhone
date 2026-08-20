@@ -119,10 +119,8 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 #pragma mark - 配置
 
 - (NSString *)_gatewayHost {
-    // ???????App spawn manager ?? sharedTaskEnvironment ???
-    // ?? manager ? root ?????? App ????? defaults suite?
-    const char *envHost = getenv("TVNC_GATEWAY_HOST");
-    if (envHost && envHost[0]) return [NSString stringWithUTF8String:envHost];
+    // 2026-08-20：不再读 env（spawn 时刻冻结的 TVNC_GATEWAY_HOST 会永久遮蔽设置页后续修改，
+    // 是「网关地址变更不生效」的根因之一）。读取顺序：root 域 defaults → mobile 域 plist 兜底。
     NSString *host = [_defaults stringForKey:kGatewayHostKey];
     if (host.length) return host;
     // 2026-08-20 根因修复：App 设置页写的是 mobile 用户域（/var/mobile/...），root 进程
@@ -145,8 +143,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
  * @return token 字符串，未配置返回 nil
  */
 - (NSString *)_gatewayToken {
-    const char *envTok = getenv("TVNC_GATEWAY_TOKEN");
-    if (envTok && envTok[0]) return [NSString stringWithUTF8String:envTok];
+    // 2026-08-20：与 _gatewayHost 对称，不再读 env（同款遮蔽问题）
     NSString *t = [_defaults stringForKey:@"GatewayToken"];
     if (t.length) return t;
     // 2026-08-20：与 _gatewayHost 对称，兜底读 mobile 用户域（App 设置页写入的令牌）
@@ -322,6 +319,22 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     }
 }
 
+- (void)noteExternalPrefsChanged {
+    // 2026-08-20：App 设置页（另一进程）配置变更，经 manager 的 prefs-changed 通知链转进来。
+    // 与 _defaultsChanged 同语义（NSUserDefaultsDidChangeNotification 只在本进程写 defaults 时触发，
+    // 收不到跨进程写入）：标记重发 register（worker ≤5s 内拾取），并允许下次读取新设备名。
+    // 网关地址变更不走 reregister——写到旧 fd 会把注册发到旧网关，由 _connectAndRun
+    // 超时分支的 host 比对主动断开重连（见 _connectAndRun）。
+    @synchronized(self) {
+        _needsReregister = YES;
+        _deviceName = nil;
+        // 网关配置从空到有且 worker 未跑：立即启动注册
+        if (!_started && [self _gatewayHost]) {
+            [self start];
+        }
+    }
+}
+
 - (void)_workerMain {
     while (_started && ![[NSThread currentThread] isCancelled]) {
         @autoreleasepool {
@@ -338,6 +351,8 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 - (BOOL)_connectAndRun {
     NSString *host = [self _gatewayHost];
     if (!host.length) return NO;
+    // 2026-08-20：记录本次连接目标，select 超时分支据此检测网关地址变更（见下方比对）
+    NSString *connectedHost = [host copy];
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return NO;
@@ -396,6 +411,15 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             return NO;
         }
         if (sel == 0) {
+            // 2026-08-20：网关地址变更检测——host 与本次连接目标不一致时断开重连。
+            // 旧逻辑（下方 reregister）只往当前 fd 重发 register，地址变更时会把注册发到旧网关；
+            // 返回 NO 由外层 worker 重连（重读最新 host，退避 2s）。
+            NSString *curHost = [self _gatewayHost];
+            if (curHost.length && ![curHost isEqualToString:connectedHost]) {
+                TVLog(@"[gw] gateway host changed (%@ -> %@), reconnecting", connectedHost, curHost);
+                close(fd);
+                return NO;
+            }
             // 超时：设置变更 → 重发 register（读最新 NSUserDefaults）；否则按间隔发 hello
             time_t now = time(NULL);
             BOOL rereg = NO;

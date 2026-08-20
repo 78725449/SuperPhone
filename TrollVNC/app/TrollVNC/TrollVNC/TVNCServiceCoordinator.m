@@ -88,16 +88,10 @@ NSString *TVNCDeviceUDID(void) {
         if (languageCode) {
             env[@"TVNC_LANGUAGE_CODE"] = languageCode;
         }
-        // ??????????? trollvncmanager?manager ? root persona ???
-        // ??? App ????? defaults suite???????????TRGatewayClient ?????
-        NSUserDefaults *gwDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
-        NSString *gwHost = [gwDefaults stringForKey:@"GatewayHost"];
-        if (gwHost.length) {
-            env[@"TVNC_GATEWAY_HOST"] = gwHost;
-            // GatewayPort 固定 18081（网关注册端口）不可调，不注入 env（TRGatewayClient 固定读取）
-            NSString *gwToken = [gwDefaults stringForKey:@"GatewayToken"];
-            if (gwToken.length) env[@"TVNC_GATEWAY_TOKEN"] = gwToken;
-        }
+        // 2026-08-20：不再注入 TVNC_GATEWAY_HOST/TOKEN——env 冻结在 spawn 时刻，会永久遮蔽
+        // 设置页后续修改（网关地址变更不生效的多重根因之一）。root 域配置读取统一走
+        // TRGatewayClient 的「root defaults + mobile 域 plist 兜底」双域链（见 _gatewayHost）。
+        // 网关配置变更经 prefs-changed 通知由 manager 自治处理（重读配置/重连），无需重启进程。
 #if TARGET_IPHONE_SIMULATOR
         [env addEntriesFromDictionary:[[NSProcessInfo processInfo] environment]];
 #endif
@@ -217,13 +211,10 @@ NSString *TVNCDeviceUDID(void) {
 
 - (void)ensureServiceRunning {
     // 2026-08-20 桥接控制模式：本机仅作为控制端连接网关，不注册/不开隧道。
-    // 若此前以网关中继运行（trollvncmanager 已 spawn 且注册+隧道存活），需主动停止，
-    // 否则切换后注册/隧道仍继续，与「桥接控制不注册」语义冲突。
+    // manager 订阅 prefs-changed 通知后自退（root 进程自治，复用 SIGHUP 清理路径）；
+    // 协调器只负责「不拉起」——App 沙盒内 kill root 进程恒 EPERM，旧停止通路从未生效。
     NSString *connMode = [_userDefaults stringForKey:@"ConnectionMode"];
     if (connMode.length && [connMode isEqualToString:@"bridge"]) {
-        if ([self _isServiceRunning]) {
-            [self stopService];
-        }
         if (_serviceRunning) {
             _serviceRunning = NO;
             [[NSNotificationCenter defaultCenter] postNotificationName:TVNCServiceStatusDidChangeNotification object:self];
@@ -239,17 +230,6 @@ NSString *TVNCDeviceUDID(void) {
         _serviceRunning = running;
         [[NSNotificationCenter defaultCenter] postNotificationName:TVNCServiceStatusDidChangeNotification object:self];
     }
-}
-
-/// 停止本地服务：向 trollvncmanager 发 SIGTERM（其处理 SIGTERM 退出并连带 watchdog/子进程）。
-/// trollvncserver 由 watchdog 管辖，manager 退出时一并清理；启动器（launchd）不自动重启 manager。
-- (void)stopService {
-    TVNCEnumerateProcesses(^(pid_t pid, NSString *executablePath, BOOL *stop) {
-        if ([executablePath.lastPathComponent isEqualToString:@"trollvncmanager"]) {
-            kill(pid, SIGTERM);
-            *stop = YES;
-        }
-    });
 }
 
 - (BOOL)_isServiceRunning {

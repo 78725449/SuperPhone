@@ -205,19 +205,22 @@ New project/
 
 #### 4.1.2 trollvncmanager.mm — 守护进程主程序
 
-**文件**：`TrollVNC/src/trollvncmanager.mm`（346 行）
-**入口**：`main(argc, argv)` (L166)
+**文件**：`TrollVNC/src/trollvncmanager.mm`（474 行）
+**入口**：`main(argc, argv)` (L228)
 
-**核心职责**：用文件锁实现单例；监控自身可执行文件 vnode 删除事件（被升级覆盖时 exit 让 launchd 重启）；启动 `TRWatchDog` 守护 `trollvncserver`；启动 `TRGatewayClient` 注册到网关 18081；监听 SIGCHLD/SIGHUP/SIGINT/SIGTERM；在 127.0.0.1:46751 打开哑服务端口供探测。
+**核心职责**：用文件锁实现单例；监控自身可执行文件 vnode 删除事件（被升级覆盖时 exit 让 launchd 重启）；启动 `TRWatchDog` 守护 `trollvncserver`；启动 `TRGatewayClient` 注册到网关 18081；监听 SIGCHLD/SIGHUP/SIGINT/SIGTERM；在 127.0.0.1:46751 打开哑服务端口供探测；启动时 sysctl 清理孤儿 trollvncserver；**双通知自治（2026-08-20，替代 App kill 通路——mobile 沙盒 kill root 恒 EPERM）**：订阅 `prefs-changed`（桥接模式自退 / GatewayClient 重发 register / watchdog 热调，双域读取）与 `restart-service`（watchdog 重启 trollvncserver，root 杀 root）。
 
 **关键函数**：
 
 | 函数 | 行号 | 作用 |
 |---|---|---|
-| `main(argc, argv)` | L166 | 单例锁 → 探测越狱根 → 创建 TRWatchDog → 配置可执行文件/环境/用户 → start → 注入 restartHandler → 启动 TRGatewayClient → 信号注册 → openLocalDummyService → CFRunLoopRun |
-| `monitorSelfAndRestartIfVnodeDeleted(executable)` | L65 | dispatch_source 监听 `DISPATCH_VNODE_DELETE`，文件被删除时 exit(EXIT_SUCCESS) |
-| `openLocalDummyService(port)` | L90 | 在 127.0.0.1:port 监听 TCP，accept 后立即 close 不响应 |
-| `mSignalAction` / `mSignalHandler` | L47-63 | SIGCHLD 调 waitpid(WNOHANG) 收尸；SIGHUP/SIGINT 停 run loop；SIGTERM 直接退出 |
+| `main(argc, argv)` | L228 | 单例锁 → killStaleVncServer 清孤儿 → 探测越狱根 → 创建 TRWatchDog → 配置可执行文件/环境/用户 → start → 注入 restartHandler → 启动 TRGatewayClient → 信号注册 → openLocalDummyService → 订阅双通知（prefs-changed / restart-service）→ bridge 启动守卫 → CFRunLoopRun → 清理（watchdog stop + 等子进程退出） |
+| `monitorSelfAndRestartIfVnodeDeleted(executable)` | L101 | dispatch_source 监听 `DISPATCH_VNODE_DELETE`，文件被删除时 exit(EXIT_SUCCESS) |
+| `killStaleVncServer()` | L71 | sysctl KERN_PROC_ALL + KERN_PROCARGS2 枚举（root 可读任意进程 argv），SIGKILL 残留 trollvncserver（释放 5901/5801/5802） |
+| `tvManagerReadPref(defaults, key)` | L126 | 双域配置读取：root defaults 优先，mobile 域 plist 文件兜底（App 设置页写 mobile 域、root 进程读不到） |
+| `tvManagerIsBridgeMode()` | L136 | ConnectionMode=bridge 判定（未设置/非 bridge 均 relay） |
+| `openLocalDummyService(port)` | L145 | 在 127.0.0.1:port 监听 TCP，accept 后立即 close 不响应 |
+| `mSignalAction` / `mSignalHandler` | L49-65 | SIGCHLD 调 waitpid(WNOHANG) 收尸；SIGHUP/SIGINT 停 run loop；SIGTERM 直接退出 |
 
 **关键常量**：`SINGLETON_MARKER_PATH = "/var/mobile/Library/Caches/com.82flex.trollvnc.manager.pid"`、`kTvAlivePort = 46751`、stdout/stderr 重定向到 `<jbroot>/tmp/trollvnc-stdout.log` / `trollvnc-stderr.log`
 
@@ -276,7 +279,7 @@ New project/
 
 **关键常量**：`kHelloInterval=30.0`、`kReadTimeout=5.0`、`kMinRetryDelay=2.0`、`kMaxRetryDelay=30.0`；端口硬编码 `_gatewayPort=18081` / `_vncPort=5901` / `_httpPort=5801`
 
-**环境变量**：`TVNC_GATEWAY_HOST` / `TVNC_GATEWAY_TOKEN` 优先于 NSUserDefaults
+**环境变量**：无（2026-08-20 删除 env 读取——spawn 时刻冻结的 `TVNC_GATEWAY_HOST` 会永久遮蔽设置页后续修改）；网关配置读 `_gatewayHost` 双域链：root defaults → mobile 域 plist 兜底；host 变更由 `_connectAndRun` 超时分支比对 connectedHost 主动断开重连；`noteExternalPrefsChanged`（manager prefs-changed 通知链调入）标记重发 register + 清设备名缓存 + 未启动时立即 start
 
 ---
 
@@ -477,9 +480,9 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 
 **关键方法/函数**：
 - `TVNCDeviceUDID()` — 全局函数；dlopen libMobileGestalt.dylib + MGCopyAnswer("UniqueDeviceID")，失败回退 NSUserDefaults
-- `sharedTaskEnvironment` — 静态环境字典；注入 TVNC_LANGUAGE_CODE / TVNC_GATEWAY_HOST / TVNC_GATEWAY_TOKEN
+- `sharedTaskEnvironment` — 静态环境字典；仅注入 TVNC_LANGUAGE_CODE（2026-08-20 删除 TVNC_GATEWAY_HOST/TOKEN env 注入——冻结在 spawn 时刻会永久遮蔽设置页修改；root 域配置读取统一走 TRGatewayClient 双域链）
 - `registerServiceMonitor` — 启动 3s NSTimer + registerBackgroundTasks
-- `ensureServiceRunning` — _isServiceRunning 失败时调 checkPrebootDependencies + spawnService
+- `ensureServiceRunning` — ConnectionMode=bridge 时早退（本机仅控制端，不 spawn；stopService 已删——manager 收 prefs-changed 通知自退）；否则 _isServiceRunning 失败时调 checkPrebootDependencies + spawnService
 - `_isServiceRunning` — 真机：socket connect 127.0.0.1:46751 端口探活（沙盒安全准确）；不用进程枚举（iOS 沙盒 KERN_PROCARGS2 读 root 进程 EPERM，枚举会误判）；模拟器：恒 YES
 - `spawnService` — TRTask 启动 trollvncmanager（setUserIdentifier:0 root / setGroupIdentifier:0）
 - `checkPrebootDependencies` — 读 LaunchAtLogin → SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions
@@ -487,13 +490,14 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 
 #### 4.2.5 TVNCAppStore — 控制端状态层
 
-**核心职责**：单一数据源；网关状态机 + 设备目录缓存（60s TTL）+ 结果驱动重试退避（1→2→4→8→15s 封顶，最多 8 次 ≈ 75s 上限）。
+**核心职责**：单一数据源；网关状态机（Idle/ServiceUp/Registered/Disconnected/**BridgeConnected**——2026-08-20 桥接模式：isBridgeMode 网关可达即目标态，无注册判定不重试）+ 设备目录缓存（60s TTL）+ 结果驱动重试退避（1→2→4→8→15s 封顶，最多 8 次 ≈ 75s 上限）。
 
 **关键方法**：
 - `ensureDeviceDirectory` — 缓存新鲜（< 60s）直接复用；网关未配置 return；否则 fetchWithRetry
 - `isRegistered` — 动态读 TVNCReadSelfDeviceId()，遍历目录匹配自身 id 且该记录 online=true（2026-08-20：仅活跃注册才算已连接，db 残留记录不再误判）
+- `isBridgeMode` — 动态读 ConnectionMode（App 直读 mobile 域，无需跨域兜底）；默认 relay
 - `fetchWithRetry` — 防重入；置 ServiceUp 态；performFetch
-- `performFetch` — 调 TVNCGatewayClient.fetchDevicesWithCompletion；按结果判定 Registered/Disconnected
+- `performFetch` — 调 TVNCGatewayClient.fetchDevicesWithCompletion；按结果判定 Registered/Disconnected/BridgeConnected（桥接模式可达即达，不重试）
 - `retryIfNeeded` — MIN(startInterval * (1<<retryCount), maxInterval) 退避
 
 #### 4.2.6 TVNCRootListController — 设置 Tab
@@ -503,9 +507,10 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 **关键方法**：
 - `specifiers` — 优先 ManagedRoot.plist（hasManagedConfiguration），否则 Root.plist
 - `setPreferenceValue:specifier:` — 覆写；restart 级 key 变更时调 _scheduleAutoRestart；**2026-08-20 起所有写入后 `notify_post(TVNC_NOTIFY_PREFS_CHANGED)` 触发设置页热重载通道**（帧率/通知/缩放等即时生效）
-- `_restartRequiredKeys` — BindHost/FullPassword/ViewOnlyPassword/TileSize/MaxRects/AsyncSwap/PerformanceMode（2026-08-20 起移除 ConnectionMode——协调器 3s 轮询自动生效、FrameRateSpec——热重载生效）
-- `_managerRestartKeys` — GatewayHost/GatewayToken/BonjourEnabled/WatchdogThrottleInterval/WatchdogExitTimeout（2026-08-20：生效对象在 manager 进程 → kill trollvncmanager 由协调器 3s 自动拉起；`_scheduleManagerRestart`/`_managerRestartNow` 防抖调度；saveGateway 保存网关同样触发）
-- `_scheduleAutoRestart` / `_autoRestartNow` — 400ms 防抖；校验 BindHost IPv4/IPv6 literal；TVNCRestartVNCService() 自动重启（2026-08-20 由确认弹窗改为自动重启，不再弹框打断）
+- `_restartRequiredKeys` — BindHost/FullPassword/ViewOnlyPassword/TileSize/MaxRects/AsyncSwap/Scale/OrientationPadFix/BonjourEnabled/PerformanceMode（2026-08-20：Scale/OrientationPadFix 重建 framebuffer 改 restart 级；BonjourEnabled server 启动期标志改 restart 级；移除 ConnectionMode——协调器 3s 轮询自动生效、FrameRateSpec——热重载生效、Notifications——instant 级）
+- `_managerRestartKeys` 已删除（2026-08-20 双通知自治：App kill root 恒 EPERM 通路废弃）——GatewayHost/GatewayToken 变更走 prefs-changed → noteExternalPrefsChanged 重发 register + worker host 比对断开重连；WatchdogThrottleInterval/WatchdogExitTimeout 由 manager 收通知热调即时生效；BonjourEnabled 归入 server restart 级
+- `_scheduleAutoRestart` / `_autoRestartNow` — 400ms 防抖；校验 BindHost IPv4/IPv6 literal；TVNCRestartVNCService()（notify_post restart-service → manager watchdog 重启 trollvncserver）自动重启（2026-08-20 由确认弹窗改为自动重启，不再弹框打断）
+- `connectGateway` — 双模式分派（2026-08-20 幂等 ensure 语义）：bridge 纯 App 级 fetchDevices 验证网关可达并反馈设备数（不碰进程）；relay 走 ensureServiceRunning（manager 死则立即 spawn，活则交给 prefs-changed 自治），均无 kill 重启
 - `navigationController:willShowViewController:animated:` — 根页隐藏导航栏 / 子页显示
 - `_reallyGenerateKeys` — 调 ZTSelfSignedCertificate.generateWithCommonName → 写 cacertPath/cakeyPath（0600）
 - `viewLogs` — StripedTextTableViewController 打开 `<jbroot>/tmp/trollvnc-stderr.log`
@@ -1150,13 +1155,18 @@ length:4B (big-endian)
 │                       (FT_ 帧协议透传 RFB + CMD)                 │
 │                                                                 │
 │   openLocalDummyService(46751)  ←─ 探测端口                     │
+│   notify_register_dispatch:                                     │
+│     prefs-changed   ←─ App 设置页写入（bridge 自退/重发 register/│
+│                       watchdog 热调，双域读取 tvManagerReadPref）│
+│     restart-service ←─ App TVNCRestartVNCService()（notify_post，│
+│                       watchdog 重启 trollvncserver）             │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ### 8.2 端到端数据流
 
-1. **配置写入路径**：用户在 TVNCRootListController 设置页修改 → NSUserDefaults suite `com.82flex.trollvnc` → **2026-08-20 起写后 `notify_post("com.82flex.trollvnc.prefs-changed")` → trollvncserver `tvApplyPrefsChanged` 热重载 hot/instant 配置（帧率/通知/缩放等即时生效）**；restart 级 key（密码/BindHost/TileSize/MaxRects/AsyncSwap/PerformanceMode 预设）触发 `_scheduleAutoRestart` → `TVNCRestartVNCService()` kill trollvncserver → launchd 自动重启 → trollvncserver 读取最新 defaults；ConnectionMode 不重启（TVNCServiceCoordinator 3s 轮询自动生效）
-2. **服务启动路径**：AppDelegate → TVNCServiceCoordinator.registerServiceMonitor → 3s 定时探活 127.0.0.1:46751 → 失败时 spawnService（TRTask posix_spawn trollvncmanager 以 root 身份）→ trollvncmanager 再拉起 trollvncserver。**2026-08-20 桥接控制（ConnectionMode=bridge）**：`ensureServiceRunning` 不 spawn，且**若此前以中继运行（manager 存活）则向 trollvncmanager 发 SIGTERM 停止**（stopService 经 TVNCEnumerateProcesses）——本机仅作控制端连网关，省注册+隧道+后台保活全部开销（探活/后台刷新均空转）
+1. **配置写入路径**：用户在 TVNCRootListController 设置页修改 → NSUserDefaults suite `com.82flex.trollvnc` → **2026-08-20 起写后 `notify_post("com.82flex.trollvnc.prefs-changed")` → trollvncserver `tvApplyPrefsChanged` 热重载 hot/instant 配置（帧率/通知/自然滚动等即时生效）+ trollvncmanager 双通知自治（GatewayClient 重发 register / watchdog 热调）**；restart 级 key（密码/BindHost/TileSize/MaxRects/AsyncSwap/Scale/OrientationPadFix/BonjourEnabled/PerformanceMode 预设）触发 `_scheduleAutoRestart` → `TVNCRestartVNCService()`（notify_post restart-service）→ trollvncmanager watchdog 重启 trollvncserver（root 杀 root）→ 读取最新 defaults；ConnectionMode 不重启（TVNCServiceCoordinator 3s 轮询自动生效）
+2. **服务启动路径**：AppDelegate → TVNCServiceCoordinator.registerServiceMonitor → 3s 定时探活 127.0.0.1:46751 → 失败时 spawnService（TRTask posix_spawn trollvncmanager 以 root 身份）→ trollvncmanager 再拉起 trollvncserver。**2026-08-20 桥接控制（ConnectionMode=bridge）**：`ensureServiceRunning` 不 spawn；切桥接时设置页 notify_post(prefs-changed) → trollvncmanager 收通知检测 bridge 模式自退（CFRunLoopStop 清理路径，root 进程自治）——本机仅作控制端连网关，省注册+隧道+后台保活全部开销（探活/后台刷新均空转）
 3. **网关注册路径**：trollvncmanager → TCP 18081 注册到 trollvnc-farm 网关 → 网关设备目录含 selfId → TVNCAppStore.fetchWithRetry 拉取 /api/devices → isRegistered 匹配 selfId → 状态 = Registered → Hero 卡片绿"已连接"
 4. **控制 Tab 路径**：TVNCConsoleWebViewController.buildConsoleURL → `https://{host}:8080/?container=ipa&token=&selfId=` → WKWebView 加载 → farmBridge 桥（writeClipboard / setTabBarHidden）
 5. **客户端列表路径**：TVNCClientListController → TVNCControlConnect 127.0.0.1:5901 RFB 3.8 握手 + cap.hello（mgmt=YES 豁免）→ TVNCControlInvoke clients.list / clients.disconnect / clients.block / clients.unblock

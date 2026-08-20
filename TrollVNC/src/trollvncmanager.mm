@@ -120,6 +120,25 @@ static void monitorSelfAndRestartIfVnodeDeleted(const char *executable) {
     dispatch_resume(monitorSource);
 }
 
+/// 2026-08-20 双域配置读取：root defaults 优先，mobile 域 plist 兜底。
+/// App 设置页（mobile 用户）写 mobile 域，manager（root）的 NSUserDefaults 实例读不到，
+/// 须文件级兜底——与 TRGatewayClient _gatewayHost 同款双域链。
+static id tvManagerReadPref(NSUserDefaults *defaults, NSString *key) {
+    id v = [defaults objectForKey:key];
+    if (v) return v;
+    NSDictionary *mobilePrefs = [NSDictionary dictionaryWithContentsOfFile:
+        @"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist"];
+    return mobilePrefs[key];
+}
+
+/// 当前是否桥接控制模式（ConnectionMode=bridge：本机仅控制端，不注册/不开隧道）。
+/// 默认 relay（未设置/非 bridge 均按中继处理）。
+static BOOL tvManagerIsBridgeMode(void) {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    id mode = tvManagerReadPref(defaults, @"ConnectionMode");
+    return [mode isKindOfClass:[NSString class]] && [mode isEqualToString:@"bridge"];
+}
+
 // Open a local IPv4 TCP listener on 127.0.0.1:port that accepts and
 // immediately closes connections (no response). This lets clients detect
 // the service by a successful connect without any protocol exchange.
@@ -321,12 +340,13 @@ int main(int argc, const char *argv[]) {
         [gWatchDog setKeepAlive:@YES];
 
         // 2026-08-20：设置页补齐 Watchdog 配置——启动时从 defaults 读取覆盖默认值（与 CONFIG_DEFS 对齐）
+        // 双域读取（tvManagerReadPref）：设置页写 mobile 域，root defaults 直读恒空导致从未生效
         NSUserDefaults *wdDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
-        NSNumber *exitTimeoutN = [wdDefaults objectForKey:@"WatchdogExitTimeout"];
+        NSNumber *exitTimeoutN = tvManagerReadPref(wdDefaults, @"WatchdogExitTimeout");
         if ([exitTimeoutN isKindOfClass:[NSNumber class]]) {
             [gWatchDog setExitTimeOut:exitTimeoutN.doubleValue];
         }
-        NSNumber *throttleN = [wdDefaults objectForKey:@"WatchdogThrottleInterval"];
+        NSNumber *throttleN = tvManagerReadPref(wdDefaults, @"WatchdogThrottleInterval");
         if ([throttleN isKindOfClass:[NSNumber class]]) {
             [gWatchDog setThrottleInterval:throttleN.doubleValue];
         }
@@ -389,7 +409,55 @@ int main(int argc, const char *argv[]) {
     // IPv4 127.0.0.1:46751, no response; accept and close.
     openLocalDummyService(kTvAlivePort);
 
-    CFRunLoopRun();
+    // 2026-08-20 双通知自治模型：App（mobile 沙盒）对 root 进程 kill 恒 EPERM，
+    // 旧「App 枚举进程发信号」的停止/重启通路从未生效。改为 manager 订阅跨进程通知自治：
+    // - prefs-changed（设置页每次写入后必发）：桥接模式自退 + 通知 GatewayClient 重读配置
+    // - restart-service（restart 级配置生效）：watchdog 重启 trollvncserver（root 杀 root）
+    // 通知名字面量与 trollvncserver.mm / TVNCUtil.h 约定一致（src/ 进程不引 App 头文件）。
+    {
+        int prefsToken = 0;
+        notify_register_dispatch("com.82flex.trollvnc.prefs-changed", &prefsToken,
+            dispatch_get_main_queue(), ^(int token) {
+                (void)token;
+                // 桥接控制模式：本机仅作为控制端，不注册/不开隧道 → 自退
+                //（CFRunLoopStop 复用 SIGHUP 同款清理路径：watchdog 停止 → 等子进程退出）
+                if (tvManagerIsBridgeMode()) {
+                    fprintf(stderr, "[manager] bridge mode detected -> self exit\n");
+                    CFRunLoopStop(CFRunLoopGetMain());
+                    return;
+                }
+                // 网关地址/令牌/设备名变更 → 标记重发 register（host 变更由 worker 断开重连）
+                [[TRGatewayClient sharedClient] noteExternalPrefsChanged];
+                // watchdog 节流/退出超时：TRWatchDog 属性可热调，即时生效
+                //（2026-08-20 前为 manager 重启级；双域读取保证 mobile 域设置页写入可见）
+                NSUserDefaults *wd = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+                NSNumber *exitN = tvManagerReadPref(wd, @"WatchdogExitTimeout");
+                if ([exitN isKindOfClass:[NSNumber class]]) [gWatchDog setExitTimeOut:exitN.doubleValue];
+                NSNumber *thrN = tvManagerReadPref(wd, @"WatchdogThrottleInterval");
+                if ([thrN isKindOfClass:[NSNumber class]]) [gWatchDog setThrottleInterval:thrN.doubleValue];
+            });
+    }
+    {
+        int restartToken = 0;
+        notify_register_dispatch("com.82flex.trollvnc.restart-service", &restartToken,
+            dispatch_get_main_queue(), ^(int token) {
+                (void)token;
+                // restart 级配置生效（密码/BindHost/Scale/TileSize/Bonjour 等）：
+                // 经 watchdog 重启 trollvncserver——App 沙盒内直接 kill root 恒 EPERM 的唯一可行路径
+                if (gWatchDog) {
+                    [gWatchDog restart];
+                    fprintf(stderr, "[manager] restart-service notified -> watchdog restarting trollvncserver\n");
+                }
+            });
+    }
+
+    // 启动守卫：coordinator 的 spawn 决策（relay）与本订阅建立之间若切到 bridge
+    //（该次 notify 已丢），此处二次检查兜底——跳过 runloop 直接走清理路径退出，不留孤儿进程
+    if (!tvManagerIsBridgeMode()) {
+        CFRunLoopRun();
+    } else {
+        fprintf(stderr, "[manager] bridge mode at startup -> skip runloop, cleanup\n");
+    }
     @autoreleasepool {
         pid_t child = [gWatchDog processIdentifier];
         [gWatchDog stop];
