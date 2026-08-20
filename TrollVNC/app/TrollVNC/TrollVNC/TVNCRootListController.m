@@ -209,10 +209,20 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     for (PSSpecifier *sp in all) {
         NSString *cg = [sp propertyForKey:@"collapseGroup"];
         // 2026-08-20：折叠组头识别需同时兼容 cell=PSButtonCell 与 cellClass=TVNCButtonCell
-        // （「重新生成证书」已改 cellClass=TVNCButtonCell，无 cell 键，否则被误判为折叠子项而隐藏）
+        // （「重新生成证书」已改 cellClass=TVNCButtonCell，无 cell 键，否则被误判为折叠子项而隐藏）。
+        // 修复闪退（2026-08-20 根因）：PSSpecifier 的 cellClass 键会被 PSListController 解析为
+        // Class 对象（NSClassFromString 后 setProperty:forKey:），不能直接 isEqualToString: 比较——
+        // 对 Class 对象调用 isEqualToString: 是 unrecognized selector → 进入设置页即闪退。
+        // 类型安全判断：NSString 走字符串比较，Class 对象走指针比较。
+        BOOL isTVNCButton = NO;
+        id cc = [sp propertyForKey:@"cellClass"];
+        if ([cc isKindOfClass:[NSString class]]) {
+            isTVNCButton = [(NSString *)cc isEqualToString:@"TVNCButtonCell"];
+        } else if (cc) {
+            isTVNCButton = ((Class)cc == NSClassFromString(@"TVNCButtonCell"));
+        }
         BOOL isCollapseHeader = (cg != nil &&
-                                 ([[sp propertyForKey:@"cell"] isEqualToString:@"PSButtonCell"] ||
-                                  [[sp propertyForKey:@"cellClass"] isEqualToString:@"TVNCButtonCell"]));
+                                 ([[sp propertyForKey:@"cell"] isEqualToString:@"PSButtonCell"] || isTVNCButton));
         // 折叠组的子项：组被折叠则隐藏
         if (cg != nil && !isCollapseHeader && [_collapsedGroups containsObject:cg]) continue;
         // 底层传输参数：仅 custom 模式显示
