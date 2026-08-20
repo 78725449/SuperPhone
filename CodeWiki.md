@@ -480,7 +480,7 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 - `sharedTaskEnvironment` — 静态环境字典；注入 TVNC_LANGUAGE_CODE / TVNC_GATEWAY_HOST / TVNC_GATEWAY_TOKEN
 - `registerServiceMonitor` — 启动 3s NSTimer + registerBackgroundTasks
 - `ensureServiceRunning` — _isServiceRunning 失败时调 checkPrebootDependencies + spawnService
-- `_isServiceRunning` — 真机：socket connect 127.0.0.1:46751 端口为主判定（沙盒安全）；进程枚举仅在实际读到进程 argv 时收紧（iOS 沙盒 KERN_PROCARGS2 读 root 进程 EPERM，枚举不可作唯一判定——2026-08-20 二修）；模拟器：恒 YES
+- `_isServiceRunning` — 真机：socket connect 127.0.0.1:46751 端口探活（沙盒安全准确）；不用进程枚举（iOS 沙盒 KERN_PROCARGS2 读 root 进程 EPERM，枚举会误判）；模拟器：恒 YES
 - `spawnService` — TRTask 启动 trollvncmanager（setUserIdentifier:0 root / setGroupIdentifier:0）
 - `checkPrebootDependencies` — 读 LaunchAtLogin → SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions
 - `registerBackgroundTasks` / `scheduleBGRefresh` / `handleBGRefreshTask:` — BGTaskScheduler 注册 `com.82flex.trollvnc.refresh`，earliestBeginDate=15min
