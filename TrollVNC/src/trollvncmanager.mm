@@ -47,7 +47,7 @@ BOOL tvncVerboseLoggingEnabled = NO;
 static TRWatchDog *gWatchDog = nil;
 
 // 2026-08-21：trollvncserver 崩溃日志路径（watchdog 重定向的 stdout/stderr 文件）。
-// 由 main 在计算 jailbreak root 后赋值，供日志 HTTP 端点（5803）远程读取——manager 常驻，
+// 由 main 在计算 jailbreak root 后赋值，供日志 HTTP 端点（5902）远程读取——manager 常驻，
 // 即使 trollvncserver 崩溃循环，日志端点仍可用（5801/5802/5901 均随 server 失效）。
 static NSString *gLogStdoutPath = nil;
 static NSString *gLogStderrPath = nil;
@@ -231,10 +231,10 @@ static void openLocalDummyService(uint16_t port) {
     fprintf(stderr, "[dummy-listener] listening on 127.0.0.1:%u\n", (unsigned)port);
 }
 
-// 2026-08-21：远程日志端点（局域网 0.0.0.0:5803）。GET /stderr 返回 trollvncserver 崩溃日志
+// 2026-08-21：远程日志端点（局域网 0.0.0.0:5902）。GET /stderr 返回 trollvncserver 崩溃日志
 // 尾部 64KB、GET /stdout 返回 stdout 尾部 64KB。独立于 trollvncserver（随其崩溃仍可用），
 // 供 AI/脚本远程读取崩溃日志定位根因。无鉴权（仅内网，与 5802 管理 API 同等级别）。
-static const uint16_t kLogHttpPort = 5803;
+static const uint16_t kLogHttpPort = 5902;
 
 static NSString *tvReadLogTail(NSString *path, NSUInteger maxBytes) {
     if (!path) return @"";
@@ -443,7 +443,7 @@ int main(int argc, const char *argv[]) {
         NSString *stdoutPath = [rootPath stringByAppendingPathComponent:@"tmp/trollvnc-stdout.log"];
         NSString *stderrPath = [rootPath stringByAppendingPathComponent:@"tmp/trollvnc-stderr.log"];
 
-        // 供日志端点（5803）远程读取
+        // 供日志端点（5902）远程读取
         gLogStdoutPath = stdoutPath;
         gLogStderrPath = stderrPath;
 
@@ -542,7 +542,7 @@ int main(int argc, const char *argv[]) {
     // IPv4 127.0.0.1:46751, no response; accept and close.
     openLocalDummyService(kTvAlivePort);
 
-    // 2026-08-21：远程日志端点（局域网 5803）——trollvncserver 崩溃循环时 5801/5802/5901
+    // 2026-08-21：远程日志端点（局域网 5902）——trollvncserver 崩溃循环时 5801/5802/5901
     // 均不可用，仅 manager 常驻可提供崩溃日志（stderr/stdout 尾部），供 AI/脚本远程定位根因。
     openLogHttpService();
 
