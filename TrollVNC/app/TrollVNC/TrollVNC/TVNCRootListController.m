@@ -332,6 +332,12 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     // - trollvncmanager：桥接模式自退；网关地址/令牌变更重读配置并重连（原 manager 重启级
     //   配置 GatewayHost/Token/Watchdog* 即时生效，无需 kill 重启——沙盒内 kill root 恒 EPERM）
     // restart 级配置由上方 _scheduleAutoRestart（restart-service 通知）重启生效。
+    // 2026-08-21 竞态修复：manager 的双域读取兜底走 plist 文件（tvManagerReadPref），
+    // cfprefsd 懒落盘会让 root 侧读到旧值——relay→bridge 切换读到 relay 不自退，
+    // bridge 下残留注册/隧道（UI 已显示桥接但服务仍按中继跑，模式分叉）。synchronize
+    // 强制 flush 后再 notify，消除「通知先于落盘」的读写竞态。
+    NSUserDefaults *syncDefs = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    [syncDefs synchronize];
     notify_post(TVNC_NOTIFY_PREFS_CHANGED);
 }
 

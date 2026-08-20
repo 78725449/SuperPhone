@@ -1332,9 +1332,12 @@ const regServer = net.createServer((sock) => {
       });
       dev.online = true;
       dev.lastSeen = Date.now();
-      // 同设备重复注册：关闭旧连接，仅保留最新
+      // 同设备重复注册：关闭旧连接，仅保留最新。
+      // 2026-08-21 修复：同连接 reregister（设备端设置变更后在当前 fd 重发 register）
+      // 时 oldRec.sock === sock，原逻辑会 destroy 自己 → 注册通道闪断重连，叠加出
+      // 「App 显示已注册但命令通道间歇黑洞」的混乱。同连接重发仅刷新记录。
       const oldRec = registeredDevices.get(deviceId);
-      if (oldRec) {
+      if (oldRec && oldRec.sock !== sock) {
         try { oldRec.ws && oldRec.ws.terminate(); } catch (e) { /* noop */ }
         try { oldRec.sock && oldRec.sock.destroy(); } catch (e) { /* noop */ }
       }

@@ -493,6 +493,16 @@ static void TRTunnelLog(const char *fmt, ...) {
         switch (type) {
             case kFrameTypeData:
                 if (payloadLen > 0) {
+                    // 2026-08-21 修复：standby（_localFd=-1，本地 5901 已断/rfb.stop 后）收到
+                    // DATA 帧（网关放行的客户端输入）时，原逻辑 write(-1) 失败 → return NO
+                    // → 整条隧道断开重连 → 网关侧 4002/4003 风暴 + CMD 帧黑洞（invoke 504）。
+                    // 已死会话的输入字节无意义，丢弃并告警；隧道保持，网关侧会话重建时
+                    // 重走 rfb.start（server 真死则明确 4005）。
+                    if (_localFd < 0) {
+                        TVLog(@"[tunnel] drop DATA frame in standby (local RFB down), %u bytes", payloadLen);
+                        TRTunnelLog("drop DATA in standby, %u bytes", payloadLen);
+                        break;
+                    }
                     // 写入本地 RFB（处理部分写）
                     size_t off = 0;
                     while (off < payloadLen) {

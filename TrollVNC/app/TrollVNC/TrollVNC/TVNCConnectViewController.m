@@ -202,7 +202,7 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
  * 构建 Hero 卡片（3 行直观信息）。
  * 功能：创建渐变卡片，包含三行：
  *   - 第 1 行：设备名（左）+ 状态点+文字（右，🟢已连接/🔴未连接）
- *   - 第 2 行：连接状态文字（已注册到网关，隧道已建立 / 未注册到网关）
+ *   - 第 2 行：连接状态文字（已注册到网关 / 未注册到网关）
  *   - 第 3 行：服务状态文字（VNC 服务运行中·N 个客户端在线 / VNC 服务未运行·请前往设置配置网关）
  * 参数：无
  * 返回值：UIView* - Hero 卡片根视图（TVNCGradientCard 实例）
@@ -521,7 +521,7 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
  * 功能：依据 TVNCAppStore 网关状态机（真注册判定）更新 Hero 卡片：
  *   - 第 1 行状态点颜色 + 状态文字：Registered→绿「已连接」/ ServiceUp→黄「连接中」/
  *     Disconnected→红「未连接」/ Idle→灰「未连接」
- *   - 第 2 行连接状态文字（已注册到网关，隧道已建立 / 正在连接网关… / 网关不可达 / 未注册到网关）
+ *   - 第 2 行连接状态文字（已注册到网关 / 正在连接网关… / 网关不可达 / 未注册到网关）
  *   - 第 3 行服务状态文字（VNC 服务运行中·N 个客户端在线 / VNC 服务未运行）
  * 参数：无
  * 返回值：void
@@ -553,7 +553,10 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     // 第 2 行：连接状态文字（真实注册判定，替代服务存活近似）
     switch (st) {
         case TVNCGatewayStateRegistered:
-            self.connectStateLabel.text = @"已注册到网关，隧道已建立";
+            // 2026-08-21：App 仅能从网关目录判定「已注册」（online=注册通道或隧道任一存活），
+            // 感知不到隧道/server 真实状态——原「隧道已建立」是无依据的推断，
+            // 在 server 崩溃/隧道断开时误导用户「一切正常」。只陈述可验证的事实。
+            self.connectStateLabel.text = @"已注册到网关";
             break;
         case TVNCGatewayStateBridgeConnected:
             self.connectStateLabel.text = @"桥接控制 · 网关可达";
