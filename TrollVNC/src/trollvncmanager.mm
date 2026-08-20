@@ -253,9 +253,10 @@ static NSString *tvReadLogTail(NSString *path, NSUInteger maxBytes) {
 static void tvLogHttpWriteRaw(int fd, const char *head, NSData *body) {
     NSMutableData *out = [NSMutableData dataWithBytes:head length:strlen(head)];
     [out appendData:body];
+    const char *base = (const char *)out.bytes;
     ssize_t written = 0;
     while (written < (ssize_t)out.length) {
-        ssize_t n = write(fd, out.bytes + written, out.length - written);
+        ssize_t n = write(fd, base + written, out.length - (NSUInteger)written);
         if (n <= 0) break;
         written += n;
     }
