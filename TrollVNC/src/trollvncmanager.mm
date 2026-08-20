@@ -283,6 +283,12 @@ static void tvLogHttpHandleClient(int cfd) {
         logPath = gLogStderrPath;
     } else if ([path isEqualToString:@"/stdout"]) {
         logPath = gLogStdoutPath;
+    } else if ([path isEqualToString:@"/tunnel"]) {
+        // TRTunnelClient 透传日志（帧读写/握手字节流转），定位画面黑根因用。
+        // 注意：TRTunnelClient 运行在 trollvncserver 进程内，其 /tmp 是 jailbreak root 的
+        // /tmp（非系统 /tmp），故从 gLogStderrPath 推导同目录而非硬编码 /tmp。
+        NSString *dir = [gLogStderrPath stringByDeletingLastPathComponent];
+        logPath = [dir stringByAppendingPathComponent:@"trollvnc-tunnel.log"];
     }
     if (!logPath) {
         const char *notFound = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n";
