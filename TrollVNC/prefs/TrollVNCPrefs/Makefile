@@ -17,6 +17,10 @@ TrollVNCPrefs_FILES += TVNCSegmentCell.m
 TrollVNCPrefs_FILES += TVNCSliderCell.m
 TrollVNCPrefs_FILES += StripedTextTableViewController.m
 TrollVNCPrefs_FILES += ZTSelfSignedCertificate.m
+# 2026-08-20：connectGateway（桥接/中继验证网关可达）依赖 TVNCGatewayClient（纯 NSURLSession
+# 服务类，symlink 共享 app 源码）；TVNCServiceCoordinator 仅 App 编译（THEBOOTSTRAP 条件编译，
+# prefs bundle 无 spawn root 能力——relay 分支退化为 fetchDevices 验证，两端行为对齐）
+TrollVNCPrefs_FILES += TVNCGatewayClient.m
 
 TrollVNCPrefs_CFLAGS += -fobjc-arc
 TrollVNCPrefs_CFLAGS += -DPACKAGE_VERSION=\"$(PACKAGE_VERSION)\"

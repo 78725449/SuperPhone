@@ -510,7 +510,7 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 - `_restartRequiredKeys` — BindHost/FullPassword/ViewOnlyPassword/TileSize/MaxRects/AsyncSwap/Scale/OrientationPadFix/BonjourEnabled/PerformanceMode（2026-08-20：Scale/OrientationPadFix 重建 framebuffer 改 restart 级；BonjourEnabled server 启动期标志改 restart 级；移除 ConnectionMode——协调器 3s 轮询自动生效、FrameRateSpec——热重载生效、Notifications——instant 级）
 - `_managerRestartKeys` 已删除（2026-08-20 双通知自治：App kill root 恒 EPERM 通路废弃）——GatewayHost/GatewayToken 变更走 prefs-changed → noteExternalPrefsChanged 重发 register + worker host 比对断开重连；WatchdogThrottleInterval/WatchdogExitTimeout 由 manager 收通知热调即时生效；BonjourEnabled 归入 server restart 级
 - `_scheduleAutoRestart` / `_autoRestartNow` — 400ms 防抖；校验 BindHost IPv4/IPv6 literal；TVNCRestartVNCService()（notify_post restart-service → manager watchdog 重启 trollvncserver）自动重启（2026-08-20 由确认弹窗改为自动重启，不再弹框打断）
-- `connectGateway` — 双模式分派（2026-08-20 幂等 ensure 语义）：bridge 纯 App 级 fetchDevices 验证网关可达并反馈设备数（不碰进程）；relay 走 ensureServiceRunning（manager 死则立即 spawn，活则交给 prefs-changed 自治），均无 kill 重启
+- `connectGateway` — 双模式分派（2026-08-20 幂等 ensure 语义）：bridge 纯 App 级 fetchDevices 验证网关可达并反馈设备数（不碰进程）；relay 分支按构建上下文（`#ifdef THEBOOTSTRAP`）——App 走 ensureServiceRunning（manager 死则立即 spawn，活则交给 prefs-changed 自治）；prefs bundle 无 spawn root 能力退化为 fetchDevices 验证可达（与 bridge 分支同款反馈），均无 kill 重启
 - `navigationController:willShowViewController:animated:` — 根页隐藏导航栏 / 子页显示
 - `_reallyGenerateKeys` — 调 ZTSelfSignedCertificate.generateWithCommonName → 写 cacertPath/cakeyPath（0600）
 - `viewLogs` — StripedTextTableViewController 打开 `<jbroot>/tmp/trollvnc-stderr.log`
@@ -559,9 +559,9 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 
 **路径**：`TrollVNC/prefs/TrollVNCPrefs/`
 **核心职责**：Preferences.app 加载的设置面板（独立安装到非 bootstrap 设备时使用，与 App 内嵌 TVNCRootListController 共享代码）。
-- `TrollVNCPrefs_FILES` = 8 个 .m：TVNCClientCell / TVNCClientListController / TVNCListItemsController / TVNCRootListController / TVNCSegmentCell / TVNCSliderCell / StripedTextTableViewController / ZTSelfSignedCertificate
+- `TrollVNCPrefs_FILES` = 9 个 .m：TVNCClientCell / TVNCClientListController / TVNCListItemsController / TVNCRootListController / TVNCSegmentCell / TVNCSliderCell / StripedTextTableViewController / ZTSelfSignedCertificate / TVNCGatewayClient（2026-08-20 加：connectGateway 验证网关可达所需，纯 NSURLSession 服务类）
 - `INSTALL_TARGET_PROCESSES = Preferences`、`PRIVATE_FRAMEWORKS = Preferences`、`INSTALL_PATH = /Library/PreferenceBundles`
-- **分叉约束**：源码与 `app/TrollVNC/TrollVNC/` 内同名文件是**分叉副本**，互不引用（AGENTS.md 已知约束）
+- **共享方式（2026-08-20 校准）**：大部分源文件（RootListController/ClientListController/ClientCell/ListItemsController/SliderCell/StripedTextTable/ZTSelfSignedCertificate/TVNCUtil/TVNCGatewayClient/Control.h）是**指向 `../../app/TrollVNC/TrollVNC/` 的 git symlink（120000）**——编译期同源，App 改动 prefs 自动跟随；仅 TVNCButtonCell/TVNCSegmentCell（bundle 专属 UI 组件）与 Resources/Makefile 是实体分叉。**App-only 依赖须 `#ifdef THEBOOTSTRAP` 条件编译**（如 TVNCServiceCoordinator——prefs bundle 无 spawn root 能力），否则 symlink 断链编译失败（2026-08-20 踩坑：connectGateway 引入 GatewayClient/Coordinator 后 rootless scheme 编译 'TVNCGatewayClient.h' file not found）
 
 **Resources/Root.plist 分组（2026-08-20 定稿）**：连接（含 ConnectionMode 网关中继/桥接控制） / 安全（含 AccessMode 完全访问/只读） / 画质 / 交互 / 显示 / 高级（折叠） / 关于
 **关键配置项**（端口固定不出现）：GatewayHost / GatewayToken / searchGateway / ConnectionMode / BonjourEnabled（仅中继）/ AccessMode / FullPassword（仅完全访问）/ ViewOnlyPassword（仅只读）/ PerformanceMode（流畅/智能/画质/自定义）/ Scale / FrameRateSpec（15/30/60/动态/自定义，自定义联动 FrameRateSpecCustom）/ OrientationSync / TileSize（仅自定义）/ MaxRects（仅自定义）/ FullscreenThresholdPercent（仅自定义）/ AsyncSwap（仅自定义）/ DeferWindowSec（仅自定义）/ MaxInflight（仅自定义）/ NaturalScroll / WheelStepPx / AutoAssistEnabled / ThumbInterval / FabAutoCollapse / Notifications / BindHost / KeepAliveSec（连接保活）/ ModifierMap / OrientationPadFix / WatchdogThrottleInterval / WatchdogExitTimeout / KeyLogging / generateKeys / viewLogs / resetDefaults

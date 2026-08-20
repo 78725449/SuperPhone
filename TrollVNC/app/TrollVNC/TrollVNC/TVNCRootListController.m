@@ -34,7 +34,11 @@
 #import "StripedTextTableViewController.h"
 #import "TVNCGatewayClient.h"
 #import "TVNCRootListController.h"
+// 仅 App（bootstrap tipa）：prefs bundle（越狱设置页）无 spawn root 能力，不编 Coordinator
+//（2026-08-20 编译分叉修复：symlink 共享源码后 prefs 侧曾因 import 链断链编译失败）
+#ifdef THEBOOTSTRAP
 #import "TVNCServiceCoordinator.h"
+#endif
 #import "TVNCUtil.h"
 #import "ZTSelfSignedCertificate.h"
 
@@ -801,8 +805,10 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 
 /// 2026-08-20 双模式的「连接网关」按钮（幂等 ensure 语义，不碰进程重启）：
 /// - 桥接控制：纯 App 级——用当前配置拉取设备目录验证网关可达，反馈设备数
-/// - 网关中继：ensureServiceRunning——manager 死则立即 spawn（读最新 defaults，不等 3s 轮询）；
-///   活则交给 manager 的 prefs-changed 自治（重读配置/重连），无需 kill 重启（沙盒内恒 EPERM）
+/// - 网关中继（App/bootstrap）：ensureServiceRunning——manager 死则立即 spawn（读最新 defaults，
+///   不等 3s 轮询）；活则交给 manager 的 prefs-changed 自治（重读配置/重连），无需 kill 重启（沙盒内恒 EPERM）
+/// - 网关中继（prefs bundle/越狱设置页）：无 spawn root 能力，manager 由 launchd 常驻自治，
+///   按钮退化为验证网关可达（与桥接分支同款反馈，两端行为对齐）
 - (void)connectGateway {
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
     NSString *host = [defaults stringForKey:@"GatewayHost"];
@@ -825,7 +831,26 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
             }
         }];
     } else {
+#ifdef THEBOOTSTRAP
+        // App（bootstrap）：manager 死则立即 spawn（读最新 defaults，不等 3s 轮询）；
+        // 活则交给 manager 的 prefs-changed 自治（重读配置/重连），无需 kill 重启（沙盒内恒 EPERM）
         [[TVNCServiceCoordinator sharedCoordinator] ensureServiceRunning];
+#else
+        // prefs bundle（越狱设置页，Preferences.app 进程）：无 spawn root 能力；
+        // manager 由 launchd 常驻自治（prefs-changed 通知重读配置/重连），
+        // 按钮退化为验证网关可达（与 bridge 分支同款反馈语义，两端行为对齐）
+        __weak typeof(self) weakSelf = self;
+        [[TVNCGatewayClient sharedClient] fetchDevicesWithCompletion:^(NSArray<NSDictionary *> *devices, NSError *error) {
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            if (devices) {
+                [self showGatewayMessage:[NSString stringWithFormat:@"网关可达 · %ld 台设备", (long)devices.count]];
+            } else {
+                [self showGatewayMessage:[NSString stringWithFormat:@"网关不可达：%@",
+                    error.localizedDescription ?: @"未知错误"]];
+            }
+        }];
+#endif
     }
 }
 
