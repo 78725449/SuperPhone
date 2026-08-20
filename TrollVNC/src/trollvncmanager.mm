@@ -263,6 +263,11 @@ static void tvLogHttpWriteRaw(int fd, const char *head, NSData *body) {
 }
 
 static void tvLogHttpHandleClient(int cfd) {
+    // 监听 fd 为 O_NONBLOCK（dispatch_source accept 需要），accept 返回的 cfd 在 macOS
+    // 上会继承该标志 → recv 立即 EAGAIN 被误判为连接关闭。此处显式改回阻塞模式。
+    int fl = fcntl(cfd, F_GETFL, 0);
+    if (fl != -1) fcntl(cfd, F_SETFL, fl & ~O_NONBLOCK);
+
     char buf[1024];
     ssize_t n = recv(cfd, buf, sizeof(buf) - 1, 0);
     if (n <= 0) { close(cfd); return; }
