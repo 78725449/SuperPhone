@@ -30,6 +30,7 @@
 #import <string.h>
 #import <sys/proc_info.h>
 #import <sys/socket.h>
+#import <sys/sysctl.h>
 #import <unistd.h>
 
 #import "Control.h"
@@ -65,27 +66,36 @@ static void mSignalHandler(int signal) {
 
 /// 2026-08-20：清理残留 trollvncserver 孤儿进程。manager 重启/被杀后旧 server 不再受
 /// watchdog 管辖、仍占用 5901/5801/5802 → 新 server bind 失败（画面全挂）。本进程以 root
-/// 运行，proc_pidpath 可读任意进程路径（App 沙盒内 KERN_PROCARGS2 读 root 进程会 EPERM，
-/// 协调器侧枚举不可靠，故必须在此侧清理）。
+/// 运行，sysctl KERN_PROCARGS2 可读任意进程 argv（App 沙盒内同调用返回 EPERM，协调器侧
+/// 枚举不可靠，故必须在此侧清理）。不用 libproc（Theos SDK 头不全，proc_listallpids 未声明）。
 static void killStaleVncServer(void) {
-    int n = proc_listallpids(NULL, 0);
-    if (n <= 0) return;
-    pid_t *pids = (pid_t *)calloc((size_t)n, sizeof(pid_t));
-    if (!pids) return;
-    int got = proc_listallpids(pids, (int)((size_t)n * sizeof(pid_t)));
-    for (int i = 0; i < got; i++) {
-        if (pids[i] <= 1) continue;
-        char path[PROC_PIDPATHINFO_MAXSIZE];
-        int plen = proc_pidpath(pids[i], path, sizeof(path));
-        if (plen <= 0) continue;
-        const char *base = strrchr(path, '/');
-        base = base ? base + 1 : path;
+    size_t len = 0;
+    if (sysctl((int[]){CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0}, 4, NULL, &len, NULL, 0) < 0) return;
+    struct kinfo_proc *procs = (struct kinfo_proc *)calloc(1, len + sizeof(struct kinfo_proc));
+    if (!procs) return;
+    if (sysctl((int[]){CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0}, 4, procs, &len, NULL, 0) < 0) {
+        free(procs);
+        return;
+    }
+    int cnt = (int)(len / sizeof(struct kinfo_proc));
+    char *argBuf = (char *)calloc(1, 4097);
+    if (!argBuf) { free(procs); return; }
+    for (int i = 0; i < cnt; i++) {
+        pid_t pid = procs[i].kp_proc.p_pid;
+        if (pid <= 1) continue;
+        size_t argSize = 4096;
+        memset(argBuf, 0, 4097);
+        if (sysctl((int[]){CTL_KERN, KERN_PROCARGS2, pid, 0}, 4, argBuf, &argSize, NULL, 0) < 0) continue;
+        const char *exe = argBuf + sizeof(int);
+        const char *base = strrchr(exe, '/');
+        base = base ? base + 1 : exe;
         if (strcmp(base, "trollvncserver") == 0) {
-            fprintf(stderr, "[manager] kill stale trollvncserver pid=%d\n", pids[i]);
-            kill(pids[i], SIGKILL);
+            fprintf(stderr, "[manager] kill stale trollvncserver pid=%d\n", pid);
+            kill(pid, SIGKILL);
         }
     }
-    free(pids);
+    free(argBuf);
+    free(procs);
 }
 
 static void monitorSelfAndRestartIfVnodeDeleted(const char *executable) {
