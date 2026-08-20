@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -84,6 +84,8 @@
 			<string>搜索网关</string>
 			<key>action</key>
 			<string>searchGateway</string>
+			<key>height</key>
+			<real>48</real>
 			<key>visibleOnlyRelay</key>
 			<true/>
 		</dict>
@@ -94,6 +96,8 @@
 			<string>连接网关</string>
 			<key>action</key>
 			<string>connectGateway</string>
+			<key>height</key>
+			<real>48</real>
 			<key>visibleOnlyBridge</key>
 			<true/>
 		</dict>
@@ -700,6 +704,8 @@
 			<string>重新生成证书</string>
 			<key>action</key>
 			<string>generateKeys</string>
+			<key>height</key>
+			<real>48</real>
 			<key>collapseGroup</key>
 			<string>advanced</string>
 		</dict>

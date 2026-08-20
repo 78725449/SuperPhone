@@ -19,6 +19,7 @@
 #import <Preferences/PSSpecifier.h>
 
 @implementation TVNCButtonCell {
+    UIView *_bgView;
     UILabel *_titleLabel;
 }
 
@@ -30,37 +31,24 @@
         return nil;
     }
 
-    // 2026-08-20 修复按钮点击闪退（根因）：仅渲染（自建 UILabel + 圆角背景），
-    // 点击交系统 PSListController didSelect → [specifier perform] 触发 action；
-    // 不可手动调 [specifier target]/[specifier action]（PSSpecifier 无此 getter，会崩溃）。
+    // 2026-08-20 修复按钮消失：纯 UIView(bg) 无 intrinsic，自动行高下塌缩为 0。
+    // 修复：frame 布局（layoutSubviews 手动设置），行高由 Root.plist height 属性指定。
     self.textLabel.hidden = YES;
     self.detailTextLabel.hidden = YES;
 
-    UIView *bg = [[UIView alloc] init];
-    bg.translatesAutoresizingMaskIntoConstraints = NO;
-    bg.backgroundColor = [UIColor colorWithRed:35 / 255.0 green:158 / 255.0 blue:171 / 255.0 alpha:1.0];
-    bg.layer.cornerRadius = 10.0;
-    bg.layer.masksToBounds = YES;
-    [self.contentView addSubview:bg];
+    _bgView = [[UIView alloc] initWithFrame:CGRectZero];
+    _bgView.backgroundColor = [UIColor colorWithRed:35 / 255.0 green:158 / 255.0 blue:171 / 255.0 alpha:1.0];
+    _bgView.layer.cornerRadius = 10.0;
+    _bgView.layer.masksToBounds = YES;
+    [self.contentView addSubview:_bgView];
 
-    _titleLabel = [[UILabel alloc] init];
-    _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    _titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     _titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
     _titleLabel.textColor = [UIColor whiteColor];
     _titleLabel.textAlignment = NSTextAlignmentCenter;
     _titleLabel.numberOfLines = 1;
     _titleLabel.lineBreakMode = NSLineBreakByClipping;
     [self.contentView addSubview:_titleLabel];
-
-    UILayoutGuide *margins = self.contentView.layoutMarginsGuide;
-    [NSLayoutConstraint activateConstraints:@[
-        [bg.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor],
-        [bg.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor],
-        [bg.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:6],
-        [bg.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-6],
-        [_titleLabel.centerXAnchor constraintEqualToAnchor:self.contentView.centerXAnchor],
-        [_titleLabel.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-    ]];
 
     [self _syncWithSpecifier:specifier];
     return self;
@@ -87,6 +75,15 @@
     [super layoutSubviews];
     self.textLabel.hidden = YES;
     self.detailTextLabel.hidden = YES;
+
+    CGRect b = self.contentView.bounds;
+    if (b.size.width < 20 || b.size.height < 20) {
+        return;
+    }
+    CGFloat vInset = 6.0;
+    CGFloat hInset = 16.0;
+    _bgView.frame = CGRectMake(hInset, vInset, b.size.width - hInset * 2, b.size.height - vInset * 2);
+    _titleLabel.frame = _bgView.frame;
 }
 
 @end

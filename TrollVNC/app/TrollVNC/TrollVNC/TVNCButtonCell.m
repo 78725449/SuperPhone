@@ -19,6 +19,7 @@
 #import <Preferences/PSSpecifier.h>
 
 @implementation TVNCButtonCell {
+    UIView *_bgView;
     UILabel *_titleLabel;
 }
 
@@ -30,40 +31,27 @@
         return nil;
     }
 
-    // 2026-08-20 修复按钮点击闪退（根因）：
-    // - 之前用 UIButton 拦截点击并手动 [specifier target]/[specifier action] 调用——
-    //   PSSpecifier 无这两个 getter（本地补的声明是虚构的），点击即 unrecognized selector 崩溃。
-    // - 现在本 cell 只负责渲染（自建 UILabel 标题 + 圆角背景），点击交给系统：
-    //   cell 选中 → PSListController didSelect → [specifier perform] 触发 action
-    //   （系统机制对无参/带参 action 都安全，与普通 PSButtonCell 同路径，可靠）。
+    // 2026-08-20 修复按钮消失（根因）：纯 UIView(bg) 无 intrinsicContentSize，
+    // 若 PSListController 用自动行高，行高由内容 intrinsic 决定 → bg/label 无 intrinsic 或
+    // 内容为空时行高塌缩为 0 → 按钮不可见。
+    // 修复：改用 frame 布局（layoutSubviews 手动设置，不依赖 Auto Layout 求解）；
+    // 行高由 Root.plist 的 height 属性明确指定（PSListController heightForRowAtIndexPath 读取）。
     self.textLabel.hidden = YES;
     self.detailTextLabel.hidden = YES;
 
-    UIView *bg = [[UIView alloc] init];
-    bg.translatesAutoresizingMaskIntoConstraints = NO;
-    bg.backgroundColor = [UIColor colorWithRed:35 / 255.0 green:158 / 255.0 blue:171 / 255.0 alpha:1.0];
-    bg.layer.cornerRadius = 10.0;
-    bg.layer.masksToBounds = YES;
-    [self.contentView addSubview:bg];
+    _bgView = [[UIView alloc] initWithFrame:CGRectZero];
+    _bgView.backgroundColor = [UIColor colorWithRed:35 / 255.0 green:158 / 255.0 blue:171 / 255.0 alpha:1.0];
+    _bgView.layer.cornerRadius = 10.0;
+    _bgView.layer.masksToBounds = YES;
+    [self.contentView addSubview:_bgView];
 
-    _titleLabel = [[UILabel alloc] init];
-    _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    _titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     _titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
     _titleLabel.textColor = [UIColor whiteColor];
     _titleLabel.textAlignment = NSTextAlignmentCenter;
     _titleLabel.numberOfLines = 1;
     _titleLabel.lineBreakMode = NSLineBreakByClipping;
     [self.contentView addSubview:_titleLabel];
-
-    UILayoutGuide *margins = self.contentView.layoutMarginsGuide;
-    [NSLayoutConstraint activateConstraints:@[
-        [bg.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor],
-        [bg.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor],
-        [bg.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:6],
-        [bg.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-6],
-        [_titleLabel.centerXAnchor constraintEqualToAnchor:self.contentView.centerXAnchor],
-        [_titleLabel.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-    ]];
 
     [self _syncWithSpecifier:specifier];
     return self;
@@ -91,6 +79,16 @@
     // 兜底：PSListController/PSTableCell 可能在刷新时重新显示系统 label
     self.textLabel.hidden = YES;
     self.detailTextLabel.hidden = YES;
+
+    // frame 布局：背景撑满 contentView（上下 6 / 左右 16 内缩），标题撑满背景居中
+    CGRect b = self.contentView.bounds;
+    if (b.size.width < 20 || b.size.height < 20) {
+        return;
+    }
+    CGFloat vInset = 6.0;
+    CGFloat hInset = 16.0;
+    _bgView.frame = CGRectMake(hInset, vInset, b.size.width - hInset * 2, b.size.height - vInset * 2);
+    _titleLabel.frame = _bgView.frame;
 }
 
 @end

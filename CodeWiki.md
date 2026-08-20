@@ -526,7 +526,7 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 - **TVNCHotspotManager**：NEHotspotHelper 注册（保活兜底）；任何 hotspot 命令回调时拉起 VNC 服务
 - **TVNCListItemsController**：PSListItemsController 子类（仅设置主题色，用于 PSLinkListCell 子页）
 - **TVNCClientCell**：客户端列表 cell（ID + Host + Subtitle + View-Only badge）
-- **TVNCButtonCell**：自定义 PSTableCell（**仅渲染**：自建 UILabel 标题居中 + 圆角背景；**点击交系统** PSListController didSelect → `[specifier perform]` 触发 action——2026-08-20 修复点击闪退根因：PSSpecifier **无** `target`/`action` getter（虚构声明 unrecognized selector），不可手动调；UIButton 拦截点击 + 手动调用即闪退）
+- **TVNCButtonCell**：自定义 PSTableCell（**frame 布局**：layoutSubviews 手动设置圆角背景 + 居中标题，不依赖 Auto Layout——2026-08-20 修复按钮消失：纯 UIView 无 intrinsic 在自动行高下塌缩为 0；行高由 Root.plist `height` 键明确指定（48）。**点击交系统** PSListController didSelect 触发 action；PSSpecifier **无** `target`/`action` getter，不可手动调）
 - **TVNCSliderCell**：自定义 PSTableCell（自建标题 UILabel + UISlider + 右侧值标签；2026-08-20 重新启用——系统 PSSliderCell 在 iOS 15 上不显示标题；布局：标题压缩阻力 300 可截断、值标签 46pt/13pt、间距 8，让位滑杆）
 - **TVNCSegmentCell**：自定义 PSTableCell（无标题，UISegmentedControl 占满整行；字符串值 ↔ 段索引双向转换；系统 PSSegmentCell 只认整数索引，2026-08-20 新增）
 - **自定义 cell 布局约定（2026-08-20 修复重叠）**：标题用 contentView 自建 UILabel，隐藏系统 textLabel/detailTextLabel（detailTextLabel 会被 PSTableCell 设为当前值如 "full"）——iOS 15 的 UITableViewCell/PSTableCell 对系统 label 有内置约束，手动再加约束会双约束冲突 → Auto Layout 破坏性布局 → 标题与控件互相覆盖；自建视图约束与系统布局完全隔离，layoutSubviews 兜底隐藏系统 label。选择器行（TVNCSegmentCell）无标题、控件占满整行
