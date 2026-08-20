@@ -503,6 +503,14 @@ static void TRTunnelLog(const char *fmt, ...) {
                         TRTunnelLog("drop DATA in standby, %u bytes", payloadLen);
                         break;
                     }
+                    // 2026-08-21 根因修复（与主动写协议版本配套）：rfb.start connect 后本进程
+                    // 已主动向本地 5901 写入 "RFB 003.008\n"，网关 ack 放行的 noVNC 协议版本
+                    // （同样 12B "RFB 003."）若再次写入即重复 → 设备端协议错乱。此处过滤：
+                    // 12B 且以 "RFB 003." 开头的帧视为重复协议版本，丢弃（后续 SetEncodings 等照常）。
+                    if (payloadLen == 12 && memcmp(payload, "RFB 003.", 8) == 0) {
+                        TRTunnelLog("drop duplicate client version (%u bytes)", payloadLen);
+                        break;
+                    }
                     // 写入本地 RFB（处理部分写）
                     size_t off = 0;
                     while (off < payloadLen) {
