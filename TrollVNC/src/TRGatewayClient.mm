@@ -124,7 +124,15 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     const char *envHost = getenv("TVNC_GATEWAY_HOST");
     if (envHost && envHost[0]) return [NSString stringWithUTF8String:envHost];
     NSString *host = [_defaults stringForKey:kGatewayHostKey];
-    return host.length ? host : nil;
+    if (host.length) return host;
+    // 2026-08-20 根因修复：App 设置页写的是 mobile 用户域（/var/mobile/...），root 进程
+    // 读不到 → manager 拿不到网关地址不注册（重置默认值后设备失联的根因之一）。
+    // 兜底读 mobile 域 plist（与 TVNCReadSelfDeviceId 同款双域读取）。
+    NSDictionary *mobilePrefs = [NSDictionary dictionaryWithContentsOfFile:
+        @"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist"];
+    NSString *mhost = mobilePrefs[kGatewayHostKey];
+    if ([mhost isKindOfClass:[NSString class]] && mhost.length) return mhost;
+    return nil;
 }
 
 - (NSInteger)_gatewayPort {
@@ -140,7 +148,13 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     const char *envTok = getenv("TVNC_GATEWAY_TOKEN");
     if (envTok && envTok[0]) return [NSString stringWithUTF8String:envTok];
     NSString *t = [_defaults stringForKey:@"GatewayToken"];
-    return t.length ? t : nil;
+    if (t.length) return t;
+    // 2026-08-20：与 _gatewayHost 对称，兜底读 mobile 用户域（App 设置页写入的令牌）
+    NSDictionary *mobilePrefs = [NSDictionary dictionaryWithContentsOfFile:
+        @"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist"];
+    NSString *mt = mobilePrefs[@"GatewayToken"];
+    if ([mt isKindOfClass:[NSString class]] && mt.length) return mt;
+    return nil;
 }
 
 - (NSString *)_deviceId {

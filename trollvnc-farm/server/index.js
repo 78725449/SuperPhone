@@ -36,6 +36,11 @@ function loadDb() {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     if (fs.existsSync(DB_FILE)) {
       devices = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+      // 2026-08-20：注册设备的在线状态只能由「活跃注册」驱动，不能从 db 继承——
+      // 否则历史残留记录（设备已不再注册/重置换 UUID）会恒显示在线，前端/App 据此误判"已连接"。
+      for (const d of devices) {
+        if (d.source === 'register') d.online = false;
+      }
     }
   } catch (e) {
     console.error('[db] load failed:', e.message);

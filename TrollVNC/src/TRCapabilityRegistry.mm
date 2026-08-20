@@ -1228,6 +1228,8 @@ static NSDictionary *TRSearchGatewaySync(void) {
             @"WheelStepPx": @48.0, @"KeepAliveSec": @30,
             @"ThumbInterval": @3,
             @"FabAutoCollapse": @YES,
+            // 2026-08-20：watchdog 节流/退出超时安全默认（不可回退 0，否则服务重启风暴）
+            @"WatchdogThrottleInterval": @5, @"WatchdogExitTimeout": @3,
         };
         return defs[key] ?: @0;
     }

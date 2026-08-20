@@ -232,6 +232,9 @@ NSString *TVNCDeviceUDID(void) {
     }
     BOOL running = [self _isServiceRunning];
     if (!running) {
+        // 2026-08-20：拉起前清理孤儿 trollvncserver（manager 不存在但 server 残留时
+        // 释放 5901/5801/5802，避免新 manager 的 watchdog spawn 新 server 时端口冲突）
+        [self _killOrphanedVncServer];
         [self checkPrebootDependencies];
         [self spawnService];
     }
@@ -252,7 +255,41 @@ NSString *TVNCDeviceUDID(void) {
     });
 }
 
+/// 2026-08-20：manager 不在但 trollvncserver 残留（孤儿，posix_spawn 继承 fd）时清理，
+/// 释放 5901/5801/5802/46751 供新实例绑定。仅在 manager 确认不存在时执行，
+/// 避免误杀被正常 manager 管辖的 server。
+- (void)_killOrphanedVncServer {
+    __block BOOL managerExists = NO;
+    __block pid_t serverPid = -1;
+    TVNCEnumerateProcesses(^(pid_t pid, NSString *executablePath, BOOL *stop) {
+        NSString *base = executablePath.lastPathComponent;
+        if ([base isEqualToString:@"trollvncmanager"]) {
+            managerExists = YES;
+            *stop = YES;
+        }
+        if ([base isEqualToString:@"trollvncserver"] && serverPid == -1) {
+            serverPid = pid;
+        }
+    });
+    if (managerExists) return; // manager 正常，server 由 watchdog 管辖，不清理
+    if (serverPid > 1) {
+        kill(serverPid, SIGKILL);
+    }
+}
+
 - (BOOL)_isServiceRunning {
+    // 2026-08-20 根因修复：仅探 46751 端口会被继承 fd 的孤儿进程欺骗——manager 被杀后
+    // trollvncserver（posix_spawn 继承 fd，无 FD_CLOEXEC）仍持有该监听 socket，探活成功
+    // → 协调器误判服务存活 → 永不重新 spawn → 设备永久失联。双保险：trollvncmanager
+    // 进程存在 + 端口探活都通过才认为服务在跑。
+    __block BOOL managerFound = NO;
+    TVNCEnumerateProcesses(^(pid_t pid, NSString *executablePath, BOOL *stop) {
+        if ([executablePath.lastPathComponent isEqualToString:@"trollvncmanager"]) {
+            managerFound = YES;
+            *stop = YES;
+        }
+    });
+    if (!managerFound) return NO;
 #if TARGET_IPHONE_SIMULATOR
     return YES;
 #else

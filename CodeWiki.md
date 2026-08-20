@@ -480,7 +480,7 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 - `sharedTaskEnvironment` — 静态环境字典；注入 TVNC_LANGUAGE_CODE / TVNC_GATEWAY_HOST / TVNC_GATEWAY_TOKEN
 - `registerServiceMonitor` — 启动 3s NSTimer + registerBackgroundTasks
 - `ensureServiceRunning` — _isServiceRunning 失败时调 checkPrebootDependencies + spawnService
-- `_isServiceRunning` — 真机：socket connect 127.0.0.1:46751 成功即视为运行；模拟器：恒 YES
+- `_isServiceRunning` — 真机：trollvncmanager 进程存在（TVNCEnumerateProcesses）+ socket connect 127.0.0.1:46751 双保险（2026-08-20：仅探端口会被继承 fd 的孤儿 trollvncserver 欺骗→误判存活永不拉起）；模拟器：恒 YES
 - `spawnService` — TRTask 启动 trollvncmanager（setUserIdentifier:0 root / setGroupIdentifier:0）
 - `checkPrebootDependencies` — 读 LaunchAtLogin → SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions
 - `registerBackgroundTasks` / `scheduleBGRefresh` / `handleBGRefreshTask:` — BGTaskScheduler 注册 `com.82flex.trollvnc.refresh`，earliestBeginDate=15min
@@ -491,7 +491,7 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 
 **关键方法**：
 - `ensureDeviceDirectory` — 缓存新鲜（< 60s）直接复用；网关未配置 return；否则 fetchWithRetry
-- `isRegistered` — 动态读 TVNCReadSelfDeviceId()，遍历目录匹配自身 id
+- `isRegistered` — 动态读 TVNCReadSelfDeviceId()，遍历目录匹配自身 id 且该记录 online=true（2026-08-20：仅活跃注册才算已连接，db 残留记录不再误判）
 - `fetchWithRetry` — 防重入；置 ServiceUp 态；performFetch
 - `performFetch` — 调 TVNCGatewayClient.fetchDevicesWithCompletion；按结果判定 Registered/Disconnected
 - `retryIfNeeded` — MIN(startInterval * (1<<retryCount), maxInterval) 退避
@@ -713,7 +713,7 @@ API 全部前缀 `/api`，统一走 `authOk`（Bearer Token 或 `?token=`，无 
 
 | 函数 | 作用 |
 |---|---|
-| `loadDb/saveDb` | 设备库读写，saveDb 300ms 防抖落盘 data/devices.json |
+| `loadDb/saveDb` | 设备库读写，saveDb 300ms 防抖落盘 data/devices.json；loadDb 对 source=register 设备初始 online=false（2026-08-20：在线只能由活跃注册驱动，不继承 db 残留状态） |
 | `upsertRegistered` | 注册设备按 deviceId 键去重；manual/mdns 同 host:port 合并到 deviceId；保留 addedAt；剥离 capabilities/capMetadata/configSchema |
 | `sortDevices` | order 升序在前 → addedAt 升序在后 → id 字典序兜底，稳定排序 |
 | `writeTunnelFrame` | 写 5B 头帧（1B type + 4B BE length + payload） |

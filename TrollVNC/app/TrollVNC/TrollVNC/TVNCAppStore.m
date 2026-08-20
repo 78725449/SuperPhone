@@ -73,7 +73,14 @@ static const NSInteger kRetryMaxCount = 8;
     if (!did.length) return NO;
     for (NSDictionary *d in self.deviceDirectory) {
         if (![d isKindOfClass:[NSDictionary class]]) continue;
-        if ([d[@"id"] isEqualToString:did]) return YES;
+        if ([d[@"id"] isEqualToString:did]) {
+            // 2026-08-20 根因修复：仅当网关判定该设备在线（活跃注册）才算「已连接」。
+            // 网关 db 残留的历史记录（重置默认值/换 UUID 后）不再误判为已连接——
+            // 与「重置默认值清空配置 → 设备不再注册」后的真实状态保持一致。
+            NSNumber *online = d[@"online"];
+            if (online && [online isKindOfClass:[NSNumber class]] && online.boolValue) return YES;
+            return NO;
+        }
     }
     return NO;
 }

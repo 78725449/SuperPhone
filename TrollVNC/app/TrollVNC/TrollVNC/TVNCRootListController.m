@@ -750,8 +750,27 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 }
 
 - (void)_reallyResetDefaults {
+    // 2026-08-20 根因修复：仅删空域会把网关地址/令牌/DeviceUUID/watchdog 配置一并清空，
+    // 导致设备失联（manager 无网关地址不注册）+ watchdog 回退 0 节流（重启风暴）。
+    // 重置只恢复"功能默认"，保留设备身份与网络连接信息，并写回关键安全默认。
+    NSUserDefaults *keep = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSString *deviceUUID = [keep stringForKey:@"DeviceUUID"];
+    NSString *gatewayHost = [keep stringForKey:@"GatewayHost"];
+    NSString *gatewayToken = [keep stringForKey:@"GatewayToken"];
+
     [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:@"com.82flex.trollvnc"];
     [[NSUserDefaults standardUserDefaults] synchronize];
+
+    // 写回保留项 + 关键安全默认（watchdog 节流/退出超时不可为 0，否则服务重启风暴）
+    NSUserDefaults *defs = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    if (deviceUUID.length) [defs setObject:deviceUUID forKey:@"DeviceUUID"];
+    if (gatewayHost.length) [defs setObject:gatewayHost forKey:@"GatewayHost"];
+    if (gatewayToken.length) [defs setObject:gatewayToken forKey:@"GatewayToken"];
+    [defs setObject:@"relay" forKey:@"ConnectionMode"];
+    [defs setBool:YES forKey:@"BonjourEnabled"];
+    [defs setInteger:5 forKey:@"WatchdogThrottleInterval"];
+    [defs setInteger:3 forKey:@"WatchdogExitTimeout"];
+    [defs synchronize];
 
     [self reloadSpecifiers];
 
