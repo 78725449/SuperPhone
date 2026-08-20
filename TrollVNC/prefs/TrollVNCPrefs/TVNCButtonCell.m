@@ -18,9 +18,11 @@
 #import "TVNCButtonCell.h"
 #import <Preferences/PSSpecifier.h>
 
-// PSSpecifier 私有 perform（执行 target/action），bootstrap 头未声明，本地补声明
+// PSSpecifier 私有 target/action 属性（bootstrap 头未声明，本地补声明）——
+// 不用 perform（私有方法内部 performSelector:withObject: 带参调用 action，无参方法会崩溃）
 @interface PSSpecifier (TVNCButtonAccess)
-- (void)perform;
+@property(nonatomic, retain) id target;
+- (SEL)action;
 @end
 
 @implementation TVNCButtonCell {
@@ -87,7 +89,18 @@
 }
 
 - (void)buttonTapped {
-    [self.specifier perform];
+    PSSpecifier *specifier = self.specifier;
+    if (!specifier) {
+        return;
+    }
+    id target = [specifier target];
+    SEL action = [specifier action];
+    if (!target || !action) {
+        return;
+    }
+    // 2026-08-20 修复闪退：action 为无参方法（generateKeys/searchGateway/connectGateway），
+    // 必须无参调用——用 [specifier perform] 内部是 performSelector:withObject: 带参调用无参方法会崩溃。
+    [target performSelector:action];
 }
 
 @end
