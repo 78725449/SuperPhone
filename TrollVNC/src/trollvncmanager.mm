@@ -250,6 +250,17 @@ static NSString *tvReadLogTail(NSString *path, NSUInteger maxBytes) {
     return s ?: @"";
 }
 
+static NSString *tvReadLogHead(NSString *path, NSUInteger maxBytes) {
+    if (!path) return @"";
+    NSFileHandle *fh = [NSFileHandle fileHandleForReadingAtPath:path];
+    if (!fh) return @"(log file not found)";
+    NSData *data = [fh readDataOfLength:maxBytes];
+    [fh closeFile];
+    NSString *s = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (!s) s = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+    return s ?: @"";
+}
+
 static void tvLogHttpWriteRaw(int fd, const char *head, NSData *body) {
     NSMutableData *out = [NSMutableData dataWithBytes:head length:strlen(head)];
     [out appendData:body];
@@ -289,6 +300,32 @@ static void tvLogHttpHandleClient(int cfd) {
         // /tmp（非系统 /tmp），故从 gLogStderrPath 推导同目录而非硬编码 /tmp。
         NSString *dir = [gLogStderrPath stringByDeletingLastPathComponent];
         logPath = [dir stringByAppendingPathComponent:@"trollvnc-tunnel.log"];
+    } else if ([path hasPrefix:@"/crash/"]) {
+        // 崩溃报告：/crash/trollvncserver-<时间戳>.ips 读取指定 .ips 文件内容（SIGILL 定位用）。
+        // manager 以 root 运行，可读 /var/mobile/Library/Logs/CrashReporter/。
+        NSString *name = [path substringFromIndex:7];
+        // 防路径穿越：仅允许 CrashReporter 目录内的 .ips 文件
+        if (name.length && [name hasSuffix:@".ips"] && ![name containsString:@"/"] && ![name containsString:@".."]) {
+            logPath = [@"/var/mobile/Library/Logs/CrashReporter" stringByAppendingPathComponent:name];
+        }
+    } else if ([path isEqualToString:@"/crashlist"]) {
+        // 崩溃报告列表：返回 CrashReporter 目录内 trollvncserver-*.ips 文件名（换行分隔）
+        NSMutableString *listing = [NSMutableString string];
+        NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@"/var/mobile/Library/Logs/CrashReporter" error:NULL];
+        for (NSString *f in files) {
+            if ([f hasPrefix:@"trollvncserver-"] && [f hasSuffix:@".ips"]) {
+                [listing appendFormat:@"%@\n", f];
+            }
+        }
+        NSData *lbody = [listing dataUsingEncoding:NSUTF8StringEncoding];
+        char lhead[256];
+        snprintf(lhead, sizeof(lhead),
+                 "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n"
+                 "Access-Control-Allow-Origin: *\r\nConnection: close\r\nContent-Length: %lu\r\n\r\n",
+                 (unsigned long)lbody.length);
+        tvLogHttpWriteRaw(cfd, lhead, lbody);
+        close(cfd);
+        return;
     }
     if (!logPath) {
         const char *notFound = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n";
@@ -296,7 +333,14 @@ static void tvLogHttpHandleClient(int cfd) {
         close(cfd);
         return;
     }
-    NSString *content = tvReadLogTail(logPath, 64 * 1024);
+    // 崩溃报告读头部（堆栈在文件开头）；其余日志读尾部
+    BOOL isCrashReport = [path hasPrefix:@"/crash/"];
+    NSString *content;
+    if (isCrashReport) {
+        content = tvReadLogHead(logPath, 128 * 1024);
+    } else {
+        content = tvReadLogTail(logPath, 64 * 1024);
+    }
     NSData *body = [content dataUsingEncoding:NSUTF8StringEncoding];
     char head[256];
     snprintf(head, sizeof(head),
