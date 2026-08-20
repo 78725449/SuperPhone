@@ -959,7 +959,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
     // Scale/OrientationPadFix 会重建 framebuffer（maybeResizeFramebufferForRotation 内部 free 旧 buffer +
     // rfbNewFramebuffer），不能在 RFB 后台线程运行期间从其他线程热重载（use-after-free 崩溃），
     // 故定 restart 级（重启服务时单线程重建，安全）。2026-08-20 根因修复。
-    [self _registerConfig:@"Scale" title:@"输出缩放" type:@"number" min:@0.1 max:@1.0 step:@0.1 reload:TRConfigReloadRestart];
+    [self _registerConfig:@"Scale" title:@"输出缩放" type:@"number" min:@0.25 max:@1.0 step:@0.05 reload:TRConfigReloadRestart];
     [self _registerConfig:@"FrameRateSpec" title:@"帧率" type:@"string" reload:TRConfigReloadHot];
     [self _registerConfig:@"OrientationSync" title:@"方向同步" type:@"bool" reload:TRConfigReloadHot];
     [self _registerConfig:@"OrientationPadFix" title:@"方向偏移" type:@"enum"
@@ -1232,7 +1232,8 @@ static NSDictionary *TRSearchGatewaySync(void) {
             @"ThumbInterval": @3,
             @"FabAutoCollapse": @YES,
             // 2026-08-20：watchdog 节流/退出超时安全默认（不可回退 0，否则服务重启风暴）
-            @"WatchdogThrottleInterval": @5, @"WatchdogExitTimeout": @3,
+            // 2026-08-21：节流默认 5→60（崩溃循环时 5s 重启放大故障）
+            @"WatchdogThrottleInterval": @60, @"WatchdogExitTimeout": @3,
         };
         return defs[key] ?: @0;
     }

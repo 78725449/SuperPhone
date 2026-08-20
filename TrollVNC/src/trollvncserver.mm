@@ -632,10 +632,12 @@ static void parseDaemonOptions(void) {
     if ([scaleN isKindOfClass:[NSNumber class]]) {
         double v = scaleN.doubleValue;
         if (v <= 0.0 || v > 1.0) {
-            TVLog(@"-daemon: invalid Scale=%.3f; clamped to [0.1..1.0]", v);
+            TVLog(@"-daemon: invalid Scale=%.3f; clamped to [0.25..1.0]", v);
         }
-        if (v < 0.1)
-            v = 0.1;
+        // 2026-08-21：下限 0.1→0.25——极小缩放（如 0.1 生成 ~76x135 缓冲）接收全尺寸
+        // CARenderServerRenderDisplay 渲染，实测必崩（SIGILL in renderDisplayToScreenSurface）。
+        if (v < 0.25)
+            v = 0.25;
         if (v > 1.0)
             v = 1.0;
         gScale = v;
@@ -964,8 +966,9 @@ static void parseCLI(int argc, const char *argv[]) {
         }
         case 's': {
             double sc = strtod(optarg, NULL);
-            if (!(sc > 0.0 && sc <= 1.0)) {
-                TVPrintError("Invalid scale: %s (expected 0 < s <= 1)", optarg);
+            // 2026-08-21：下限 0.25（极小缩放接收全尺寸渲染必崩，与 prefs 读取钳制一致）
+            if (!(sc >= 0.25 && sc <= 1.0)) {
+                TVPrintError("Invalid scale: %s (expected 0.25 <= s <= 1)", optarg);
                 exit(EXIT_FAILURE);
             }
             gScale = sc;
@@ -3422,6 +3425,13 @@ static void startBonjour(void) {
 // Number of connected clients
 static int gClientCount = 0;
 
+// Capture lifecycle flags（声明前置：cap.hello 豁免 handler 早于 Client Handlers 使用）
+static BOOL gIsCaptureStarted = NO;
+
+#if !TARGET_OS_SIMULATOR
+static BOOL gRestoreAssist = NO;
+#endif
+
 // Global client states, populated via newClientHook/clientGoneHook.
 // Key: 8-char client id; Value: immutable snapshot dictionary.
 static NSMutableDictionary<NSString *, NSDictionary<NSString *, id> *> *gClientStates = nil;
@@ -3637,6 +3647,24 @@ static NSDictionary *tvExtHandleCapHello(rfbClientPtr cl, NSDictionary *params) 
         }
         // 不推画面帧
         cl->viewOnly = TRUE;
+        // 撤销 newClientHook 的其余副作用（豁免语义 = 该连接从未计入）。
+        // 2026-08-21 修复：此前仅减计数不停采集——mgmt 探测连接把 gClientCount 瞬时抬到 1 又降回 0，
+        // 采集（CADisplayLink）在 0 客户端下持续空转渲染（空耗 + 高频踩渲染路径，崩溃循环帮凶）；
+        // KeepAlive/AutoAssist 同理被探测连接误开。
+        if (gClientCount == 0) {
+            if (gIsCaptureStarted) {
+                [[ScreenCapturer sharedCapturer] endCapture];
+                gIsCaptureStarted = NO;
+                TVLog(@"Management exemption emptied clients; screen capture stopped.");
+            }
+            [[STHIDEventGenerator sharedGenerator] setKeepAliveInterval:0];
+#if !TARGET_OS_SIMULATOR
+            if (gRestoreAssist) {
+                gRestoreAssist = NO;
+                [PSAssistiveTouchSettingsDetail setEnabled:NO];
+            }
+#endif
+        }
         // 更新通知（计数已变）
         refreshBonjourTXTRecord();
         tvPublishUserSingleNotifs();
@@ -4578,12 +4606,6 @@ static void tvPublishClientDisconnectedNotif(NSString *host) {
 
 #pragma mark - Client Handlers
 
-static BOOL gIsCaptureStarted = NO;
-
-#if !TARGET_OS_SIMULATOR
-static BOOL gRestoreAssist = NO;
-#endif
-
 static void clientGoneHook(rfbClientPtr cl) {
     // Free per-client state
     TVClientState *st = tvGetClientState(cl);
@@ -4597,8 +4619,18 @@ static void clientGoneHook(rfbClientPtr cl) {
         cl->clientData = NULL;
     }
 
-    // 管理客户端：计数与状态注册已在 cap.hello 时撤销，跳过所有后续清理
+    // 管理客户端：计数与状态注册已在 cap.hello 时撤销，跳过所有后续清理。
+    // 双保险（2026-08-21）：豁免路径若因时序未收采集，此处归零兜底收采集/KeepAlive，
+    // 防止 0 客户端下 CADisplayLink 空转渲染。
     if (wasMgmt) {
+        if (gClientCount == 0) {
+            if (gIsCaptureStarted) {
+                [[ScreenCapturer sharedCapturer] endCapture];
+                gIsCaptureStarted = NO;
+                TVLog(@"Management client gone with no clients; screen capture stopped.");
+            }
+            [[STHIDEventGenerator sharedGenerator] setKeepAliveInterval:0];
+        }
         TVLog(@"Management client gone");
         return;
     }

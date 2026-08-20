@@ -78,7 +78,7 @@ export const GESTURE_DEFS = [
 
 /** 配置表单定义（契约）：与设备端 _registerConfigSchemas 对齐（37 项全量保留——均有真实实现） */
 export const CONFIG_DEFS = [
-  { key: 'Scale', title: '输出缩放', type: 'number', min: 0.1, max: 1.0, step: 0.1, reload: 'restart' },
+  { key: 'Scale', title: '输出缩放', type: 'number', min: 0.25, max: 1.0, step: 0.05, reload: 'restart' },
   { key: 'FrameRateSpec', title: '帧率', type: 'string', reload: 'hot' },
   { key: 'OrientationSync', title: '方向同步', type: 'bool', reload: 'hot' },
   { key: 'OrientationPadFix', title: '方向偏移', type: 'enum', enumValues: [0, 1, 2, 3], enumTitles: ['禁用', '90°', '180°', '270°'], reload: 'restart' },

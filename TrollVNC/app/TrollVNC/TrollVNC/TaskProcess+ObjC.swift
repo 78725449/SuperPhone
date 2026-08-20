@@ -839,6 +839,14 @@ open class TaskProcess: NSObject {
         // `waitUntilExit` to decrement the `runLoopSource` retain count,
         // potentially releasing it.
         CFRunLoopSourceInvalidate(self.runLoopSource)
+
+        // Break the retain cycle (2026-08-21): the run loop source's context
+        // retains `self` (info pointer), while `self` strongly holds the source.
+        // `waitUntilExit()` breaks the cycle via `runLoopSource = nil`, but the
+        // terminationHandler path (used by TRWatchDog) never runs that code, so
+        // every restarted task leaked together with its log file handles
+        // (closeOnDealloc) — exhausting the fd table after hundreds of restarts.
+        self.runLoopSource = nil
         let runloopToWakeup = self.runLoop
         self.isRunning = false
 

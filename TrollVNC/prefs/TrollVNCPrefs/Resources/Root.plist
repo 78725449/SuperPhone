@@ -209,7 +209,7 @@
 			<key>default</key>
 			<real>1.0</real>
 			<key>min</key>
-			<real>0.1</real>
+			<real>0.25</real>
 			<key>max</key>
 			<real>1.0</real>
 			<key>showValue</key>
@@ -653,13 +653,13 @@
 			<key>label</key>
 			<string>重启节流</string>
 			<key>default</key>
-			<integer>5</integer>
+			<integer>60</integer>
 			<key>isNumeric</key>
 			<true/>
 			<key>noAutoCorrect</key>
 			<true/>
 			<key>placeholder</key>
-			<string>5 秒</string>
+			<string>60 秒</string>
 			<key>collapseGroup</key>
 			<string>advanced</string>
 		</dict>

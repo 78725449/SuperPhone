@@ -336,7 +336,9 @@ int main(int argc, const char *argv[]) {
         }
 
         [gWatchDog setExitTimeOut:3.0];
-        [gWatchDog setThrottleInterval:5.0];
+        // 2026-08-21：默认节流 5s→60s——崩溃循环时 5s 重启一次放大故障（FD 泄漏加速累积、
+        // 网关反复探测触发采集空转）；60s 仍能及时拉起，但把高频重启风暴压平。
+        [gWatchDog setThrottleInterval:60.0];
         [gWatchDog setKeepAlive:@YES];
 
         // 2026-08-20：设置页补齐 Watchdog 配置——启动时从 defaults 读取覆盖默认值（与 CONFIG_DEFS 对齐）

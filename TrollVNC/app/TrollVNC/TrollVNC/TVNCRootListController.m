@@ -759,7 +759,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     if (gatewayToken.length) [defs setObject:gatewayToken forKey:@"GatewayToken"];
     [defs setObject:@"relay" forKey:@"ConnectionMode"];
     [defs setBool:YES forKey:@"BonjourEnabled"];
-    [defs setInteger:5 forKey:@"WatchdogThrottleInterval"];
+    [defs setInteger:60 forKey:@"WatchdogThrottleInterval"];
     [defs setInteger:3 forKey:@"WatchdogExitTimeout"];
     [defs synchronize];
 

@@ -1,7 +1,7 @@
 // SuperPhone 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
 // rfb.js?v=2：noVNC 核心为 server 内存 patch，URL 带版本号强制浏览器重新拉取 patch 后的内容避免旧缓存
 import RFB from '/novnc/core/rfb.js?v=2';
-import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=9';
+import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=10';
 import { attachPress } from './press.js';
 import { attachFarmGesture, attachRightHome, resolveGesture } from './gesture.js';
 
