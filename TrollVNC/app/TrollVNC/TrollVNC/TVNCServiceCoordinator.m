@@ -278,36 +278,39 @@ NSString *TVNCDeviceUDID(void) {
 }
 
 - (BOOL)_isServiceRunning {
-    // 2026-08-20 根因修复：仅探 46751 端口会被继承 fd 的孤儿进程欺骗——manager 被杀后
-    // trollvncserver（posix_spawn 继承 fd，无 FD_CLOEXEC）仍持有该监听 socket，探活成功
-    // → 协调器误判服务存活 → 永不重新 spawn → 设备永久失联。双保险：trollvncmanager
-    // 进程存在 + 端口探活都通过才认为服务在跑。
-    __block BOOL managerFound = NO;
-    TVNCEnumerateProcesses(^(pid_t pid, NSString *executablePath, BOOL *stop) {
-        if ([executablePath.lastPathComponent isEqualToString:@"trollvncmanager"]) {
-            managerFound = YES;
-            *stop = YES;
-        }
-    });
-    if (!managerFound) return NO;
 #if TARGET_IPHONE_SIMULATOR
     return YES;
 #else
+    // 端口探活（主判定，沙盒安全）：trollvncmanager 存活时 127.0.0.1:46751 必监听。
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
         return NO;
     }
-
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(kTvAlivePort);
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-
     int result = connect(sockfd, (struct sockaddr *)&addr, sizeof(addr));
     close(sockfd);
+    BOOL portAlive = (result == 0);
 
-    return result == 0;
+    // 进程枚举辅助（2026-08-20）：仅当枚举真实工作（能读到进程 argv）时收紧判定——
+    // iOS App 沙盒内 KERN_PROCARGS2 读 root 进程 argv 返回 EPERM，枚举不到 trollvncmanager；
+    // 若把「枚举未找到」直接当「服务未运行」，协调器会每 3s 反复 spawn manager（多实例
+    // 并存、注册/隧道反复重建）+ UI 状态矛盾。防孤儿持 46751 的治本方案是
+    // trollvncmanager openLocalDummyService 加 FD_CLOEXEC（见 trollvncmanager.mm）。
+    __block BOOL managerFound = NO;
+    __block int procCount = 0;
+    TVNCEnumerateProcesses(^(pid_t pid, NSString *executablePath, BOOL *stop) {
+        procCount++;
+        if ([executablePath.lastPathComponent isEqualToString:@"trollvncmanager"]) {
+            managerFound = YES;
+            *stop = YES;
+        }
+    });
+    if (procCount > 0) return managerFound && portAlive;
+    return portAlive;
 #endif
 }
 

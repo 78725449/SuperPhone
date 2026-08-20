@@ -27,6 +27,7 @@
 #import <notify.h>
 #import <spawn.h>
 #import <stdlib.h>
+#import <string.h>
 #import <sys/proc_info.h>
 #import <sys/socket.h>
 #import <unistd.h>
@@ -60,6 +61,31 @@ static void mSignalHandler(int signal) {
     } else if (signal == SIGTERM) {
         exit((EXIT_FAILURE << 7) | signal);
     }
+}
+
+/// 2026-08-20：清理残留 trollvncserver 孤儿进程。manager 重启/被杀后旧 server 不再受
+/// watchdog 管辖、仍占用 5901/5801/5802 → 新 server bind 失败（画面全挂）。本进程以 root
+/// 运行，proc_pidpath 可读任意进程路径（App 沙盒内 KERN_PROCARGS2 读 root 进程会 EPERM，
+/// 协调器侧枚举不可靠，故必须在此侧清理）。
+static void killStaleVncServer(void) {
+    int n = proc_listallpids(NULL, 0);
+    if (n <= 0) return;
+    pid_t *pids = (pid_t *)calloc((size_t)n, sizeof(pid_t));
+    if (!pids) return;
+    int got = proc_listallpids(pids, (int)((size_t)n * sizeof(pid_t)));
+    for (int i = 0; i < got; i++) {
+        if (pids[i] <= 1) continue;
+        char path[PROC_PIDPATHINFO_MAXSIZE];
+        int plen = proc_pidpath(pids[i], path, sizeof(path));
+        if (plen <= 0) continue;
+        const char *base = strrchr(path, '/');
+        base = base ? base + 1 : path;
+        if (strcmp(base, "trollvncserver") == 0) {
+            fprintf(stderr, "[manager] kill stale trollvncserver pid=%d\n", pids[i]);
+            kill(pids[i], SIGKILL);
+        }
+    }
+    free(pids);
 }
 
 static void monitorSelfAndRestartIfVnodeDeleted(const char *executable) {
@@ -107,6 +133,13 @@ static void openLocalDummyService(uint16_t port) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags != -1)
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+    // 2026-08-20：防 fd 继承——子进程（trollvncserver 经 posix_spawn 继承 fd）不得持有
+    // 46751 探活监听，否则 manager 被 kill 后孤儿进程仍监听该端口，协调器端口探活误判
+    // "manager 存活" → 永不重新 spawn → 设备永久失联（重置默认值事故的次要因子）。
+    int fdflags = fcntl(fd, F_GETFD, 0);
+    if (fdflags != -1)
+        fcntl(fd, F_SETFD, fdflags | FD_CLOEXEC);
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -294,6 +327,12 @@ int main(int argc, const char *argv[]) {
             fprintf(stderr, "Invalid configuration: %s\n", [[argError localizedDescription] UTF8String]);
             return EXIT_FAILURE;
         }
+
+        // 2026-08-20：启动 watchdog 前清理残留 trollvncserver 孤儿——manager 重启/被杀后旧
+        // server 不再受 watchdog 管辖、仍占用 5901/5801/5802 → 新 server bind 失败（画面全挂）。
+        // 必须在 [gWatchDog start] 之前执行，避免误杀 watchdog 刚 spawn 的新实例。本进程以
+        // root 运行，proc_pidpath 可读任意进程路径（App 沙盒做不到，协调器侧枚举不可靠）。
+        killStaleVncServer();
 
         BOOL started = [gWatchDog start];
         if (!started) {
