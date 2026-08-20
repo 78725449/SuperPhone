@@ -3254,15 +3254,8 @@ int tvReloadConfigForKey(const char *key) {
     // 2026-08-20 修复：设置页/网关写入 com.82flex.trollvnc suite 域，
     // standardUserDefaults（无 bundle 进程 = 自身域）读不到 → 改按 suite 读取，否则热重载取到空值。
     NSUserDefaults *p = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
-    int rotQ = gRotationQuad.load();
 
-    if ([k isEqualToString:@"Scale"]) {
-        double v = [p doubleForKey:@"Scale"];
-        if (v < 0.1) v = 0.1; if (v > 1.0) v = 1.0;
-        gScale = v;
-        maybeResizeFramebufferForRotation(rotQ); // 重建 framebuffer（gWidth/gHeight 变化）
-        rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
-    } else if ([k isEqualToString:@"FrameRateSpec"]) {
+    if ([k isEqualToString:@"FrameRateSpec"]) {
         // 复用 parseFrameRateSpec（支持 min:pref:max / min-max / 单值三种格式 + 校验）；
         // 自定义=custom 时回退读 FrameRateSpecCustom（2026-08-20 设置页五档）
         NSString *spec = TVResolvedFrameRateSpec(p, [p stringForKey:@"FrameRateSpec"]);
@@ -3327,9 +3320,12 @@ static void tvApplyPrefsChanged(void) {
                 gUserClientNotifsEnabled = YES;
             }
         }
-        // hot 级配置：逐 key 调 tvReloadConfigForKey（已按 suite 读取）
+        // hot 级配置：逐 key 调 tvReloadConfigForKey（已按 suite 读取）。
+        // 注意：Scale/OrientationPadFix 会重建 framebuffer（maybeResizeFramebufferForRotation 内部
+        // free 旧 buffer + rfbNewFramebuffer），已在 CONFIG_DEFS 定为 restart 级，不得在此热重载——
+        // 否则 main 线程 free 旧 buffer 与后台 rfbRunEventLoop 读写竞态 → use-after-free 崩溃（2026-08-20 根因）。
         static const char *hotKeys[] = {
-            "Scale", "FrameRateSpec", "OrientationSync", "DeferWindowSec",
+            "FrameRateSpec", "OrientationSync", "DeferWindowSec",
             "MaxInflight", "KeepAliveSec", "WheelStepPx", "ModifierMap",
             "FullscreenThresholdPercent"
         };
@@ -3337,14 +3333,7 @@ static void tvApplyPrefsChanged(void) {
             tvReloadConfigForKey(hotKeys[i]);
         }
         // 2026-08-20 补全 hot/instant 全局变量（tvReloadConfigForKey 未覆盖，设置页改了需即时生效）：
-        // OrientationPadFix（重建 framebuffer）/ NaturalScroll / AutoAssistEnabled / KeyLogging
-        NSNumber *orientFixN = [p objectForKey:@"OrientationPadFix"];
-        if ([orientFixN isKindOfClass:[NSNumber class]]) {
-            int v = orientFixN.intValue;
-            gOrientationFixQuad = (v >= 0 && v <= 3) ? v : 0;
-            maybeResizeFramebufferForRotation(gRotationQuad.load());
-            rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
-        }
+        // NaturalScroll / AutoAssistEnabled / KeyLogging（OrientationPadFix 已改 restart 级，不在此热重载）
         NSNumber *naturalN = [p objectForKey:@"NaturalScroll"];
         if ([naturalN isKindOfClass:[NSNumber class]]) gWheelNaturalDir = naturalN.boolValue;
         NSNumber *assistN = [p objectForKey:@"AutoAssistEnabled"];

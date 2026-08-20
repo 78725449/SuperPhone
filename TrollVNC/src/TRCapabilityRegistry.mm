@@ -956,11 +956,14 @@ static NSDictionary *TRSearchGatewaySync(void) {
 /** 注册所有配置项 schema（含 type/min/max/enum/reload，供前端自动生成表单） */
 - (void)_registerConfigSchemas {
     // 画面与性能（hot）
-    [self _registerConfig:@"Scale" title:@"输出缩放" type:@"number" min:@0.1 max:@1.0 step:@0.1 reload:TRConfigReloadHot];
+    // Scale/OrientationPadFix 会重建 framebuffer（maybeResizeFramebufferForRotation 内部 free 旧 buffer +
+    // rfbNewFramebuffer），不能在 RFB 后台线程运行期间从其他线程热重载（use-after-free 崩溃），
+    // 故定 restart 级（重启服务时单线程重建，安全）。2026-08-20 根因修复。
+    [self _registerConfig:@"Scale" title:@"输出缩放" type:@"number" min:@0.1 max:@1.0 step:@0.1 reload:TRConfigReloadRestart];
     [self _registerConfig:@"FrameRateSpec" title:@"帧率" type:@"string" reload:TRConfigReloadHot];
     [self _registerConfig:@"OrientationSync" title:@"方向同步" type:@"bool" reload:TRConfigReloadHot];
     [self _registerConfig:@"OrientationPadFix" title:@"方向偏移" type:@"enum"
-        enumValues:@[@0,@1,@2,@3] enumTitles:@[@"禁用",@"90°",@"180°",@"270°"] reload:TRConfigReloadHot];
+        enumValues:@[@0,@1,@2,@3] enumTitles:@[@"禁用",@"90°",@"180°",@"270°"] reload:TRConfigReloadRestart];
     // 进阶画面
     [self _registerConfig:@"DeferWindowSec" title:@"延迟窗口" type:@"number" min:@0 max:@0.5 step:@0.005 reload:TRConfigReloadHot];
     [self _registerConfig:@"MaxInflight" title:@"最大并行帧" type:@"number" min:@0 max:@8 step:@1 reload:TRConfigReloadHot];

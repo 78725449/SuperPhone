@@ -390,6 +390,9 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
         keys = [NSSet setWithArray:@[
             @"BindHost", @"FullPassword", @"ViewOnlyPassword",
             @"TileSize", @"MaxRects", @"AsyncSwap",
+            // 2026-08-20 根因修复：Scale/OrientationPadFix 会重建 framebuffer，不能热重载
+            // （热重载在非 RFB 线程 free 旧 buffer → 与后台 rfbRunEventLoop 竞态崩溃），改 restart 级
+            @"Scale", @"OrientationPadFix",
             // 2026-08-20 起不再触发重启：
             // - ConnectionMode：TVNCServiceCoordinator 每 3s 轮询自动生效（relay→拉起 / bridge→停服务），重启是冗余中断
             // - FrameRateSpec：hot 级，设置页热重载通道（notify → trollvncserver tvApplyPrefsChanged）即时生效
