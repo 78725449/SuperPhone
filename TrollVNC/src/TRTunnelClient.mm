@@ -537,7 +537,19 @@ static void TRTunnelLog(const char *fmt, ...) {
                     _localFd = [self _connectLocalRfb];
                     BOOL ok = (_localFd >= 0);
                     TRTunnelLog("rfb.start: local connect -> fd=%d", _localFd);
-                    if (!ok) { TVLog(@"[tunnel] rfb.start: local connect failed, keep standby"); }
+                    if (ok) {
+                        // 2026-08-21 根因修复：设备端 5901 握手窗口极窄（实测 0-50ms 抖动）——
+                        // 客户端 connect 后必须立即发回协议版本，否则服务端主动关闭（EOF）。
+                        // noVNC 协议版本经「网关 ack → 放行 → 隧道」链路到达有毫秒级延迟，
+                        // 间歇性超出窗口 → 隧道 EOF → 黑屏。此处 connect 后立即主动写入
+                        // 固定协议版本 "RFB 003.008\n"，绕过网关往返，确保窗口内完成握手。
+                        // 网关 ack 放行时会跳过已主动发送的协议版本（见网关侧 skipVersion）。
+                        const char kLocalVersion[] = "RFB 003.008\n";
+                        ssize_t vw = write(_localFd, kLocalVersion, sizeof(kLocalVersion) - 1);
+                        TRTunnelLog("rfb.start: local write version -> %zd", vw);
+                    } else {
+                        TVLog(@"[tunnel] rfb.start: local connect failed, keep standby");
+                    }
                     NSDictionary *ack0 = @{ @"type": @"ack", @"cmd": @"rfb.start",
                                             @"id": cmd[@"id"] ?: [NSNull null], @"ok": @(ok) };
                     NSData *ackJson0 = [NSJSONSerialization dataWithJSONObject:ack0 options:0 error:NULL];

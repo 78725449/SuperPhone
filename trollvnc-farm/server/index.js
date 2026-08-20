@@ -425,6 +425,9 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
     // 重建即将开始全新 RFB 连接：丢弃上一个会话残留的下行缓冲（防污染新会话握手）
     tun.pending = Buffer.alloc(0);
     tun.pendingUp = Buffer.alloc(0);
+    // 2026-08-21 修复：noVNC 握手字节缓冲到 rfb.start ack 后放行（ack 时跳过协议版本——
+    // 设备端已在 rfb.start connect 后主动写入 "RFB 003.008\n"，见 TRTunnelClient）。
+    // 缓冲窗口保证 noVNC 版本不会在 connect 前/后产生重复写入竞态。
     tun.pendingUpUntil = Date.now() + 3000; // 兜底：ack 正常会在设备 connect 完成后提前结束
     tun.rebuild = { id: rid, timer: null };
     // 兜底超时：ack 丢失/旧设备不 ack 时强制放行，避免握手字节永久卡在缓冲
@@ -433,7 +436,14 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
         tun.pendingUpUntil = 0;
         console.log(`[vnc] rfb.start ack timeout, force release (${deviceId})`);
         if (tun.pendingUp && tun.pendingUp.length) {
-          try { writeTunnelFrame(tun.sock, FT_DATA, tun.pendingUp); } catch { /* noop */ }
+          // 同 ack 放行：跳过设备端已主动写入的协议版本（见 ack 处理分支）
+          let up = tun.pendingUp;
+          if (up.length >= 12 && up.subarray(0, 12).toString('latin1').startsWith('RFB 003.')) {
+            up = up.subarray(12);
+          }
+          if (up.length) {
+            try { writeTunnelFrame(tun.sock, FT_DATA, up); } catch { /* noop */ }
+          }
         }
         tun.pendingUp = null;
         tun.rebuild = null;
@@ -1451,7 +1461,19 @@ const tunnelServer = net.createServer((sock) => {
           // connect 成功：放行缓冲的握手字节，noVNC 必然拿到 server version 出画面
           console.log(`[vnc] rfb.start ack ok, release handshake bytes (${deviceId})`);
           if (tunRec.pendingUp && tunRec.pendingUp.length) {
-            try { writeTunnelFrame(sock, FT_DATA, tunRec.pendingUp); } catch { /* noop */ }
+            // 2026-08-21 根因修复（与设备端 TRTunnelClient 主动发协议版本配套）：
+            // 设备端在 rfb.start connect 后已主动写入 "RFB 003.008\n"，若此处再放行
+            // noVNC 的协议版本，设备端会收到两个协议版本 → 协议错乱。故跳过前 12 字节
+            // 协议版本（仅当以 "RFB 003." 开头时），放行其余（SetEncodings 等后续字节）。
+            let up = tunRec.pendingUp;
+            if (up.length >= 12 && up.subarray(0, 12).toString('latin1').startsWith('RFB 003.')) {
+              const skipped = up.subarray(12);
+              up = skipped.length ? skipped : null;
+              console.log(`[vnc] skip duplicate version, release ${up ? up.length : 0}B (${deviceId})`);
+            }
+            if (up && up.length) {
+              try { writeTunnelFrame(sock, FT_DATA, up); } catch { /* noop */ }
+            }
           }
         } else {
           // connect 失败：显式断开控制会话（前端提示"画面服务不可用"），不静默黑屏
