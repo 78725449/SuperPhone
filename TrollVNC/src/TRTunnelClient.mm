@@ -28,6 +28,7 @@
 #import <string.h>
 #import <time.h>
 #import <unistd.h>
+#import <notify.h>
 
 // 帧类型常量
 static const uint8_t kFrameTypeData    = 0x01;  // RFB 透传数据
@@ -266,6 +267,10 @@ static void TRTunnelLog(const char *fmt, ...) {
     _localFd = -1;
     _connected = YES;
     TRTunnelLog("handshake ok, standby (local RFB on rfb.start)");
+
+    // 2026-08-22 最小验证：隧道握手成功 → 跨进程通知 trollvncserver 惰性启动采集
+    //（替代「服务启动即常驻采集」——验证 SIGILL 是否因启动太早/无客户端触发）。
+    notify_post("com.82flex.trollvnc.tunnel-connected");
 
     // 5. select passthrough (standby: tunnel only)
     BOOL normalExit = [self _passthroughLoop:tunnelFd];

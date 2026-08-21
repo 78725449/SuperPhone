@@ -3462,6 +3462,28 @@ static void tvInstallLockStateListener(void) {
     tvLockStateChanged();
 }
 
+/** 2026-08-22 最小验证：采集惰性启动（隧道握手成功后 notify 触发）。
+ *  替代「服务启动即常驻采集」——验证 SIGILL 是否因启动太早/无客户端触发。 */
+static void tvStartCaptureIfNeeded(void) {
+    if (gIsCaptureStarted || !gFrameHandler) return;
+    gIsCaptureStarted = YES;
+    [[ScreenCapturer sharedCapturer]
+        setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps max:gCaptureLowFps];
+    [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:gFrameHandler];
+    TVLog(@"Screen capture started (lazy, tunnel-connected, low-fps %.0f).", gCaptureLowFps);
+}
+
+/** 监听 manager（TRTunnelClient）隧道握手成功通知，触发采集惰性启动 */
+static void tvInstallTunnelConnectedListener(void) {
+    static int token = 0;
+    notify_register_dispatch("com.82flex.trollvnc.tunnel-connected", &token,
+                             dispatch_get_main_queue(), ^(int t) {
+        (void)t;
+        tvStartCaptureIfNeeded();
+    });
+    TVLog(@"-daemon: tunnel-connected listener installed");
+}
+
 static void stopBonjour(void) {
     // NSNetService expects interactions on a runloop thread (prefer main).
     if (![NSThread isMainThread]) {
@@ -4950,11 +4972,18 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
         tvPublishClientConnectedNotif(host, NO);
     }
 
-    // 2026-08-21 架构升级：采集已常驻（服务启动即低频启动），新客户端到来不再启动采集，
-    // 只升频到客户端请求的 FrameRateSpec（min/pref/max，0=未指定交给 ScreenCapturer 归一化）。
-    if (gClientCount > 0 && gFrameHandler && gIsCaptureStarted) {
-        [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gFpsMin preferred:gFpsPref max:gFpsMax];
-        TVLog(@"Client connected; capture raised to min=%d pref=%d max=%d fps.", gFpsMin, gFpsPref, gFpsMax);
+    // 2026-08-22 惰性启动：首个 5901 客户端（含 5801 直连、rfb.start）触发采集启动 + 升频，
+    // 替代「服务启动即常驻采集」。已启动则只升频（隧道握手成功可能已低频启动 @CaptureFps）。
+    if (gClientCount > 0 && gFrameHandler) {
+        if (!gIsCaptureStarted) {
+            gIsCaptureStarted = YES;
+            [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gFpsMin preferred:gFpsPref max:gFpsMax];
+            [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:gFrameHandler];
+            TVLog(@"Screen capture started (lazy, first RFB client) + raised to min=%d pref=%d max=%d fps.", gFpsMin, gFpsPref, gFpsMax);
+        } else {
+            [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gFpsMin preferred:gFpsPref max:gFpsMax];
+            TVLog(@"Client connected; capture raised to min=%d pref=%d max=%d fps.", gFpsMin, gFpsPref, gFpsMax);
+        }
     }
 
 #if !TARGET_OS_SIMULATOR
@@ -5680,16 +5709,10 @@ int main(int argc, const char *argv[]) {
         initializeTilingOrReset();
         initializeAndRunRfbServer();
 
-        // 2026-08-21 架构升级：采集与客户端连接解耦——服务启动即常驻低频采集（gCaptureLowFps），
-        // 客户端连接只影响帧率升降（升频见 newClientHook，归零降频见 clientGoneHook/cap.hello 豁免）。
-        // gFrameHandler 已在 prepareScreenCapturer 就绪；rfbInitServer 之后、进入 runloop 前启动。
-        if (!gIsCaptureStarted && gFrameHandler) {
-            gIsCaptureStarted = YES;
-            [[ScreenCapturer sharedCapturer]
-                setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps max:gCaptureLowFps];
-            [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:gFrameHandler];
-            TVLog(@"Screen capture started (persistent low-fps %.0f).", gCaptureLowFps);
-        }
+        // 2026-08-22 最小验证：采集改为惰性启动——服务启动不再采集，改由「隧道握手成功」跨进程通知触发
+        //（tunnel-connected 通知 → tvStartCaptureIfNeeded），验证 SIGILL 是否因启动太早/无客户端触发。
+        // gFrameHandler 已在 prepareScreenCapturer 就绪；此处仅安装监听，采集在隧道握手成功后启动。
+        tvInstallTunnelConnectedListener();
 
         // 2026-08-17 架构级：管理操作走独立 HTTP 端口（5802），与 RFB 画面流隔离
         startHttpApiServer();
