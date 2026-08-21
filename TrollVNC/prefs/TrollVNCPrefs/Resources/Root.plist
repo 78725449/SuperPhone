@@ -6,7 +6,7 @@
 	<string>设置</string>
 	<key>items</key>
 	<array>
-		<!-- ============ 连接 ============ -->
+		<!-- ============ 连接（模式选择器 + 动态子组） ============ -->
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
@@ -64,32 +64,6 @@
 			<string>FARM_TOKEN</string>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>BonjourEnabled</string>
-			<key>label</key>
-			<string>自动发现（Bonjour）</string>
-			<key>default</key>
-			<true/>
-			<key>visibleOnlyRelay</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCButtonCell</string>
-			<key>label</key>
-			<string>搜索网关</string>
-			<key>action</key>
-			<string>searchGateway</string>
-			<key>height</key>
-			<real>48</real>
-			<key>visibleOnlyRelay</key>
-			<true/>
-		</dict>
-		<dict>
 			<key>cellClass</key>
 			<string>TVNCButtonCell</string>
 			<key>label</key>
@@ -98,40 +72,48 @@
 			<string>connectGateway</string>
 			<key>height</key>
 			<real>48</real>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCButtonCell</string>
+			<key>label</key>
+			<string>桥接网关</string>
+			<key>action</key>
+			<string>connectGateway</string>
+			<key>height</key>
+			<real>48</real>
 			<key>visibleOnlyBridge</key>
 			<true/>
 		</dict>
 
-		<!-- ============ 安全 ============ -->
+		<!-- ============ 直连（仅中继模式显示） ============ -->
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>安全</string>
+			<string>直连</string>
 			<key>footerText</key>
-			<string>经典 VNC 认证只认密码前 8 位。</string>
+			<string>不经网关、直连本设备服务（5801/5901）的访问配置。</string>
+			<key>visibleOnlyRelay</key>
+			<true/>
 		</dict>
 		<dict>
-			<key>cellClass</key>
-			<string>TVNCSegmentCell</string>
+			<key>cell</key>
+			<string>PSEditTextCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
-			<string>AccessMode</string>
+			<string>BindHost</string>
 			<key>label</key>
-			<string>访问模式</string>
-			<key>default</key>
-			<string>full</string>
-			<key>validValues</key>
-			<array>
-				<string>full</string>
-				<string>readonly</string>
-			</array>
-			<key>validTitles</key>
-			<array>
-				<string>完全访问</string>
-				<string>只读</string>
-			</array>
+			<string>直连地址</string>
+			<key>placeholder</key>
+			<string>留空则绑定所有网卡</string>
+			<key>noAutoCorrect</key>
+			<true/>
+			<key>visibleOnlyRelay</key>
+			<true/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -141,61 +123,49 @@
 			<key>key</key>
 			<string>FullPassword</string>
 			<key>label</key>
-			<string>访问密码 ●</string>
+			<string>被控密码</string>
 			<key>placeholder</key>
 			<string>最多 8 位</string>
-			<key>visibleOnlyAccessFull</key>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCButtonCell</string>
+			<key>label</key>
+			<string>生成证书</string>
+			<key>action</key>
+			<string>generateKeys</string>
+			<key>height</key>
+			<real>48</real>
+			<key>visibleOnlyRelay</key>
 			<true/>
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSSecureEditTextCell</string>
+			<string>PSSwitchCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
-			<string>ViewOnlyPassword</string>
+			<string>ViewOnly</string>
 			<key>label</key>
-			<string>只读密码 ●</string>
-			<key>placeholder</key>
-			<string>最多 8 位</string>
-			<key>visibleOnlyAccessReadonly</key>
+			<string>只读模式</string>
+			<key>default</key>
+			<false/>
+			<key>visibleOnlyRelay</key>
 			<true/>
 		</dict>
 
-		<!-- ============ 画质 ============ -->
+		<!-- ============ 画面（按链路顺序，仅中继模式显示） ============ -->
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>画质</string>
+			<string>画面</string>
 			<key>footerText</key>
-			<string>模式一键调优；选「自定义」才显示 6 项底层传输参数（● 需重启）。</string>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSegmentCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>PerformanceMode</string>
-			<key>label</key>
-			<string>模式</string>
-			<key>default</key>
-			<string>balanced</string>
-			<key>validValues</key>
-			<array>
-				<string>performance</string>
-				<string>balanced</string>
-				<string>quality</string>
-				<string>custom</string>
-			</array>
-			<key>validTitles</key>
-			<array>
-				<string>流畅</string>
-				<string>智能</string>
-				<string>画质</string>
-				<string>自定义</string>
-			</array>
+			<string>按画面链路排序：采集 → 缩略图 → 推流；画质选「自定义」才显示底层传输参数。</string>
+			<key>visibleOnlyRelay</key>
+			<true/>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -203,19 +173,57 @@
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
 			<key>key</key>
-			<string>Scale</string>
+			<string>CaptureFps</string>
 			<key>label</key>
-			<string>缩放</string>
+			<string>采集帧率</string>
 			<key>default</key>
-			<real>1.0</real>
+			<integer>10</integer>
 			<key>min</key>
-			<real>0.25</real>
-			<key>max</key>
 			<real>1.0</real>
+			<key>max</key>
+			<real>30.0</real>
 			<key>showValue</key>
 			<true/>
 			<key>format</key>
-			<string>%.2f</string>
+			<string>%.0ffps</string>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>ThumbPushEnabled</string>
+			<key>label</key>
+			<string>变化推送</string>
+			<key>default</key>
+			<true/>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>ThumbInterval</string>
+			<key>label</key>
+			<string>推送间隔</string>
+			<key>default</key>
+			<integer>3</integer>
+			<key>min</key>
+			<real>1.0</real>
+			<key>max</key>
+			<real>60.0</real>
+			<key>showValue</key>
+			<true/>
+			<key>format</key>
+			<string>%.0fs</string>
+			<key>visibleOnlyRelay</key>
+			<true/>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -225,7 +233,7 @@
 			<key>key</key>
 			<string>FrameRateSpec</string>
 			<key>label</key>
-			<string>帧率</string>
+			<string>推流帧率</string>
 			<key>default</key>
 			<string>60</string>
 			<key>validValues</key>
@@ -244,6 +252,8 @@
 				<string>动态</string>
 				<string>自定义</string>
 			</array>
+			<key>visibleOnlyRelay</key>
+			<true/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -264,6 +274,8 @@
 			<string>1-240</string>
 			<key>visibleOnlyFrameRateCustom</key>
 			<true/>
+			<key>visibleOnlyRelay</key>
+			<true/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -276,333 +288,8 @@
 			<string>方向同步</string>
 			<key>default</key>
 			<true/>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>TileSize</string>
-			<key>label</key>
-			<string>分块大小 ●</string>
-			<key>default</key>
-			<integer>32</integer>
-			<key>min</key>
-			<real>8.0</real>
-			<key>max</key>
-			<real>128.0</real>
-			<key>showValue</key>
+			<key>visibleOnlyRelay</key>
 			<true/>
-			<key>format</key>
-			<string>%.0fpx</string>
-			<key>visibleOnlyCustom</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>MaxRects</string>
-			<key>label</key>
-			<string>最大矩形数 ●</string>
-			<key>default</key>
-			<integer>512</integer>
-			<key>min</key>
-			<real>1.0</real>
-			<key>max</key>
-			<real>4096.0</real>
-			<key>showValue</key>
-			<true/>
-			<key>visibleOnlyCustom</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>FullscreenThresholdPercent</string>
-			<key>label</key>
-			<string>脏区阈值</string>
-			<key>default</key>
-			<integer>50</integer>
-			<key>min</key>
-			<real>0.0</real>
-			<key>max</key>
-			<real>100.0</real>
-			<key>showValue</key>
-			<true/>
-			<key>format</key>
-			<string>%.0f%%</string>
-			<key>visibleOnlyCustom</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>AsyncSwap</string>
-			<key>label</key>
-			<string>非阻塞交换 ●</string>
-			<key>default</key>
-			<false/>
-			<key>visibleOnlyCustom</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>DeferWindowSec</string>
-			<key>label</key>
-			<string>延迟窗口</string>
-			<key>default</key>
-			<real>0.015</real>
-			<key>min</key>
-			<real>0.0</real>
-			<key>max</key>
-			<real>0.5</real>
-			<key>showValue</key>
-			<true/>
-			<key>format</key>
-			<string>%.3fs</string>
-			<key>visibleOnlyCustom</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>MaxInflight</string>
-			<key>label</key>
-			<string>最大并行帧</string>
-			<key>default</key>
-			<integer>2</integer>
-			<key>min</key>
-			<real>0.0</real>
-			<key>max</key>
-			<real>8.0</real>
-			<key>isSegmented</key>
-			<true/>
-			<key>segmentCount</key>
-			<integer>8</integer>
-			<key>showValue</key>
-			<true/>
-			<key>visibleOnlyCustom</key>
-			<true/>
-		</dict>
-
-		<!-- ============ 交互 ============ -->
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>label</key>
-			<string>交互</string>
-			<key>footerText</key>
-			<string>控制端操作手感：滚动方向、滚轮步长、辅助触控。</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>NaturalScroll</string>
-			<key>label</key>
-			<string>自然滚动</string>
-			<key>default</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>WheelStepPx</string>
-			<key>label</key>
-			<string>滚轮步进</string>
-			<key>default</key>
-			<real>48.0</real>
-			<key>min</key>
-			<real>0.0</real>
-			<key>max</key>
-			<real>1000.0</real>
-			<key>showValue</key>
-			<true/>
-			<key>format</key>
-			<string>%.0fpx</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>AutoAssistEnabled</string>
-			<key>label</key>
-			<string>辅助触控</string>
-			<key>default</key>
-			<false/>
-		</dict>
-
-		<!-- ============ 显示 ============ -->
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>label</key>
-			<string>显示</string>
-			<key>footerText</key>
-			<string>控制台呈现：卡片墙刷新、悬浮菜单、通知。</string>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>ThumbInterval</string>
-			<key>label</key>
-			<string>卡片墙刷新间隔</string>
-			<key>default</key>
-			<integer>3</integer>
-			<key>min</key>
-			<real>1.0</real>
-			<key>max</key>
-			<real>60.0</real>
-			<key>showValue</key>
-			<true/>
-			<key>format</key>
-			<string>%.0fs</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>FabAutoCollapse</string>
-			<key>label</key>
-			<string>悬浮菜单自动收起</string>
-			<key>default</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSegmentCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>Notifications</string>
-			<key>label</key>
-			<string>通知</string>
-			<key>default</key>
-			<string>all</string>
-			<key>validValues</key>
-			<array>
-				<string>all</string>
-				<string>connectOnly</string>
-				<string>silent</string>
-			</array>
-			<key>validTitles</key>
-			<array>
-				<string>全部通知</string>
-				<string>仅连接</string>
-				<string>静默</string>
-			</array>
-		</dict>
-
-		<!-- ============ 高级（折叠组，默认折叠） ============ -->
-		<dict>
-			<key>cell</key>
-			<string>PSButtonCell</string>
-			<key>label</key>
-			<string>高级</string>
-			<key>action</key>
-			<string>toggleCollapseGroup:</string>
-			<key>collapseGroup</key>
-			<string>advanced</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSEditTextCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>BindHost</string>
-			<key>label</key>
-			<string>绑定地址 ●</string>
-			<key>placeholder</key>
-			<string>留空则绑定所有网卡</string>
-			<key>noAutoCorrect</key>
-			<true/>
-			<key>collapseGroup</key>
-			<string>advanced</string>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>KeepAliveSec</string>
-			<key>label</key>
-			<string>连接保活</string>
-			<key>default</key>
-			<real>30.0</real>
-			<key>min</key>
-			<real>0.0</real>
-			<key>max</key>
-			<real>300.0</real>
-			<key>showValue</key>
-			<true/>
-			<key>format</key>
-			<string>%.0fs</string>
-			<key>collapseGroup</key>
-			<string>advanced</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSLinkListCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>ModifierMap</string>
-			<key>label</key>
-			<string>修饰键映射</string>
-			<key>detail</key>
-			<string>TVNCListItemsController</string>
-			<key>default</key>
-			<string>std</string>
-			<key>shortTitles</key>
-			<array>
-				<string>Standard</string>
-				<string>Alt→Cmd</string>
-			</array>
-			<key>validTitles</key>
-			<array>
-				<string>Standard</string>
-				<string>Alt as Command</string>
-			</array>
-			<key>validValues</key>
-			<array>
-				<string>std</string>
-				<string>altcmd</string>
-			</array>
-			<key>staticTextMessage</key>
-			<string>标准：Alt=Option、Super=Command；macOS 客户端建议选择「Alt→Cmd」。</string>
-			<key>collapseGroup</key>
-			<string>advanced</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -640,8 +327,425 @@
 			</array>
 			<key>staticTextMessage</key>
 			<string>对采集画面施加固定旋转偏移，适用于默认方向非标准的机型（采集/触摸方向异常时纠偏）。</string>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSegmentCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>PerformanceMode</string>
+			<key>label</key>
+			<string>推流画质</string>
+			<key>default</key>
+			<string>balanced</string>
+			<key>validValues</key>
+			<array>
+				<string>performance</string>
+				<string>balanced</string>
+				<string>quality</string>
+				<string>custom</string>
+			</array>
+			<key>validTitles</key>
+			<array>
+				<string>流畅</string>
+				<string>智能</string>
+				<string>画质</string>
+				<string>自定义</string>
+			</array>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>TileSize</string>
+			<key>label</key>
+			<string>分块大小 ●</string>
+			<key>default</key>
+			<integer>32</integer>
+			<key>min</key>
+			<real>8.0</real>
+			<key>max</key>
+			<real>128.0</real>
+			<key>showValue</key>
+			<true/>
+			<key>format</key>
+			<string>%.0fpx</string>
+			<key>visibleOnlyCustom</key>
+			<true/>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>MaxRects</string>
+			<key>label</key>
+			<string>最大矩形数 ●</string>
+			<key>default</key>
+			<integer>512</integer>
+			<key>min</key>
+			<real>1.0</real>
+			<key>max</key>
+			<real>4096.0</real>
+			<key>showValue</key>
+			<true/>
+			<key>visibleOnlyCustom</key>
+			<true/>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>FullscreenThresholdPercent</string>
+			<key>label</key>
+			<string>脏区阈值</string>
+			<key>default</key>
+			<integer>50</integer>
+			<key>min</key>
+			<real>0.0</real>
+			<key>max</key>
+			<real>100.0</real>
+			<key>showValue</key>
+			<true/>
+			<key>format</key>
+			<string>%.0f%%</string>
+			<key>visibleOnlyCustom</key>
+			<true/>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>AsyncSwap</string>
+			<key>label</key>
+			<string>非阻塞交换 ●</string>
+			<key>default</key>
+			<false/>
+			<key>visibleOnlyCustom</key>
+			<true/>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>Scale</string>
+			<key>label</key>
+			<string>输出缩放</string>
+			<key>default</key>
+			<real>1.0</real>
+			<key>min</key>
+			<real>0.25</real>
+			<key>max</key>
+			<real>1.0</real>
+			<key>showValue</key>
+			<true/>
+			<key>format</key>
+			<string>%.2f</string>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>进阶</string>
+			<key>action</key>
+			<string>toggleCollapseGroup:</string>
 			<key>collapseGroup</key>
-			<string>advanced</string>
+			<string>performance</string>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>DeferWindowSec</string>
+			<key>label</key>
+			<string>延迟窗口</string>
+			<key>default</key>
+			<real>0.015</real>
+			<key>min</key>
+			<real>0.0</real>
+			<key>max</key>
+			<real>0.5</real>
+			<key>showValue</key>
+			<true/>
+			<key>format</key>
+			<string>%.3fs</string>
+			<key>collapseGroup</key>
+			<string>performance</string>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>MaxInflight</string>
+			<key>label</key>
+			<string>最大并行帧</string>
+			<key>default</key>
+			<integer>2</integer>
+			<key>min</key>
+			<real>0.0</real>
+			<key>max</key>
+			<real>8.0</real>
+			<key>isSegmented</key>
+			<true/>
+			<key>segmentCount</key>
+			<integer>8</integer>
+			<key>showValue</key>
+			<true/>
+			<key>collapseGroup</key>
+			<string>performance</string>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+
+		<!-- ============ 交互（仅中继模式显示） ============ -->
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>交互</string>
+			<key>footerText</key>
+			<string>控制端操作手感：滚动方向、滚轮步长、辅助触控。</string>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>NaturalScroll</string>
+			<key>label</key>
+			<string>自然滚动</string>
+			<key>default</key>
+			<true/>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>WheelStepPx</string>
+			<key>label</key>
+			<string>滚轮步进</string>
+			<key>default</key>
+			<real>48.0</real>
+			<key>min</key>
+			<real>0.0</real>
+			<key>max</key>
+			<real>1000.0</real>
+			<key>showValue</key>
+			<true/>
+			<key>format</key>
+			<string>%.0fpx</string>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>AutoAssistEnabled</string>
+			<key>label</key>
+			<string>辅助触控</string>
+			<key>default</key>
+			<false/>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkListCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>ModifierMap</string>
+			<key>label</key>
+			<string>修饰键映射</string>
+			<key>detail</key>
+			<string>TVNCListItemsController</string>
+			<key>default</key>
+			<string>std</string>
+			<key>shortTitles</key>
+			<array>
+				<string>Standard</string>
+				<string>Alt→Cmd</string>
+			</array>
+			<key>validTitles</key>
+			<array>
+				<string>Standard</string>
+				<string>Alt as Command</string>
+			</array>
+			<key>validValues</key>
+			<array>
+				<string>std</string>
+				<string>altcmd</string>
+			</array>
+			<key>staticTextMessage</key>
+			<string>标准：Alt=Option、Super=Command；macOS 客户端建议选择「Alt→Cmd」。</string>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>KeyLogging</string>
+			<key>label</key>
+			<string>键盘日志</string>
+			<key>default</key>
+			<false/>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+
+		<!-- ============ 保活（仅中继模式显示） ============ -->
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>保活</string>
+			<key>footerText</key>
+			<string>屏幕防息屏与网关心跳保活。</string>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSegmentCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>Notifications</string>
+			<key>label</key>
+			<string>通知模式</string>
+			<key>default</key>
+			<string>all</string>
+			<key>validValues</key>
+			<array>
+				<string>all</string>
+				<string>connectOnly</string>
+				<string>silent</string>
+			</array>
+			<key>validTitles</key>
+			<array>
+				<string>全部通知</string>
+				<string>仅连接</string>
+				<string>静默</string>
+			</array>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>KeepAliveSec</string>
+			<key>label</key>
+			<string>防息屏间隔</string>
+			<key>default</key>
+			<real>30.0</real>
+			<key>min</key>
+			<real>0.0</real>
+			<key>max</key>
+			<real>300.0</real>
+			<key>showValue</key>
+			<true/>
+			<key>format</key>
+			<string>%.0fs</string>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>TVNCSliderCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>HeartbeatIntervalSec</string>
+			<key>label</key>
+			<string>网关心跳间隔</string>
+			<key>default</key>
+			<integer>30</integer>
+			<key>min</key>
+			<real>5.0</real>
+			<key>max</key>
+			<real>300.0</real>
+			<key>showValue</key>
+			<true/>
+			<key>format</key>
+			<string>%.0fs</string>
+			<key>visibleOnlyRelay</key>
+			<true/>
+		</dict>
+
+		<!-- ============ 关于 ============ -->
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>关于</string>
+			<key>footerText</key>
+			<string>诊断与恢复：重置默认、重启服务、重启守护参数。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>重置默认设置</string>
+			<key>action</key>
+			<string>resetDefaults</string>
+			<key>isDestructive</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>重启服务</string>
+			<key>action</key>
+			<string>restartService</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -651,7 +755,7 @@
 			<key>key</key>
 			<string>WatchdogThrottleInterval</string>
 			<key>label</key>
-			<string>重启节流</string>
+			<string>重启节流间隔</string>
 			<key>default</key>
 			<integer>60</integer>
 			<key>isNumeric</key>
@@ -660,8 +764,6 @@
 			<true/>
 			<key>placeholder</key>
 			<string>60 秒</string>
-			<key>collapseGroup</key>
-			<string>advanced</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -680,44 +782,16 @@
 			<true/>
 			<key>placeholder</key>
 			<string>3 秒</string>
-			<key>collapseGroup</key>
-			<string>advanced</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>KeyLogging</string>
-			<key>label</key>
-			<string>键盘日志</string>
-			<key>default</key>
-			<false/>
-			<key>collapseGroup</key>
-			<string>advanced</string>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCButtonCell</string>
-			<key>label</key>
-			<string>重新生成证书</string>
-			<key>action</key>
-			<string>generateKeys</string>
-			<key>height</key>
-			<real>48</real>
-			<key>collapseGroup</key>
-			<string>advanced</string>
 		</dict>
 
-		<!-- ============ 关于 ============ -->
+		<!-- ============ 无分组（页面底部） ============ -->
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>关于</string>
+			<string></string>
 			<key>footerText</key>
-			<string>诊断与恢复：查看运行日志、恢复默认设置。</string>
+			<string></string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -729,13 +803,21 @@
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSButtonCell</string>
+			<string>PSStaticTextCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>DeviceUUID</string>
 			<key>label</key>
-			<string>重置默认设置</string>
-			<key>action</key>
-			<string>resetDefaults</string>
-			<key>isDestructive</key>
-			<true/>
+			<string>UDID</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSStaticTextCell</string>
+			<key>label</key>
+			<string>版本信息</string>
+			<key>getter</key>
+			<string>appVersionText</string>
 		</dict>
 	</array>
 </dict>

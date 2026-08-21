@@ -15,7 +15,7 @@
 
 ```bash
 cd trollvnc-farm && npm start        # 启动网关（8080；部署带 FARM_TOKEN=xxx）
-cd trollvnc-farm && npm test         # 10 个测试套件（smoke/tunnel/register/dedupe/caps/gesture/pending-replay/press/order/events）——网关改动必须全过
+cd trollvnc-farm && npm test         # 11 个测试套件（smoke/tunnel/register/dedupe/caps/gesture/pending-replay/press/order/events/tunnel-thumb）——网关改动必须全过
 cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + Theos）
 ```
 
@@ -27,7 +27,7 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
 
 - 端口全固定：5901 RFB（画面+命令扩展消息 0x50/0x80）/ 5801 直连页 / 5802 直连页管理 API（HTTP，v3）/ 5902 远程日志端点（manager 常驻，GET /stderr|/stdout 返回崩溃日志尾部 64KB）/ 8080 控制台 / 18081 注册 / 18181 隧道；端口不可调。
 - **能力层唯一地基**：设备操作只走 RFB → IOHID 注入，禁止前端自造输入协议；无通用 `/command` 端点（已删，禁止回归）。
-- **前端契约两端对齐**：`trollvnc-farm/web/caps.js` 自包含定义（KEY_DEFS 10 / BATCH_CAPS 20 / CONFIG_DEFS 29），设备端 `TRCapabilityRegistry` 只存 executor；新增能力 = 两端各加一条，无上报、无元数据表、无运行时发现。
+- **前端契约两端对齐**：`trollvnc-farm/web/caps.js` 自包含定义（KEY_DEFS 10 / BATCH_CAPS 20 / CONFIG_DEFS 30），设备端 `TRCapabilityRegistry` 只存 executor；新增能力 = 两端各加一条，无上报、无元数据表、无运行时发现。
 - 单会话约束：设备仅 1 条隧道 + 1 个 5901 连接，同设备同时仅 1 个活跃 VNC 会话；纯隧道（无直连回退、无反向模式）。
 - 状态以网关为准：前端不持久化设备状态，刷新一律从网关拉取。
 - **剪贴板是显式双向搬运（2026-08-17 起，无自动同步）**：复制=拉（clipboard.get）、粘贴=推（type.paste）；**粘贴的 http 降级（2026-08-18 定稿）**：http 读不到控制端剪贴板 → 粘贴按钮与 Ctrl+V **一律弹输入浮层**（PC/触屏统一，浮层内 Ctrl+V 或回车自动注入），https 直读直贴——已废弃隐藏 textarea「第二次点击/Ctrl+V 提交」方案，禁止回归。

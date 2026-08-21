@@ -6,12 +6,12 @@
       <- {"type":"tunnel_ack","ok":true}
     握手成功后进入帧封装透传模式（type:1B + length:4B BE + payload）：
       DATA(0x01)    双向 RFB 透传（隧道 ↔ 本地 127.0.0.1:5901）
-      PING(0x02)    心跳请求（设备→网关，每 30s）
+      PING(0x02)    心跳请求（设备→网关，间隔可配 HeartbeatIntervalSec，默认 30s）
       PONG(0x03)    心跳响应（网关→设备 / 设备回网关）
       CMD(0x04)     命令 JSON（网关→设备，复用 sendDeviceCmd 通道）
       CMDACK(0x05)  命令 ack JSON（设备→网关）
   帧封装是为了让 RFB 裸字节透传与 JSON 心跳/命令在同一隧道上共存而不互相污染。
-  心跳：每 30s 发 PING；断线退避重连（2s 起，上限 30s），与 TRGatewayClient 一致。
+  心跳：按 HeartbeatIntervalSec（默认 30s，5-300 钳制）发 PING；断线退避重连（2s 起，上限 30s），与 TRGatewayClient 一致。
   独立线程运行（NSThread），select() 多路复用隧道与本地 RFB 双向数据流。
 */
 #import "TRTunnelClient.h"
@@ -41,7 +41,8 @@ static const uint8_t kFrameTypeThumb   = 0x06;  // 缩略图推送（设备→�
 static BOOL gRfbActive = NO;
 
 // 心跳/超时/重连参数
-static const NSTimeInterval kTunnelPingInterval  = 30.0;   // 心跳间隔（秒）
+static const NSTimeInterval kTunnelPingInterval  = 30.0;   // 心跳间隔默认值（HeartbeatIntervalSec 未设置时）
+static NSTimeInterval gTunnelPingInterval = 30.0;          // 运行期心跳间隔（startWithHost: 从 HeartbeatIntervalSec 读取，5-300 钳制）
 static const NSTimeInterval kTunnelSelectTimeout = 5.0;    // select 超时（秒，用于触发心跳与重检）
 static const NSTimeInterval kTunnelMinRetryDelay = 2.0;    // 最小重连退避（秒）
 static const NSTimeInterval kTunnelMaxRetryDelay = 30.0;   // 最大重连退避（秒）
@@ -156,6 +157,13 @@ static void TRTunnelLog(const char *fmt, ...) {
     _deviceId = [deviceId copy];
     _token = [token copy];
     _retryDelay = kTunnelMinRetryDelay;
+    // HeartbeatIntervalSec（gateway 级，5-300s 默认 30）：与 TRGatewayClient 同域读取心跳间隔
+    NSUserDefaults *ud = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSNumber *hb = [ud objectForKey:@"HeartbeatIntervalSec"];
+    NSTimeInterval v = hb ? hb.doubleValue : kTunnelPingInterval;
+    if (v < 5) v = 5;
+    if (v > 300) v = 300;
+    gTunnelPingInterval = v;
     _started = YES;
     _workerThread = [[NSThread alloc] initWithTarget:self selector:@selector(_workerMain) object:nil];
     [_workerThread setName:@"com.82flex.trollvnc.tunnel-client"];
@@ -362,7 +370,7 @@ static void TRTunnelLog(const char *fmt, ...) {
  * select 多路复用双向透传循环
  * 隧道可读 → 帧解析 → DATA 写本地 5901 / PONG 重置心跳 / CMD 调 commandHandler 回 CMDACK
  * 本地 5901 可读 → 封装 DATA 帧写隧道
- * 每 30s 发 PING 心跳帧
+ * 按 HeartbeatIntervalSec（默认 30s）间隔发 PING 心跳帧
  * @param tunnelFd 隧道 socket fd
  * @param localFd  本地 RFB socket fd
  * @return YES 表示因 stop 正常退出；NO 表示连接异常断开（需重连）
@@ -391,7 +399,7 @@ static void TRTunnelLog(const char *fmt, ...) {
         if (sel == 0) {
             // timeout: heartbeat
             time_t now = time(NULL);
-            if (now - lastPing >= (time_t)kTunnelPingInterval) {
+            if (now - lastPing >= (time_t)gTunnelPingInterval) {
                 if (![self _writeFrame:tunnelFd type:kFrameTypePing data:NULL length:0]) {
                     free(readBuf);
                     return NO;

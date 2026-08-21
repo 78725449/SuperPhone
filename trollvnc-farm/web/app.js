@@ -1,7 +1,7 @@
 // SuperPhone 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
 // rfb.js?v=2：noVNC 核心为 server 内存 patch，URL 带版本号强制浏览器重新拉取 patch 后的内容避免旧缓存
 import RFB from '/novnc/core/rfb.js?v=2';
-import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=10';
+import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=11';
 import { attachPress } from './press.js';
 import { attachFarmGesture, attachRightHome, resolveGesture } from './gesture.js';
 
@@ -183,6 +183,11 @@ async function refreshDevices() {
     if (!inst) inst = createWallTile(d);
     updateWallTile(inst, d);
   }
+  // 缩略图兜底（2026-08-21）：事件驱动之外，列表刷新后每张在线卡片补拉一次网关缓存
+  // （首次加载 / WS 断线重连全量补齐；离线/聚焦/直控/同步卡片由 fetchThumb 内部跳过）
+  for (const inst of wallInstances.values()) {
+    fetchThumb(inst).catch(() => {});
+  }
   // 卡片比例自适应：仅当在线设备集合/屏幕尺寸签名变化才更新 --tile-pb
   // （变化驱动，避免每次轮询都重算；轮询本身仍是设备发现机制）
   const sig = devicesSignature();
@@ -203,7 +208,8 @@ async function refreshDevices() {
 
 // 设备列表变更推送订阅（2026-08-18）：后端经 /ws/events 广播设备上线/离线/删除/改名/排序，
 // 前端收到后重拉 /api/devices，替代 6s 轮询（2026-08-19 轮询已移除）。
-// 事件通知+前端重拉：后端只推 {type, deviceId}，前端统一 refreshDevices 拉全量，保证一致性。
+// 事件通知+前端重拉：后端只推 {type, deviceId}，前端 refreshDevices 拉全量保证一致性；
+// thumb 事件特例（2026-08-21）：卡片存在时直接补拉该设备缩略图缓存，不触发全量刷新。
 let eventsWS = null;
 let eventsWSRetry = 0;
 function connectEventsWS() {
@@ -215,7 +221,17 @@ function connectEventsWS() {
     // 主动 refreshDevices 补齐（取代已移除的手动刷新按钮，2026-08-19）
     refreshDevices().catch(() => {});
   };
-  eventsWS.onmessage = () => { refreshDevices().catch(() => {}); };
+  eventsWS.onmessage = (ev) => {
+    // 缩略图事件（2026-08-21）：设备经隧道推 FT_THUMB → 网关缓存 → 广播 {type:'thumb', deviceId}。
+    // 卡片存在则直接补拉该设备缩略图（避免全量刷新）；未知事件类型保持原逻辑（refreshDevices 重拉全量）
+    let msg = null;
+    try { msg = JSON.parse(ev.data); } catch { /* 非 JSON 事件按全量刷新处理 */ }
+    if (msg && msg.type === 'thumb') {
+      const inst = wallInstances.get(msg.deviceId);
+      if (inst) { fetchThumb(inst).catch(() => {}); return; }
+    }
+    refreshDevices().catch(() => {});
+  };
   eventsWS.onclose = () => {
     eventsWS = null;
     // WS 断线退避重连（2s 起，上限 30s）；死连接检测由后端心跳 ping/pong 负责
@@ -279,9 +295,8 @@ function createWallTile(d) {
   const tv = tile.querySelector('.tv');
   const statusEl = tile.querySelector('.tstate');
   const cb = tile.querySelector('.tile-checkbox');
-  // 卡片墙画面获取：hash 门控 + 变化拉图（每 ThumbInterval 秒先取轻量 pHash，
-  // 画面未变化不拉图；变化才 invoke screenshot 渲染新帧）。不建 RFB 持久连接。
-  // rfb：截图轮询实例（字段名沿用历史），ThumbInterval 为 hash 检测间隔（默认 5 秒）。
+  // 卡片墙画面获取：读网关缩略图缓存（设备经隧道推 FT_THUMB → 网关缓存 → 事件驱动前端拉取），
+  // 无轮询定时器；rfb 字段名沿用历史，实为缩略图获取状态标记（kind='thumb'）。
   const inst = { device: d, tile, statusEl, paused: false, rfb: null, checkbox: cb };
   // 恢复已选中状态（设备刷新后保持勾选）
   if (selectedDevices.has(d.id)) {
@@ -332,13 +347,10 @@ function createWallTile(d) {
 }
 
 /**
- * 启动卡片墙画面获取（hash 门控 + 变化拉图）
- * 功能：每 ThumbInterval 秒先调 screen.hash（0.3ms 级轻量 pHash，CPU<1%），
- *       与上次 hash 相同则画面未变化，不拉图（卡片保持缓存帧，静止时零图片流量）；
- *       仅当 hash 变化才调 screenshot 拉取新帧渲染。
- * 说明：v1.8.3 的定时全量截图轮询已升级为 hash 门控；卡片墙不建 RFB 持久连接。
- * 前提：所有安装本 IPA 的设备均注册 screen.hash/screenshot 能力（无旧版回退）。
- * 错误处理：hash/拉图失败均显式标记"获取失败"，不影响下一轮检测。
+ * 启动卡片墙画面获取（读网关缩略图缓存）
+ * 功能：设备经隧道推 FT_THUMB 缩略图 → 网关缓存；前端事件驱动 GET /api/devices/:id/thumb 拉取渲染。
+ *       无轮询定时器（2026-08-21 起 screen.hash/screenshot 轮询整体移除）：静止零流量，
+ *       画面更新由网关 thumb 事件广播 + 设备列表刷新兜底驱动。卡片墙不建 RFB 持久连接。
  * @param {object} inst 卡片墙实例 { device, tile, statusEl, rfb, paused }
  * @returns {void}
  */
@@ -346,11 +358,10 @@ function startWallRfb(inst) {
   if (!inst || inst.paused || inst.rfb) return;
   const tv = inst.tile.querySelector('.tv');
   if (!tv) return;
-  // 虚拟预览设备：不建立真实拉流，直接渲染等比 SVG 占位画面
+  // 虚拟预览设备：不读取网关缓存，直接渲染等比 SVG 占位画面
   if (inst.device.mock) {
     renderMockScreen(tv, inst.device);
     if (inst.statusEl) inst.statusEl.textContent = '预览';
-    inst.rfb = { kind: 'mock', closed: false }; // 占位标记：避免 updateWallTile 每轮重复渲染
     return;
   }
   // 仅隧道设备（source=register）支持画面获取
@@ -360,55 +371,50 @@ function startWallRfb(inst) {
     return;
   }
   tv.innerHTML = '<div class="offline-ph">加载中…</div>';
-  // rfb 字段仅为兼容既有 stopWallRfb/updateWallTile 引用，实为截图轮询实例
-  inst.rfb = { kind: 'screenshot', timer: null, closed: false, lastHash: null, silent: 0 };
-  const tick = async () => {
-    if (inst.paused || !inst.rfb || inst.rfb.closed) return;
-    let changed = false;
-    try {
-      // 1) 轻量屏幕 hash：安装本 IPA 的设备均具备 screen.hash 能力，失败即显式报错，无回退
-      const h = await invokeCap('', inst.device.id, 'screen.hash', {});
-      const hash = ((h && h.ack) || {}).hash;
-      if (!hash) throw new Error('screen.hash 未返回 hash');
-      changed = (hash !== inst.rfb.lastHash);
-      if (!changed) { inst.rfb.silent = (inst.rfb.silent || 0) + 1; return; } // 画面未变化，保持缓存帧
-      inst.rfb.lastHash = hash;
-      inst.rfb.silent = 0;
-      // 2) 画面变化 → 拉取新帧
-      const r = await invokeCap('', inst.device.id, 'screenshot', {});
-      const ack = (r && r.ack) || {};
-      const b64 = ack.image || ack.base64;
-      if (b64) {
-        tv.innerHTML = `<img class="thumb" src="data:image/jpeg;base64,${b64}" alt="" />`;
-        if (inst.statusEl) inst.statusEl.textContent = '';
-        if (inst.tile && ack.width && ack.height) {
-          // 仅记录设备屏幕比例供聚焦面板使用；卡片墙统一 9:16（见 createWallTile）
-          inst.tile.dataset.wh = ack.width + 'x' + ack.height;
-        }
-      }
-    } catch (e) {
-      if (inst.statusEl) inst.statusEl.textContent = '获取失败';
-    } finally {
-      // inst.rfb 可能已被 stopWallRfb 置 null（竞态：在途 tick 与卡片停止交错）——加空值保护
-      if (!inst.paused && inst.rfb && !inst.rfb.closed) {
-        // 双速检测（与 IPA 控制端一致）：变化后快检 1s；静止按 1.5 倍退避至 15s 封顶
-        const base = Number((inst.device.configs && inst.device.configs.ThumbInterval) || 3) || 3;
-        let next;
-        if (changed) next = 1;
-        else next = Math.min(Math.max(base * Math.pow(1.5, (inst.rfb.silent || 0) - 1), base), 15);
-        inst.rfb.timer = setTimeout(tick, Math.max(1, next) * 1000);
-      }
-    }
-  };
-  tick(); // hash 门控变化拉图：画面静止零图片流量（ThumbInterval 间隔 + 变化 1s 快检 / 静止 1.5 倍退避至 15s 封顶）
+  // rfb 字段仅为兼容既有 stopWallRfb/updateWallTile 引用，实为缩略图获取状态标记
+  inst.rfb = { kind: 'thumb', closed: false, fetching: false };
+  fetchThumb(inst);
+}
+
+/**
+ * 读网关缩略图缓存并渲染到卡片（2026-08-21，替代 screen.hash/screenshot 轮询）
+ * GET /api/devices/:id/thumb：200 { thumb: base64, ts } → 更新卡片 <img class="thumb"> 并记录 data-ts；
+ * 204 无缓存 → 静默跳过。仅在线真实隧道设备；聚焦/直控/同步占用画面的卡片不拉取（互斥）。
+ * 幂等：fetching 标记防并发重入；在途请求期间被 stopWallRfb 清理（rfb 置 null/closed）则放弃更新 DOM。
+ * @param {object} inst 卡片墙实例
+ * @returns {Promise<void>}
+ */
+async function fetchThumb(inst) {
+  if (!inst || !inst.rfb || inst.rfb.closed || inst.rfb.kind !== 'thumb') return;
+  const dev = inst.device;
+  // 画面互斥与前置条件：聚焦中暂停、离线/虚拟/未注册设备无缓存可读
+  if (inst.paused || dev.mock || dev.source !== 'register' || dev.online === false) return;
+  if (inst.rfb.fetching) return;
+  inst.rfb.fetching = true;
+  try {
+    const headers = TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
+    const res = await fetch(`/api/devices/${encodeURIComponent(dev.id)}/thumb`, { headers });
+    if (res.status !== 200) return; // 204 无缓存：静默跳过
+    const data = await res.json();
+    const tv = inst.tile && inst.tile.querySelector('.tv');
+    if (!data.thumb || !tv) return;
+    // 在途请求期间可能已被 stopWallRfb 清理（竞态：拉取中进入聚焦/设备离线）——空值保护
+    if (!inst.rfb || inst.rfb.closed) return;
+    tv.innerHTML = `<img class="thumb" src="data:image/jpeg;base64,${data.thumb}" alt="" />`;
+    if (data.ts) inst.tile.dataset.ts = data.ts;
+    if (inst.statusEl) inst.statusEl.textContent = '';
+  } catch (e) {
+    // 读缓存失败保持现状（「加载中…」占位），下个事件/刷新再试
+  } finally {
+    if (inst.rfb) inst.rfb.fetching = false;
+  }
 }
 
 function stopWallRfb(inst) {
   if (!inst) return;
   if (inst.rfb) {
-    if (inst.rfb.kind === 'screenshot') {
-      inst.rfb.closed = true;
-      if (inst.rfb.timer) clearTimeout(inst.rfb.timer);
+    if (inst.rfb.kind === 'thumb') {
+      inst.rfb.closed = true; // 缩略图获取无定时器/WS 可清；在途请求由 fetchThumb 检查 closed 后放弃
     } else {
       closeRfb(inst.rfb);
     }
@@ -724,21 +730,24 @@ async function showBatchConfigPanel(ids) {
     empty.textContent = '选中设备未上报可配置项';
     card.appendChild(empty);
   } else {
-    // 按 reload 生效策略分区（2026-08-19）：instant/hot/gateway/restart 顺序渲染，restart 级加警示
-    const RELOAD_GROUPS = [
-      { key: 'instant', title: '即时生效' },
-      { key: 'hot',     title: '热重载生效' },
-      { key: 'gateway', title: '网关设置' },
-      { key: 'restart', title: '需重启生效', danger: true },
+    // 按能力板块分组渲染（2026-08-21 设计文档 7 章：与 App 设置页一致 连接/直连/画面/交互/保活/关于；
+    // group 为 null 或缺失的项 UI 隐藏——FabAutoCollapse 等固定行为项）
+    const GROUP_ORDER = [
+      { key: 'connection',  title: '连接' },
+      { key: 'direct',      title: '直连' },
+      { key: 'display',     title: '画面' },
+      { key: 'interaction', title: '交互' },
+      { key: 'keepalive',   title: '保活' },
+      { key: 'about',       title: '关于' },
     ];
     const inputs = {};
-    for (const g of RELOAD_GROUPS) {
-      const groupSchemas = Array.from(schemaMap.values()).filter((s) => s.reload === g.key);
+    for (const g of GROUP_ORDER) {
+      const groupSchemas = Array.from(schemaMap.values()).filter((s) => s.group === g.key);
       if (groupSchemas.length === 0) continue;
       const sec = document.createElement('div');
       sec.className = 'cfg-section';
       const title = document.createElement('div');
-      title.className = 'cfg-sec-title' + (g.danger ? ' danger' : '');
+      title.className = 'cfg-sec-title';
       title.textContent = g.title;
       sec.appendChild(title);
       for (const schema of groupSchemas) {
@@ -1652,7 +1661,7 @@ function restoreWallTile(id) {
   if (!inst || !inst.paused) return;
   inst.paused = false;
   inst.tile.classList.remove('focused-tile');
-  // 退出 focus：恢复卡片墙 RFB 连接（Phase 12.1，v2.3 恢复）
+  // 退出 focus：恢复卡片墙缩略图获取
   startWallRfb(inst);
 }
 
@@ -1673,7 +1682,7 @@ function toggleSyncMode() {
 }
 
 /**
- * 退出同步选择模式：关闭全部同步 RFB（恢复卡片墙截图轮询）、清空选中态与"同步中"徽标。
+ * 退出同步选择模式：关闭全部同步 RFB（恢复卡片墙缩略图获取）、清空选中态与"同步中"徽标。
  * @returns {void}
  */
 function exitSyncMode() {
@@ -1685,7 +1694,7 @@ function exitSyncMode() {
     if (inst.checkbox) inst.checkbox.checked = false;
     if (inst.tile) inst.tile.classList.remove('tile-selected');
   }
-  // 关闭全部同步 RFB 订阅并置空，随后恢复卡片墙截图轮询
+  // 关闭全部同步 RFB 订阅并置空，随后恢复卡片墙缩略图获取
   // 必须显式 closeRfb：syncRfb 的 RFB 实例存在 syncRfbs Map 中（未赋给 inst.rfb），
   // stopWallRfb 只清 inst.rfb 不会关闭它 → noVNC 不监听 container DOM 变更 → WS 残留为孤儿会话
   for (const id of syncRfbs.keys()) {
@@ -1696,7 +1705,7 @@ function exitSyncMode() {
   }
   syncRfbs.clear();
   updateSyncBtn();
-  // 恢复截图轮询：仅在线且未暂停（主控自身）的卡片
+  // 恢复缩略图获取：仅在线且未暂停（主控自身）的卡片
   for (const inst of wallInstances.values()) {
     if (inst.device.online === true && !inst.paused) startWallRfb(inst);
   }
@@ -1738,7 +1747,7 @@ function toggleSync(deviceId) {
   const inst = wallInstances.get(deviceId);
   if (!inst) { alert('设备卡片未就绪，请稍后重试'); return; }
   if (syncRfbs.has(deviceId)) {
-    // 取消同步：显式 closeRfb 关闭 WS 订阅，移除选中态，恢复卡片墙截图轮询
+    // 取消同步：显式 closeRfb 关闭 WS 订阅，移除选中态，恢复卡片墙缩略图获取
     const rfb = syncRfbs.get(deviceId);
     if (rfb) closeRfb(rfb);
     stopWallRfb(inst);
@@ -1748,12 +1757,12 @@ function toggleSync(deviceId) {
     inst.tile.classList.remove('tile-selected');
     startWallRfb(inst);
   } else {
-    // 勾选同步：停截图轮询，建立 grp viewOnly RFB 渲染卡片（实时画面 + 接收广播输入）
+    // 勾选同步：停缩略图获取，建立 grp viewOnly RFB 渲染卡片（实时画面 + 接收广播输入）
     stopWallRfb(inst);
     const tv = inst.tile.querySelector('.tv');
     const rfb = createRfb(tv, dev, { grp: wallSession, viewOnly: true });
     rfb.addEventListener('disconnect', () => {
-      // 连接异常断开（设备离线等）：清理同步标记，移除选中态，恢复截图轮询
+      // 连接异常断开（设备离线等）：清理同步标记，移除选中态，恢复缩略图获取
       if (syncRfbs.get(deviceId) === rfb) {
         syncRfbs.delete(deviceId);
         setSyncBadge(inst, false);
@@ -1810,11 +1819,11 @@ function startDirectRfb(d) {
   if (!inst) return null;
   const exist = directRfbs.get(d.id);
   if (exist) return exist;
-  stopWallRfb(inst); // 停截图轮询
+  stopWallRfb(inst); // 停缩略图获取
   const tv = inst.tile.querySelector('.tv');
   const rfb = createRfb(tv, d, { ctrl: false }); // 非 ctrl 可输入连接：互不抢占、输入直达设备
   rfb.addEventListener('disconnect', (e) => {
-    // 设备离线/隧道断/服务端断开：清理直控标记，恢复截图轮询
+    // 设备离线/隧道断/服务端断开：清理直控标记，恢复缩略图获取
     if (directRfbs.get(d.id) === rfb) {
       directRfbs.delete(d.id);
       startWallRfb(inst);
@@ -1831,7 +1840,7 @@ function startDirectRfb(d) {
 
 /**
  * 切换直控模式（竞态二态）：进入 = 所有在线真实设备建立可输入 RFB 推流到卡片；
- * 退出 = 关闭全部直控 RFB，恢复截图轮询（变化帧采样）。
+ * 退出 = 关闭全部直控 RFB，恢复缩略图获取。
  * @returns {void}
  */
 function toggleDirectMode() {
@@ -1854,7 +1863,7 @@ function toggleDirectMode() {
 }
 
 /**
- * 退出直控模式：关闭全部直控 RFB，恢复截图轮询（变化帧采样），按钮恢复原色。
+ * 退出直控模式：关闭全部直控 RFB，恢复缩略图获取，按钮恢复原色。
  * @returns {void}
  */
 function exitDirectMode() {
@@ -1873,7 +1882,7 @@ function exitDirectMode() {
   directRfbs.clear();
   updateDirectBtn();
   for (const inst of wallInstances.values()) {
-    if (inst.device.online === true && !inst.paused) startWallRfb(inst); // 恢复变化帧采样
+    if (inst.device.online === true && !inst.paused) startWallRfb(inst); // 恢复缩略图获取
   }
 }
 
@@ -1903,9 +1912,9 @@ function updateWallTile(inst, d) {
     if (inst.paused) return; // 聚焦中，保持隐藏
     tile.classList.remove('tile-offline');
     // 直控模式：该设备已有直控 RFB（实时推流 canvas）。设备信息轮询刷新
-    // 绝不能覆盖直控画面或恢复截图轮询，否则“操作两下后直控失效”（canvas 被替换）。
+    // 绝不能覆盖直控画面或恢复缩略图获取，否则“操作两下后直控失效”（canvas 被替换）。
     if (directMode && directRfbs.has(d.id)) return;
-    if (!inst.rfb) { // RFB 未连接，启动它（Phase 12.1，v2.3 恢复）
+    if (!inst.rfb) { // 未在获取缩略图，启动它
       tv.innerHTML = '<div class="offline-ph">连接中…</div>';
       startWallRfb(inst);
     }

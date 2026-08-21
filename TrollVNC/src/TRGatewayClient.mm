@@ -4,7 +4,7 @@
     -> {"type":"register","deviceId":"<uuid>","name":"<真实设备名>","vncPort":5901,
         "configs":{...},"screen":{"width":..,"height":..},"httpPort":..}
     <- {"type":"ack","deviceId":"...","name":"..."}
-    -> {"type":"hello"}   每 30s
+    -> {"type":"hello"}   按 HeartbeatIntervalSec（默认 30s，5-300 钳制）
   断线退避重连（2s 起，上限 30s）；设置变更时重发 register 同步最新连接信息/配置值。
 */
 #import "TRGatewayClient.h"
@@ -29,7 +29,8 @@ static NSString *const kDeviceUUIDKey = @"DeviceUUID";
 static NSString *const kGatewayHostKey = @"GatewayHost";
 static NSString *const kDesktopNameKey = @"DesktopName";
 
-static const NSTimeInterval kHelloInterval = 30.0;
+static const NSTimeInterval kHelloInterval = 30.0;   // 心跳间隔默认值（HeartbeatIntervalSec 未设置时）
+static NSTimeInterval gHelloInterval = 30.0;         // 运行期心跳间隔（start 时从 HeartbeatIntervalSec 读取，5-300 钳制）
 static const NSTimeInterval kReadTimeout = 5.0;
 static const NSTimeInterval kMinRetryDelay = 2.0;
 static const NSTimeInterval kMaxRetryDelay = 30.0;
@@ -276,6 +277,11 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
         TVLog(@"[gw] no gateway host configured, registration disabled");
         return;
     }
+    // HeartbeatIntervalSec（gateway 级，5-300s 默认 30）：启动时读取心跳间隔（与 _configs 同域）
+    NSTimeInterval hb = TVNCDoublePref(_defaults, @"HeartbeatIntervalSec", kHelloInterval);
+    if (hb < 5) hb = 5;
+    if (hb > 300) hb = 300;
+    gHelloInterval = hb;
     _started = YES;
     _workerThread = [[NSThread alloc] initWithTarget:self selector:@selector(_workerMain) object:nil];
     [_workerThread setName:@"com.82flex.trollvnc.gateway-client"];
@@ -392,7 +398,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     // 此处重置标志，允许本次连接的首个 ack 触发 _startTunnel
     _tunnelStarted = NO;
 
-    // 读线程循环：读 ack/任意数据；每 kHelloInterval 发 hello；select 超时检测
+    // 读线程循环：读 ack/任意数据；每 gHelloInterval 发 hello；select 超时检测
     // 命令通道行缓冲：接收网关注册通道下发的 JSON 行（cmd 命令，宪法 7.4）
     char inBuf[1024];
     size_t inLen = 0;
@@ -436,7 +442,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
                 lastHello = now;
                 continue;
             }
-            if (now - lastHello >= (time_t)kHelloInterval) {
+            if (now - lastHello >= (time_t)gHelloInterval) {
                 [self _sendHello:fd];
                 lastHello = now;
             }

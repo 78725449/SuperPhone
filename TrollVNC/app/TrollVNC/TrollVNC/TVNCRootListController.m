@@ -175,7 +175,9 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
             // 2026-08-19 折叠组：保存完整列表，显示列表由 _visibleSpecifiers 过滤
             _allSpecifiers = specifiers;
             if (!_collapsedGroups) {
-                _collapsedGroups = [NSMutableSet setWithObjects:@"performance", @"advanced", nil];
+                // 2026-08-21 板块整改：折叠组仅剩画面分组「进阶」（performance）；
+                // 原「高级」折叠组（advanced）已拆散到直连/画面/交互/保活/关于各分组
+                _collapsedGroups = [NSMutableSet setWithObject:@"performance"];
             }
             _specifiers = [self _visibleSpecifiersFrom:specifiers];
         } else {
@@ -719,6 +721,27 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
+/// 2026-08-21 关于分组「重启服务」按钮：发跨进程通知，manager watchdog 重启 trollvncserver
+- (void)restartService {
+    TVNCRestartVNCService();
+    [_notificationGenerator notificationOccurred:UINotificationFeedbackTypeSuccess];
+}
+
+/// 2026-08-21 底部无分组「版本信息」静态文本 getter：
+/// App（bootstrap）取 mainBundle（TrollVNC.app）版本；越狱设置页（Preferences.app 进程）
+/// 取 TrollVNCPrefs bundle 版本
+- (NSString *)appVersionText {
+#ifdef THEBOOTSTRAP
+    NSString *ver = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+    NSString *build = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"];
+#else
+    NSString *ver = [self.bundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+    NSString *build = [self.bundle objectForInfoDictionaryKey:@"CFBundleVersion"];
+#endif
+    if (!ver.length) return @"";
+    return build.length ? [NSString stringWithFormat:@"v%@ (%@)", ver, build] : ver;
+}
+
 - (void)resetDefaults {
     NSString *title = NSLocalizedStringFromTableInBundle(@"Reset to Defaults", @"Localizable", self.bundle, nil);
     NSString *message = NSLocalizedStringFromTableInBundle(
@@ -819,7 +842,9 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
     NSString *host = [defaults stringForKey:@"GatewayHost"];
     if (!host.length) {
-        [self showGatewayMessage:@"请先填写网关地址，再点击「连接网关」"];
+        // 2026-08-21 多态按钮（relay「连接网关」/ bridge「桥接网关」共用入口）：
+        // 网关地址未填 → 点击转为搜索网关（settings.searchGateway）
+        [self searchGateway];
         return;
     }
     [self showGatewayMessage:[NSString stringWithFormat:@"正在连接网关 %@…", host]];

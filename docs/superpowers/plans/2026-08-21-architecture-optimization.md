@@ -23,6 +23,7 @@
 | `TrollVNC/src/ScreenCapturer.mm/.h` | 动态帧率（CaptureFps 驱动）、缩略尺寸编码、pHash 检测回调 |
 | `TrollVNC/src/TRScreenHasher.mm` | pHash native 直读 framebuffer |
 | `TrollVNC/src/TRTunnelClient.mm` | 新增 FT_THUMB(0x06) 推送、屏幕流互斥（rfb.start 暂停/stop 恢复） |
+| `TrollVNC/src/trollvncmanager.mm` | 缩略图轮询定时器（GET server 5802/thumb，变化才推隧道） |
 | `trollvnc-farm/server/index.js` | 隧道帧解析新增 FT_THUMB → 缓存 → WS 推前端 |
 | `trollvnc-farm/web/app.js` | 卡片墙改读网关缓存（移除 screen.hash/screenshot 轮询） |
 | `TrollVNC/app/TrollVNC/TrollVNC/TVNCRootListController.m` | 设置页板块整改 |
@@ -213,22 +214,19 @@ git commit -m "feat(server): 采集服务启动即常驻低频，gClientCount �
 
 ---
 
-### 任务 3：缩略图变化推送（设备端检测 + 隧道推送 + 屏幕流互斥）
+### 任务 3：缩略图变化推送（server 缓存 + manager 拉取转发 + 屏幕流互斥）
+
+> **进程模型（2026-08-21 查证修正）**：TRTunnelClient 在 **trollvncmanager 进程**，trollvncserver 是独立子进程。缩略图检测在 server 进程、隧道在 manager 进程——**内部 IPC 复用 5802 改拉取**（用户定案）：server 维护「最新缩略图缓存」，manager 定时 GET `127.0.0.1:5802/thumb`，hash 变化才经隧道推网关。
 
 **文件：**
-- 修改：`TrollVNC/src/TRTunnelClient.mm`（帧类型常量 33-37、写帧函数 617-640、rfb.start 处理 540-565）
-- 修改：`TrollVNC/src/trollvncserver.mm`（采集帧回调内 pHash 检测 + 节流 + 触发推送）
-- 修改：`TrollVNC/src/TRScreenHasher.mm`（确认 native 直读 framebuffer 可用）
+- 修改：`TrollVNC/src/TRTunnelClient.mm`（帧类型常量 33-37、写帧 617-640）
+- 修改：`TrollVNC/src/trollvncserver.mm`（采集回调内缩略图缓存 + 5802 端点）
+- 修改：`TrollVNC/src/trollvncmanager.mm`（缩略图轮询定时器 + 配置读取）
 
 - [ ] **步骤 1：TRTunnelClient 新增 FT_THUMB 帧类型与发送接口**
 
-帧类型常量区（37 行后）追加：
-
-```objc
-static const uint8_t kFrameTypeThumb = 0x06;  // 缩略图推送（设备→网关）
-```
-
-新增公开方法（.h 声明 + .mm 实现），复用现有写帧工具：
+帧类型常量区（37 行后）追加 `static const uint8_t kFrameTypeThumb = 0x06;`
+新增方法（.h 声明 + .mm 实现，复用既有写帧工具）：
 
 ```objc
 // TRTunnelClient.h
@@ -243,40 +241,47 @@ static const uint8_t kFrameTypeThumb = 0x06;  // 缩略图推送（设备→网�
 
 （`writeFrame:data:length:` 若不存在，复用 617-640 行的帧封装写函数，把类型常量作为参数。）
 
-- [ ] **步骤 2：采集帧回调内 pHash 变化检测 + 节流 + 缩略尺寸推送**
+- [ ] **步骤 2：trollvncserver 维护最新缩略图缓存 + 5802 端点**
 
-在 `trollvncserver.mm` 的采集帧处理回调（gFrameHandler 指向的函数）入口追加：仅当「无屏幕流（未 rfb.start）且 ThumbPushEnabled 开启」时执行检测（屏幕流互斥）；每帧取 TRScreenHasher 当前 hash，与上次推送 hash 对比，汉明距离超阈值（默认 5）且距上次推送 ≥ ThumbInterval 时，编码缩略尺寸 JPEG 并经 `[TRTunnelClient sharedClient] sendThumbnail:` 推送，更新上次推送 hash 与时间戳：
+采集帧回调（handleFramebuffer，2035 起）内，**gClientCount==0 且 ThumbPushEnabled 开启**时执行缩略图检测（每帧 pHash ≈0.3ms，与屏幕流互斥）：
 
 ```objc
-// 伪码骨架（接入既有 frameHandler）
-static void tvThumbCheck(void) {
-    if (!gThumbPushEnabled || gRfbActive) return;      // 开关 + 屏幕流互斥
-    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    if (now - gLastThumbTs < gThumbIntervalSec) return;  // 节流
+// handleFramebuffer 内（采集写入完成、释放锁之后追加）
+static void tvUpdateThumbCache(void) {
+    if (gClientCount > 0 || !gThumbPushEnabled) return;   // 屏幕流互斥 + 开关
     NSString *h = [[TRScreenHasher sharedHasher] computeHashHexForCurrentFrame];
-    if (gLastThumbHash && [TRScreenHasher hammingDistance:h vs:gLastThumbHash] < 5) return; // 无变化
-    // 缩略尺寸：captureSingleFrameImage 后按卡片墙宽度（如 320）等比缩再 JPEG 0.7
+    if (gThumbHash && [TRScreenHasher hammingDistanceHex:h vs:gThumbHash] < 5) return; // 无变化
+    // 缩略尺寸：captureSingleFrameImage 后按宽 320 等比缩再 JPEG 0.7
     UIImage *img = [[ScreenCapturer sharedCapturer] captureSingleFrameImage];
-    ... // 缩尺寸 + JPEG 编码
-    [[TRTunnelClient sharedClient] sendThumbnail:jpegData];
-    gLastThumbHash = h; gLastThumbTs = now;
+    ... // 缩尺寸 + UIImageJPEGRepresentation(img, 0.7)
+    @synchronized(gThumbLock) {
+        gThumbJpeg = jpegData; gThumbHash = h; gThumbTs = CFAbsoluteTimeGetCurrent();
+    }
 }
 ```
 
-静态变量：`gThumbPushEnabled`（读 ThumbPushEnabled 默认 YES）、`gThumbIntervalSec`（读 ThumbInterval 默认 3）、`gLastThumbHash`、`gLastThumbTs`、`gRfbActive`。
+静态变量：`gThumbPushEnabled`（读 ThumbPushEnabled 默认 YES）、`gThumbHash`/`gThumbJpeg`/`gThumbTs`、`gThumbLock`（NSLock 或 pthread_mutex）。server 启动参数解析处读 ThumbPushEnabled。
 
-- [ ] **步骤 3：屏幕流互斥——rfb.start 暂停 / rfb.stop 恢复**
-
-`TRTunnelClient.mm` rfb.start 处理处（540-565）设置 `gRfbActive = YES`（暂停缩略图检测），rfb.stop 处理处设置 `gRfbActive = NO`（恢复）。两处各加一行：
+5802 HTTP 路由（startHttpApiServer 内）新增端点，返回最新缓存：
 
 ```objc
-// rfb.start 分支内
-gRfbActive = YES;
-// rfb.stop 分支内
-gRfbActive = NO; gLastThumbTs = 0; // 重置节流，恢复后立即可推
+// GET /thumb → 200 {hash, ts, image: base64}（无缓存 204）
 ```
 
-（`gRfbActive` 声明为全局变量，与 trollvncserver 共享进程内符号。）
+- [ ] **步骤 3：trollvncmanager 缩略图轮询定时器**
+
+manager 启动后创建定时器（间隔读 ThumbInterval 默认 3s，gateway 级变化时重建）：
+
+```objc
+// trollvncmanager.mm 新增
+static void tvThumbPollTimerFired(void) {
+    if (gRfbActive || !gThumbPushEnabled) return;          // 屏幕流互斥 + 开关
+    // GET 127.0.0.1:5802/thumb → {hash, ts, image}
+    // hash != gLastPushedHash → [[TRTunnelClient sharedClient] sendThumbnail:jpeg] → gLastPushedHash = hash
+}
+```
+
+`gRfbActive`：TRTunnelClient 处理 rfb.start 时置 YES、rfb.stop 置 NO（与隧道同进程，直接设置）。`gThumbPushEnabled`/`ThumbInterval`：manager 读 defaults（cfprefs 共享），prefs-changed 时刷新。
 
 - [ ] **步骤 4：验证（CI 编译）**
 
@@ -285,8 +290,8 @@ gRfbActive = NO; gLastThumbTs = 0; // 重置节流，恢复后立即可推
 - [ ] **步骤 5：Commit**
 
 ```bash
-git add TrollVNC/src/TRTunnelClient.mm TrollVNC/src/TRTunnelClient.h TrollVNC/src/trollvncserver.mm TrollVNC/src/TRScreenHasher.mm
-git commit -m "feat(thumb): 设备端缩略图变化推送（pHash 检测+节流+隧道 FT_THUMB）+ 屏幕流互斥"
+git add TrollVNC/src/TRTunnelClient.mm TrollVNC/src/TRTunnelClient.h TrollVNC/src/trollvncserver.mm TrollVNC/src/trollvncmanager.mm
+git commit -m "feat(thumb): 缩略图变化推送（server 缓存+5802 拉取+隧道 FT_THUMB+屏幕流互斥）"
 ```
 
 ---
