@@ -131,18 +131,28 @@ static const int kHashBits = 64;                      // 哈希位数
     }
 
     uint64_t hash = 0;
-    @try {
-        CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-        void *baseAddr = CVPixelBufferGetBaseAddress(pixelBuffer);
-        size_t srcWidth = CVPixelBufferGetWidth(pixelBuffer);
-        size_t srcHeight = CVPixelBufferGetHeight(pixelBuffer);
-        size_t srcRowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer);
-        OSType srcFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+    CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    hash = [self _computeHashFromLockedPixelBuffer:pixelBuffer];
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    CVPixelBufferRelease(pixelBuffer);
+    return hash;
+}
 
-        if (!baseAddr || srcWidth == 0 || srcHeight == 0) {
-            TVLog(@"[TRScreenHasher] CVPixelBuffer 数据无效（baseAddr=%p, %zux%zu）", baseAddr, srcWidth, srcHeight);
-            return 0;
-        }
+// 2026-08-21：从【已 lock】的 CVPixelBuffer 直接算 hash（不取帧、不二次渲染、不 lock/release）。
+// 供采集回调（handleFramebuffer）复用采集帧，避免 captureSingleFrameBuffer 在 CADisplayLink
+// 回调内二次 CARenderServerRenderDisplay 导致 SIGILL 崩溃循环（server 首帧后即退出）。
+- (uint64_t)_computeHashFromLockedPixelBuffer:(CVPixelBufferRef)pixelBuffer {
+    uint64_t hash = 0;
+    void *baseAddr = CVPixelBufferGetBaseAddress(pixelBuffer);
+    size_t srcWidth = CVPixelBufferGetWidth(pixelBuffer);
+    size_t srcHeight = CVPixelBufferGetHeight(pixelBuffer);
+    size_t srcRowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer);
+    OSType srcFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+
+    if (!baseAddr || srcWidth == 0 || srcHeight == 0) {
+        TVLog(@"[TRScreenHasher] CVPixelBuffer 数据无效（baseAddr=%p, %zux%zu）", baseAddr, srcWidth, srcHeight);
+        return 0;
+    }
 
         // 构建源 vImage_Buffer（只读视图，不拷贝）
         vImage_Buffer srcBuffer;
@@ -251,10 +261,6 @@ static const int kHashBits = 64;                      // 哈希位数
                 hash |= ((uint64_t)1 << i);
             }
         }
-    } @finally {
-        CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-        CVPixelBufferRelease(pixelBuffer);
-    }
 
     return hash;
 }
@@ -267,6 +273,29 @@ static const int kHashBits = 64;                      // 哈希位数
  */
 - (NSString *)computeHashHexForCurrentFrame {
     uint64_t hash = [self computeHashForCurrentFrame];
+    return [self hexStringFromHash:hash];
+}
+
+/**
+ * 从给定像素缓冲（采集帧）直接计算 pHash（串行队列内）。
+ * 功能：复用 _computeHashFromLockedPixelBuffer（跳过取帧），内部自行 lock/unlock，不 release。
+ */
+- (uint64_t)computeHashForPixelBuffer:(CVPixelBufferRef)pixelBuffer {
+    if (!pixelBuffer) return 0;
+    __block uint64_t hash = 0;
+    dispatch_sync(_queue, ^{
+        CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+        hash = [self _computeHashFromLockedPixelBuffer:pixelBuffer];
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    });
+    return hash;
+}
+
+/**
+ * 从给定像素缓冲（采集帧）直接计算 pHash 并返回 hex 字符串（跳过取帧，避免二次渲染）。
+ */
+- (NSString *)computeHashHexForPixelBuffer:(CVPixelBufferRef)pixelBuffer {
+    uint64_t hash = [self computeHashForPixelBuffer:pixelBuffer];
     return [self hexStringFromHash:hash];
 }
 

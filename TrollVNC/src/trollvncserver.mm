@@ -2282,12 +2282,11 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     CFAbsoluteTime __tv_tUnlock0 = CFAbsoluteTimeGetCurrent();
 #endif
 
-    // 2026-08-21：采集写入完成（gFramebufferLock 已释放）→ 从采集帧（pb）更新缩略图缓存
-    //（画面 hash 变化才编码，无活跃客户端且开关开启时生效）
-    // 2026-08-21 修复：从采集帧（pb）直接编码缩略图——须在 pb unlock 前调用（读 pb 像素）
-    tvUpdateThumbCache(pb);
-
     CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+
+    // 2026-08-21：采集写入完成（gFramebufferLock 已释放）→ 从采集帧（pb）更新缩略图缓存
+    //（hash 用 computeHashHexForPixelBuffer、编码用 CIImage，均自行 lock，须在 pb unlock 后调用）
+    tvUpdateThumbCache(pb);
 
 #if DEBUG
     CFAbsoluteTime __tv_tUnlock1 = CFAbsoluteTimeGetCurrent();
@@ -3534,7 +3533,10 @@ static void startBonjour(void) {
 static void tvUpdateThumbCache(CVPixelBufferRef pb) {
     if (gClientCount > 0 || !gThumbPushEnabled || gScreenLocked) return;   // 屏幕流互斥 + 开关 + 锁屏停留最后一帧
     if (!pb) return;
-    NSString *h = [[TRScreenHasher sharedHasher] computeHashHexForCurrentFrame];
+    // 2026-08-21 修复：hash 从采集帧（pb）直接计算——computeHashHexForCurrentFrame 会二次取帧
+    //（captureSingleFrameBuffer → renderDisplayToScreenSurface → 重入 CARenderServerRenderDisplay）
+    // 在 CADisplayLink 回调内崩溃（SIGILL）。改用 computeHashHexForPixelBuffer 跳过取帧。
+    NSString *h = [[TRScreenHasher sharedHasher] computeHashHexForPixelBuffer:pb];
     if (!h) return;
     pthread_mutex_lock(&gThumbLock);
     BOOL changed = !gThumbHash || ![h isEqualToString:gThumbHash];
