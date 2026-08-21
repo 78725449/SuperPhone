@@ -376,7 +376,11 @@ function startWallRfb(inst) {
     if (inst.statusEl) inst.statusEl.textContent = '未注册';
     return;
   }
-  tv.innerHTML = '<div class="offline-ph">加载中…</div>';
+  // 2026-08-22：已有画面（直控 canvas 残留）时不设「加载中…」占位——保留最后画面，
+  // fetchThumb 拉到缩略图后替换，避免退出直控时卡片闪「加载中…」
+  if (!tv.querySelector('canvas')) {
+    tv.innerHTML = '<div class="offline-ph">加载中…</div>';
+  }
   // rfb 字段仅为兼容既有 stopWallRfb/updateWallTile 引用，实为缩略图获取状态标记
   inst.rfb = { kind: 'thumb', closed: false, fetching: false };
   fetchThumb(inst);
@@ -414,6 +418,9 @@ async function fetchThumb(inst) {
       img.alt = '';
       tv.appendChild(img);
     }
+    // 2026-08-22：移除直控残留 canvas（退出直控后 .tv 里 canvas 与 img 共存，canvas 会盖住缩略图）
+    const oldCanvas = tv.querySelector('canvas');
+    if (oldCanvas) oldCanvas.remove();
     img.src = `data:image/jpeg;base64,${data.thumb}`;
     if (data.ts) inst.tile.dataset.ts = data.ts;
     if (inst.statusEl) inst.statusEl.textContent = '';
@@ -1646,8 +1653,16 @@ function exitFocus() {
   cancelFabAutoCollapse();
   $('fab').classList.add('hidden');
   restoreWallTile(devId);
-  // 2026-08-22：断开控制后立即重拉设备列表——网关 controlled 已更新为 false，
-  // 主动刷新让「被控制中」遮罩立刻移除（不依赖 state 事件时序）
+  // 2026-08-22：断开控制后立即移除「被控制中」遮罩——断开是前端主动行为，
+  // 本地直接删遮罩（不依赖网关 controlled 更新时序：rfb.stop 有 800ms 延迟 + 网络）。
+  // 同时本地把该设备 controlled 置 false，避免 refreshDevices 拉取到旧值重新加遮罩。
+  const dev = devices.find((d) => d.id === devId);
+  if (dev) dev.controlled = false;
+  const inst = wallInstances.get(devId);
+  if (inst && inst.tile) {
+    const mask = inst.tile.querySelector('.ctrl-mask');
+    if (mask) mask.remove();
+  }
   refreshDevices().catch(() => {});
   // 退出大屏同步退出系统全屏（若处于全屏态）
   if (document.fullscreenElement) {
