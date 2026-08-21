@@ -444,6 +444,8 @@ static void openLogHttpService(void) {
 }
 
 int main(int argc, const char *argv[]) {
+    /* 2026-08-21 诊断：stderr 无缓冲（重定向到日志文件后是全缓冲，崩溃/信号时不 flush 丢诊断）*/
+    setvbuf(stderr, NULL, _IONBF, 0);
     if (!argv || !argv[0] || argv[0][0] != '/') {
         fprintf(stderr, "This program must be run from an absolute path\n");
         return EXIT_FAILURE;
@@ -542,6 +544,7 @@ int main(int argc, const char *argv[]) {
         // 子进程退出状态日志（"exited with code"/"terminated by signal"）可经 5902 /stderr
         // 远程读取，用于区分 server 是正常退出（runloop 返回）还是信号终止（崩溃循环根因）。
         freopen([gLogStderrPath UTF8String], "a", stderr);
+        setvbuf(stderr, NULL, _IONBF, 0);   // freopen 会重置缓冲，重新设无缓冲
 
         [gWatchDog setStandardOutputPath:stdoutPath];
         [gWatchDog setStandardErrorPath:stderrPath];

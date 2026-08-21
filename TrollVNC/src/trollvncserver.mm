@@ -5617,6 +5617,10 @@ static void ensureSingleton(const char *argv[]) {
 
 int main(int argc, const char *argv[]) {
 
+    /* 2026-08-21 诊断：stderr 无缓冲（stderr 被 watchdog 重定向到日志文件后是全缓冲，
+     * fprintf 在崩溃/信号终止时不 flush 会丢失诊断日志）*/
+    setvbuf(stderr, NULL, _IONBF, 0);
+
     /* Drop privileges: this program should run as mobile */
     dropPrivileges();
 
