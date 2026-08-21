@@ -1646,6 +1646,9 @@ function exitFocus() {
   cancelFabAutoCollapse();
   $('fab').classList.add('hidden');
   restoreWallTile(devId);
+  // 2026-08-22：断开控制后立即重拉设备列表——网关 controlled 已更新为 false，
+  // 主动刷新让「被控制中」遮罩立刻移除（不依赖 state 事件时序）
+  refreshDevices().catch(() => {});
   // 退出大屏同步退出系统全屏（若处于全屏态）
   if (document.fullscreenElement) {
     try { document.exitFullscreen().catch(() => {}); } catch (e) { /* 忽略 */ }
@@ -1912,7 +1915,12 @@ function exitDirectMode() {
   for (const [id, rfb] of directRfbs.entries()) {
     closeRfb(rfb);
     const inst = wallInstances.get(id);
-    if (inst) stopWallRfb(inst);
+    if (inst) {
+      // 2026-08-22：清理直控加载浮层（startDirectRfb 创建的「连接中…」），退出直控立即恢复缩略图
+      const ov = inst.tile && inst.tile.querySelector('.focus-status-ov');
+      if (ov) ov.remove();
+      stopWallRfb(inst);
+    }
   }
   directRfbs.clear();
   updateDirectBtn();
