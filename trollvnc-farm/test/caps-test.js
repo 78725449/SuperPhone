@@ -17,7 +17,7 @@ check('BATCH_CAPS 含重启、不含客户端/系统/网关批量项',
   && !BATCH_CAPS.some((d) => /clients\.|sys\.|gateway\.|touch|stylus|screenshot|clipboard|type\./i.test(d.id)));
 
 // ---- CONFIG_DEFS：配置表单定义契约 ----
-check('CONFIG_DEFS 含 29 项', CONFIG_DEFS.length === 29);
+check('CONFIG_DEFS 含 32 项', CONFIG_DEFS.length === 32);
 check('CONFIG_DEFS 不含端口项（端口固定不可调）', !CONFIG_DEFS.some((s) => /Port$/i.test(s.key)));
 check('CONFIG_DEFS 每项含 reload 与字段', CONFIG_DEFS.every((s) => s.key && s.title && s.type && s.reload));
 

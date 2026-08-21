@@ -89,6 +89,11 @@ static NSString *gDesktopName = @"SuperPhone";
 static BOOL gViewOnly = NO;
 static double gKeepAliveSec = 0.0; // 15..86400
 
+// 2026-08-21：采集与客户端连接解耦——服务启动即常驻低频采集（CaptureFps 配置驱动），
+// 客户端连接只影响帧率升降；0 客户端时降回该低频，不再启停采集。
+static double gCaptureLowFps = 10.0; // 低频采集帧率（1..30，默认 10fps）
+static pthread_mutex_t gFramebufferLock = PTHREAD_MUTEX_INITIALIZER; // framebuffer 重建/读写互斥
+
 static double gScale = 1.0; // 0 < scale <= 1.0, 1.0 = no scaling
 // Preferred frame rate range (0 = unspecified)
 static int gFpsMin = 0;
@@ -146,6 +151,14 @@ static BOOL gUserSingleNotifsEnabled = YES;
 
 // Blocked hosts (temporary blacklist)
 static NSMutableSet<NSString *> *gBlockedHosts = nil;
+
+// 2026-08-21：缩略图变化推送——server 侧维护最新缩略图缓存（hash+JPEG），
+// manager 定时 GET 127.0.0.1:5802/thumb 拉取，经隧道 FT_THUMB 帧推网关。
+static BOOL gThumbPushEnabled = YES;      // ThumbPushEnabled 配置（默认开）
+static NSString *gThumbHash = nil;        // 缓存 hash（16 hex）
+static NSData *gThumbJpeg = nil;          // 缓存缩略 JPEG
+static CFAbsoluteTime gThumbTs = 0;
+static pthread_mutex_t gThumbLock = PTHREAD_MUTEX_INITIALIZER;  // 缓存读写锁
 
 typedef NS_ENUM(uint8_t, TVBindHostKind) {
     kTVBindHostKindNone = 0,
@@ -627,6 +640,19 @@ static void parseDaemonOptions(void) {
         // 2026-08-20：默认 30s（有客户端连接时周期性 HID 唤醒防息屏）；0=关闭
         gKeepAliveSec = 30.0;
     }
+
+    // 2026-08-21：采集与客户端连接解耦——CaptureFps 为 0 客户端时的常驻低频帧率，钳制 [1..30]
+    NSNumber *capFpsN = [prefs objectForKey:@"CaptureFps"];
+    double lowFps = capFpsN ? capFpsN.doubleValue : 10.0;
+    if (lowFps < 1) lowFps = 1;
+    if (lowFps > 30) lowFps = 30;
+    gCaptureLowFps = lowFps;
+    TVLog(@"-daemon: CaptureFps set to %.1f fps (idle capture)", gCaptureLowFps);
+
+    // 2026-08-21：缩略图变化推送开关（ThumbPushEnabled，默认开）
+    NSNumber *thumbN = [prefs objectForKey:@"ThumbPushEnabled"];
+    gThumbPushEnabled = thumbN ? thumbN.boolValue : YES;
+    TVLog(@"-daemon: ThumbPushEnabled set to %@", gThumbPushEnabled ? @"YES" : @"NO");
 
     NSNumber *scaleN = [prefs objectForKey:@"Scale"];
     if ([scaleN isKindOfClass:[NSNumber class]]) {
@@ -1710,6 +1736,8 @@ NS_INLINE void markRectsModified(DirtyRect *rects, int rectCount) {
 }
 
 NS_INLINE void copyRectsFromBackToFront(DirtyRect *rects, int rectCount) {
+    // 2026-08-21：back->front 内存拷贝（发送数据准备）与重建/写入互斥
+    pthread_mutex_lock(&gFramebufferLock);
     size_t fbBPR = (size_t)gWidth * (size_t)gBytesPerPixel;
     for (int i = 0; i < rectCount; ++i) {
         int x = rects[i].x, y = rects[i].y, w = rects[i].w, h = rects[i].h;
@@ -1720,6 +1748,7 @@ NS_INLINE void copyRectsFromBackToFront(DirtyRect *rects, int rectCount) {
             memcpy(dst, src, rowBytes);
         }
     }
+    pthread_mutex_unlock(&gFramebufferLock);
 }
 
 #pragma mark - Display Hooks
@@ -1786,11 +1815,16 @@ NS_INLINE void alignDimensions(int rawW, int rawH, int *alignedW, int *alignedH)
 
 // Resize framebuffer according to rotation (0/180 keep WxH from src, 90/270 swap), then apply scale
 NS_INLINE void maybeResizeFramebufferForRotation(int rotQ) {
+    // 2026-08-21：重建段（free 旧 buffer + rfbNewFramebuffer + 指针更新）加 gFramebufferLock，
+    // 与采集写入段 / swapBuffers / back->front 拷贝等 framebuffer 读写互斥，防转屏重建竞态。
+    pthread_mutex_lock(&gFramebufferLock);
     // Source capture size (portrait-orientated)
     int srcW = gSrcWidth;
     int srcH = gSrcHeight;
-    if (srcW <= 0 || srcH <= 0)
+    if (srcW <= 0 || srcH <= 0) {
+        pthread_mutex_unlock(&gFramebufferLock);
         return;
+    }
 
     // Rotate at source dimension stage
     int rotW = (rotQ % 2 == 0) ? srcW : srcH;
@@ -1802,8 +1836,10 @@ NS_INLINE void maybeResizeFramebufferForRotation(int rotQ) {
     int outW = 0, outH = 0;
     alignDimensions(outWraw, outHraw, &outW, &outH);
 
-    if (outW == gWidth && outH == gHeight)
+    if (outW == gWidth && outH == gHeight) {
+        pthread_mutex_unlock(&gFramebufferLock);
         return; // no change
+    }
 
     // Allocate new double buffers
     size_t newFBSize = (size_t)outW * (size_t)outH * (size_t)gBytesPerPixel;
@@ -1850,6 +1886,7 @@ NS_INLINE void maybeResizeFramebufferForRotation(int rotQ) {
 
     gHasPending = NO;
     TVLog(@"Resize: framebuffer changed to %dx%d (rotQ=%d, scale=%.3f)", gWidth, gHeight, rotQ, gScale);
+    pthread_mutex_unlock(&gFramebufferLock);
 }
 
 // Ensure scratch buffer for rotation is available and large enough
@@ -1943,10 +1980,13 @@ NS_INLINE void copyPadOrCropToTight(uint8_t *dstTight, int dstW, int dstH, const
 }
 
 NS_INLINE void swapBuffers(void) {
+    // 2026-08-21：指针交换 + gScreen->frameBuffer 发布点与重建/写入互斥
+    pthread_mutex_lock(&gFramebufferLock);
     void *tmp = gFrontBuffer;
     gFrontBuffer = gBackBuffer;
     gBackBuffer = tmp;
     gScreen->frameBuffer = (char *)gFrontBuffer;
+    pthread_mutex_unlock(&gFramebufferLock);
 }
 
 // Try to acquire all clients' sendMutex without blocking.
@@ -2004,6 +2044,9 @@ NS_INLINE void unlockAllClientsBlocking(void) {
     }
     rfbReleaseClientIterator(it);
 }
+
+// 2026-08-21：缩略图缓存更新（定义见 gClientCount 之后，采集回调先声明后调用）
+static void tvUpdateThumbCache(void);
 
 static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 
@@ -2150,6 +2193,8 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 #endif
     }
 
+    // 2026-08-21：写 gBackBuffer 段（尺寸读取 + 内存拷贝/缩放）与重建/发送读互斥
+    pthread_mutex_lock(&gFramebufferLock);
     // Scale stage to back buffer (tightly packed)
     vImage_Buffer dstBuf = {.data = gBackBuffer,
                             .height = (vImagePixelCount)gHeight,
@@ -2201,6 +2246,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
             if (ensureScaleTemp(stage.width, stage.height, dstBuf.width, dstBuf.height, kvImageHighQualityResampling) !=
                 0) {
                 CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+                pthread_mutex_unlock(&gFramebufferLock);
                 return;
             }
 
@@ -2212,6 +2258,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
                     TVLog(@"vImageScale_ARGB8888 failed: %ld", (long)err);
                 }
                 CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+                pthread_mutex_unlock(&gFramebufferLock);
                 return;
             }
 
@@ -2223,12 +2270,17 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 #endif
         }
     }
+    pthread_mutex_unlock(&gFramebufferLock);
 
 #if DEBUG
     CFAbsoluteTime __tv_tUnlock0 = CFAbsoluteTimeGetCurrent();
 #endif
 
     CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+
+    // 2026-08-21：采集写入完成（gFramebufferLock 已释放）→ 更新缩略图缓存
+    //（画面 hash 变化才重新采集+JPEG 编码，无活跃客户端且开关开启时生效）
+    tvUpdateThumbCache();
 
 #if DEBUG
     CFAbsoluteTime __tv_tUnlock1 = CFAbsoluteTimeGetCurrent();
@@ -2264,8 +2316,11 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 #endif
 
             } else {
+                // 2026-08-21：back->front 全屏拷贝（发送数据准备）与重建/写入互斥
+                pthread_mutex_lock(&gFramebufferLock);
                 copyWithStrideTight((uint8_t *)gFrontBuffer, (uint8_t *)gBackBuffer, gWidth, gHeight,
                                     (size_t)gWidth * (size_t)gBytesPerPixel);
+                pthread_mutex_unlock(&gFramebufferLock);
                 rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
 
 #if DEBUG
@@ -2330,8 +2385,11 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 
             } else {
                 // Whole screen copy fallback (tight -> tight)
+                // 2026-08-21：back->front 全屏拷贝（发送数据准备）与重建/写入互斥
+                pthread_mutex_lock(&gFramebufferLock);
                 copyWithStrideTight((uint8_t *)gFrontBuffer, (uint8_t *)gBackBuffer, gWidth, gHeight,
                                     (size_t)gWidth * (size_t)gBytesPerPixel);
+                pthread_mutex_unlock(&gFramebufferLock);
                 rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
 
 #if DEBUG
@@ -2563,8 +2621,11 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
         } else {
             if (fullScreen) {
                 // Whole screen copy fallback (tight -> tight)
+                // 2026-08-21：back->front 全屏拷贝（发送数据准备）与重建/写入互斥
+                pthread_mutex_lock(&gFramebufferLock);
                 copyWithStrideTight((uint8_t *)gFrontBuffer, (uint8_t *)gBackBuffer, gWidth, gHeight,
                                     (size_t)gWidth * (size_t)gBytesPerPixel);
+                pthread_mutex_unlock(&gFramebufferLock);
                 rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
 
 #if DEBUG
@@ -3425,6 +3486,36 @@ static void startBonjour(void) {
 // Number of connected clients
 static int gClientCount = 0;
 
+// 2026-08-21：更新缩略图缓存（采集回调 handleFramebuffer 末尾调用，主线程）。
+// 无活跃 VNC 客户端（屏幕流互斥）且 ThumbPushEnabled 开启时，对当前帧计算 pHash，
+// 与缓存 hash 不同才重新采集单帧并缩放为宽 320 的 JPEG 存入缓存，供 5802 /thumb 拉取。
+static void tvUpdateThumbCache(void) {
+    if (gClientCount > 0 || !gThumbPushEnabled) return;   // 屏幕流互斥 + 开关
+    NSString *h = [[TRScreenHasher sharedHasher] computeHashHexForCurrentFrame];
+    if (!h) return;
+    pthread_mutex_lock(&gThumbLock);
+    BOOL changed = !gThumbHash || ![h isEqualToString:gThumbHash];
+    pthread_mutex_unlock(&gThumbLock);
+    if (!changed) return;   // 画面无变化不更新
+    UIImage *img = [[ScreenCapturer sharedCapturer] captureSingleFrameImage];
+    if (!img) return;
+    // 缩尺寸：按宽 320 等比缩放
+    CGFloat scale = 320.0 / img.size.width;
+    if (scale >= 1.0) scale = 1.0;
+    CGSize newSize = CGSizeMake((NSInteger)(img.size.width * scale), (NSInteger)(img.size.height * scale));
+    UIGraphicsBeginImageContextWithOptions(newSize, NO, 1.0);
+    [img drawInRect:CGRectMake(0, 0, newSize.width, newSize.height)];
+    UIImage *thumb = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    NSData *jpeg = thumb ? UIImageJPEGRepresentation(thumb, 0.7) : nil;
+    if (!jpeg) return;
+    pthread_mutex_lock(&gThumbLock);
+    gThumbJpeg = jpeg;
+    gThumbHash = h;
+    gThumbTs = CFAbsoluteTimeGetCurrent();
+    pthread_mutex_unlock(&gThumbLock);
+}
+
 // Capture lifecycle flags（声明前置：cap.hello 豁免 handler 早于 Client Handlers 使用）
 static BOOL gIsCaptureStarted = NO;
 
@@ -3651,11 +3742,12 @@ static NSDictionary *tvExtHandleCapHello(rfbClientPtr cl, NSDictionary *params) 
         // 2026-08-21 修复：此前仅减计数不停采集——mgmt 探测连接把 gClientCount 瞬时抬到 1 又降回 0，
         // 采集（CADisplayLink）在 0 客户端下持续空转渲染（空耗 + 高频踩渲染路径，崩溃循环帮凶）；
         // KeepAlive/AutoAssist 同理被探测连接误开。
+        // 2026-08-21 架构升级：采集已常驻（服务启动即启动），不再 stopCapture，只降回低频。
         if (gClientCount == 0) {
             if (gIsCaptureStarted) {
-                [[ScreenCapturer sharedCapturer] endCapture];
-                gIsCaptureStarted = NO;
-                TVLog(@"Management exemption emptied clients; screen capture stopped.");
+                [[ScreenCapturer sharedCapturer]
+                    setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps max:gCaptureLowFps];
+                TVLog(@"Management exemption emptied clients; capture idled at %.0f fps.", gCaptureLowFps);
             }
             [[STHIDEventGenerator sharedGenerator] setKeepAliveInterval:0];
 #if !TARGET_OS_SIMULATOR
@@ -3762,6 +3854,10 @@ static ssize_t tvTlsRead(int fd, SSL *ssl, void *buf, size_t len);
 static ssize_t tvTlsWrite(int fd, SSL *ssl, const void *buf, size_t len);
 static SSL *tvTlsAccept(int fd);
 static int tvPeekTls(int fd);
+// GET /thumb 分支用到的 HTTP 辅助（定义见 "HTTPS 服务器" 区，此处前向声明）
+static void tvHttpParsePath(const char *reqLine, char *outPath, size_t outSize);
+static void tvHttpSendSimple(int fd, SSL *ssl, const char *status, const char *mime, const char *body,
+                             size_t bodyLen);
 
 // 架构级方案（2026-08-17）：管理操作（剪贴板/type.paste/配置）改走独立 HTTP 端口 5802，
 // 与网关 REST 架构同构（管理走 HTTP、画面走 RFB），彻底消除 0x50/0x80 与 FBU 帧在
@@ -3850,6 +3946,31 @@ static void tvHttpApiHandleClient(int fd) {
             if (ssl) SSL_free(ssl);
             close(fd);
             return;
+        }
+        if ([requestLine hasPrefix:@"GET"]) {
+            // 2026-08-21：缩略图轮询端点（manager 定时 GET 拉取）——返回缓存缩略图 JSON。
+            // 锁内仅拷贝引用（ARC strong 局部变量），编码/发送在锁外，避免持锁做 base64。
+            char path[512];
+            tvHttpParsePath(first, path, sizeof(path));
+            if (strcmp(path, "/thumb") == 0) {
+                pthread_mutex_lock(&gThumbLock);
+                NSString *hash = gThumbHash;
+                NSData *jpeg = gThumbJpeg;
+                CFAbsoluteTime ts = gThumbTs;
+                pthread_mutex_unlock(&gThumbLock);
+                if (!hash || !jpeg) {
+                    // 尚无缓存（server 刚启动/画面未变过）：204 空响应
+                    tvHttpSendSimple(fd, ssl, "204 No Content", "application/json", "", 0);
+                } else {
+                    NSString *b64 = [jpeg base64EncodedStringWithOptions:0];
+                    NSDictionary *resp = @{ @"hash": hash, @"ts": @(ts), @"image": b64 };
+                    NSData *json = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
+                    tvHttpSendSimple(fd, ssl, "200 OK", "application/json; charset=utf-8", json.bytes, json.length);
+                }
+                if (ssl) SSL_free(ssl);
+                close(fd);
+                return;
+            }
         }
     }
     if (ssl) SSL_free(ssl);
@@ -4557,16 +4678,9 @@ static void tvPublishUserSingleNotifs(void) {
     });
 }
 
-static void tvPublishClientConnectedNotif(NSString *host) {
+static void tvPublishClientConnectedNotif(NSString *host, BOOL remoteControl) {
     if (!gUserClientNotifsEnabled || !host || host.length == 0)
         return;
-
-    // Check if host is a loopback address
-    if ([host isEqualToString:@"127.0.0.1"] || [host isEqualToString:@"::1"] || [host isEqualToString:@"localhost"] ||
-        [host hasPrefix:@"127."] || [host hasPrefix:@"::ffff:127."]) {
-        TVLog(@"Skipping notification for loopback connection from %@", host);
-        return;
-    }
 
     BulletinManager *mgr = [BulletinManager sharedManager];
 
@@ -4574,11 +4688,20 @@ static void tvPublishClientConnectedNotif(NSString *host) {
         @"clientHost" : host,
     };
 
-    NSString *localizedContentTmpl;
-    localizedContentTmpl =
-        LocalizedString(@"A VNC client connected from %@.", @"Localizable", tvLocalizationBundle(), @"trollvncserver");
-
-    NSString *localizedContent = [NSString stringWithFormat:localizedContentTmpl, host];
+    // 2026-08-21 控制知情通知：隧道 rfb.start 的连接在 socket 层是本地 127.0.0.1（loopback），
+    // 原 loopback 整体豁免会误伤该远程控制会话；此处按调用方分流（newClientHook）：
+    // remoteControl=YES 弹「远程控制已建立」（host 为 loopback 无展示意义），
+    // NO 保留带来源 IP 的连接文案（5801 直连等非本地连接）。
+    NSString *localizedContent;
+    if (remoteControl) {
+        localizedContent =
+            LocalizedString(@"Remote control established.", @"Localizable", tvLocalizationBundle(), @"trollvncserver");
+    } else {
+        NSString *localizedContentTmpl =
+            LocalizedString(@"A VNC client connected from %@.", @"Localizable", tvLocalizationBundle(),
+                            @"trollvncserver");
+        localizedContent = [NSString stringWithFormat:localizedContentTmpl, host];
+    }
     dispatch_async(dispatch_get_main_queue(), ^(void) {
         [mgr popBannerWithContent:localizedContent userInfo:userInfo];
     });
@@ -4620,14 +4743,14 @@ static void clientGoneHook(rfbClientPtr cl) {
     }
 
     // 管理客户端：计数与状态注册已在 cap.hello 时撤销，跳过所有后续清理。
-    // 双保险（2026-08-21）：豁免路径若因时序未收采集，此处归零兜底收采集/KeepAlive，
-    // 防止 0 客户端下 CADisplayLink 空转渲染。
+    // 双保险（2026-08-21）：豁免路径若因时序未收采集，此处归零兜底降频/KeepAlive，
+    // 防止 0 客户端下 CADisplayLink 高频空转渲染（采集已常驻，只降频不停采）。
     if (wasMgmt) {
         if (gClientCount == 0) {
             if (gIsCaptureStarted) {
-                [[ScreenCapturer sharedCapturer] endCapture];
-                gIsCaptureStarted = NO;
-                TVLog(@"Management client gone with no clients; screen capture stopped.");
+                [[ScreenCapturer sharedCapturer]
+                    setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps max:gCaptureLowFps];
+                TVLog(@"Management client gone with no clients; capture idled at %.0f fps.", gCaptureLowFps);
             }
             [[STHIDEventGenerator sharedGenerator] setKeepAliveInterval:0];
         }
@@ -4651,10 +4774,11 @@ static void clientGoneHook(rfbClientPtr cl) {
     NSString *host = (cl && cl->host) ? [NSString stringWithUTF8String:cl->host] : @"";
     TVLog(@"Client %@ disconnected, active clients=%d", host, gClientCount);
 
+    // 采集已常驻：客户端归零时只降回低频，不停采（2026-08-21 架构升级）
     if (gIsCaptureStarted && gClientCount == 0) {
-        [[ScreenCapturer sharedCapturer] endCapture];
-        gIsCaptureStarted = NO;
-        TVLog(@"No clients remaining; screen capture stopped.");
+        [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps
+                                                                      max:gCaptureLowFps];
+        TVLog(@"No clients remaining; capture idled at %.0f fps.", gCaptureLowFps);
     }
 
 #if !TARGET_OS_SIMULATOR
@@ -4742,14 +4866,36 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
     // Update user notification
     tvPublishUserSingleNotifs();
 
-    // Notify client connected
-    tvPublishClientConnectedNotif(host);
+    // 2026-08-21 控制知情通知：凡控制会话建立即弹（设计 3.6；silent 配置在
+    // tvPublishClientConnectedNotif 内统一短路，connectOnly/all 均弹）。
+    // - 非本地连接（5801 直连页 noVNC，host=PC IP）：立即弹带来源 IP 的连接通知（现有行为）。
+    // - loopback 连接：可能是隧道 rfb.start（TRTunnelClient 本地 connect 127.0.0.1:5901，
+    //   socket 层为 loopback，语义是远程控制会话）或 mgmt 探测（TRCapabilityRegistry
+    //   cap.hello mgmt=true）。延迟 1s 后再弹：mgmt 探测在握手后立即发 cap.hello 并被从
+    //   gClientStates 移除条目 → 不弹；条目仍在 = 活跃非 mgmt 控制会话 → 弹「远程控制已建立」
+    //   （host 是 127.0.0.1，无展示意义，用控制知情文案）。
+    BOOL isLoopback = [host isEqualToString:@"127.0.0.1"] || [host isEqualToString:@"::1"] ||
+                      [host isEqualToString:@"localhost"] || [host hasPrefix:@"127."] ||
+                      [host hasPrefix:@"::ffff:127."];
+    if (isLoopback) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(),
+                       ^(void) {
+                           BOOL alive = NO;
+                           @synchronized(gClientStates) {
+                               alive = (gClientStates[clientId] != nil);
+                           }
+                           if (alive)
+                               tvPublishClientConnectedNotif(host, YES);
+                       });
+    } else {
+        tvPublishClientConnectedNotif(host, NO);
+    }
 
-    if (!gIsCaptureStarted && gClientCount > 0 && gFrameHandler) {
-        // Start capture when entering non-zero client population.
-        gIsCaptureStarted = YES;
-        [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:gFrameHandler];
-        TVLog(@"Screen capture started (clients=%d).", gClientCount);
+    // 2026-08-21 架构升级：采集已常驻（服务启动即低频启动），新客户端到来不再启动采集，
+    // 只升频到客户端请求的 FrameRateSpec（min/pref/max，0=未指定交给 ScreenCapturer 归一化）。
+    if (gClientCount > 0 && gFrameHandler && gIsCaptureStarted) {
+        [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gFpsMin preferred:gFpsPref max:gFpsMax];
+        TVLog(@"Client connected; capture raised to min=%d pref=%d max=%d fps.", gFpsMin, gFpsPref, gFpsMax);
     }
 
 #if !TARGET_OS_SIMULATOR
@@ -5464,6 +5610,17 @@ int main(int argc, const char *argv[]) {
 
         initializeTilingOrReset();
         initializeAndRunRfbServer();
+
+        // 2026-08-21 架构升级：采集与客户端连接解耦——服务启动即常驻低频采集（gCaptureLowFps），
+        // 客户端连接只影响帧率升降（升频见 newClientHook，归零降频见 clientGoneHook/cap.hello 豁免）。
+        // gFrameHandler 已在 prepareScreenCapturer 就绪；rfbInitServer 之后、进入 runloop 前启动。
+        if (!gIsCaptureStarted && gFrameHandler) {
+            gIsCaptureStarted = YES;
+            [[ScreenCapturer sharedCapturer]
+                setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps max:gCaptureLowFps];
+            [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:gFrameHandler];
+            TVLog(@"Screen capture started (persistent low-fps %.0f).", gCaptureLowFps);
+        }
 
         // 2026-08-17 架构级：管理操作走独立 HTTP 端口（5802），与 RFB 画面流隔离
         startHttpApiServer();

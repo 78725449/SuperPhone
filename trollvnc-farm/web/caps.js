@@ -107,6 +107,9 @@ export const CONFIG_DEFS = [
   { key: 'KeyLogging', title: '键盘日志', type: 'bool', reload: 'instant' },
   { key: 'WatchdogThrottleInterval', title: '重启节流间隔', type: 'number', min: 1, max: 300, step: 1, reload: 'hot' },
   { key: 'WatchdogExitTimeout', title: '退出超时', type: 'number', min: 1, max: 60, step: 1, reload: 'hot' },
+  { key: 'CaptureFps', title: '采集帧率', type: 'number', min: 1, max: 30, step: 1, reload: 'hot' },
+  { key: 'ThumbPushEnabled', title: '缩略图变化推送', type: 'bool', reload: 'instant' },
+  { key: 'HeartbeatIntervalSec', title: '网关心跳间隔', type: 'number', min: 5, max: 300, step: 5, reload: 'gateway' },
 ];
 export const CONFIG_BY_KEY = new Map(CONFIG_DEFS.map((s) => [s.key, s]));
 

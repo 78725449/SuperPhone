@@ -121,6 +121,9 @@
 /* No comment provided by engineer. */
 "Pause Auto Update" = "暂停自动更新";
 
+/* trollvncserver */
+"Remote control established." = "远程控制已建立。";
+
 /* No comment provided by engineer. */
 "Reset" = "还原";
 

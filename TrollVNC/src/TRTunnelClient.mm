@@ -35,6 +35,10 @@ static const uint8_t kFrameTypePing    = 0x02;  // 心跳请求（设备→网�
 static const uint8_t kFrameTypePong    = 0x03;  // 心跳响应（网关→设备）
 static const uint8_t kFrameTypeCmd     = 0x04;  // 命令 JSON（网关→设备）
 static const uint8_t kFrameTypeCmdAck  = 0x05;  // 命令 ack JSON（设备→网关）
+static const uint8_t kFrameTypeThumb   = 0x06;  // 缩略图推送（设备→网关）
+
+// 本地 RFB 会话活跃标记（rfb.start/stop 命令驱动），供缩略图轮询互斥判断
+static BOOL gRfbActive = NO;
 
 // 心跳/超时/重连参数
 static const NSTimeInterval kTunnelPingInterval  = 30.0;   // 心跳间隔（秒）
@@ -71,6 +75,7 @@ static void TRTunnelLog(const char *fmt, ...) {
     NSThread *_workerThread;   // 工作线程
     BOOL _started;             // 是否已启动
     BOOL _connected;           // 是否已连接（含握手成功）
+    int _tunnelFd;             // 当前隧道 socket fd（-1 表示未连接，供 sendThumbnail 写帧）
     NSTimeInterval _retryDelay;   // 当前重连退避（秒）
     // 隧道帧解析缓冲（动态扩容）
     uint8_t *_frameBuf;
@@ -107,6 +112,7 @@ static void TRTunnelLog(const char *fmt, ...) {
     if (self) {
         _retryDelay = kTunnelMinRetryDelay;
         _port = kDefaultTunnelPort;
+        _tunnelFd = -1;
     }
     return self;
 }
@@ -204,6 +210,7 @@ static void TRTunnelLog(const char *fmt, ...) {
  */
 - (BOOL)_connectAndRun {
     _connected = NO;
+    _tunnelFd = -1;
     [self _resetFrameBuf];
 
     // 1. TCP 连接到网关隧道端口
@@ -225,6 +232,7 @@ static void TRTunnelLog(const char *fmt, ...) {
     }
     TVLog(@"[tunnel] connected to %@:%ld", _host, (long)_port);
     TRTunnelLog("tunnel connected %@:%ld", _host, (long)_port);
+    _tunnelFd = tunnelFd;
 
     // 2. 发送 tunnel_hello 握手
     if (![self _sendHandshakeHello:tunnelFd]) {
@@ -256,6 +264,7 @@ static void TRTunnelLog(const char *fmt, ...) {
 
     // 6. cleanup
     _connected = NO;
+    _tunnelFd = -1;
     if (_localFd >= 0) { close(_localFd); _localFd = -1; }
     close(tunnelFd);
     [self _resetFrameBuf];
@@ -544,6 +553,8 @@ static void TRTunnelLog(const char *fmt, ...) {
                     if (_localFd >= 0) { close(_localFd); _localFd = -1; }
                     _localFd = [self _connectLocalRfb];
                     BOOL ok = (_localFd >= 0);
+                    // 2026-08-21：RFB 会话活跃标记（= ok：connect 成功才有画面流，失败不误禁缩略图）
+                    gRfbActive = ok;
                     TRTunnelLog("rfb.start: local connect -> fd=%d", _localFd);
                     if (ok) {
                         // 2026-08-21 根因修复：设备端 5901 握手窗口极窄（实测 0-50ms 抖动）——
@@ -568,6 +579,8 @@ static void TRTunnelLog(const char *fmt, ...) {
                 }
                 if ([[cmd objectForKey:@"cmd"] isEqualToString:@"rfb.stop"]) {
                     // 会话结束：同步关闭本地 5901 连接，回 standby
+                    // 2026-08-21：RFB 会话活跃标记复位，恢复缩略图推送
+                    gRfbActive = NO;
                     if (_localFd >= 0) {
                         TRTunnelLog("rfb.stop: closing local RFB fd=%d", _localFd);
                         close(_localFd);
@@ -637,6 +650,28 @@ static void TRTunnelLog(const char *fmt, ...) {
         }
     }
     return YES;
+}
+
+#pragma mark - 缩略图推送（2026-08-21）
+
+/**
+ * 推送设备端屏幕缩略图（JPEG）到网关（FT_THUMB 帧）。
+ * 由 trollvncmanager 的缩略图轮询调用（画面 hash 变化时才推）；
+ * 隧道未连接时静默丢弃。无 RFB 客户端（gRfbActive=NO）时才被调用，
+ * 此时隧道上仅有心跳帧，跨线程 write 交错概率极低。
+ * @param jpegData JPEG 编码的缩略图数据
+ */
+- (void)sendThumbnail:(NSData *)jpegData {
+    if (!_connected || !jpegData.length) return;  // 隧道未连：静默丢弃
+    if (_tunnelFd < 0) return;
+    if (![self _writeFrame:_tunnelFd type:kFrameTypeThumb data:jpegData.bytes length:jpegData.length]) {
+        TVLog(@"[tunnel] sendThumbnail write failed (fd=%d)", _tunnelFd);
+    }
+}
+
+/** 本地 RFB 会话是否活跃（rfb.start/stop 命令驱动），供缩略图轮询互斥判断 */
++ (BOOL)isRfbActive {
+    return gRfbActive;
 }
 
 @end

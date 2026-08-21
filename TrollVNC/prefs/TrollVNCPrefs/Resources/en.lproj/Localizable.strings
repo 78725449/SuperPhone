@@ -121,6 +121,9 @@
 /* No comment provided by engineer. */
 "Pause Auto Update" = "Pause Auto Update";
 
+/* trollvncserver */
+"Remote control established." = "Remote control established.";
+
 /* No comment provided by engineer. */
 "Reset" = "Reset";
 

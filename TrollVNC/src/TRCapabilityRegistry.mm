@@ -1007,6 +1007,9 @@ static NSDictionary *TRSearchGatewaySync(void) {
     // 附录 E：Watchdog 活属性配置（hot 级别，setConfig 时即时应用到对象属性；崩溃自动重启底层已实现不暴露）
     [self _registerConfig:@"WatchdogThrottleInterval" title:@"重启节流间隔" type:@"number" min:@1 max:@300 step:@1 reload:TRConfigReloadHot];
     [self _registerConfig:@"WatchdogExitTimeout" title:@"退出超时" type:@"number" min:@1 max:@60 step:@1 reload:TRConfigReloadHot];
+    [self _registerConfig:@"CaptureFps" title:@"采集帧率" type:@"number" min:@1 max:@30 step:@1 reload:TRConfigReloadHot];
+    [self _registerConfig:@"ThumbPushEnabled" title:@"缩略图变化推送" type:@"bool" reload:TRConfigReloadInstant];
+    [self _registerConfig:@"HeartbeatIntervalSec" title:@"网关心跳间隔" type:@"number" min:@5 max:@300 step:@5 reload:TRConfigReloadGateway];
 }
 
 /** 注册配置 schema 表项（内部辅助） */
@@ -1220,6 +1223,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
             @"NaturalScroll": @YES,
             @"ViewOnly": @NO, @"AsyncSwap": @NO, @"AutoAssistEnabled": @NO,
             @"SingleNotifEnabled": @YES, @"ClientNotifsEnabled": @YES, @"KeyLogging": @NO,
+            @"ThumbPushEnabled": @YES,
         };
         return defs[key] ?: @NO;
     }
@@ -1234,6 +1238,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
             // 2026-08-20：watchdog 节流/退出超时安全默认（不可回退 0，否则服务重启风暴）
             // 2026-08-21：节流默认 5→60（崩溃循环时 5s 重启放大故障）
             @"WatchdogThrottleInterval": @60, @"WatchdogExitTimeout": @3,
+            @"CaptureFps": @10, @"HeartbeatIntervalSec": @30,
         };
         return defs[key] ?: @0;
     }
