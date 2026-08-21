@@ -243,6 +243,7 @@ const FT_PING    = 0x02;  // 心跳请求
 const FT_PONG    = 0x03;  // 心跳响应
 const FT_CMD     = 0x04;  // 命令 JSON（网关→设备）
 const FT_CMDACK  = 0x05;  // 命令 ack JSON（设备→网关）
+const FT_THUMB   = 0x06;  // 缩略图推送（设备→网关，JPEG payload）
 
 // 向已注册设备下发 JSON 命令（写注册 socket；v1 仅 ping 验证，set 类留 B4）
 function sendToDevice(deviceId, obj) {
@@ -751,6 +752,13 @@ async function handleApi(req, res, url) {
     if (id) {
       const dev = findDevice(id);
       if (!dev) { sendJson(res, 404, { error: 'device not found' }); return true; }
+      if (req.method === 'GET' && sub === 'thumb') {
+        // 缩略图缓存读取：设备经隧道推送的最新 JPEG（base64）；无缓存返回 204
+        const trec = tunnels.get(id);
+        if (!trec || !trec.thumb) { res.writeHead(204); res.end(); return true; }
+        sendJson(res, 200, { thumb: trec.thumb.toString('base64'), ts: trec.thumbTs });
+        return true;
+      }
       if (req.method === 'GET') {
         sendJson(res, 200, { device: dev });
         return true;
@@ -1447,6 +1455,14 @@ const tunnelServer = net.createServer((sock) => {
           }
         }
       }
+        } else if (type === FT_THUMB) {
+      // 缩略图推送（设备→网关）：缓存最新 JPEG + 广播事件通知前端
+      const trec = tunnels.get(deviceId);
+      if (trec) {
+        trec.thumb = payload;        // 最新缩略 JPEG（Buffer）
+        trec.thumbTs = Date.now();
+      }
+      notifyDevicesChanged('thumb', deviceId);
         } else if (type === FT_CMDACK) {
       // cmd ack: match pending cmds
       let ack;
@@ -1548,7 +1564,7 @@ const tunnelServer = net.createServer((sock) => {
       if (old && old.sock !== sock) {
         try { old.sock.destroy(); } catch { /* noop */ }
       }
-      tunnels.set(deviceId, { sock, wsSet: new Set(), controller: null, pending: Buffer.alloc(0) });
+      tunnels.set(deviceId, { sock, wsSet: new Set(), controller: null, pending: Buffer.alloc(0), thumb: null, thumbTs: 0 });
       sock.write(JSON.stringify({ type: 'tunnel_ack', ok: true }) + '\n');
       framed = true;
       dev.online = true;

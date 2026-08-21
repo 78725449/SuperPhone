@@ -3965,7 +3965,7 @@ static void tvHttpApiHandleClient(int fd) {
                     NSString *b64 = [jpeg base64EncodedStringWithOptions:0];
                     NSDictionary *resp = @{ @"hash": hash, @"ts": @(ts), @"image": b64 };
                     NSData *json = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
-                    tvHttpSendSimple(fd, ssl, "200 OK", "application/json; charset=utf-8", json.bytes, json.length);
+                    tvHttpSendSimple(fd, ssl, "200 OK", "application/json; charset=utf-8", (const char *)json.bytes, (size_t)json.length);
                 }
                 if (ssl) SSL_free(ssl);
                 close(fd);
