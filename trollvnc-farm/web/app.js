@@ -1536,14 +1536,15 @@ function setFocusOverlay(loading, text) {
     ov.innerHTML = '<div class="spin"></div><div id="focusStatusText">连接中…</div>';
   }
   if (ov.parentElement !== fs) fs.appendChild(ov); // innerHTML='' 清空后重新挂载
+  // 2026-08-22 修复：创建时带 hidden 类（display:none !important），toggle show 时必须移除，
+  // 否则 hidden 的 !important 覆盖 .show 的 display:flex → 浮层永远不可见
+  ov.classList.toggle('hidden', !(loading || text != null));
   ov.classList.toggle('loading', !!loading);
   ov.classList.toggle('show', !!loading || text != null);
   if (text != null) {
     const t = $('focusStatusText');
     if (t) t.textContent = text;
   }
-  // 2026-08-22 诊断：确认浮层显示状态（loading/show/display）
-  console.log(`[focusOv] loading=${loading} text=${text} show=${ov.classList.contains('show')} display=${getComputedStyle(ov).display}`);
 }
 
 // ---------- 聚焦画面自动重连（2026-08-14） ----------
