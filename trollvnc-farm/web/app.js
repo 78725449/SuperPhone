@@ -1879,11 +1879,17 @@ function startDirectRfb(d) {
       directRfbs.delete(d.id);
       const o = tv.querySelector('.focus-status-ov');
       if (o) o.remove();
-      startWallRfb(inst);
-      updateDirectBtn();
+      // 2026-08-22：主动退出直控（directMode=false）时延迟恢复缩略图——保留 canvas 最后画面，
+      // 等网关缩略图链路重建（设备端 rfb.stop 重连缩略图客户端 → 网关重新解码）后再替换，
+      // 避免立即 startWallRfb 清空 canvas 闪「加载中…」占位。异常断开（directMode=true）立即恢复。
       if (directMode) {
+        startWallRfb(inst);
+        updateDirectBtn();
         const code = e && e.detail && e.detail.code;
         toast(`设备「${d.name}」直控已断开` + (code ? `（${code}）` : ''), 'error');
+      } else {
+        setTimeout(() => { if (!directRfbs.has(d.id)) startWallRfb(inst); }, 1200);
+        updateDirectBtn();
       }
     }
   });
@@ -1924,6 +1930,8 @@ function exitDirectMode() {
   directMode = false;
   const wall = $('wall');
   if (wall) wall.classList.remove('direct-mode');
+  // 2026-08-22：记录本次关闭的直控设备 id——它们由 disconnect 事件延迟恢复缩略图
+  const closedDirectIds = new Set(directRfbs.keys());
   // 先 close 全部直控 RFB（必须真正断开 WS，否则残留会话持续占用设备推流，
   // 再次进入直控时会话堆积 → 服务端 sessions=2/3…，还会与后续 rfb.stop 互扰）。
   // 注意 stopWallRfb 只处理 inst.rfb（截图轮询），直控 RFB 在 directRfbs 中，须显式 close。
@@ -1934,13 +1942,24 @@ function exitDirectMode() {
       // 2026-08-22：清理直控加载浮层（startDirectRfb 创建的「连接中…」），退出直控立即恢复缩略图
       const ov = inst.tile && inst.tile.querySelector('.focus-status-ov');
       if (ov) ov.remove();
+      // 2026-08-22：退出直控后本地移除「被控制中」遮罩——直控是前端主动行为，
+      // 本地置 controlled=false + 删遮罩（不依赖网关 controlled 更新时序）
+      const dev = devices.find((d) => d.id === id);
+      if (dev) dev.controlled = false;
+      const mask = inst.tile && inst.tile.querySelector('.ctrl-mask');
+      if (mask) mask.remove();
       stopWallRfb(inst);
     }
   }
   directRfbs.clear();
   updateDirectBtn();
+  refreshDevices().catch(() => {});
+  // 2026-08-22：刚 close 的直控设备由 disconnect 事件延迟恢复缩略图（保留 canvas 最后画面），
+  // 此处跳过它们，避免立即 startWallRfb 清空 canvas 闪「加载中…」占位
   for (const inst of wallInstances.values()) {
-    if (inst.device.online === true && !inst.paused) startWallRfb(inst); // 恢复缩略图获取
+    if (inst.device.online === true && !inst.paused && !closedDirectIds.has(inst.device.id)) {
+      startWallRfb(inst); // 恢复缩略图获取
+    }
   }
 }
 
