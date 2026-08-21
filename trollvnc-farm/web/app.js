@@ -1835,11 +1835,28 @@ function startDirectRfb(d) {
   if (exist) return exist;
   stopWallRfb(inst); // 停缩略图获取
   const tv = inst.tile.querySelector('.tv');
+  // 2026-08-22：直控模式加载动画——卡片中央显示「连接中…」旋转浮层（与聚焦大屏一致），
+  // connect 后隐藏；复用 .focus-status-ov 样式（挂到卡片 .tv 内，position:absolute 覆盖卡片）
+  let ov = tv.querySelector('.focus-status-ov');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.className = 'focus-status-ov show loading';
+    ov.innerHTML = '<div class="spin"></div><div id="focusStatusText">连接中…</div>';
+    tv.appendChild(ov);
+  } else {
+    ov.classList.add('show', 'loading');
+  }
   const rfb = createRfb(tv, d, { ctrl: false }); // 非 ctrl 可输入连接：互不抢占、输入直达设备
+  rfb.addEventListener('connect', () => {
+    const o = tv.querySelector('.focus-status-ov');
+    if (o) o.classList.remove('show', 'loading');
+  });
   rfb.addEventListener('disconnect', (e) => {
     // 设备离线/隧道断/服务端断开：清理直控标记，恢复缩略图获取
     if (directRfbs.get(d.id) === rfb) {
       directRfbs.delete(d.id);
+      const o = tv.querySelector('.focus-status-ov');
+      if (o) o.remove();
       startWallRfb(inst);
       updateDirectBtn();
       if (directMode) {
@@ -1923,9 +1940,10 @@ function updateWallTile(inst, d) {
   tile.querySelector('.dot').className = 'dot ' + (d.online ? 'on' : 'off');
   const tv = tile.querySelector('.tv');
   // 被控状态遮罩（2026-08-22）：设备被控制（隧道 rfb.start / 5801 直连）时叠加「被控制中」遮罩，
-  // 网关经 /api/devices 附带 controlled 字段（隧道 FT_STATE 上报），此处按需增删遮罩元素
+  // 网关经 /api/devices 附带 controlled 字段（隧道 FT_STATE 上报），此处按需增删遮罩元素。
+  // 直控模式（directMode）下设备由本端自己控制，不显示「被控制中」遮罩。
   let mask = tile.querySelector('.ctrl-mask');
-  if (d.controlled && d.online) {
+  if (d.controlled && d.online && !(directMode && directRfbs.has(d.id))) {
     if (!mask) {
       mask = document.createElement('div');
       mask.className = 'ctrl-mask';
