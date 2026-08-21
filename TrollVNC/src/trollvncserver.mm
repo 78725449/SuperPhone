@@ -5676,11 +5676,16 @@ int main(int argc, const char *argv[]) {
         // 2026-08-20：设置页热重载通道（App notify_post → 本进程热重载 hot/instant 配置）
         tvInstallPrefsChangedListener();
         // 2026-08-21：锁屏状态监听（设计 3.5「锁屏停留最后一帧」）
-        tvInstallLockStateListener();
-    }
+    tvInstallLockStateListener();
 
-    CFRunLoopRun();
-    cleanupAndExit(EXIT_SUCCESS);
+    // 2026-08-21 诊断：runloop 生命周期日志——区分「正常退出（runloop 返回）」与
+    // 「启动后崩溃/被杀」（无 "runloop exited" 行即为中途异常终止）
+    TVLog(@"-daemon: entering main runloop");
+}
+
+CFRunLoopRun();
+TVLog(@"-daemon: main runloop exited (code path A)");
+cleanupAndExit(EXIT_SUCCESS);
 
     return EXIT_SUCCESS;
 }

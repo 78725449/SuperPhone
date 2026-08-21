@@ -529,6 +529,11 @@ int main(int argc, const char *argv[]) {
         gLogStdoutPath = stdoutPath;
         gLogStderrPath = stderrPath;
 
+        // 2026-08-21 诊断：manager 自身 stderr 并入 server stderr 文件——watchdog 的
+        // 子进程退出状态日志（"exited with code"/"terminated by signal"）可经 5902 /stderr
+        // 远程读取，用于区分 server 是正常退出（runloop 返回）还是信号终止（崩溃循环根因）。
+        freopen([gLogStderrPath UTF8String], "a", stderr);
+
         [gWatchDog setStandardOutputPath:stdoutPath];
         [gWatchDog setStandardErrorPath:stderrPath];
 
