@@ -3447,7 +3447,7 @@ static void tvInstallPrefsChangedListener(void) {
 /** 2026-08-21：锁屏状态监听（设计 3.5「锁屏停留最后一帧」）——锁定时暂停缩略图缓存更新
  *  （停留最后一帧，锁屏过渡黑帧不覆盖缓存）；解锁恢复（CADisplayLink 恢复 → 新帧变化自然更新）。 */
 static void tvLockStateChanged(void) {
-    int state = 0;
+    uint64_t state = 0;
     notify_get_state(gLockStateToken, &state);
     gScreenLocked = (state == 1);
     TVLog(@"-daemon: lock state -> %@", gScreenLocked ? @"LOCKED" : @"UNLOCKED");
