@@ -43,6 +43,7 @@
 #import "TVNCAppStore.h"
 #endif
 #import "TVNCUtil.h"
+#import "TVNCButtonCell.h"
 #import "ZTSelfSignedCertificate.h"
 
 // PSSpecifier 的 name/setName: 为私有属性，bootstrap 方案（xcodebuild + iPhoneOS16.5.sdk）头未声明，
