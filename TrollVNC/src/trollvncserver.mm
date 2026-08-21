@@ -5478,6 +5478,8 @@ static void dropPrivileges(void) {
 }
 
 static void cleanupAndExit(int code) {
+    // 2026-08-21 诊断：退出路径日志（fprintf 同步，防 NSLog 缓冲丢失）
+    fprintf(stderr, "MAIN: cleanupAndExit code=%d\n", code);
     // Stop auto discovery
     stopBonjour();
 
@@ -5517,6 +5519,8 @@ static void monitorParentProcess(void) {
                                dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0));
 
     dispatch_source_set_event_handler(source, ^{
+        // 2026-08-21 诊断：父进程退出触发点（fprintf 同步）
+        fprintf(stderr, "MAIN: parent-proc event data=0x%lx\n", (unsigned long)dispatch_source_get_data(source));
         if (dispatch_source_get_data(source) & DISPATCH_PROC_EXIT) {
             dispatch_source_cancel(source);
             TVPrintError("Parent process %d exited", ppid);
@@ -5544,6 +5548,8 @@ static void monitorSelfAndRestartIfVnodeDeleted(const char *executable) {
 
     dispatch_source_set_event_handler(monitorSource, ^{
         unsigned long flags = dispatch_source_get_data(monitorSource);
+        // 2026-08-21 诊断：可执行文件删除触发点（fprintf 同步）
+        fprintf(stderr, "MAIN: vnode-delete event flags=0x%lx\n", flags);
         if (flags & DISPATCH_VNODE_DELETE) {
             dispatch_source_cancel(monitorSource);
             exit(EXIT_SUCCESS);
@@ -5680,11 +5686,12 @@ int main(int argc, const char *argv[]) {
 
     // 2026-08-21 诊断：runloop 生命周期日志——区分「正常退出（runloop 返回）」与
     // 「启动后崩溃/被杀」（无 "runloop exited" 行即为中途异常终止）
-    TVLog(@"-daemon: entering main runloop");
+    // fprintf 同步写 stderr（NSLog 异步缓冲，exit 太快会丢）
+    fprintf(stderr, "MAIN: entering main runloop\n");
 }
 
 CFRunLoopRun();
-TVLog(@"-daemon: main runloop exited (code path A)");
+fprintf(stderr, "MAIN: runloop exited (code path A)\n");
 cleanupAndExit(EXIT_SUCCESS);
 
     return EXIT_SUCCESS;
