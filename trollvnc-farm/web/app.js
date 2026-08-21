@@ -1496,7 +1496,8 @@ async function enterFocus(d) {
   focus.rfb = fRfb;
   fRfb.addEventListener('connect', () => {
     focusReconnectAttempts = 0; // 重连成功：复位重试计数
-    setFocusOverlay(false, null); // 隐藏连接浮层
+    // 2026-08-22：连接极快时动画一闪而过——最小显示 300ms 再隐藏，保证「连接中…」可见
+    setTimeout(() => setFocusOverlay(false, null), 300);
     setTimeout(fitFocusPanel, 300);
   });
   // 聚焦主控画面断线自动重连（2026-08-14）：iOS 后台挂起/切应用导致 WS 断开（1006）后画面黑屏，
