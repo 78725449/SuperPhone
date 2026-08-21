@@ -1673,7 +1673,9 @@ function exitFocus() {
     const mask = inst.tile.querySelector('.ctrl-mask');
     if (mask) mask.remove();
   }
-  refreshDevices().catch(() => {});
+  // 2026-08-22：延迟 refreshDevices——立即拉取会覆盖本地 controlled=false（网关 rfb.stop
+  // 未到设备端时 controlled 仍为 true，updateWallTile 会重新加遮罩）。延迟等网关更新后再拉。
+  setTimeout(() => refreshDevices().catch(() => {}), 1500);
   // 退出大屏同步退出系统全屏（若处于全屏态）
   if (document.fullscreenElement) {
     try { document.exitFullscreen().catch(() => {}); } catch (e) { /* 忽略 */ }
@@ -1972,7 +1974,9 @@ function exitDirectMode() {
   }
   directRfbs.clear();
   updateDirectBtn();
-  refreshDevices().catch(() => {});
+  // 2026-08-22：延迟 refreshDevices——立即拉取会覆盖本地 controlled=false（网关 rfb.stop
+  // 未到设备端时 controlled 仍为 true，updateWallTile 会重新加遮罩）。延迟等网关更新后再拉。
+  setTimeout(() => refreshDevices().catch(() => {}), 1500);
   // 2026-08-22：刚 close 的直控设备延迟恢复缩略图——保留 canvas 最后画面，
   // 等网关缩略图链路重建（设备端 rfb.stop 重连缩略图客户端 → 网关重新解码）后再替换，
   // 避免立即 startWallRfb 清空 canvas 闪「加载中…」占位。其余设备立即恢复。
