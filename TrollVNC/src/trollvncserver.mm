@@ -1398,7 +1398,9 @@ NS_INLINE uint64_t hash_basis(void) {
 
 NS_INLINE uint64_t hash_update(uint64_t h, const uint8_t *data, size_t len) {
 #if defined(__aarch64__) || defined(__ARM_FEATURE_CRC32)
-    return crc32_update(h, data, len);
+    // 2026-08-22 诊断：SIGILL 疑似 __builtin_arm_crc32* 指令问题——强制走 FNV 验证
+    // （若禁用后不再崩，则确认为硬件 CRC32 指令在真机上的兼容问题）
+    return fnv1a_update(h, data, len);
 #else
     // If CRC32 not supported at compile time, fallback to FNV-1a
     return fnv1a_update(h, data, len);
@@ -2440,6 +2442,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 #endif
 
     accumulatePendingDirty();
+    fprintf(stderr, "HFB:6 after-pending hasPending=%d\n", gHasPending ? 1 : 0);
 
 #if DEBUG
     CFAbsoluteTime __tv_tPend1 = CFAbsoluteTimeGetCurrent();
@@ -2469,6 +2472,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 
     if (!shouldFlush) {
         // Still deferring: do not notify clients yet; keep previous full-hash baseline.
+        fprintf(stderr, "HFB:7 defer-noflush\n");
 
 #if DEBUG
         CFAbsoluteTime __tv_tEnd = CFAbsoluteTimeGetCurrent();
