@@ -158,6 +158,7 @@ static BOOL gThumbPushEnabled = YES;      // ThumbPushEnabled 配置（默认开
 static NSString *gThumbHash = nil;        // 缓存 hash（16 hex）
 static NSData *gThumbJpeg = nil;          // 缓存缩略 JPEG
 static CFAbsoluteTime gThumbTs = 0;
+static CFAbsoluteTime gLastThumbEncodeTs = 0;  // 缩略图编码节流时间戳（变化时 ≥1s 才重编码）
 static pthread_mutex_t gThumbLock = PTHREAD_MUTEX_INITIALIZER;  // 缓存读写锁
 
 typedef NS_ENUM(uint8_t, TVBindHostKind) {
@@ -3362,6 +3363,12 @@ int tvReloadConfigForKey(const char *key) {
     return 0;
 }
 
+// Number of connected clients（前置声明：tvApplyPrefsChanged 热重载 CaptureFps 需引用）
+static int gClientCount = 0;
+
+// Capture lifecycle flags（前置声明：cap.hello 豁免 handler 与 tvApplyPrefsChanged 热重载共用）
+static BOOL gIsCaptureStarted = NO;
+
 /** 设置页热重载通道回调（2026-08-20）：
  *  App（TVNCRootListController）改配置写 defaults 后 notify_post("com.82flex.trollvnc.prefs-changed")，
  *  本进程收到后重读 suite 并热重载 hot/instant 级配置（帧率/通知/缩放等即时生效，无需重启）。
@@ -3404,6 +3411,19 @@ static void tvApplyPrefsChanged(void) {
         if ([assistN isKindOfClass:[NSNumber class]]) gAutoAssistEnabled = assistN.boolValue;
         NSNumber *keyLogN = [p objectForKey:@"KeyLogging"];
         if ([keyLogN isKindOfClass:[NSNumber class]]) gKeyEventLogging = keyLogN.boolValue;
+        // 2026-08-21：缩略图推送开关（instant）/采集帧率（hot）热生效
+        NSNumber *thumbOnN = [p objectForKey:@"ThumbPushEnabled"];
+        if ([thumbOnN isKindOfClass:[NSNumber class]]) gThumbPushEnabled = thumbOnN.boolValue;
+        NSNumber *capFpsN2 = [p objectForKey:@"CaptureFps"];
+        if ([capFpsN2 isKindOfClass:[NSNumber class]]) {
+            double v = capFpsN2.doubleValue;
+            if (v < 1) v = 1; if (v > 30) v = 30;
+            gCaptureLowFps = v;
+            // 无客户端（低频模式）时立即应用新帧率
+            if (gClientCount == 0 && gIsCaptureStarted) {
+                [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps max:gCaptureLowFps];
+            }
+        }
         TVLog(@"-daemon: prefs-changed -> hot reload applied");
     }
 }
@@ -3483,12 +3503,10 @@ static void startBonjour(void) {
     }
 }
 
-// Number of connected clients
-static int gClientCount = 0;
-
 // 2026-08-21：更新缩略图缓存（采集回调 handleFramebuffer 末尾调用，主线程）。
 // 无活跃 VNC 客户端（屏幕流互斥）且 ThumbPushEnabled 开启时，对当前帧计算 pHash，
-// 与缓存 hash 不同才重新采集单帧并缩放为宽 320 的 JPEG 存入缓存，供 5802 /thumb 拉取。
+// 与缓存 hash 不同且距上次编码 ≥1s 才重新采集单帧并缩放为宽 320 的 JPEG 存入缓存，
+// 供 5802 /thumb 拉取（hash 检测每帧做，编码节流防高频画面反复重渲染）。
 static void tvUpdateThumbCache(void) {
     if (gClientCount > 0 || !gThumbPushEnabled) return;   // 屏幕流互斥 + 开关
     NSString *h = [[TRScreenHasher sharedHasher] computeHashHexForCurrentFrame];
@@ -3497,6 +3515,9 @@ static void tvUpdateThumbCache(void) {
     BOOL changed = !gThumbHash || ![h isEqualToString:gThumbHash];
     pthread_mutex_unlock(&gThumbLock);
     if (!changed) return;   // 画面无变化不更新
+    // 编码节流：画面高频变化时不每帧重渲染（hash 检测每帧做，编码 ≥1s 一次）
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (now - gLastThumbEncodeTs < 1.0) return;
     UIImage *img = [[ScreenCapturer sharedCapturer] captureSingleFrameImage];
     if (!img) return;
     // 缩尺寸：按宽 320 等比缩放
@@ -3513,11 +3534,9 @@ static void tvUpdateThumbCache(void) {
     gThumbJpeg = jpeg;
     gThumbHash = h;
     gThumbTs = CFAbsoluteTimeGetCurrent();
+    gLastThumbEncodeTs = now;   // 成功写缓存后记录编码时刻（供下一帧节流判断）
     pthread_mutex_unlock(&gThumbLock);
 }
-
-// Capture lifecycle flags（声明前置：cap.hello 豁免 handler 早于 Client Handlers 使用）
-static BOOL gIsCaptureStarted = NO;
 
 #if !TARGET_OS_SIMULATOR
 static BOOL gRestoreAssist = NO;

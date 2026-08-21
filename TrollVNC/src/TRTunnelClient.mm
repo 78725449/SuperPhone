@@ -674,13 +674,14 @@ static void TRTunnelLog(const char *fmt, ...) {
  * 隧道未连接时静默丢弃。无 RFB 客户端（gRfbActive=NO）时才被调用，
  * 此时隧道上仅有心跳帧，跨线程 write 交错概率极低。
  * @param jpegData JPEG 编码的缩略图数据
+ * @return YES 表示已真正写入隧道；NO 表示隧道未连或写帧失败（静默丢弃，不记录推送状态）
  */
-- (void)sendThumbnail:(NSData *)jpegData {
-    if (!_connected || !jpegData.length) return;  // 隧道未连：静默丢弃
-    if (_tunnelFd < 0) return;
-    if (![self _writeFrame:_tunnelFd type:kFrameTypeThumb data:jpegData.bytes length:jpegData.length]) {
-        TVLog(@"[tunnel] sendThumbnail write failed (fd=%d)", _tunnelFd);
-    }
+- (BOOL)sendThumbnail:(NSData *)jpegData {
+    if (!_connected || !jpegData.length) return NO;  // 隧道未连：静默丢弃，不记录推送状态
+    if (_tunnelFd < 0) return NO;
+    BOOL ok = [self _writeFrame:_tunnelFd type:kFrameTypeThumb data:jpegData.bytes length:jpegData.length];
+    if (!ok) TVLog(@"[tunnel] sendThumbnail write failed (fd=%d)", _tunnelFd);
+    return ok;
 }
 
 /** 本地 RFB 会话是否活跃（rfb.start/stop 命令驱动），供缩略图轮询互斥判断 */

@@ -35,8 +35,9 @@
  * 由 trollvncmanager 的缩略图轮询调用（画面 hash 变化时才推）；
  * 隧道未连接时静默丢弃。
  * @param jpegData JPEG 编码的缩略图数据
+ * @return YES 表示已真正写入隧道（隧道已连且写帧成功）；NO 表示未写入（隧道未连或写帧失败）
  */
-- (void)sendThumbnail:(NSData *)jpegData;
+- (BOOL)sendThumbnail:(NSData *)jpegData;
 
 /** 查询本地 RFB 会话是否活跃（rfb.start/rfb.stop 命令驱动），供缩略图轮询互斥判断 */
 + (BOOL)isRfbActive;

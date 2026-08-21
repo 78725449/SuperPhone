@@ -62,7 +62,7 @@ static dispatch_source_t gThumbTimerSource = nil;  // 轮询定时器（主队�
 /**
  * 2026-08-21：缩略图轮询回调（主线程定时器触发，间隔 ThumbInterval 默认 3s）。
  * 无活跃 RFB 会话且开关开启时，GET 127.0.0.1:5802/thumb 拉取 server 缩略图缓存，
- * hash 与上次推送不同则经隧道推送并记录（JPEG base64 由 server 端编码，此处解码）。
+ * hash 与上次推送不同则经隧道推送，仅真正写入隧道才记录 hash（JPEG base64 由 server 端编码，此处解码）。
  */
 static void tvThumbPollTick(void) {
     if ([TRTunnelClient isRfbActive] || !gThumbPushEnabled) return;   // 屏幕流互斥 + 开关
@@ -78,8 +78,10 @@ static void tvThumbPollTick(void) {
     if (![b64 isKindOfClass:[NSString class]] || !b64.length) return;
     NSData *jpeg = [[NSData alloc] initWithBase64EncodedString:b64 options:0];
     if (!jpeg.length) return;
-    [[TRTunnelClient sharedClient] sendThumbnail:jpeg];
-    gLastPushedHash = hash;
+    if ([[TRTunnelClient sharedClient] sendThumbnail:jpeg]) {
+        gLastPushedHash = hash;   // 仅真正推送成功才记录——隧道断时静默丢弃不记录，
+                                  // 恢复后下一 tick 拉到同 hash 仍会补推（防缩略图丢失）
+    }
 }
 
 static void mSignalAction(int signal, struct __siginfo *info, void *context) {
