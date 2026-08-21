@@ -2208,6 +2208,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
         if (cNoScalePadThresholdPx > 0 && dW <= cNoScalePadThresholdPx && dW >= -cNoScalePadThresholdPx &&
             dH <= cNoScalePadThresholdPx && dH >= -cNoScalePadThresholdPx) {
 
+    fprintf(stderr, "HFB:3 before-copy stage=%zux%zu dst=%dx%d bpp=%d\n", (size_t)stage.width, (size_t)stage.height, (int)dstBuf.width, (int)dstBuf.height, gBytesPerPixel);
 #if DEBUG
             CFAbsoluteTime __tv_tPad0 = CFAbsoluteTimeGetCurrent();
 #endif
@@ -2263,6 +2264,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 #endif
 
     CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+    fprintf(stderr, "HFB:4 after-copy+unlock\n");
 
 #if DEBUG
     CFAbsoluteTime __tv_tUnlock1 = CFAbsoluteTimeGetCurrent();
@@ -2410,6 +2412,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     CFAbsoluteTime __tv_tHash0 = CFAbsoluteTimeGetCurrent();
 #endif
 
+    fprintf(stderr, "HFB:5 before-hash tileCount=%zu tileSize=%d\n", gTileCount, gTileSize);
     if (cSparseHashDuringDefer && gDeferWindowSec > 0) {
         hashTiledFromBufferSparse((const uint8_t *)gBackBuffer, gWidth, gHeight,
                                   (size_t)gWidth * (size_t)gBytesPerPixel, cHashStrideX, cHashStrideY);
