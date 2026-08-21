@@ -1342,6 +1342,16 @@ typedef struct {
     int x, y, w, h;
 } DirtyRect;
 
+NS_INLINE uint64_t fnv1a_basis(void) { return 1469598103934665603ULL; }
+NS_INLINE uint64_t fnv1a_update(uint64_t h, const uint8_t *data, size_t len) {
+    const uint64_t FNV_PRIME = 1099511628211ULL;
+    for (size_t i = 0; i < len; ++i) {
+        h ^= (uint64_t)data[i];
+        h *= FNV_PRIME;
+    }
+    return h;
+}
+
 #if defined(__aarch64__) || defined(__ARM_FEATURE_CRC32)
 NS_INLINE uint64_t crc32_update(uint64_t h, const uint8_t *data, size_t len) {
     uint32_t c = (uint32_t)h;
@@ -1375,25 +1385,12 @@ NS_INLINE uint64_t crc32_update(uint64_t h, const uint8_t *data, size_t len) {
     }
     return (uint64_t)c;
 }
-#else
-NS_INLINE uint64_t fnv1a_basis(void) { return 1469598103934665603ULL; }
-NS_INLINE uint64_t fnv1a_update(uint64_t h, const uint8_t *data, size_t len) {
-    const uint64_t FNV_PRIME = 1099511628211ULL;
-    for (size_t i = 0; i < len; ++i) {
-        h ^= (uint64_t)data[i];
-        h *= FNV_PRIME;
-    }
-    return h;
-}
 #endif
 
 // Generic hash wrappers: prefer hardware CRC32 when enabled and available, else fallback to FNV-1a.
 NS_INLINE uint64_t hash_basis(void) {
-#if defined(__aarch64__) || defined(__ARM_FEATURE_CRC32)
-    return 0u; // CRC32 initial accumulator
-#else
+    // 2026-08-22 诊断：与 hash_update 一致强制 FNV（避免 CRC32 指令 SIGILL）
     return fnv1a_basis();
-#endif
 }
 
 NS_INLINE uint64_t hash_update(uint64_t h, const uint8_t *data, size_t len) {
