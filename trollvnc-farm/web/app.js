@@ -1638,6 +1638,16 @@ function exitFocus() {
   focusReconnectTimer = null;
   focusReconnectAttempts = 0;
   setFocusOverlay(false, null); // 退出隐藏连接浮层
+  // 2026-08-22 时序原则：断开时「先清理被控中状态，再断开」——本地置 controlled=false +
+  // 移除遮罩，然后才 closeRfb。断开后本地 controlled=false 保持（不 refreshDevices 覆盖），
+  // 网关 rfb.stop 上报 controlled=false 后经 state 事件/后续刷新保持，无需延迟 hack。
+  const dev = devices.find((d) => d.id === devId);
+  if (dev) dev.controlled = false;
+  const inst = wallInstances.get(devId);
+  if (inst && inst.tile) {
+    const mask = inst.tile.querySelector('.ctrl-mask');
+    if (mask) mask.remove();
+  }
   // 清除 URL 聚焦参数（2026-08-14）：退出控制后刷新不再自动进入该设备
   try {
     const u = new URL(location.href);
@@ -1663,19 +1673,6 @@ function exitFocus() {
   cancelFabAutoCollapse();
   $('fab').classList.add('hidden');
   restoreWallTile(devId);
-  // 2026-08-22：断开控制后立即移除「被控制中」遮罩——断开是前端主动行为，
-  // 本地直接删遮罩（不依赖网关 controlled 更新时序：rfb.stop 有 800ms 延迟 + 网络）。
-  // 同时本地把该设备 controlled 置 false，避免 refreshDevices 拉取到旧值重新加遮罩。
-  const dev = devices.find((d) => d.id === devId);
-  if (dev) dev.controlled = false;
-  const inst = wallInstances.get(devId);
-  if (inst && inst.tile) {
-    const mask = inst.tile.querySelector('.ctrl-mask');
-    if (mask) mask.remove();
-  }
-  // 2026-08-22：延迟 refreshDevices——立即拉取会覆盖本地 controlled=false（网关 rfb.stop
-  // 未到设备端时 controlled 仍为 true，updateWallTile 会重新加遮罩）。延迟等网关更新后再拉。
-  setTimeout(() => refreshDevices().catch(() => {}), 1500);
   // 退出大屏同步退出系统全屏（若处于全屏态）
   if (document.fullscreenElement) {
     try { document.exitFullscreen().catch(() => {}); } catch (e) { /* 忽略 */ }
@@ -1949,35 +1946,32 @@ function exitDirectMode() {
   // 注意 stopWallRfb 只处理 inst.rfb（截图轮询），直控 RFB 在 directRfbs 中，须显式 close。
   for (const [id, rfb] of directRfbs.entries()) {
     const inst = wallInstances.get(id);
-    // 2026-08-22：closeRfb 前截图直控 canvas 最后画面——noVNC disconnect 会移除 canvas，
-    // 截图保留最后画面，startWallRfb 先显示它（不闪「加载中…」），缩略图就绪后替换
-    if (inst && inst.tile) {
-      const c = inst.tile.querySelector('.tv canvas');
-      if (c) {
-        try { inst._lastFrame = c.toDataURL('image/jpeg', 0.7); } catch (e) { inst._lastFrame = null; }
+    if (inst) {
+      // 2026-08-22 时序原则：断开时「先清理被控中状态，再断开」——
+      // ① 截图直控 canvas 最后画面（noVNC disconnect 会移除 canvas，截图保留最后画面，
+      //    startWallRfb 先显示它，缩略图就绪后替换）
+      // ② 本地置 controlled=false + 移除「被控制中」遮罩 + 清理加载浮层
+      // ③ 然后才 closeRfb
+      if (inst.tile) {
+        const c = inst.tile.querySelector('.tv canvas');
+        if (c) {
+          try { inst._lastFrame = c.toDataURL('image/jpeg', 0.7); } catch (e) { inst._lastFrame = null; }
+        }
+        const ov = inst.tile.querySelector('.focus-status-ov');
+        if (ov) ov.remove();
+        const dev = devices.find((d) => d.id === id);
+        if (dev) dev.controlled = false;
+        const mask = inst.tile.querySelector('.ctrl-mask');
+        if (mask) mask.remove();
       }
     }
     closeRfb(rfb);
-    if (inst) {
-      // 2026-08-22：清理直控加载浮层（startDirectRfb 创建的「连接中…」），退出直控立即恢复缩略图
-      const ov = inst.tile && inst.tile.querySelector('.focus-status-ov');
-      if (ov) ov.remove();
-      // 2026-08-22：退出直控后本地移除「被控制中」遮罩——直控是前端主动行为，
-      // 本地置 controlled=false + 删遮罩（不依赖网关 controlled 更新时序）
-      const dev = devices.find((d) => d.id === id);
-      if (dev) dev.controlled = false;
-      const mask = inst.tile && inst.tile.querySelector('.ctrl-mask');
-      if (mask) mask.remove();
-      // 2026-08-22：不调 stopWallRfb——它会 tv.innerHTML='' 清空直控 canvas（最后画面丢失），
-      // 且直控设备本就没在获取缩略图（startDirectRfb 时已 stopWallRfb）。
-    }
   }
   directRfbs.clear();
   updateDirectBtn();
-  // 2026-08-22：延迟 refreshDevices——立即拉取会覆盖本地 controlled=false（网关 rfb.stop
-  // 未到设备端时 controlled 仍为 true，updateWallTile 会重新加遮罩）。延迟等网关更新后再拉。
-  setTimeout(() => refreshDevices().catch(() => {}), 1500);
-  // 2026-08-22：刚 close 的直控设备延迟恢复缩略图——保留 canvas 最后画面，
+  // 2026-08-22：断开后本地 controlled=false 保持（不 refreshDevices 覆盖），
+  // 网关 rfb.stop 上报 controlled=false 后经 state 事件/后续刷新保持，无需延迟 hack。
+  // 刚 close 的直控设备延迟恢复缩略图——保留 canvas 最后画面（截图），
   // 等网关缩略图链路重建（设备端 rfb.stop 重连缩略图客户端 → 网关重新解码）后再替换，
   // 避免立即 startWallRfb 清空 canvas 闪「加载中…」占位。其余设备立即恢复。
   for (const inst of wallInstances.values()) {
