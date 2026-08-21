@@ -29,6 +29,12 @@ NS_ASSUME_NONNULL_BEGIN
  */
 @interface TVNCButtonCell : PSTableCell
 
+/// 动态标题（2026-08-21，设计文档 7.4）：连接网关/桥接网关按钮随连接状态显示 已连接/已桥接。
+/// 仅更新 _titleLabel.text，不写回 specifier——后续 setSpecifier/refreshCellContentsWithSpecifier
+/// 会重读 plist label 恢复默认文字，调用方（TVNCRootListController）负责在 cellForRow 时重新应用。
+/// 调用方需保证在主线程调用。
+- (void)setCellTitle:(NSString *)title;
+
 @end
 
 NS_ASSUME_NONNULL_END

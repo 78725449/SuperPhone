@@ -74,6 +74,11 @@
     [self _syncWithSpecifier:specifier];
 }
 
+/// 2026-08-21 动态标题（设计文档 7.4）：主线程更新 _titleLabel.text，不写回 specifier
+- (void)setCellTitle:(NSString *)title {
+    _titleLabel.text = title;
+}
+
 - (void)layoutSubviews {
     [super layoutSubviews];
     // 兜底：PSListController/PSTableCell 可能在刷新时重新显示系统 label

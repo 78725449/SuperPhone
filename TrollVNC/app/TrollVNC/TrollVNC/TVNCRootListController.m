@@ -38,6 +38,9 @@
 //（2026-08-20 编译分叉修复：symlink 共享源码后 prefs 侧曾因 import 链断链编译失败）
 #ifdef THEBOOTSTRAP
 #import "TVNCServiceCoordinator.h"
+// 2026-08-21 连接网关/桥接网关按钮文字动态化（设计文档 7.4）：TVNCAppStore 为 App 进程单例，
+// prefs bundle（Preferences.app 进程）不编译 TVNCAppStore（见 prefs Makefile），须条件编译隔离
+#import "TVNCAppStore.h"
 #endif
 #import "TVNCUtil.h"
 #import "ZTSelfSignedCertificate.h"
@@ -366,6 +369,15 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     if ([self hasManagedConfiguration]) {
         return;
     }
+#ifdef THEBOOTSTRAP
+    // 2026-08-21 连接网关/桥接网关按钮文字动态化（设计文档 7.4）：
+    // 监听 TVNCAppStore 状态变化（object=AppStore 单例），驱动按钮文字 已连接/已桥接。
+    // 托管页（ManagedRoot.plist）无连接网关按钮，已提前 return，不注册。
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(_gatewayStateDidChange)
+                                                 name:TVNCGatewayStateDidChangeNotification
+                                               object:[TVNCAppStore sharedStore]];
+#endif
     // 右上角 Apply 按钮已移除（2026-08-14）：
     // 配置变更按 reload 级别即时生效（网关组自动重注册 / hot 走控制端热重载），
     // restart 级配置修改后由 setPreferenceValue 拦截自动弹确认框触发重启，
@@ -374,6 +386,10 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 #pragma mark - UINavigationControllerDelegate（2026-08-15：根页隐藏导航栏，子页临时显示）
@@ -812,7 +828,19 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
         return cell;
     }
 
+#ifdef THEBOOTSTRAP
+    // 2026-08-21 连接网关/桥接网关按钮动态标题（设计文档 7.4）：
+    // cell 复用/刷新（setSpecifier/refreshCellContentsWithSpecifier）会重读 plist label 恢复默认文字，
+    // 返回前重放动态标题（与 _applyGatewayButtonTitles 同语义）。
+    UITableViewCell *cell = [super tableView:tableView cellForRowAtIndexPath:indexPath];
+    if ([cell isKindOfClass:[TVNCButtonCell class]] &&
+        [[specifier propertyForKey:@"action"] isEqualToString:@"connectGateway"]) {
+        [(TVNCButtonCell *)cell setCellTitle:[self _gatewayButtonTitle]];
+    }
+    return cell;
+#else
     return [super tableView:tableView cellForRowAtIndexPath:indexPath];
+#endif
 }
 
 - (void)tableView:(UITableView *)tableView
@@ -831,6 +859,46 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 
 
 #pragma mark - Gateway Search (internal farm)
+
+/// 2026-08-21 连接网关/桥接网关按钮动态标题（设计文档 7.4）：
+/// relay 且已注册 → 「已连接」；bridge 且桥接已连 → 「已桥接」；其余 → 默认（按模式）。
+/// prefs bundle（Preferences.app 进程）无 App 状态层（TVNCAppStore 仅 App 编译），恒默认文字。
+- (NSString *)_gatewayButtonTitle {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSString *connMode = [defaults stringForKey:@"ConnectionMode"] ?: @"relay";
+#ifdef THEBOOTSTRAP
+    TVNCGatewayState state = [TVNCAppStore sharedStore].gatewayState;
+    if ([connMode isEqualToString:@"bridge"] && state == TVNCGatewayStateBridgeConnected) {
+        return @"已桥接";
+    }
+    if ([connMode isEqualToString:@"relay"] && state == TVNCGatewayStateRegistered) {
+        return @"已连接";
+    }
+#endif
+    return [connMode isEqualToString:@"bridge"] ? @"桥接网关" : @"连接网关";
+}
+
+#ifdef THEBOOTSTRAP
+/// 2026-08-21 遍历可见 cell，对 action==connectGateway 的 TVNCButtonCell 应用动态标题。
+/// 不写回 specifier：后续 setSpecifier/refreshCellContentsWithSpecifier 会重读 plist label
+/// 恢复默认文字，cellForRow 已负责重新应用动态标题。
+- (void)_applyGatewayButtonTitles {
+    for (UITableViewCell *cell in self.table.visibleCells) {
+        if (![cell isKindOfClass:[TVNCButtonCell class]]) continue;
+        PSSpecifier *sp = cell.specifier;
+        if (![[sp propertyForKey:@"action"] isEqualToString:@"connectGateway"]) continue;
+        [(TVNCButtonCell *)cell setCellTitle:[self _gatewayButtonTitle]];
+    }
+}
+
+- (void)_gatewayStateDidChange {
+    // 防御性切主队列（TVNCAppStore 实际在主线程发布）；nil 消息安全
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf _applyGatewayButtonTitles];
+    });
+}
+#endif
 
 /// 2026-08-20 双模式的「连接网关」按钮（幂等 ensure 语义，不碰进程重启）：
 /// - 桥接控制：纯 App 级——用当前配置拉取设备目录验证网关可达，反馈设备数
@@ -856,6 +924,10 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
             if (!self) return;
             if (devices) {
                 [self showGatewayMessage:[NSString stringWithFormat:@"网关可达 · %ld 台设备", (long)devices.count]];
+#ifdef THEBOOTSTRAP
+                // 2026-08-21 状态通知可能滞后（AppStore 状态由自身拉取驱动），点击验证可达后主动刷新按钮文字
+                [self _applyGatewayButtonTitles];
+#endif
             } else {
                 [self showGatewayMessage:[NSString stringWithFormat:@"网关不可达：%@",
                     error.localizedDescription ?: @"未知错误"]];
