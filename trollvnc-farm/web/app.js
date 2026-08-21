@@ -1542,6 +1542,8 @@ function setFocusOverlay(loading, text) {
     const t = $('focusStatusText');
     if (t) t.textContent = text;
   }
+  // 2026-08-22 诊断：确认浮层显示状态（loading/show/display）
+  console.log(`[focusOv] loading=${loading} text=${text} show=${ov.classList.contains('show')} display=${getComputedStyle(ov).display}`);
 }
 
 // ---------- 聚焦画面自动重连（2026-08-14） ----------
