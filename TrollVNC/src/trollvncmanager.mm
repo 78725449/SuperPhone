@@ -86,8 +86,17 @@ static void tvThumbPollTick(void) {
 
 static void mSignalAction(int signal, struct __siginfo *info, void *context) {
     if (signal == SIGCHLD) {
-        int unused;
-        waitpid(info->si_pid, &unused, WNOHANG);
+        int status = 0;
+        pid_t p = waitpid(info->si_pid, &status, WNOHANG);
+        // 2026-08-21 诊断：打印收割的子进程真实退出状态——watchdog 的 TRTask 也在 waitpid
+        // 同一子进程（竞争），此处理会先收割导致 TRTask 误报 "exited with code: 0"，
+        // 真实死因（signal/exit）被掩盖。打印到 server stderr 文件（manager stderr 已并入）供 5902 读取。
+        if (p > 0) {
+            fprintf(stderr, "MANAGER: SIGCHLD reaped pid=%d status=0x%x signaled=%d sig=%d exit=%d\n",
+                    p, status, WIFSIGNALED(status) ? 1 : 0,
+                    WIFSIGNALED(status) ? WTERMSIG(status) : 0,
+                    WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        }
     }
 }
 
