@@ -883,9 +883,11 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 /// 不写回 specifier：后续 setSpecifier/refreshCellContentsWithSpecifier 会重读 plist label
 /// 恢复默认文字，cellForRow 已负责重新应用动态标题。
 - (void)_applyGatewayButtonTitles {
-    for (UITableViewCell *cell in self.table.visibleCells) {
+    UITableView *tv = [self valueForKey:@"table"];   // PSListController 私有 table，KVC 取（无公开属性）
+    if (!tv) return;
+    for (UITableViewCell *cell in tv.visibleCells) {
         if (![cell isKindOfClass:[TVNCButtonCell class]]) continue;
-        PSSpecifier *sp = cell.specifier;
+        PSSpecifier *sp = [(PSTableCell *)cell specifier];
         if (![[sp propertyForKey:@"action"] isEqualToString:@"connectGateway"]) continue;
         [(TVNCButtonCell *)cell setCellTitle:[self _gatewayButtonTitle]];
     }
