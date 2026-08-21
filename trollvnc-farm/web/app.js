@@ -406,7 +406,15 @@ async function fetchThumb(inst) {
     if (!data.thumb || !tv) return;
     // 在途请求期间可能已被 stopWallRfb 清理（竞态：拉取中进入聚焦/设备离线）——空值保护
     if (!inst.rfb || inst.rfb.closed) return;
-    tv.innerHTML = `<img class="thumb" src="data:image/jpeg;base64,${data.thumb}" alt="" />`;
+    // 2026-08-22：复用 img 元素只更新 src，避免 innerHTML 重建 DOM 触发 forced reflow
+    let img = tv.querySelector('img.thumb');
+    if (!img) {
+      img = document.createElement('img');
+      img.className = 'thumb';
+      img.alt = '';
+      tv.appendChild(img);
+    }
+    img.src = `data:image/jpeg;base64,${data.thumb}`;
     if (data.ts) inst.tile.dataset.ts = data.ts;
     if (inst.statusEl) inst.statusEl.textContent = '';
   } catch (e) {
