@@ -91,7 +91,6 @@ export const CONFIG_DEFS = [
   { key: 'FullscreenThresholdPercent', title: '脏区阈值', type: 'number', min: 0, max: 100, step: 1, reload: 'hot', group: 'display' },
   { key: 'MaxRects', title: '最大矩形数', type: 'number', min: 1, max: 4096, step: 1, reload: 'restart', group: 'display' },
   { key: 'AsyncSwap', title: '非阻塞交换', type: 'bool', reload: 'restart', group: 'display' },
-  { key: 'ThumbInterval', title: '推送间隔', type: 'number', min: 1, max: 60, step: 1, reload: 'instant', group: 'display' },
   { key: 'FabAutoCollapse', title: '悬浮菜单自动收起', type: 'bool', reload: 'instant', group: null },
   { key: 'NaturalScroll', title: '自然滚动', type: 'bool', reload: 'instant', group: 'interaction' },
   { key: 'ModifierMap', title: '修饰键映射', type: 'enum', enumValues: ['std', 'altcmd'], enumTitles: ['标准', 'Alt→Cmd'], reload: 'hot', group: 'interaction' },
@@ -108,7 +107,6 @@ export const CONFIG_DEFS = [
   { key: 'WatchdogThrottleInterval', title: '重启节流间隔', type: 'number', min: 1, max: 300, step: 1, reload: 'hot', group: 'about' },
   { key: 'WatchdogExitTimeout', title: '退出超时', type: 'number', min: 1, max: 60, step: 1, reload: 'hot', group: 'about' },
   { key: 'CaptureFps', title: '采集帧率', type: 'number', min: 1, max: 30, step: 1, reload: 'hot', group: 'display' },
-  { key: 'ThumbPushEnabled', title: '缩略图变化推送', type: 'bool', reload: 'instant', group: 'display' },
   { key: 'HeartbeatIntervalSec', title: '网关心跳间隔', type: 'number', min: 5, max: 300, step: 5, reload: 'gateway', group: 'keepalive' },
 ];
 export const CONFIG_BY_KEY = new Map(CONFIG_DEFS.map((s) => [s.key, s]));

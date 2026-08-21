@@ -21,3 +21,6 @@ TrollVNC-upstream/
 
 # TrollVNC 旧 git 对象库（已归档，不入库）
 TrollVNC/.git.bak/
+
+# 隔离 worktree 目录（本地开发用）
+.worktrees/

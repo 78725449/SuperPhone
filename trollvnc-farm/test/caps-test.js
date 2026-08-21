@@ -18,7 +18,7 @@ check('BATCH_CAPS 含重启、不含客户端/系统/网关批量项',
 
 // ---- CONFIG_DEFS：配置表单定义契约（2026-08-21 按能力板块 group 分组：连接/直连/画面/交互/保活/关于） ----
 const GROUPS = ['connection', 'direct', 'display', 'interaction', 'keepalive', 'about'];
-check('CONFIG_DEFS 含 30 项', CONFIG_DEFS.length === 30);
+check('CONFIG_DEFS 含 28 项', CONFIG_DEFS.length === 28);
 check('CONFIG_DEFS 不含端口项（端口固定不可调）', !CONFIG_DEFS.some((s) => /Port$/i.test(s.key)));
 check('CONFIG_DEFS 每项含 reload 与字段', CONFIG_DEFS.every((s) => s.key && s.title && s.type && s.reload));
 check('CONFIG_DEFS 每项含 group 板块字段（null=UI 隐藏）', CONFIG_DEFS.every((s) => s.group === null || GROUPS.includes(s.group)));
@@ -29,8 +29,7 @@ check('CONFIG_DEFS 移除 BonjourEnabled/ViewOnlyPassword（设计废弃 UI）',
 check('CONFIG_DEFS 显示名对齐 App 设置页',
   CONFIG_BY_KEY.get('FullPassword').title === '被控密码'
   && CONFIG_BY_KEY.get('BindHost').title === '直连地址'
-  && CONFIG_BY_KEY.get('KeepAliveSec').title === '防息屏间隔'
-  && CONFIG_BY_KEY.get('ThumbInterval').title === '推送间隔');
+  && CONFIG_BY_KEY.get('KeepAliveSec').title === '防息屏间隔');
 
 // ---- KEY_DEFS 保留（右侧按键直发；2026-08-14 移除 hwlock/releasekeys 两键 → 10 键） ----
 check('KEY_DEFS 10 键且含直发映射', KEY_DEFS.length === 10 && KEY_DEFS.every((k) => k.title && k.icon && k.events));

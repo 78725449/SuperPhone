@@ -348,6 +348,15 @@ main {
   pointer-events: none;
   box-shadow: 0 2px 8px rgba(0, 0, 0, .4);
 }
+/* 被控状态遮罩（2026-08-22）：设备被控制时叠加半透明覆盖层 + 居中提示，不可点击 */
+.tile .ctrl-mask {
+  position: absolute; inset: 0; z-index: 6;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(5, 8, 14, .5);
+  color: #ffd166;
+  font-size: 12px; font-weight: 600; letter-spacing: .5px;
+  pointer-events: none;
+}
 /* 聚焦中设备的墙卡片隐藏（2026-08-19 加 !important：列表视图 #wall.wall-list .tile 含 ID 选择器
    specificity 更高会覆盖 display:none，导致聚焦设备卡片残留在屏幕墙） */
 #wall .tile.focused-tile { display: none !important; }

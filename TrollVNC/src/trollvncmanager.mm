@@ -53,37 +53,6 @@ static TRWatchDog *gWatchDog = nil;
 static NSString *gLogStdoutPath = nil;
 static NSString *gLogStderrPath = nil;
 
-// 2026-08-21：缩略图变化推送——manager 常驻轮询 127.0.0.1:5802/thumb，
-// 画面 hash 变化时经隧道 FT_THUMB 帧推网关（无活跃 RFB 会话且开关开启时）。
-static BOOL gThumbPushEnabled = YES;     // 开关（读 defaults ThumbPushEnabled，默认开）
-static NSString *gLastPushedHash = nil;  // 上次已推送缩略图的 hash
-static dispatch_source_t gThumbTimerSource = nil;  // 轮询定时器（主队列）
-
-/**
- * 2026-08-21：缩略图轮询回调（主线程定时器触发，间隔 ThumbInterval 默认 3s）。
- * 无活跃 RFB 会话且开关开启时，GET 127.0.0.1:5802/thumb 拉取 server 缩略图缓存，
- * hash 与上次推送不同则经隧道推送，仅真正写入隧道才记录 hash（JPEG base64 由 server 端编码，此处解码）。
- */
-static void tvThumbPollTick(void) {
-    if ([TRTunnelClient isRfbActive] || !gThumbPushEnabled) return;   // 屏幕流互斥 + 开关
-    NSURL *u = [NSURL URLWithString:@"http://127.0.0.1:5802/thumb"];
-    NSData *data = [NSData dataWithContentsOfURL:u];   // 同步拉取（本地回环，轮询低频可接受）
-    if (!data.length) return;
-    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
-    if (![json isKindOfClass:[NSDictionary class]]) return;
-    NSString *hash = json[@"hash"];
-    NSString *b64 = json[@"image"];
-    if (![hash isKindOfClass:[NSString class]] || !hash.length) return;
-    if ([hash isEqualToString:gLastPushedHash]) return;   // 画面无变化不推
-    if (![b64 isKindOfClass:[NSString class]] || !b64.length) return;
-    NSData *jpeg = [[NSData alloc] initWithBase64EncodedString:b64 options:0];
-    if (!jpeg.length) return;
-    if ([[TRTunnelClient sharedClient] sendThumbnail:jpeg]) {
-        gLastPushedHash = hash;   // 仅真正推送成功才记录——隧道断时静默丢弃不记录，
-                                  // 恢复后下一 tick 拉到同 hash 仍会补推（防缩略图丢失）
-    }
-}
-
 static void mSignalAction(int signal, struct __siginfo *info, void *context) {
     if (signal == SIGCHLD) {
         int status = 0;
@@ -609,29 +578,6 @@ int main(int argc, const char *argv[]) {
         // 注入 watchdog 实例，供 service.* 能力（signal/state/info/isActive/isThrottled/validate）访问
         [TRGatewayClient sharedClient].watchdog = gWatchDog;
         [[TRGatewayClient sharedClient] start];
-
-        // 2026-08-21：缩略图变化推送——创建轮询定时器（主队列），间隔读 ThumbInterval 默认 3s，
-        // 钳制 1..60；开关读 ThumbPushEnabled 默认开。prefs-changed 通知处可热调（见下方）。
-        {
-            NSUserDefaults *td = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
-            NSNumber *tpN = tvManagerReadPref(td, @"ThumbPushEnabled");
-            gThumbPushEnabled = tpN ? tpN.boolValue : YES;
-            NSNumber *tiN = tvManagerReadPref(td, @"ThumbInterval");
-            double interval = tiN ? tiN.doubleValue : 3.0;
-            if (interval < 1) interval = 1;
-            if (interval > 60) interval = 60;
-            gThumbTimerSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-            if (gThumbTimerSource) {
-                dispatch_source_set_timer(gThumbTimerSource, dispatch_time(DISPATCH_TIME_NOW, 0),
-                                          (uint64_t)(interval * NSEC_PER_SEC), (uint64_t)(0.5 * NSEC_PER_SEC));
-                dispatch_source_set_event_handler(gThumbTimerSource, ^{
-                    tvThumbPollTick();
-                });
-                dispatch_resume(gThumbTimerSource);
-            }
-            TVLog(@"[thumb] poll timer created (interval=%.1fs enabled=%@)", interval,
-                  gThumbPushEnabled ? @"YES" : @"NO");
-        }
     }
 
     {
@@ -694,17 +640,6 @@ int main(int argc, const char *argv[]) {
                 if ([exitN isKindOfClass:[NSNumber class]]) [gWatchDog setExitTimeOut:exitN.doubleValue];
                 NSNumber *thrN = tvManagerReadPref(wd, @"WatchdogThrottleInterval");
                 if ([thrN isKindOfClass:[NSNumber class]]) [gWatchDog setThrottleInterval:thrN.doubleValue];
-                // 缩略图开关/间隔热调（同双域读取；间隔钳制 1..60）
-                NSNumber *tpN = tvManagerReadPref(wd, @"ThumbPushEnabled");
-                gThumbPushEnabled = tpN ? tpN.boolValue : YES;
-                NSNumber *tiN = tvManagerReadPref(wd, @"ThumbInterval");
-                double interval = tiN ? tiN.doubleValue : 3.0;
-                if (interval < 1) interval = 1;
-                if (interval > 60) interval = 60;
-                if (gThumbTimerSource) {
-                    dispatch_source_set_timer(gThumbTimerSource, dispatch_time(DISPATCH_TIME_NOW, 0),
-                                              (uint64_t)(interval * NSEC_PER_SEC), (uint64_t)(0.5 * NSEC_PER_SEC));
-                }
             });
     }
     {

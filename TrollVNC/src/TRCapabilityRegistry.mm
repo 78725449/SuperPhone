@@ -977,8 +977,6 @@ static NSDictionary *TRSearchGatewaySync(void) {
     [self _registerConfig:@"FullscreenThresholdPercent" title:@"脏区阈值" type:@"number" min:@0 max:@100 step:@1 reload:TRConfigReloadHot];
     [self _registerConfig:@"MaxRects" title:@"最大矩形数" type:@"number" min:@1 max:@4096 step:@1 reload:TRConfigReloadRestart];
     [self _registerConfig:@"AsyncSwap" title:@"非阻塞交换" type:@"bool" reload:TRConfigReloadRestart];
-    // Phase 10.6：卡片墙帧获取间隔（web/IPA 原硬编码 5s/10s，现可配置，instant 级别即时生效）
-    [self _registerConfig:@"ThumbInterval" title:@"卡片墙帧获取间隔(秒)" type:@"number" min:@1 max:@60 step:@1 reload:TRConfigReloadInstant];
     // 2026-08-17：控制台 FAB 悬浮菜单自动收起（App 设置页 → 网关 configs 同步，前端即时读取）
     [self _registerConfig:@"FabAutoCollapse" title:@"悬浮菜单自动收起" type:@"bool" reload:TRConfigReloadInstant];
     // 输入
@@ -1008,7 +1006,6 @@ static NSDictionary *TRSearchGatewaySync(void) {
     [self _registerConfig:@"WatchdogThrottleInterval" title:@"重启节流间隔" type:@"number" min:@1 max:@300 step:@1 reload:TRConfigReloadHot];
     [self _registerConfig:@"WatchdogExitTimeout" title:@"退出超时" type:@"number" min:@1 max:@60 step:@1 reload:TRConfigReloadHot];
     [self _registerConfig:@"CaptureFps" title:@"采集帧率" type:@"number" min:@1 max:@30 step:@1 reload:TRConfigReloadHot];
-    [self _registerConfig:@"ThumbPushEnabled" title:@"缩略图变化推送" type:@"bool" reload:TRConfigReloadInstant];
     [self _registerConfig:@"HeartbeatIntervalSec" title:@"网关心跳间隔" type:@"number" min:@5 max:@300 step:@5 reload:TRConfigReloadGateway];
 }
 
@@ -1223,7 +1220,6 @@ static NSDictionary *TRSearchGatewaySync(void) {
             @"NaturalScroll": @YES,
             @"ViewOnly": @NO, @"AsyncSwap": @NO, @"AutoAssistEnabled": @NO,
             @"SingleNotifEnabled": @YES, @"ClientNotifsEnabled": @YES, @"KeyLogging": @NO,
-            @"ThumbPushEnabled": @YES,
         };
         return defs[key] ?: @NO;
     }
@@ -1233,7 +1229,6 @@ static NSDictionary *TRSearchGatewaySync(void) {
             @"DeferWindowSec": @0.015, @"MaxInflight": @2, @"TileSize": @32,
             @"FullscreenThresholdPercent": @50, @"MaxRects": @512,
             @"WheelStepPx": @48.0, @"KeepAliveSec": @30,
-            @"ThumbInterval": @3,
             @"FabAutoCollapse": @YES,
             // 2026-08-20：watchdog 节流/退出超时安全默认（不可回退 0，否则服务重启风暴）
             // 2026-08-21：节流默认 5→60（崩溃循环时 5s 重启放大故障）

@@ -11,6 +11,140 @@ import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import Bonjour from 'bonjour-service';
+import jpeg from 'jpeg-js';
+
+// 缩略图 RFB 客户端：解码设备 5901 的 Raw 编码 framebuffer，产出 JPEG。
+// 只声明 Raw 编码（SetEncodings 仅 Raw=0），避免 Tight/ZRLE 复杂解码。
+class ThumbRfbDecoder {
+  constructor() {
+    this.w = 0; this.h = 0;
+    this.fb = null;            // RGBA Buffer（ServerInit 后分配）
+    this.state = 'version';    // version -> security -> secresult -> init -> update
+    this.pending = Buffer.alloc(0);
+    this.jpeg = null;          // 最新 JPEG Buffer
+    this.maxPending = 1024 * 1024;  // 握手阶段 pending 上限；init 后按全屏帧调整
+    this.lastNotifyTs = 0;          // onJpeg 节流时间戳
+    this.onSend = null;        // (Buffer) => void，上行握手字节回调
+    this.onJpeg = null;        // jpeg 更新回调
+  }
+  feed(data) {
+    if (this.state === 'dead') { this.pending = Buffer.alloc(0); return; }
+    this.pending = Buffer.concat([this.pending, data]);
+    if (this.pending.length > this.maxPending) { this.pending = Buffer.alloc(0); this.state = 'dead'; return; }
+    let again = true;
+    while (again) again = this._step();
+  }
+  _step() {
+    switch (this.state) {
+      case 'version': {
+        const n = this.pending.indexOf(0x0a);
+        if (n < 0) {
+          // 未到换行：若首字节不是 'R'(0x52)，是旧会话污染数据，清空重等
+          if (this.pending.length > 0 && this.pending[0] !== 0x52) this.pending = Buffer.alloc(0);
+          return false;
+        }
+        const ver = this.pending.subarray(0, n + 1).toString('latin1');
+        this.pending = this.pending.subarray(n + 1);
+        if (!ver.startsWith('RFB ')) return true; // 丢弃非版本行，继续等
+        this._send(Buffer.from('RFB 003.008\n', 'latin1'));
+        this.state = 'security';
+        return true;
+      }
+      case 'security': {
+        if (this.pending.length < 1) return false;
+        const n = this.pending[0];
+        if (this.pending.length < 1 + n) return false;
+        const types = this.pending.subarray(1, 1 + n);
+        this.pending = this.pending.subarray(1 + n);
+        if (types.includes(1)) { this._send(Buffer.from([1])); this.state = 'secresult'; }
+        else { this.state = 'dead'; }
+        return true;
+      }
+      case 'secresult': {
+        if (this.pending.length < 4) return false;
+        this.pending = this.pending.subarray(4);
+        this._send(Buffer.from([1])); // ClientInit: shared-flag=1
+        this.state = 'init';
+        return true;
+      }
+      case 'init': {
+        // ServerInit: width(2) height(2) pixfmt(16) nameLen(4) name(nameLen)
+        if (this.pending.length < 24) return false;
+        this.w = this.pending.readUInt16BE(0);
+        this.h = this.pending.readUInt16BE(2);
+        const nameLen = this.pending.readUInt32BE(20);
+        if (this.pending.length < 24 + nameLen) return false;
+        this.pending = this.pending.subarray(24 + nameLen);
+        this.fb = Buffer.alloc(this.w * this.h * 4);
+        this.maxPending = this.w * this.h * 4 + 1024 * 1024; // 一帧全屏 Raw + 余量
+        // SetPixelFormat: type(0) + padding(3) + pixelFormat(16) = 20 字节；声明 BGRA（与设备端 serverFormat 一致）
+        const pixfmt = Buffer.alloc(16);
+        pixfmt.writeUInt8(32, 0);   // bits-per-pixel
+        pixfmt.writeUInt8(24, 1);   // depth
+        pixfmt.writeUInt8(0, 2);    // big-endian-flag
+        pixfmt.writeUInt8(1, 3);    // true-color-flag
+        pixfmt.writeUInt16BE(255, 4);  // red-max
+        pixfmt.writeUInt16BE(255, 6);  // green-max
+        pixfmt.writeUInt16BE(255, 8);  // blue-max
+        pixfmt.writeUInt8(16, 10);  // red-shift = 16（BGRA）
+        pixfmt.writeUInt8(8, 11);   // green-shift = 8
+        pixfmt.writeUInt8(0, 12);   // blue-shift = 0
+        this._send(Buffer.concat([Buffer.from([0, 0, 0, 0]), pixfmt]));
+        // SetEncodings: type(2) + padding(1) + count(2) + encoding(4) = 8 字节，仅声明 Raw(0)
+        this._send(Buffer.from([2, 0, 0, 1, 0, 0, 0, 0]));
+        this.state = 'update';
+        this._requestUpdate(true);
+        return true;
+      }
+      case 'update': {
+        if (this.pending.length < 4) return false;
+        const numRects = this.pending.readUInt16BE(2);
+        let off = 4;
+        for (let i = 0; i < numRects; i++) {
+          if (this.pending.length < off + 12) return false;
+          const x = this.pending.readUInt16BE(off);
+          const y = this.pending.readUInt16BE(off + 2);
+          const rw = this.pending.readUInt16BE(off + 4);
+          const rh = this.pending.readUInt16BE(off + 6);
+          const enc = this.pending.readInt32BE(off + 8);
+          off += 12;
+          if (enc !== 0) { this.state = 'dead'; return false; } // 仅 Raw
+          const rowBytes = rw * 4;
+          if (this.pending.length < off + rowBytes * rh) return false;
+          const px = this.pending.subarray(off, off + rowBytes * rh);
+          off += rowBytes * rh;
+          for (let r = 0; r < rh; r++) {
+            const src = px.subarray(r * rowBytes, (r + 1) * rowBytes);
+            const dstOff = ((y + r) * this.w + x) * 4;
+            for (let c = 0; c < rw; c++) {
+              this.fb[dstOff + c * 4] = src[c * 4 + 2];       // R
+              this.fb[dstOff + c * 4 + 1] = src[c * 4 + 1];   // G
+              this.fb[dstOff + c * 4 + 2] = src[c * 4];       // B
+              this.fb[dstOff + c * 4 + 3] = 255;              // A
+            }
+          }
+        }
+        this.pending = this.pending.subarray(off);
+        if (this.fb && this.w > 0 && this.h > 0) {
+          try { this.jpeg = jpeg.encode({ data: this.fb, width: this.w, height: this.h }, 70).data; } catch { /* ignore */ }
+          const now = Date.now();
+          if (this.onJpeg && now - this.lastNotifyTs >= 500) { this.lastNotifyTs = now; this.onJpeg(); }
+        }
+        this._requestUpdate(true); // 增量请求：静止不触发 update
+        return true;
+      }
+      default: return false;
+    }
+  }
+  _send(b) { if (this.onSend) this.onSend(Buffer.isBuffer(b) ? b : Buffer.from(b)); }
+  _requestUpdate(incremental) {
+    const m = Buffer.alloc(10);
+    m.writeUInt8(3, 0); m.writeUInt8(incremental ? 1 : 0, 1);
+    m.writeUInt16BE(0, 2); m.writeUInt16BE(0, 4);
+    m.writeUInt16BE(this.w, 6); m.writeUInt16BE(this.h, 8);
+    this._send(m);
+  }
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -243,7 +377,7 @@ const FT_PING    = 0x02;  // 心跳请求
 const FT_PONG    = 0x03;  // 心跳响应
 const FT_CMD     = 0x04;  // 命令 JSON（网关→设备）
 const FT_CMDACK  = 0x05;  // 命令 ack JSON（设备→网关）
-const FT_THUMB   = 0x06;  // 缩略图推送（设备→网关，JPEG payload）
+const FT_STATE   = 0x07;  // 被控状态上报（设备→网关，JSON {controlled:bool}）
 
 // 向已注册设备下发 JSON 命令（写注册 socket；v1 仅 ping 验证，set 类留 B4）
 function sendToDevice(deviceId, obj) {
@@ -450,6 +584,8 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
         tun.rebuild = null;
       }
     }, 3000);
+    tun.mode = 'stream'; // 屏幕流态：FT_DATA 转发 noVNC（退出缩略图态）
+    tun.thumbRfb = null;
     try { writeTunnelFrame(tun.sock, FT_CMD, mkCmd('rfb.start', rid)); } catch { /* noop */ }
   }
 
@@ -499,6 +635,8 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
           tun.stopTimer = null;
           if (!tun.sock || tun.sock.destroyed || !tun.sock.writable) return;
           const rfbStop = Buffer.from(JSON.stringify({ type: 'cmd', cmd: 'rfb.stop', id: 'e' + Date.now().toString(36) }), 'utf8');
+          tun.mode = 'thumb';       // 回缩略图态
+          tun.thumbRfb = null;      // 丢弃旧解码器，下次缩略图态重建
           try { writeTunnelFrame(tun.sock, FT_CMD, rfbStop); } catch { /* noop */ }
         }, 800);
       }
@@ -690,7 +828,12 @@ async function handleApi(req, res, url) {
   if (resource === 'devices') {
     if (req.method === 'GET' && !id) {
       // 2026-08-15：按排序号（order）返回，前端卡片墙据此排列
-      sendJson(res, 200, { devices: sortDevices() });
+      // 2026-08-22：附带被控状态（隧道 FT_STATE 上报缓存在 tunnels，设备列表合并输出供前端遮罩）
+      const list = sortDevices().map((d) => {
+        const trec = tunnels.get(d.id);
+        return { ...d, controlled: !!(trec && trec.controlled) };
+      });
+      sendJson(res, 200, { devices: list });
       return true;
     }
     if (req.method === 'POST' && !id) {
@@ -753,10 +896,11 @@ async function handleApi(req, res, url) {
       const dev = findDevice(id);
       if (!dev) { sendJson(res, 404, { error: 'device not found' }); return true; }
       if (req.method === 'GET' && sub === 'thumb') {
-        // 缩略图缓存读取：设备经隧道推送的最新 JPEG（base64）；无缓存返回 204
+        // 缩略图缓存读取：缩略图 RFB 解码器产出的 JPEG（base64）；无缓存返回 204
         const trec = tunnels.get(id);
-        if (!trec || !trec.thumb) { res.writeHead(204); res.end(); return true; }
-        sendJson(res, 200, { thumb: trec.thumb.toString('base64'), ts: trec.thumbTs });
+        const jpeg = trec && trec.thumbRfb && trec.thumbRfb.jpeg;
+        if (!jpeg) { res.writeHead(204); res.end(); return true; }
+        sendJson(res, 200, { thumb: jpeg.toString('base64'), ts: Date.now() });
         return true;
       }
       if (req.method === 'GET') {
@@ -1428,42 +1572,30 @@ const tunnelServer = net.createServer((sock) => {
    */
   const handleFrame = (type, payload) => {
     if (type === FT_DATA) {
-      // DIAG: count FT_DATA frames from device
-      const diag = tunnels.get(deviceId) || {};
-      diag._dataCount = (diag._dataCount || 0) + 1;
-      if (diag._dataCount === 1 || diag._dataCount % 50 === 0) {
-        console.log(`[tunnel] FT_DATA from ${deviceId} count=${diag._dataCount} ws=${(tunnels.get(deviceId)||{wsSet:new Set()}).wsSet.size}`);
-      }
-      // RFB data: broadcast to subscribed WS; buffer when no subscriber yet
-      // (RFB handshake head), replay on first subscribe so noVNC sees the
-      // server version instead of hanging black
       const rec = tunnels.get(deviceId);
-      if (rec) {
-        // 设备 5901 重建窗口期：丢弃旧连接残留的下行数据（防污染新会话握手）
-        if (rec.pendingUpUntil && Date.now() < rec.pendingUpUntil) return;
+      if (!rec) return;
+      if (rec.pendingUpUntil && Date.now() < rec.pendingUpUntil) return;
+      if (rec.mode === 'thumb') {
+        // 缩略图态：喂给缩略图 RFB 解码器（网关自己解码 framebuffer）
+        if (!rec.thumbRfb) {
+          rec.thumbRfb = new ThumbRfbDecoder();
+          rec.thumbRfb.onSend = (bytes) => { try { writeTunnelFrame(sock, FT_DATA, bytes); } catch { /* noop */ } };
+          rec.thumbRfb.onJpeg = () => { notifyDevicesChanged('thumb', deviceId); };
+        }
+        rec.thumbRfb.feed(payload);
+      } else {
+        // 屏幕流态：转发给 noVNC 订阅者
         if (rec.wsSet.size > 0) {
           rec.pending = Buffer.alloc(0);
           for (const ws of rec.wsSet) {
-            if (ws.readyState === ws.OPEN) {
-              try { ws.send(payload); } catch { /* ignore */ }
-            }
+            if (ws.readyState === ws.OPEN) { try { ws.send(payload); } catch { /* ignore */ } }
           }
         } else {
           rec.pending = Buffer.concat([rec.pending, payload]);
-          if (rec.pending.length > 64 * 1024) {
-            rec.pending = rec.pending.subarray(rec.pending.length - 64 * 1024);
-          }
+          if (rec.pending.length > 64 * 1024) rec.pending = rec.pending.subarray(rec.pending.length - 64 * 1024);
         }
       }
-        } else if (type === FT_THUMB) {
-      // 缩略图推送（设备→网关）：缓存最新 JPEG + 广播事件通知前端
-      const trec = tunnels.get(deviceId);
-      if (trec) {
-        trec.thumb = payload;        // 最新缩略 JPEG（Buffer）
-        trec.thumbTs = Date.now();
-      }
-      notifyDevicesChanged('thumb', deviceId);
-        } else if (type === FT_CMDACK) {
+    } else if (type === FT_CMDACK) {
       // cmd ack: match pending cmds
       let ack;
       try { ack = JSON.parse(payload.toString('utf8')); } catch { return; }
@@ -1513,6 +1645,15 @@ const tunnelServer = net.createServer((sock) => {
       writeTunnelFrame(sock, FT_PONG, Buffer.alloc(0));
     } else if (type === FT_PONG) {
       // 心跳响应：链路存活即可
+    } else if (type === FT_STATE) {
+      // 被控状态上报（设备→网关）：更新设备状态缓存 + 广播事件
+      let st;
+      try { st = JSON.parse(payload.toString('utf8')); } catch { return; }
+      if (st && typeof st.controlled === 'boolean') {
+        const trec = tunnels.get(deviceId);
+        if (trec) trec.controlled = st.controlled;
+        notifyDevicesChanged('state', deviceId);
+      }
     }
   };
 
@@ -1564,7 +1705,7 @@ const tunnelServer = net.createServer((sock) => {
       if (old && old.sock !== sock) {
         try { old.sock.destroy(); } catch { /* noop */ }
       }
-      tunnels.set(deviceId, { sock, wsSet: new Set(), controller: null, pending: Buffer.alloc(0), thumb: null, thumbTs: 0 });
+      tunnels.set(deviceId, { sock, wsSet: new Set(), controller: null, pending: Buffer.alloc(0), thumbRfb: null, mode: 'thumb', controlled: false });
       sock.write(JSON.stringify({ type: 'tunnel_ack', ok: true }) + '\n');
       framed = true;
       dev.online = true;

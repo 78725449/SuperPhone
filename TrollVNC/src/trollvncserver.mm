@@ -152,20 +152,6 @@ static BOOL gUserSingleNotifsEnabled = YES;
 // Blocked hosts (temporary blacklist)
 static NSMutableSet<NSString *> *gBlockedHosts = nil;
 
-// 2026-08-21：缩略图变化推送——server 侧维护最新缩略图缓存（hash+JPEG），
-// manager 定时 GET 127.0.0.1:5802/thumb 拉取，经隧道 FT_THUMB 帧推网关。
-static BOOL gThumbPushEnabled = YES;      // ThumbPushEnabled 配置（默认开）
-static NSString *gThumbHash = nil;        // 缓存 hash（16 hex）
-static NSData *gThumbJpeg = nil;          // 缓存缩略 JPEG
-static CFAbsoluteTime gThumbTs = 0;
-static CFAbsoluteTime gLastThumbEncodeTs = 0;  // 缩略图编码节流时间戳（变化时 ≥1s 才重编码）
-static pthread_mutex_t gThumbLock = PTHREAD_MUTEX_INITIALIZER;  // 缓存读写锁
-
-// 2026-08-21：锁屏状态感知（设计 3.5「锁屏停留最后一帧」）——锁定时暂停缩略图缓存更新，
-// 锁屏/熄屏过渡黑帧不覆盖缓存；解锁后新帧变化自然恢复更新。
-static BOOL gScreenLocked = NO;          // 锁屏状态（com.apple.springboard.lockstate 驱动，1=锁 0=解）
-static int gLockStateToken = 0;          // lockstate 通知 token（文件顶部声明供下方函数引用）
-
 typedef NS_ENUM(uint8_t, TVBindHostKind) {
     kTVBindHostKindNone = 0,
     kTVBindHostKindIPv4,
@@ -654,11 +640,6 @@ static void parseDaemonOptions(void) {
     if (lowFps > 30) lowFps = 30;
     gCaptureLowFps = lowFps;
     TVLog(@"-daemon: CaptureFps set to %.1f fps (idle capture)", gCaptureLowFps);
-
-    // 2026-08-21：缩略图变化推送开关（ThumbPushEnabled，默认开）
-    NSNumber *thumbN = [prefs objectForKey:@"ThumbPushEnabled"];
-    gThumbPushEnabled = thumbN ? thumbN.boolValue : YES;
-    TVLog(@"-daemon: ThumbPushEnabled set to %@", gThumbPushEnabled ? @"YES" : @"NO");
 
     NSNumber *scaleN = [prefs objectForKey:@"Scale"];
     if ([scaleN isKindOfClass:[NSNumber class]]) {
@@ -2051,9 +2032,6 @@ NS_INLINE void unlockAllClientsBlocking(void) {
     rfbReleaseClientIterator(it);
 }
 
-// 2026-08-21：缩略图缓存更新（定义见 gClientCount 之后，采集回调先声明后调用；pb 为采集帧）
-static void tvUpdateThumbCache(CVPixelBufferRef pb);
-
 static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 
 #if DEBUG
@@ -2285,10 +2263,6 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 #endif
 
     CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
-
-    // 2026-08-21：采集写入完成（gFramebufferLock 已释放）→ 从采集帧（pb）更新缩略图缓存
-    //（hash 用 computeHashHexForPixelBuffer、编码用 CIImage，均自行 lock，须在 pb unlock 后调用）
-    tvUpdateThumbCache(pb);
 
 #if DEBUG
     CFAbsoluteTime __tv_tUnlock1 = CFAbsoluteTimeGetCurrent();
@@ -3418,9 +3392,6 @@ static void tvApplyPrefsChanged(void) {
         if ([assistN isKindOfClass:[NSNumber class]]) gAutoAssistEnabled = assistN.boolValue;
         NSNumber *keyLogN = [p objectForKey:@"KeyLogging"];
         if ([keyLogN isKindOfClass:[NSNumber class]]) gKeyEventLogging = keyLogN.boolValue;
-        // 2026-08-21：缩略图推送开关（instant）/采集帧率（hot）热生效
-        NSNumber *thumbOnN = [p objectForKey:@"ThumbPushEnabled"];
-        if ([thumbOnN isKindOfClass:[NSNumber class]]) gThumbPushEnabled = thumbOnN.boolValue;
         NSNumber *capFpsN2 = [p objectForKey:@"CaptureFps"];
         if ([capFpsN2 isKindOfClass:[NSNumber class]]) {
             double v = capFpsN2.doubleValue;
@@ -3446,22 +3417,6 @@ static void tvInstallPrefsChangedListener(void) {
     TVLog(@"-daemon: prefs-changed listener installed");
 }
 
-/** 2026-08-21：锁屏状态监听（设计 3.5「锁屏停留最后一帧」）——锁定时暂停缩略图缓存更新
- *  （停留最后一帧，锁屏过渡黑帧不覆盖缓存）；解锁恢复（CADisplayLink 恢复 → 新帧变化自然更新）。 */
-static void tvLockStateChanged(void) {
-    uint64_t state = 0;
-    notify_get_state(gLockStateToken, &state);
-    gScreenLocked = (state == 1);
-    TVLog(@"-daemon: lock state -> %@", gScreenLocked ? @"LOCKED" : @"UNLOCKED");
-}
-
-static void tvInstallLockStateListener(void) {
-    notify_register_dispatch("com.apple.springboard.lockstate", &gLockStateToken,
-        dispatch_get_main_queue(), ^(int token) { (void)token; tvLockStateChanged(); });
-    // 启动时读取当前锁屏状态（覆盖「已锁屏时启动」场景）
-    tvLockStateChanged();
-}
-
 /** 2026-08-22 最小验证：采集惰性启动（隧道握手成功后 notify 触发）。
  *  替代「服务启动即常驻采集」——验证 SIGILL 是否因启动太早/无客户端触发。 */
 static void tvStartCaptureIfNeeded(void) {
@@ -3482,6 +3437,26 @@ static void tvInstallTunnelConnectedListener(void) {
         tvStartCaptureIfNeeded();
     });
     TVLog(@"-daemon: tunnel-connected listener installed");
+}
+
+/** 采集帧率档位（缩略图态 CaptureFps / 屏幕流态 FrameRateSpec）——由 TRTunnelClient 经 notify 驱动 */
+static void tvApplyCaptureFramerate(BOOL active) {
+    if (!gIsCaptureStarted || !gFrameHandler) return;
+    if (active) {
+        [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gFpsMin preferred:gFpsPref max:gFpsMax];
+    } else {
+        [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps max:gCaptureLowFps];
+    }
+    TVLog(@"capture framerate -> %@", active ? @"active(FrameRateSpec)" : @"idle(CaptureFps)");
+}
+
+static void tvInstallCaptureFramerateListeners(void) {
+    static int idleTok = 0, activeTok = 0;
+    notify_register_dispatch("com.82flex.trollvnc.capture-idle", &idleTok,
+        dispatch_get_main_queue(), ^(int t) { (void)t; tvApplyCaptureFramerate(NO); });
+    notify_register_dispatch("com.82flex.trollvnc.capture-active", &activeTok,
+        dispatch_get_main_queue(), ^(int t) { (void)t; tvApplyCaptureFramerate(YES); });
+    TVLog(@"-daemon: capture-framerate listeners installed");
 }
 
 static void stopBonjour(void) {
@@ -3546,58 +3521,6 @@ static void startBonjour(void) {
         gBonjourHttpService.delegate = gBonjourDelegate;
         [gBonjourHttpService publish];
     }
-}
-
-// 2026-08-21：更新缩略图缓存（采集回调 handleFramebuffer 末尾调用，主线程）。
-// 无活跃 VNC 客户端（屏幕流互斥）且 ThumbPushEnabled 开启时，对当前帧计算 pHash，
-// 与缓存 hash 不同且距上次编码 ≥1s 才从【采集帧直接编码】缩略图（宽 320 JPEG）存入缓存，
-// 供 5802 /thumb 拉取（hash 检测每帧做，编码节流防高频画面反复重编码）。
-// 2026-08-21 修复：不再调用 captureSingleFrameImage 二次渲染——daemon（无前台 UI/熄屏）下
-// 在采集回调内二次 CARenderServerRenderDisplay 会崩溃（server 首帧后即退出，崩溃循环根因）。
-static void tvUpdateThumbCache(CVPixelBufferRef pb) {
-    if (gClientCount > 0 || !gThumbPushEnabled || gScreenLocked) return;   // 屏幕流互斥 + 开关 + 锁屏停留最后一帧
-    if (!pb) return;
-    fprintf(stderr, "THUMB:1 enter pb=%p\n", pb);
-    // 2026-08-21 修复：hash 从采集帧（pb）直接计算——computeHashHexForCurrentFrame 会二次取帧
-    //（captureSingleFrameBuffer → renderDisplayToScreenSurface → 重入 CARenderServerRenderDisplay）
-    // 在 CADisplayLink 回调内崩溃（SIGILL）。改用 computeHashHexForPixelBuffer 跳过取帧。
-    NSString *h = [[TRScreenHasher sharedHasher] computeHashHexForPixelBuffer:pb];
-    fprintf(stderr, "THUMB:2 after-hash h=%s\n", h ? [h UTF8String] : "nil");
-    if (!h) return;
-    pthread_mutex_lock(&gThumbLock);
-    BOOL changed = !gThumbHash || ![h isEqualToString:gThumbHash];
-    pthread_mutex_unlock(&gThumbLock);
-    if (!changed) return;   // 画面无变化不更新
-    // 编码节流：画面高频变化时不每帧重编码（hash 检测每帧做，编码 ≥1s 一次）
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-    if (now - gLastThumbEncodeTs < 1.0) return;
-    // 从采集帧（pb，已由 handleFramebuffer lock）直接编码——零二次渲染
-    CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pb];
-    if (!ciImage) return;
-    static CIContext *thumbCiContext;
-    static dispatch_once_t thumbCtxOnce;
-    dispatch_once(&thumbCtxOnce, ^{ thumbCiContext = [CIContext context]; });
-    CGRect extent = CGRectMake(0, 0, CVPixelBufferGetWidth(pb), CVPixelBufferGetHeight(pb));
-    CGImageRef cgImage = [thumbCiContext createCGImage:ciImage fromRect:extent];
-    if (!cgImage) return;
-    UIImage *img = [UIImage imageWithCGImage:cgImage];
-    CGImageRelease(cgImage);
-    // 缩尺寸：按宽 320 等比缩放
-    CGFloat scale = 320.0 / img.size.width;
-    if (scale >= 1.0) scale = 1.0;
-    CGSize newSize = CGSizeMake((NSInteger)(img.size.width * scale), (NSInteger)(img.size.height * scale));
-    UIGraphicsBeginImageContextWithOptions(newSize, NO, 1.0);
-    [img drawInRect:CGRectMake(0, 0, newSize.width, newSize.height)];
-    UIImage *thumb = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    NSData *jpeg = thumb ? UIImageJPEGRepresentation(thumb, 0.7) : nil;
-    if (!jpeg) return;
-    pthread_mutex_lock(&gThumbLock);
-    gThumbJpeg = jpeg;
-    gThumbHash = h;
-    gThumbTs = CFAbsoluteTimeGetCurrent();
-    gLastThumbEncodeTs = now;   // 成功写缓存后记录编码时刻（供下一帧节流判断）
-    pthread_mutex_unlock(&gThumbLock);
 }
 
 #if !TARGET_OS_SIMULATOR
@@ -4027,31 +3950,6 @@ static void tvHttpApiHandleClient(int fd) {
             if (ssl) SSL_free(ssl);
             close(fd);
             return;
-        }
-        if ([requestLine hasPrefix:@"GET"]) {
-            // 2026-08-21：缩略图轮询端点（manager 定时 GET 拉取）——返回缓存缩略图 JSON。
-            // 锁内仅拷贝引用（ARC strong 局部变量），编码/发送在锁外，避免持锁做 base64。
-            char path[512];
-            tvHttpParsePath(first, path, sizeof(path));
-            if (strcmp(path, "/thumb") == 0) {
-                pthread_mutex_lock(&gThumbLock);
-                NSString *hash = gThumbHash;
-                NSData *jpeg = gThumbJpeg;
-                CFAbsoluteTime ts = gThumbTs;
-                pthread_mutex_unlock(&gThumbLock);
-                if (!hash || !jpeg) {
-                    // 尚无缓存（server 刚启动/画面未变过）：204 空响应
-                    tvHttpSendSimple(fd, ssl, "204 No Content", "application/json", "", 0);
-                } else {
-                    NSString *b64 = [jpeg base64EncodedStringWithOptions:0];
-                    NSDictionary *resp = @{ @"hash": hash, @"ts": @(ts), @"image": b64 };
-                    NSData *json = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
-                    tvHttpSendSimple(fd, ssl, "200 OK", "application/json; charset=utf-8", (const char *)json.bytes, (size_t)json.length);
-                }
-                if (ssl) SSL_free(ssl);
-                close(fd);
-                return;
-            }
         }
     }
     if (ssl) SSL_free(ssl);
@@ -4855,6 +4753,13 @@ static void clientGoneHook(rfbClientPtr cl) {
     NSString *host = (cl && cl->host) ? [NSString stringWithUTF8String:cl->host] : @"";
     TVLog(@"Client %@ disconnected, active clients=%d", host, gClientCount);
 
+    // 5801 直连控制结束（非 loopback 归零）：通知 TRTunnelClient 上报被控状态
+    if (![host isEqualToString:@"127.0.0.1"] && ![host isEqualToString:@"::1"] &&
+        ![host isEqualToString:@"localhost"] && ![host hasPrefix:@"127."] &&
+        ![host hasPrefix:@"::ffff:127."]) {
+        notify_post("com.82flex.trollvnc.control-idle");
+    }
+
     // 采集已常驻：客户端归零时只降回低频，不停采（2026-08-21 架构升级）
     if (gIsCaptureStarted && gClientCount == 0) {
         [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps
@@ -4972,15 +4877,25 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
         tvPublishClientConnectedNotif(host, NO);
     }
 
+    // 5801 直连控制开始（非 loopback）：通知 TRTunnelClient 上报被控状态
+    if (!isLoopback) {
+        notify_post("com.82flex.trollvnc.control-active");
+    }
+
     // 2026-08-22 惰性启动：首个 5901 客户端（含 5801 直连、rfb.start）触发采集启动 + 升频，
     // 替代「服务启动即常驻采集」。已启动则只升频（隧道握手成功可能已低频启动 @CaptureFps）。
     if (gClientCount > 0 && gFrameHandler) {
         if (!gIsCaptureStarted) {
             gIsCaptureStarted = YES;
-            [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gFpsMin preferred:gFpsPref max:gFpsMax];
+            // 惰性启动：非 loopback（5801 直连控制）升频 FrameRateSpec；loopback（隧道缩略图）保持 CaptureFps
+            if (!isLoopback) {
+                [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gFpsMin preferred:gFpsPref max:gFpsMax];
+            } else {
+                [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps max:gCaptureLowFps];
+            }
             [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:gFrameHandler];
-            TVLog(@"Screen capture started (lazy, first RFB client) + raised to min=%d pref=%d max=%d fps.", gFpsMin, gFpsPref, gFpsMax);
-        } else {
+            TVLog(@"Screen capture started (lazy, first RFB client)");
+        } else if (!isLoopback) {
             [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gFpsMin preferred:gFpsPref max:gFpsMax];
             TVLog(@"Client connected; capture raised to min=%d pref=%d max=%d fps.", gFpsMin, gFpsPref, gFpsMax);
         }
@@ -5713,6 +5628,7 @@ int main(int argc, const char *argv[]) {
         //（tunnel-connected 通知 → tvStartCaptureIfNeeded），验证 SIGILL 是否因启动太早/无客户端触发。
         // gFrameHandler 已在 prepareScreenCapturer 就绪；此处仅安装监听，采集在隧道握手成功后启动。
         tvInstallTunnelConnectedListener();
+        tvInstallCaptureFramerateListeners();
 
         // 2026-08-17 架构级：管理操作走独立 HTTP 端口（5802），与 RFB 画面流隔离
         startHttpApiServer();
@@ -5727,8 +5643,6 @@ int main(int argc, const char *argv[]) {
 
         // 2026-08-20：设置页热重载通道（App notify_post → 本进程热重载 hot/instant 配置）
         tvInstallPrefsChangedListener();
-        // 2026-08-21：锁屏状态监听（设计 3.5「锁屏停留最后一帧」）
-    tvInstallLockStateListener();
 
     // 2026-08-21 诊断：runloop 生命周期日志——区分「正常退出（runloop 返回）」与
     // 「启动后崩溃/被杀」（无 "runloop exited" 行即为中途异常终止）

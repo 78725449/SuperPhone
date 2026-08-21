@@ -276,29 +276,6 @@ static const int kHashBits = 64;                      // 哈希位数
     return [self hexStringFromHash:hash];
 }
 
-/**
- * 从给定像素缓冲（采集帧）直接计算 pHash（串行队列内）。
- * 功能：复用 _computeHashFromLockedPixelBuffer（跳过取帧），内部自行 lock/unlock，不 release。
- */
-- (uint64_t)computeHashForPixelBuffer:(CVPixelBufferRef)pixelBuffer {
-    if (!pixelBuffer) return 0;
-    __block uint64_t hash = 0;
-    dispatch_sync(_queue, ^{
-        CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-        hash = [self _computeHashFromLockedPixelBuffer:pixelBuffer];
-        CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-    });
-    return hash;
-}
-
-/**
- * 从给定像素缓冲（采集帧）直接计算 pHash 并返回 hex 字符串（跳过取帧，避免二次渲染）。
- */
-- (NSString *)computeHashHexForPixelBuffer:(CVPixelBufferRef)pixelBuffer {
-    uint64_t hash = [self computeHashForPixelBuffer:pixelBuffer];
-    return [self hexStringFromHash:hash];
-}
-
 #pragma mark - 汉明距离与格式转换
 
 /**

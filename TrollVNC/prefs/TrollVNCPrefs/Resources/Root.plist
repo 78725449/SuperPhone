@@ -163,7 +163,7 @@
 			<key>label</key>
 			<string>画面</string>
 			<key>footerText</key>
-			<string>按画面链路排序：采集 → 缩略图 → 推流；画质选「自定义」才显示底层传输参数。</string>
+			<string>按画面链路排序：采集 → 推流；画质选「自定义」才显示底层传输参数。</string>
 			<key>visibleOnlyRelay</key>
 			<true/>
 		</dict>
@@ -186,42 +186,6 @@
 			<true/>
 			<key>format</key>
 			<string>%.0ffps</string>
-			<key>visibleOnlyRelay</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>ThumbPushEnabled</string>
-			<key>label</key>
-			<string>变化推送</string>
-			<key>default</key>
-			<true/>
-			<key>visibleOnlyRelay</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>TVNCSliderCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>ThumbInterval</string>
-			<key>label</key>
-			<string>推送间隔</string>
-			<key>default</key>
-			<integer>3</integer>
-			<key>min</key>
-			<real>1.0</real>
-			<key>max</key>
-			<real>60.0</real>
-			<key>showValue</key>
-			<true/>
-			<key>format</key>
-			<string>%.0fs</string>
 			<key>visibleOnlyRelay</key>
 			<true/>
 		</dict>

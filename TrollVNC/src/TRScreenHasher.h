@@ -62,15 +62,6 @@ static const NSInteger TRScreenWaitStableDefaultThreshold = 3;
  */
 - (NSString *)computeHashHexForCurrentFrame;
 
-/**
- * 从给定像素缓冲（采集帧）直接计算 pHash 并返回 hex 字符串。
- * 功能：复用 pHash 管线（缩放/灰度/DCT/哈希），但跳过取帧（不二次渲染），
- *      供采集回调内复用采集帧，避免 captureSingleFrameBuffer 重入渲染崩溃。
- * 参数：pixelBuffer - 已采集的帧（CVPixelBufferRef，调用方持有，内部自行 lock/unlock）
- * 返回值：NSString* — 16 字符 hex 字符串；失败返回 @"0"
- */
-- (NSString *)computeHashHexForPixelBuffer:(CVPixelBufferRef)pixelBuffer;
-
 #pragma mark - 汉明距离与差异检测
 
 /**

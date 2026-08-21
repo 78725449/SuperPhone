@@ -90,10 +90,10 @@
 |---|---|---|---|
 | 手机 **5901** | 原生双向控制通道 | RFB/VNC | 画面下行 + 操作上行；含 0x50/0x80 扩展消息命令通道；配置证书后 WS 自动支持 wss（webSocketsCheck 首字节分流，明文不受影响） |
 | 手机 **5801** | 网页文件服务器 | HTTP/HTTPS | 只发 noVNC 页面；管理 API 在 5802；有证书时自建 HTTPS 服务器接管（TLS + 明文 301，2026-08-19） |
-| 手机 **5802** | 直连页管理 API | HTTP/HTTPS v3 | clipboard.get / type.paste / config.get / cap.list + **/thumb 缩略图轮询端点**（manager 定时 GET 拉缩略图缓存供变化推送，2026-08-21）（trollvncserver 自实现轻量 API 服务器，与 RFB 流隔离，2026-08-17 起；**与网关 REST 同构**——管理 HTTP / 画面 RFB，复用 tvExtHandle* 纯函数；2026-08-19 起支持 TLS，peek 分流明文/TLS） |
+| 手机 **5802** | 直连页管理 API | HTTP/HTTPS v3 | clipboard.get / type.paste / config.get / cap.list（trollvncserver 自实现轻量 API 服务器，与 RFB 流隔离，2026-08-17 起；**与网关 REST 同构**——管理 HTTP / 画面 RFB，复用 tvExtHandle* 纯函数；2026-08-19 起支持 TLS，peek 分流明文/TLS） |
 | 网关 **8080** | 控制台 | HTTP/HTTPS + WS | 外部经 frp/隧道到此，再由网关桥到 5901 |
 | 网关 **18081** | 注册/心跳 | TCP JSON 行 | 设备主动拨入 |
-| 网关 **18181** | 隧道 | TCP 帧（FT_，含 FT_THUMB 0x06 缩略图推送） | 设备主动建立；无隧道 4003 拒绝 |
+| 网关 **18181** | 隧道 | TCP 帧（FT_） | 设备主动建立；无隧道 4003 拒绝 |
 | 手机 **46751** | 服务存活探活 | TCP | trollvncmanager 哑服务，accept 后立即 close |
 
 ### 2.3 连接模型
@@ -181,7 +181,7 @@ New project/
 **文件**：`TrollVNC/src/trollvncserver.mm`（~4873 行，无 ObjC 类，全 C 函数）
 **入口**：`main(argc, argv)` (L4826)
 
-**核心职责**：基于 libvncserver 暴露 5901 RFB + 5801 HTTP + Bonjour mDNS；通过 RFB 扩展消息 0x50/0x80 暴露设备能力通道；**采集常驻低频（2026-08-21，服务启动即启动，CaptureFps 驱动；客户端连接只升降频 FrameRateSpec，不再启停采集）+ 缩略图缓存（采集回调 pHash 变化 → 宽 320 JPEG 0.7 存缓存，供 5802 /thumb 轮询）**；管理客户端连接/黑名单；接收命令注入 IOHID 触控/键盘事件；提供配置热重载入口 `tvReloadConfigForKey`。
+**核心职责**：基于 libvncserver 暴露 5901 RFB + 5801 HTTP + Bonjour mDNS；通过 RFB 扩展消息 0x50/0x80 暴露设备能力通道；**采集惰性启动（2026-08-22，隧道握手成功 tunnel-connected 通知触发，CaptureFps 低频驱动；客户端连接只升降频 FrameRateSpec，不再启停采集）**；管理客户端连接/黑名单；接收命令注入 IOHID 触控/键盘事件；提供配置热重载入口 `tvReloadConfigForKey`。
 
 **关键函数**：
 
@@ -199,7 +199,7 @@ New project/
 
 **0x50/0x80 扩展操作（14 个 op）**：`cap.hello` / `cap.list` / `screen.hash` / `screen.diff` / `screen.waitStable` / `clients.count` / `clients.list` / `clients.disconnect` / `clients.block` / `clients.unblock` / `clients.blocked.list` / `clipboard.get` / `type.paste` / `config.get`
 
-**关键全局变量**：`gPort=5901`、`gHttpPort=5801`（端口固定不可调）、`gScale/gFpsMin/gFpsPref/gFpsMax/gDeferWindowSec/gMaxInflightUpdates/gTileSize/gFullscreenThresholdPercent/gMaxRectsLimit/gAsyncSwapEnabled`、`gWheelStepPx=48.0`、**`gCaptureLowFps=10.0`（采集常驻低频帧率，CaptureFps 钳制 1..30）、`gFramebufferLock`（framebuffer 重建/采集写入/RFB 发送互斥）、`gThumbPushEnabled/gThumbHash/gThumbJpeg/gThumbTs/gThumbLock`（缩略图缓存，2026-08-21）**
+**关键全局变量**：`gPort=5901`、`gHttpPort=5801`（端口固定不可调）、`gScale/gFpsMin/gFpsPref/gFpsMax/gDeferWindowSec/gMaxInflightUpdates/gTileSize/gFullscreenThresholdPercent/gMaxRectsLimit/gAsyncSwapEnabled`、`gWheelStepPx=48.0`、**`gCaptureLowFps=10.0`（缩略图态惰性采集低频帧率，CaptureFps 钳制 1..30）、`gFramebufferLock`（framebuffer 重建/采集写入/RFB 发送互斥）**
 
 ---
 
@@ -208,7 +208,7 @@ New project/
 **文件**：`TrollVNC/src/trollvncmanager.mm`（474 行）
 **入口**：`main(argc, argv)` (L228)
 
-**核心职责**：用文件锁实现单例；监控自身可执行文件 vnode 删除事件（被升级覆盖时 exit 让 launchd 重启）；启动 `TRWatchDog` 守护 `trollvncserver`；启动 `TRGatewayClient` 注册到网关 18081；**缩略图变化推送（2026-08-21）：主队列定时器（ThumbInterval 1-60 默认 3）GET 127.0.0.1:5802/thumb → hash 与上次不同经隧道 FT_THUMB 推网关（`gThumbPushEnabled` 开关、`[TRTunnelClient isRfbActive]` 屏幕流互斥，prefs-changed 处可热调）**；监听 SIGCHLD/SIGHUP/SIGINT/SIGTERM；在 127.0.0.1:46751 打开哑服务端口供探测；启动时 sysctl 清理孤儿 trollvncserver；**双通知自治（2026-08-20，替代 App kill 通路——mobile 沙盒 kill root 恒 EPERM）**：订阅 `prefs-changed`（桥接模式自退 / GatewayClient 重发 register / watchdog 热调，双域读取）与 `restart-service`（watchdog 重启 trollvncserver，root 杀 root）。
+**核心职责**：用文件锁实现单例；监控自身可执行文件 vnode 删除事件（被升级覆盖时 exit 让 launchd 重启）；启动 `TRWatchDog` 守护 `trollvncserver`；启动 `TRGatewayClient` 注册到网关 18081；监听 SIGCHLD/SIGHUP/SIGINT/SIGTERM；在 127.0.0.1:46751 打开哑服务端口供探测；启动时 sysctl 清理孤儿 trollvncserver；**双通知自治（2026-08-20，替代 App kill 通路——mobile 沙盒 kill root 恒 EPERM）**：订阅 `prefs-changed`（桥接模式自退 / GatewayClient 重发 register / watchdog 热调，双域读取）与 `restart-service`（watchdog 重启 trollvncserver，root 杀 root）。
 
 **关键函数**：
 
@@ -220,7 +220,6 @@ New project/
 | `tvManagerReadPref(defaults, key)` | L126 | 双域配置读取：root defaults 优先，mobile 域 plist 文件兜底（App 设置页写 mobile 域、root 进程读不到） |
 | `tvManagerIsBridgeMode()` | L136 | ConnectionMode=bridge 判定（未设置/非 bridge 均 relay） |
 | `openLocalDummyService(port)` | L145 | 在 127.0.0.1:port 监听 TCP，accept 后立即 close 不响应 |
-| `tvThumbPollTick()` | L67 | 缩略图轮询回调（2026-08-21）：`isRfbActive`/`gThumbPushEnabled` 双闸 → GET 127.0.0.1:5802/thumb → hash 与 `gLastPushedHash` 不同则经 `[TRTunnelClient sendThumbnail:]` 推网关并记录 |
 | `mSignalAction` / `mSignalHandler` | L49-65 | SIGCHLD 调 waitpid(WNOHANG) 收尸；SIGHUP/SIGINT 停 run loop；SIGTERM 直接退出 |
 
 **关键常量**：`SINGLETON_MARKER_PATH = "/var/mobile/Library/Caches/com.82flex.trollvnc.manager.pid"`、`kTvAlivePort = 46751`、stdout/stderr 重定向到 `<jbroot>/tmp/trollvnc-stdout.log` / `trollvnc-stderr.log`
@@ -301,8 +300,7 @@ New project/
 | `- _processFramesTunnel:` | L479 | 循环解析帧——FT_DATA 写本地 5901；FT_PONG 标记存活；FT_PING 回 FT_PONG；FT_CMD 解析 JSON（rfb.start/rfb.stop 同步处理并维护 gRfbActive，其他委托 commandHandler） |
 | `- _writeFrame:fd:type:data:length:` | L592 | 写 5 字节头（1B type + 4B BE length）+ payload，处理部分写 |
 | `- _appendFrameData:length:` | L436 | 动态扩容帧缓冲（初始 8KB，倍增到 16MB 上限） |
-| `- sendThumbnail:` | L664 | 缩略图推送（2026-08-21）：`_connected` 且 `_tunnelFd>=0` 时写 FT_THUMB 帧（JPEG payload），隧道未连静默丢弃；由 manager 缩略图轮询调用（画面 hash 变化时才推） |
-| `+ isRfbActive` | L673 | 本地 RFB 会话是否活跃（rfb.start/stop 驱动 gRfbActive），供 manager 缩略图轮询屏幕流互斥判断 |
+| `+ isRfbActive` | L673 | 本地 RFB 会话是否活跃（rfb.start/stop 驱动 gRfbActive） |
 
 **FT_ 帧类型常量**（L33-38）：
 - `FT_DATA=0x01` 双向 RFB 透传
@@ -310,9 +308,8 @@ New project/
 - `FT_PONG=0x03` 心跳响应（双向）
 - `FT_CMD=0x04` 命令 JSON（网关→设备）
 - `FT_CMDACK=0x05` 命令 ack JSON（设备→网关）
-- `FT_THUMB=0x06` 缩略图推送（设备→网关，JPEG payload，2026-08-21）
 
-**关键常量**：`kTunnelPingInterval=30.0`、`kTunnelSelectTimeout=5.0`、`kTunnelMinRetryDelay=2.0`、`kTunnelMaxRetryDelay=30.0`、`kLocalRfbPort=5901`、`kDefaultTunnelPort=18181`、`kFrameHeaderSize=5`、`kMaxFramePayload=16MB`、`kReadBufSize=64KB`、`kFrameTypeThumb=0x06`（缩略图推送）
+**关键常量**：`kTunnelPingInterval=30.0`、`kTunnelSelectTimeout=5.0`、`kTunnelMinRetryDelay=2.0`、`kTunnelMaxRetryDelay=30.0`、`kLocalRfbPort=5901`、`kDefaultTunnelPort=18181`、`kFrameHeaderSize=5`、`kMaxFramePayload=16MB`、`kReadBufSize=64KB`
 
 **特殊命令**：`rfb.start`/`rfb.stop` 由隧道客户端同步处理（不委托 commandHandler），ack 携带 connect 结果供网关精确放行缓冲字节
 
@@ -359,16 +356,16 @@ New project/
 - `captureSingleFrameBuffer` 零拷贝 CVPixelBuffer（供 pHash，省 ~8ms）
 - `captureSingleFrameImage` UIImage via CoreImage（静默截图，不触发系统截图动画）
 - DEBUG 构建含 FPS 统计（EMA 平滑，alpha=0.2）
-- **采集生命周期（2026-08-21）**：服务启动即常驻低频采集（CaptureFps 默认 10fps）；客户端连接只经 `setPreferredFrameRateWithMin:preferred:max:` 升降频（newClientHook 升频 FrameRateSpec / clientGoneHook、cap.hello 豁免归零降回低频），不再启停采集
+- **采集生命周期（2026-08-22 统一到 RFB）**：隧道握手成功（tunnel-connected 通知）才惰性启动低频采集（CaptureFps 默认 10fps）；客户端连接只经 `setPreferredFrameRateWithMin:preferred:max:` 升降频（newClientHook 升频 FrameRateSpec / clientGoneHook、cap.hello 豁免归零降回低频），不再启停采集
 
 **TRScreenHasher**（`TRScreenHasher.h` 133 行 + `.mm` 459 行，单例，Phase 11.4）
 - 基于 Accelerate framework（vImage + 自写 DCT-II）实现 5 步 pHash 管线：取帧 → 缩放 32×32 → 灰度 Rec.601 → DCT-II → 8×8 低频哈希
 - 单次 pHash ≈0.3ms（vs JPEG 8ms，快 26 倍）；60fps 持续计算 CPU <1%，内存 4KB
-- `computeHashForCurrentFrame` / `computeHashHexForCurrentFrame` 返回 64bit pHash（hex 版本供缩略图变化检测比对，2026-08-21）
+- `computeHashForCurrentFrame` / `computeHashHexForCurrentFrame` 返回 64bit pHash（hex 版本供 screen.hash 能力使用）
 - `hammingDistanceBetweenHash:andHash:` 用 `__builtin_popcountll(a ^ b)`
 - `diffWithBaselineHash:threshold:currentHash:` 计算 `{distance, threshold, changed, currentHash}`
 - `waitStableWithMaxMs:stableMs:intervalMs:threshold:frameCount:durationMs:lastHash:` 轮询等待画面稳定
-- **用途（2026-08-21）**：采集回调内做 pHash 变化检测——变化时生成缩略图（宽 320 JPEG 0.7）更新 server 缓存供 5802 /thumb 轮询，替代已移除的前端 screen.hash/screenshot 卡片墙轮询门控
+- **用途**：screen.hash / screen.diff / screen.waitStable 三项能力底层实现（按需调用，替代已移除的前端 screen.hash/screenshot 卡片墙轮询门控）
 
 **默认阈值**：`TRScreenHashDiffDefaultThreshold=5`（<3 基本相同 / 3-8 轻微 / 8-15 明显 / >15 完全不同）、`TRScreenWaitStableDefaultMaxMs=3000`、`TRScreenWaitStableDefaultStableMs=500`、`TRScreenWaitStableDefaultIntervalMs=200`、`TRScreenWaitStableDefaultThreshold=3`
 
@@ -570,7 +567,7 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 - **共享方式（2026-08-20 校准）**：大部分源文件（RootListController/ClientListController/ClientCell/ListItemsController/SliderCell/StripedTextTable/ZTSelfSignedCertificate/TVNCUtil/TVNCGatewayClient/Control.h）是**指向 `../../app/TrollVNC/TrollVNC/` 的 git symlink（120000）**——编译期同源，App 改动 prefs 自动跟随；仅 TVNCButtonCell/TVNCSegmentCell（bundle 专属 UI 组件）与 Resources/Makefile 是实体分叉。**App-only 依赖须 `#ifdef THEBOOTSTRAP` 条件编译**（如 TVNCServiceCoordinator——prefs bundle 无 spawn root 能力），否则 symlink 断链编译失败（2026-08-20 踩坑：connectGateway 引入 GatewayClient/Coordinator 后 rootless scheme 编译 'TVNCGatewayClient.h' file not found）
 
 **Resources/Root.plist 分组（2026-08-21 定稿）**：按能力板块分组 = **连接 / 直连 / 画面 / 交互 / 保活 / 关于**（6 组）+ 页面底部无分组（查看日志/UDID/版本信息）；连接/直连/画面/交互/保活仅中继模式显示（visibleOnlyRelay）
-**关键配置项**（端口固定不出现）：ConnectionMode（网关中继/桥接控制）/ GatewayHost / GatewayToken /「连接网关」按钮（visibleOnlyRelay）/「桥接网关」按钮（visibleOnlyBridge）/ BindHost（直连地址，仅中继）/ FullPassword（被控密码，仅中继）/ generateKeys（生成证书，仅中继）/ ViewOnly（只读开关，仅中继）/ CaptureFps（采集帧率 1-30 默认 10，仅中继）/ ThumbPushEnabled（变化推送，仅中继）/ ThumbInterval（推送间隔 1-60 默认 3，仅中继）/ FrameRateSpec（推流帧率 15/30/60/动态/自定义，自定义联动 FrameRateSpecCustom）/ OrientationSync（方向同步）/ OrientationPadFix（方向偏移）/ PerformanceMode（推流画质 流畅/智能/画质/自定义）/ Scale（输出缩放 0.25-1.0）/ 进阶（collapseGroup=performance：DeferWindowSec / MaxInflight）/ TileSize● / MaxRects● / FullscreenThresholdPercent / AsyncSwap●（仅自定义）/ NaturalScroll / WheelStepPx / AutoAssistEnabled / ModifierMap / KeyLogging / Notifications（通知模式 全部通知/仅连接/静默）/ KeepAliveSec（防息屏间隔 0-300 默认 30）/ HeartbeatIntervalSec（网关心跳间隔 5-300 默认 30）/ WatchdogThrottleInterval（重启节流默认 60）/ WatchdogExitTimeout（退出超时默认 3）/ resetDefaults（重置默认设置）/ restartService（重启服务）/ viewLogs（查看日志）/ DeviceUUID（UDID）/ appVersionText（版本信息）。**2026-08-21 移除**：AccessMode/ViewOnlyPassword/BonjourEnabled/searchGateway/FabAutoCollapse 设置页项（FabAutoCollapse 在 CONFIG_DEFS 保留 group:null）；显示名对齐：FullPassword→被控密码、BindHost→直连地址、KeepAliveSec→防息屏间隔、ThumbInterval→推送间隔；需重启项 label 带 ● 标记
+**关键配置项**（端口固定不出现）：ConnectionMode（网关中继/桥接控制）/ GatewayHost / GatewayToken /「连接网关」按钮（visibleOnlyRelay）/「桥接网关」按钮（visibleOnlyBridge）/ BindHost（直连地址，仅中继）/ FullPassword（被控密码，仅中继）/ generateKeys（生成证书，仅中继）/ ViewOnly（只读开关，仅中继）/ CaptureFps（采集帧率 1-30 默认 10，仅中继）/ FrameRateSpec（推流帧率 15/30/60/动态/自定义，自定义联动 FrameRateSpecCustom）/ OrientationSync（方向同步）/ OrientationPadFix（方向偏移）/ PerformanceMode（推流画质 流畅/智能/画质/自定义）/ Scale（输出缩放 0.25-1.0）/ 进阶（collapseGroup=performance：DeferWindowSec / MaxInflight）/ TileSize● / MaxRects● / FullscreenThresholdPercent / AsyncSwap●（仅自定义）/ NaturalScroll / WheelStepPx / AutoAssistEnabled / ModifierMap / KeyLogging / Notifications（通知模式 全部通知/仅连接/静默）/ KeepAliveSec（防息屏间隔 0-300 默认 30）/ HeartbeatIntervalSec（网关心跳间隔 5-300 默认 30）/ WatchdogThrottleInterval（重启节流默认 60）/ WatchdogExitTimeout（退出超时默认 3）/ resetDefaults（重置默认设置）/ restartService（重启服务）/ viewLogs（查看日志）/ DeviceUUID（UDID）/ appVersionText（版本信息）。**2026-08-21 移除**：AccessMode/ViewOnlyPassword/BonjourEnabled/searchGateway/FabAutoCollapse 设置页项（FabAutoCollapse 在 CONFIG_DEFS 保留 group:null）；显示名对齐：FullPassword→被控密码、BindHost→直连地址、KeepAliveSec→防息屏间隔；需重启项 label 带 ● 标记
 
 ---
 
@@ -686,13 +683,11 @@ API 全部前缀 `/api`，统一走 `authOk`（Bearer Token 或 `?token=`，无 
 | `FT_PONG` | 0x03 | 网关→设备 | 心跳响应 |
 | `FT_CMD` | 0x04 | 网关→设备 | 命令 JSON（`{type:'cmd',cmd,id,ts,...}`） |
 | `FT_CMDACK` | 0x05 | 设备→网关 | 命令 ack JSON（含 rfb.start/rfb.stop ack） |
-| `FT_THUMB` | 0x06 | 设备→网关 | 缩略图推送（JPEG payload，2026-08-21） |
 
 `feedFrame` 解析器：frameBuf 累积，每帧读 5B 头取 type+len，`len>16MB` 直接 sock.destroy() 防内存炸；不完整帧等下次 chunk
 
 `handleFrame` 分支：
-- `FT_DATA`：广播给 tun.wsSet 全部订阅者；无订阅者缓冲进 tun.pending（64KB 滚动截断）；处于 5901 重建窗口（pendingUpUntil）时丢弃旧连接残留帧防污染
-- `FT_THUMB`：缓存 `trec.thumb = payload`（Buffer）+ `trec.thumbTs = Date.now()`，随后 `notifyDevicesChanged('thumb', deviceId)` 广播缩略图事件（2026-08-21）
+- `FT_DATA`：缩略图态（`rec.mode==='thumb'`）喂 `rec.thumbRfb.feed` 解码（Raw 编码 → JPEG，onJpeg 广播 thumb 事件）；屏幕流态广播给 tun.wsSet 全部订阅者；无订阅者缓冲进 tun.pending（64KB 滚动截断）；处于 5901 重建窗口（pendingUpUntil）时丢弃旧连接残留帧防污染
 - `FT_CMDACK`：先识别 rfb.start ack（匹配 tun.rebuild.id），ok 则放行缓冲的握手字节（pendingUp），fail 则 controller.close(4005,'device RFB unavailable')；其余 ack 按 ack.id 匹配 pendingCmds 解析 Promise
 - `FT_PING`：回 PONG；`FT_PONG`：仅作存活证明
 
@@ -734,7 +729,7 @@ API 全部前缀 `/api`，统一走 `authOk`（Bearer Token 或 `?token=`，无 
 | `handleVncSocket` | WS↔VNC 桥接 + 单会话约束 + rfb 重建 + pending 缓冲管理 |
 | `handleControlSocket` | AI 工具 WS 控制端点（JSON 行 cmd→ack 透传） |
 | `handleApi` | REST API 路由分发（含 batch 分支优先级） |
-| `GET /api/devices/:id/thumb` | 缩略图读回（2026-08-21）：`tun.thumb` 有值 → 200 `{thumb: base64, ts: thumbTs}`；隧道/缓存无 → 204；设备不存在 → 404 |
+| `GET /api/devices/:id/thumb` | 缩略图读回（2026-08-22 统一到 RFB）：`trec.thumbRfb.jpeg` 有值 → 200 `{thumb: base64, ts}`；无 → 204；设备不存在 → 404 |
 | `notifyDevicesChanged` | 设备变更事件广播（/ws/events），type ∈ register/offline/delete/update/thumb（2026-08-21 新增 thumb） |
 | `loadTlsOptions` | TLS 证书加载，缺失时 spawnSync 调 scripts/gen-cert.mjs 自动生成 |
 | `bootstrap`（同端口协议自适应） | 首字节 0x16 0x03 → TLS server，否则 → httpRedirect 301；pause→unshift→emit→nextTick(resume) 交接 |
@@ -762,8 +757,9 @@ tun = {
   rebuild: {id, timer}|null, // rfb.start 重建 ack 跟踪
   stopTimer,             // debounce rfb.stop 800ms
   _dataCount,            // FT_DATA 诊断计数
-  thumb: Buffer|null,    // 最新缩略 JPEG（FT_THUMB 缓存，2026-08-21）
-  thumbTs: number        // 缩略图时间戳（2026-08-21）
+  thumbRfb: ThumbRfbDecoder|null,  // 缩略图态 RFB 解码器（Raw→JPEG，2026-08-22）
+  mode: 'thumb'|'ctrl',            // 隧道态：缩略图/控制
+  controlled: boolean,             // 被控状态（2026-08-22）
 }
 
 // 命令挂起表（pendingCmds.get(cid)）
@@ -797,7 +793,7 @@ tun = {
 |---|---|
 | `refreshDevices` | 拉 /api/devices，过滤 SELF_ID，注入 MOCK_DEVICES，按签名变化重算卡片比例；由 /ws/events 推送驱动（2026-08-18），轮询已移除（2026-08-19） |
 | `connectEventsWS` | 订阅 /ws/events 设备变更推送：收到事件重拉 refreshDevices；断线退避重连（2s 起，上限 30s）；死连接检测由后端心跳 ping/pong 负责（2026-08-19） |
-| `startWallRfb` | 卡片墙缩略图获取（2026-08-21 起事件驱动）：每张卡片建 `{kind:'thumb'}` 实例并 fetchThumb 拉一次；画面更新由 /ws/events 的 thumb 事件广播 + 设备列表刷新兜底驱动；无轮询定时器、无 RFB 持久连接 |
+| `startWallRfb` | 卡片墙缩略图获取（2026-08-22 起事件驱动）：每张卡片建 `{kind:'thumb'}` 实例并 fetchThumb 拉一次；画面更新由 /ws/events 的 thumb 事件广播 + 设备列表刷新兜底驱动；前端无轮询定时器、无 RFB 连接（缩略图 RFB 流由网关侧 thumbRfb 维护） |
 | `fetchThumb` | GET /api/devices/:id/thumb → 200 `{thumb: base64, ts}` 更新卡片 `<img class="thumb">` 并记录 data-ts；204/404 跳过；离线/聚焦/直控/同步卡片跳过（fetchThumb 内部判断） |
 | `createWallTile` | 创建卡片 DOM（含批量复选框、⋯ 菜单）；点击卡片进入聚焦/同步/批量不同分支 |
 | `enterFocus` / `exitFocus` | 聚焦大屏进出：URL ?focus= 持久化、IPA setTabBarHidden 桥接、createRfb(grp+broadcast+ctrl)、断线重连 |
@@ -809,7 +805,7 @@ tun = {
 | `scheduleFocusReconnect` / `reconnectFocusRfb` | 聚焦画面断线重连（首立即、后续 2s 间隔，上限 8 次；1000/1001/4001 不重连；visibilitychange 回前台触发） |
 
 **关键模式**：
-- **卡片墙缩略图事件驱动（2026-08-21）**：设备侧 pHash 变化 → 隧道 FT_THUMB 推网关 → 网关缓存 + 广播 `{type:'thumb', deviceId}` → 前端收到后补拉该设备缩略图缓存（fetchThumb，不触发全量刷新）；screen.hash/screenshot 轮询门控已移除
+- **卡片墙缩略图事件驱动（2026-08-22 统一到 RFB）**：设备 5901 经隧道 FT_DATA 发 RFB Raw 流 → 网关 ThumbRfbDecoder 解码产 JPEG → 广播 `{type:'thumb', deviceId}` → 前端收到后补拉该设备缩略图（fetchThumb，不触发全量刷新）；screen.hash/screenshot 轮询门控已移除
 - **聚焦抢占语义**：主控连接始终带 grp+broadcast，勾选同步设备无需重建主控；新 ctrl 顶旧 ctrl 由网关 4001 处理
 - **剪贴板显式双向搬运**（2026-08-17 决策）：
   - 复制 = 拉：copyFromFocusedDevice → invokeCap('','id','clipboard.get') → farmWriteClipboardToControl（IPA 走原生桥 writeClipboard，浏览器走 navigator.clipboard.writeText 降级 execCommand('copy')）
@@ -848,7 +844,7 @@ kbdShiftHeld, kbdShiftTimer, kbdComposing, kbdJustComposed, kbdLastLen
 | `KEY_DEFS` | 10 | 右侧按键直发（power/home/volup/mute/voldn/briup/bridn/snapshot/spotlight/keyboard） | RFB 直发（ks keysym / code DOM code / ptr 指针掩码）；每项 events:{click,long} 或 {click,down,up}（双击/三击=自然连点，显式 double/triple 走 BATCH_CAPS） |
 | `BATCH_CAPS` | 20 | 批量调用菜单（17 hid + service.restart + settings.generateKeys + settings.searchGateway） | invoke API；按 category 分组（hid/service/native） |
 | `GESTURE_DEFS` | 3 | 画布多点手势（pinch→touch.pinch / twotap→touch.twoFingerTap / threetap→touch.threeFingerTap） | invoke API（坐标 0-1 归一化） |
-| `CONFIG_DEFS` | **30 项** | 配置表单契约（2026-08-21：+CaptureFps/ThumbPushEnabled/HeartbeatIntervalSec、-BonjourEnabled/ViewOnlyPassword UI；按能力板块 group 分组 connection/direct/display/interaction/keepalive/about，null=UI 隐藏） | set API；每项含 reload: hot/restart/instant/gateway |
+| `CONFIG_DEFS` | **28 项** | 配置表单契约（2026-08-22 统一到 RFB：+CaptureFps/HeartbeatIntervalSec、-ThumbPushEnabled/ThumbInterval/BonjourEnabled/ViewOnlyPassword UI；按能力板块 group 分组 connection/direct/display/interaction/keepalive/about，null=UI 隐藏） | set API；每项含 reload: hot/restart/instant/gateway |
 | `CONFIG_BY_KEY` | Map | 按 key 索引 schema | — |
 | `CATEGORY_LABELS` | 8 类 | 批量菜单分组标题 | hid/touch/stylus/system/native/service/gateway/control |
 
@@ -954,7 +950,7 @@ script app.js?v=170（type=module）
 | 8 | `press-test.js` | press.js 时序：volup 按下 down、抬起 up、不补 click；home 双击→home.double；单击窗口超时→click；按住 900ms→home.long；power 三击→power.triple |
 | 9 | `order-test.js` | 卡片墙 order 排序：注册 a/b/c 初始按 addedAt；PATCH b=1/a=3 → [b,a,c]；相同 order 按 id 字典序兜底；清除 order（null）回到注册时间段；order=-1/100000 拒绝 400 |
 | 10 | `events-test.js` | 设备变更推送（2026-08-18）：/ws/events 订阅后设备 register 上线收到 register 事件；DELETE 删除收到 delete 事件；事件为 {type,deviceId,ts} 轻量通知；非 /ws/events 连接不进入订阅集合；心跳 ping→pong（2026-08-19） |
-| 11 | `tunnel-thumb-test.js` | 缩略图推送（2026-08-21）：FakeDevice 经隧道发 FT_THUMB(0x06) JPEG → 网关缓存 → GET /api/devices/:id/thumb 读回 base64（200）；无缩略图 204；无隧道设备 204；未知设备 404 |
+| 11 | `tunnel-thumb-test.js` | 缩略图 RFB 流（2026-08-22 统一到 RFB）：FakeDevice 经隧道发 RFB Raw 流 → 网关 ThumbRfbDecoder 解码 → GET /api/devices/:id/thumb 读回 base64（200）；无缩略图 204；无隧道设备 204；未知设备 404 |
 
 **辅助文件**（不属于 npm test）：
 - `fake-rfb-server.js`：smoke 用的假 VNC echo server
@@ -1089,7 +1085,6 @@ length:4B (big-endian)
 | FT_PONG | 0x03 | 双向 | 心跳响应 |
 | FT_CMD | 0x04 | 网关→设备 | 命令 JSON |
 | FT_CMDACK | 0x05 | 设备→网关 | 命令 ack JSON |
-| FT_THUMB | 0x06 | 设备→网关 | 缩略图推送（JPEG payload，2026-08-21） |
 
 ### 7.3 注册通道（18081，JSON 行）
 
@@ -1150,8 +1145,7 @@ length:4B (big-endian)
 │         │                          ├── 0x50/0x80 扩展消息        │
 │         │                          ├── ScreenCapturer ──> IOSurface│
 │         │                          │   └── TRScreenHasher (pHash)│
-│         │                          │       └── 缩略图缓存 → 5802 /thumb│
-│         │                          │           （manager 轮询 → FT_THUMB）│
+│         │                          │       └── screen.hash/diff/waitStable│
 │         │                          ├── STHIDEventGenerator       │
 │         │                          │   (IOHID 注入)              │
 │         │                          ├── ClipboardManager          │
@@ -1188,7 +1182,7 @@ length:4B (big-endian)
 4. **控制 Tab 路径**：TVNCConsoleWebViewController.buildConsoleURL → `https://{host}:8080/?container=ipa&token=&selfId=` → WKWebView 加载 → farmBridge 桥（writeClipboard / setTabBarHidden）
 5. **客户端列表路径**：TVNCClientListController → TVNCControlConnect 127.0.0.1:5901 RFB 3.8 握手 + cap.hello（mgmt=YES 豁免）→ TVNCControlInvoke clients.list / clients.disconnect / clients.block / clients.unblock
 6. **命令通道路径**：前端 → POST /api/devices/:id/invoke|configs|restart|ping → 网关 sendDeviceCmd：隧道 FT_CMD 帧优先，注册通道 JSON 行回退 → 设备 TRGatewayClient → TRCapabilityRegistry.invoke/setConfig → executor 执行 → ACK → 网关回调用端（默认 5s 等待 ack，超时/离线 504）
-7. **卡片墙缩略图路径（2026-08-21 变化推送）**：采集回调（常驻低频 CaptureFps）TRScreenHasher pHash 变化 → server 缩略图缓存（宽 320 JPEG 0.7）→ manager 定时（ThumbInterval）GET 127.0.0.1:5802/thumb → hash 变化经隧道 FT_THUMB(0x06) 推网关 → 网关缓存 {thumb, thumbTs} + 广播 {type:'thumb', deviceId} → 前端 fetchThumb GET /api/devices/:id/thumb 渲染（原 screen.hash/screenshot 轮询门控已移除）
+7. **卡片墙缩略图路径（2026-08-22 统一到 RFB）**：隧道握手成功 → TRTunnelClient connect 本地 5901（缩略图客户端 = 首个 RFB 客户端）+ 采集惰性启动（tunnel-connected 通知 @ CaptureFps）→ 采集帧 → framebuffer → tile 脏矩形检测 → libvncserver 编码 Raw → 5901 → TRTunnelClient 透传 → 隧道 FT_DATA → 网关 ThumbRfbDecoder 解码（Raw → JPEG）→ 缓存 jpeg + 广播 `{type:'thumb', deviceId}` → 前端 fetchThumb GET /api/devices/:id/thumb 渲染（原 screen.hash/screenshot 轮询门控已移除）
 
 ### 8.3 端口契约矩阵
 
@@ -1312,8 +1306,8 @@ node scripts/wait-ipa.mjs <runId>
 
 | 项 | 修复前 | 代码真相源 | 修复状态 |
 |---|---|---|---|
-| 测试套件数 | 8（AGENTS.md / 说明文档.md） | **11**（package.json 串行 11 个：…/events-test.js + `tunnel-thumb-test.js`，2026-08-21 新增缩略图推送测试） | ✅ 已修复：说明文档.md 已同步为 11 套件，套件列表补 `events`、`tunnel-thumb`。**AGENTS.md 需同步**（仍写 10 套件） |
-| CONFIG_DEFS 项数 | 38（2026-08-17 校准）/ 37 | **30 项**（caps.js 实际 30，`caps-test.js` 断言 `=== 30`；2026-08-20 配置治理 37→29；**2026-08-21 采集架构升级 29→30**：+CaptureFps/ThumbPushEnabled/HeartbeatIntervalSec、-BonjourEnabled/ViewOnlyPassword UI，设备端 `_registerConfigSchemas` 保留注册 32 项） | ✅ 已修复：说明文档.md、CodeWiki 同步为 30。**AGENTS.md 需同步**（仍写 29 项相关描述） |
+| 测试套件数 | 8（AGENTS.md / 说明文档.md） | **11**（package.json 串行 11 个：…/events-test.js + `tunnel-thumb-test.js`，2026-08-22 改测缩略图 RFB 流） | ✅ 已修复：说明文档.md 已同步为 11 套件，套件列表补 `events`、`tunnel-thumb`。**AGENTS.md 需同步**（仍写 10 套件） |
+| CONFIG_DEFS 项数 | 38（2026-08-17 校准）/ 37 | **28 项**（caps.js 实际 28，`caps-test.js` 断言 `=== 28`；2026-08-20 配置治理 37→29；2026-08-21 采集架构升级 29→30；**2026-08-22 统一到 RFB 30→28：-ThumbPushEnabled/ThumbInterval**，设备端 `_registerConfigSchemas` 保留注册 30 项） | ✅ 已修复：说明文档.md、CodeWiki 同步为 28。**AGENTS.md 需同步**（仍写 30 项相关描述） |
 | BATCH_CAPS | 20（两文档一致） | 20（一致） | — 无需修复 |
 | KEY_DEFS | 10（两文档一致） | 10（一致） | — 无需修复 |
 | GESTURE_DEFS | 3（两文档一致） | 3（一致） | — 无需修复 |

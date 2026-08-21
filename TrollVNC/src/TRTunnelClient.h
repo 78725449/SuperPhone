@@ -30,16 +30,7 @@
 /** 停止隧道客户端，断开连接 */
 - (void)stop;
 
-/**
- * 推送设备端屏幕缩略图（JPEG）到网关（FT_THUMB 帧，type 0x06）。
- * 由 trollvncmanager 的缩略图轮询调用（画面 hash 变化时才推）；
- * 隧道未连接时静默丢弃。
- * @param jpegData JPEG 编码的缩略图数据
- * @return YES 表示已真正写入隧道（隧道已连且写帧成功）；NO 表示未写入（隧道未连或写帧失败）
- */
-- (BOOL)sendThumbnail:(NSData *)jpegData;
-
-/** 查询本地 RFB 会话是否活跃（rfb.start/rfb.stop 命令驱动），供缩略图轮询互斥判断 */
+/** 查询本地 RFB 会话是否活跃（rfb.start/rfb.stop 命令驱动） */
 + (BOOL)isRfbActive;
 
 /**

@@ -222,13 +222,19 @@ function connectEventsWS() {
     refreshDevices().catch(() => {});
   };
   eventsWS.onmessage = (ev) => {
-    // 缩略图事件（2026-08-21）：设备经隧道推 FT_THUMB → 网关缓存 → 广播 {type:'thumb', deviceId}。
+    // 缩略图事件：设备 5901 经隧道发 RFB Raw 流 → 网关 ThumbRfbDecoder 解码 → 广播 {type:'thumb', deviceId}。
     // 卡片存在则直接补拉该设备缩略图（避免全量刷新）；未知事件类型保持原逻辑（refreshDevices 重拉全量）
     let msg = null;
     try { msg = JSON.parse(ev.data); } catch { /* 非 JSON 事件按全量刷新处理 */ }
     if (msg && msg.type === 'thumb') {
       const inst = wallInstances.get(msg.deviceId);
       if (inst) { fetchThumb(inst).catch(() => {}); return; }
+    }
+    if (msg && msg.type === 'state') {
+      // 被控状态上报（2026-08-22）：设备控制开始/结束，重拉设备列表以刷新「被控制中」遮罩
+      // （遮罩渲染在 updateWallTile 根据设备 controlled 字段叠加）
+      refreshDevices().catch(() => {});
+      return;
     }
     refreshDevices().catch(() => {});
   };
@@ -295,7 +301,7 @@ function createWallTile(d) {
   const tv = tile.querySelector('.tv');
   const statusEl = tile.querySelector('.tstate');
   const cb = tile.querySelector('.tile-checkbox');
-  // 卡片墙画面获取：读网关缩略图缓存（设备经隧道推 FT_THUMB → 网关缓存 → 事件驱动前端拉取），
+  // 卡片墙画面获取：读网关缩略图缓存（设备 5901 经隧道发 RFB Raw 流 → 网关解码 → 事件驱动前端拉取），
   // 无轮询定时器；rfb 字段名沿用历史，实为缩略图获取状态标记（kind='thumb'）。
   const inst = { device: d, tile, statusEl, paused: false, rfb: null, checkbox: cb };
   // 恢复已选中状态（设备刷新后保持勾选）
@@ -348,7 +354,7 @@ function createWallTile(d) {
 
 /**
  * 启动卡片墙画面获取（读网关缩略图缓存）
- * 功能：设备经隧道推 FT_THUMB 缩略图 → 网关缓存；前端事件驱动 GET /api/devices/:id/thumb 拉取渲染。
+ * 功能：设备 5901 经隧道发 RFB Raw 流 → 网关 ThumbRfbDecoder 解码产 JPEG 缓存；前端事件驱动 GET /api/devices/:id/thumb 拉取渲染。
  *       无轮询定时器（2026-08-21 起 screen.hash/screenshot 轮询整体移除）：静止零流量，
  *       画面更新由网关 thumb 事件广播 + 设备列表刷新兜底驱动。卡片墙不建 RFB 持久连接。
  * @param {object} inst 卡片墙实例 { device, tile, statusEl, rfb, paused }
@@ -1908,6 +1914,19 @@ function updateWallTile(inst, d) {
   tile.querySelector('.tname').textContent = d.name;
   tile.querySelector('.dot').className = 'dot ' + (d.online ? 'on' : 'off');
   const tv = tile.querySelector('.tv');
+  // 被控状态遮罩（2026-08-22）：设备被控制（隧道 rfb.start / 5801 直连）时叠加「被控制中」遮罩，
+  // 网关经 /api/devices 附带 controlled 字段（隧道 FT_STATE 上报），此处按需增删遮罩元素
+  let mask = tile.querySelector('.ctrl-mask');
+  if (d.controlled && d.online) {
+    if (!mask) {
+      mask = document.createElement('div');
+      mask.className = 'ctrl-mask';
+      mask.textContent = '被控制中';
+      tile.appendChild(mask);
+    }
+  } else if (mask) {
+    mask.remove();
+  }
   if (d.online) {
     if (inst.paused) return; // 聚焦中，保持隐藏
     tile.classList.remove('tile-offline');
