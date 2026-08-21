@@ -273,6 +273,9 @@ static void TRTunnelLog(const char *fmt, ...) {
     // 6. cleanup
     _connected = NO;
     _tunnelFd = -1;
+    // 2026-08-21：隧道断开（网关重启/断网）时 rfb.stop 到不了设备端，必须在此复位
+    // RFB 会话活跃标记——否则 gRfbActive 残留 YES 会永久暂停缩略图推送（前端收不到变化图）
+    gRfbActive = NO;
     if (_localFd >= 0) { close(_localFd); _localFd = -1; }
     close(tunnelFd);
     [self _resetFrameBuf];
@@ -426,6 +429,9 @@ static void TRTunnelLog(const char *fmt, ...) {
             if (n <= 0) {
                 // 本地 5901 连接关闭（rfb.stop 或服务端断开）是正常事件：
                 // 仅清理本地 fd 回 standby，绝不能退出隧道（否则隧道重连导致网关 4002 tunnel closed）
+                // 2026-08-21：会话结束即复位 RFB 活跃标记——rfb.stop 可能未到（客户端异常断开/
+                // 服务端 EOF），残留 YES 会永久暂停缩略图推送
+                gRfbActive = NO;
                 close(_localFd);
                 _localFd = -1;
                 TRTunnelLog("local RFB closed (EOF), stay standby");
