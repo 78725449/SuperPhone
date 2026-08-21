@@ -376,10 +376,20 @@ function startWallRfb(inst) {
     if (inst.statusEl) inst.statusEl.textContent = '未注册';
     return;
   }
-  // 2026-08-22：已有画面（直控 canvas 残留）时不设「加载中…」占位——保留最后画面，
-  // fetchThumb 拉到缩略图后替换，避免退出直控时卡片闪「加载中…」
-  if (!tv.querySelector('canvas')) {
+  // 2026-08-22：已有画面（直控 canvas 残留）或退出直控截图（_lastFrame）时不设「加载中…」占位——
+  // 保留最后画面，fetchThumb 拉到缩略图后替换，避免退出直控时卡片闪「加载中…」
+  if (!tv.querySelector('canvas') && !inst._lastFrame) {
     tv.innerHTML = '<div class="offline-ph">加载中…</div>';
+  } else if (inst._lastFrame) {
+    // 退出直控截图：先显示最后画面（img），fetchThumb 拉到缩略图后替换
+    let img = tv.querySelector('img.thumb');
+    if (!img) {
+      img = document.createElement('img');
+      img.className = 'thumb';
+      img.alt = '';
+      tv.appendChild(img);
+    }
+    img.src = inst._lastFrame;
   }
   // rfb 字段仅为兼容既有 stopWallRfb/updateWallTile 引用，实为缩略图获取状态标记
   inst.rfb = { kind: 'thumb', closed: false, fetching: false };
@@ -1930,14 +1940,22 @@ function exitDirectMode() {
   directMode = false;
   const wall = $('wall');
   if (wall) wall.classList.remove('direct-mode');
-  // 2026-08-22：记录本次关闭的直控设备 id——它们由 disconnect 事件延迟恢复缩略图
+  // 2026-08-22：记录本次关闭的直控设备 id——它们延迟恢复缩略图（保留 canvas 最后画面）
   const closedDirectIds = new Set(directRfbs.keys());
   // 先 close 全部直控 RFB（必须真正断开 WS，否则残留会话持续占用设备推流，
   // 再次进入直控时会话堆积 → 服务端 sessions=2/3…，还会与后续 rfb.stop 互扰）。
   // 注意 stopWallRfb 只处理 inst.rfb（截图轮询），直控 RFB 在 directRfbs 中，须显式 close。
   for (const [id, rfb] of directRfbs.entries()) {
-    closeRfb(rfb);
     const inst = wallInstances.get(id);
+    // 2026-08-22：closeRfb 前截图直控 canvas 最后画面——noVNC disconnect 会移除 canvas，
+    // 截图保留最后画面，startWallRfb 先显示它（不闪「加载中…」），缩略图就绪后替换
+    if (inst && inst.tile) {
+      const c = inst.tile.querySelector('.tv canvas');
+      if (c) {
+        try { inst._lastFrame = c.toDataURL('image/jpeg', 0.7); } catch (e) { inst._lastFrame = null; }
+      }
+    }
+    closeRfb(rfb);
     if (inst) {
       // 2026-08-22：清理直控加载浮层（startDirectRfb 创建的「连接中…」），退出直控立即恢复缩略图
       const ov = inst.tile && inst.tile.querySelector('.focus-status-ov');
@@ -1948,17 +1966,22 @@ function exitDirectMode() {
       if (dev) dev.controlled = false;
       const mask = inst.tile && inst.tile.querySelector('.ctrl-mask');
       if (mask) mask.remove();
-      stopWallRfb(inst);
+      // 2026-08-22：不调 stopWallRfb——它会 tv.innerHTML='' 清空直控 canvas（最后画面丢失），
+      // 且直控设备本就没在获取缩略图（startDirectRfb 时已 stopWallRfb）。
     }
   }
   directRfbs.clear();
   updateDirectBtn();
   refreshDevices().catch(() => {});
-  // 2026-08-22：刚 close 的直控设备由 disconnect 事件延迟恢复缩略图（保留 canvas 最后画面），
-  // 此处跳过它们，避免立即 startWallRfb 清空 canvas 闪「加载中…」占位
+  // 2026-08-22：刚 close 的直控设备延迟恢复缩略图——保留 canvas 最后画面，
+  // 等网关缩略图链路重建（设备端 rfb.stop 重连缩略图客户端 → 网关重新解码）后再替换，
+  // 避免立即 startWallRfb 清空 canvas 闪「加载中…」占位。其余设备立即恢复。
   for (const inst of wallInstances.values()) {
-    if (inst.device.online === true && !inst.paused && !closedDirectIds.has(inst.device.id)) {
-      startWallRfb(inst); // 恢复缩略图获取
+    if (inst.device.online !== true || inst.paused) continue;
+    if (closedDirectIds.has(inst.device.id)) {
+      setTimeout(() => { if (!directRfbs.has(inst.device.id)) startWallRfb(inst); }, 1200);
+    } else {
+      startWallRfb(inst);
     }
   }
 }
