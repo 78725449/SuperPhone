@@ -161,6 +161,11 @@ static CFAbsoluteTime gThumbTs = 0;
 static CFAbsoluteTime gLastThumbEncodeTs = 0;  // 缩略图编码节流时间戳（变化时 ≥1s 才重编码）
 static pthread_mutex_t gThumbLock = PTHREAD_MUTEX_INITIALIZER;  // 缓存读写锁
 
+// 2026-08-21：锁屏状态感知（设计 3.5「锁屏停留最后一帧」）——锁定时暂停缩略图缓存更新，
+// 锁屏/熄屏过渡黑帧不覆盖缓存；解锁后新帧变化自然恢复更新。
+static BOOL gScreenLocked = NO;          // 锁屏状态（com.apple.springboard.lockstate 驱动，1=锁 0=解）
+static int gLockStateToken = 0;          // lockstate 通知 token（文件顶部声明供下方函数引用）
+
 typedef NS_ENUM(uint8_t, TVBindHostKind) {
     kTVBindHostKindNone = 0,
     kTVBindHostKindIPv4,
@@ -3439,6 +3444,22 @@ static void tvInstallPrefsChangedListener(void) {
     TVLog(@"-daemon: prefs-changed listener installed");
 }
 
+/** 2026-08-21：锁屏状态监听（设计 3.5「锁屏停留最后一帧」）——锁定时暂停缩略图缓存更新
+ *  （停留最后一帧，锁屏过渡黑帧不覆盖缓存）；解锁恢复（CADisplayLink 恢复 → 新帧变化自然更新）。 */
+static void tvLockStateChanged(void) {
+    int state = 0;
+    notify_get_state(gLockStateToken, &state);
+    gScreenLocked = (state == 1);
+    TVLog(@"-daemon: lock state -> %@", gScreenLocked ? @"LOCKED" : @"UNLOCKED");
+}
+
+static void tvInstallLockStateListener(void) {
+    notify_register_dispatch("com.apple.springboard.lockstate", &gLockStateToken,
+        dispatch_get_main_queue(), ^(int token) { (void)token; tvLockStateChanged(); });
+    // 启动时读取当前锁屏状态（覆盖「已锁屏时启动」场景）
+    tvLockStateChanged();
+}
+
 static void stopBonjour(void) {
     // NSNetService expects interactions on a runloop thread (prefer main).
     if (![NSThread isMainThread]) {
@@ -3508,7 +3529,7 @@ static void startBonjour(void) {
 // 与缓存 hash 不同且距上次编码 ≥1s 才重新采集单帧并缩放为宽 320 的 JPEG 存入缓存，
 // 供 5802 /thumb 拉取（hash 检测每帧做，编码节流防高频画面反复重渲染）。
 static void tvUpdateThumbCache(void) {
-    if (gClientCount > 0 || !gThumbPushEnabled) return;   // 屏幕流互斥 + 开关
+    if (gClientCount > 0 || !gThumbPushEnabled || gScreenLocked) return;   // 屏幕流互斥 + 开关 + 锁屏停留最后一帧
     NSString *h = [[TRScreenHasher sharedHasher] computeHashHexForCurrentFrame];
     if (!h) return;
     pthread_mutex_lock(&gThumbLock);
@@ -5654,6 +5675,8 @@ int main(int argc, const char *argv[]) {
 
         // 2026-08-20：设置页热重载通道（App notify_post → 本进程热重载 hot/instant 配置）
         tvInstallPrefsChangedListener();
+        // 2026-08-21：锁屏状态监听（设计 3.5「锁屏停留最后一帧」）
+        tvInstallLockStateListener();
     }
 
     CFRunLoopRun();

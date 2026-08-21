@@ -289,7 +289,7 @@ function createWallTile(d) {
     <div class="tile-bar">
       <span class="dot ${d.online ? 'on' : 'off'}"></span>
       <span class="tname">${escapeHtml(d.name)}</span>
-      <span class="tstate">${d.online ? '连接中…' : '离线'}</span>
+      <span class="tstate">${d.online ? '已连接' : '离线'}</span>
       <button class="tmore" title="更多操作">⋯</button>
     </div>`;
   const tv = tile.querySelector('.tv');
@@ -312,7 +312,7 @@ function createWallTile(d) {
   // （竖屏=跟随全局统一比例；横屏=设备 screen 比例倒置）。聚焦画面始终实时跟随设备方向。
   applyTileOrient(tile, d);
   if (d.online) {
-    tv.innerHTML = '<div class="offline-ph">连接中…</div>';
+    tv.innerHTML = '<div class="offline-ph">已连接</div>';
     startWallRfb(inst);
   } else {
     tv.innerHTML = '<div class="offline-ph">离线</div>';
@@ -1915,7 +1915,7 @@ function updateWallTile(inst, d) {
     // 绝不能覆盖直控画面或恢复缩略图获取，否则“操作两下后直控失效”（canvas 被替换）。
     if (directMode && directRfbs.has(d.id)) return;
     if (!inst.rfb) { // 未在获取缩略图，启动它
-      tv.innerHTML = '<div class="offline-ph">连接中…</div>';
+      tv.innerHTML = '<div class="offline-ph">已连接</div>';
       startWallRfb(inst);
     }
   } else {
