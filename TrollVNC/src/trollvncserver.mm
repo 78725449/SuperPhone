@@ -2066,6 +2066,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
         TVLogVerbose(@"sampleBuffer has no image buffer (skip)");
         return;
     }
+    fprintf(stderr, "HFB:0 entry pb=%p\n", pb);
 
     // Busy-drop: if encoders are busy and limit reached, skip this frame (disabled when -Q 0)
     if (gMaxInflightUpdates > 0 && gInflight.load(std::memory_order_relaxed) >= gMaxInflightUpdates) {
@@ -2095,11 +2096,12 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     // Determine rotation and resize framebuffer if orientation implies new dimensions.
     int rotQ = (gOrientationSyncEnabled ? gRotationQuad.load(std::memory_order_relaxed) : 0) & 3;
 
+    fprintf(stderr, "HFB:1 before-resize rotQ=%d gSrc=%dx%d gOut=%dx%d\n", rotQ, gSrcWidth, gSrcHeight, gWidth, gHeight);
 #if DEBUG
     CFAbsoluteTime __tv_tResize0 = CFAbsoluteTimeGetCurrent();
 #endif
-
     maybeResizeFramebufferForRotation(rotQ);
+    fprintf(stderr, "HFB:2 after-resize\n");
 
 #if DEBUG
     CFAbsoluteTime __tv_tResize1 = CFAbsoluteTimeGetCurrent();
@@ -3533,10 +3535,12 @@ static void startBonjour(void) {
 static void tvUpdateThumbCache(CVPixelBufferRef pb) {
     if (gClientCount > 0 || !gThumbPushEnabled || gScreenLocked) return;   // 屏幕流互斥 + 开关 + 锁屏停留最后一帧
     if (!pb) return;
+    fprintf(stderr, "THUMB:1 enter pb=%p\n", pb);
     // 2026-08-21 修复：hash 从采集帧（pb）直接计算——computeHashHexForCurrentFrame 会二次取帧
     //（captureSingleFrameBuffer → renderDisplayToScreenSurface → 重入 CARenderServerRenderDisplay）
     // 在 CADisplayLink 回调内崩溃（SIGILL）。改用 computeHashHexForPixelBuffer 跳过取帧。
     NSString *h = [[TRScreenHasher sharedHasher] computeHashHexForPixelBuffer:pb];
+    fprintf(stderr, "THUMB:2 after-hash h=%s\n", h ? [h UTF8String] : "nil");
     if (!h) return;
     pthread_mutex_lock(&gThumbLock);
     BOOL changed = !gThumbHash || ![h isEqualToString:gThumbHash];
