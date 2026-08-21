@@ -2282,11 +2282,12 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     CFAbsoluteTime __tv_tUnlock0 = CFAbsoluteTimeGetCurrent();
 #endif
 
-    CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+    // 2026-08-21：采集写入完成（gFramebufferLock 已释放）→ 从采集帧（pb）更新缩略图缓存
+    //（画面 hash 变化才编码，无活跃客户端且开关开启时生效）
+    // 2026-08-21 修复：从采集帧（pb）直接编码缩略图——须在 pb unlock 前调用（读 pb 像素）
+    tvUpdateThumbCache(pb);
 
-    // 2026-08-21：采集写入完成（gFramebufferLock 已释放）→ 更新缩略图缓存
-    //（画面 hash 变化才重新采集+JPEG 编码，无活跃客户端且开关开启时生效）
-    tvUpdateThumbCache();
+    CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
 
 #if DEBUG
     CFAbsoluteTime __tv_tUnlock1 = CFAbsoluteTimeGetCurrent();
@@ -3526,21 +3527,33 @@ static void startBonjour(void) {
 
 // 2026-08-21：更新缩略图缓存（采集回调 handleFramebuffer 末尾调用，主线程）。
 // 无活跃 VNC 客户端（屏幕流互斥）且 ThumbPushEnabled 开启时，对当前帧计算 pHash，
-// 与缓存 hash 不同且距上次编码 ≥1s 才重新采集单帧并缩放为宽 320 的 JPEG 存入缓存，
-// 供 5802 /thumb 拉取（hash 检测每帧做，编码节流防高频画面反复重渲染）。
-static void tvUpdateThumbCache(void) {
+// 与缓存 hash 不同且距上次编码 ≥1s 才从【采集帧直接编码】缩略图（宽 320 JPEG）存入缓存，
+// 供 5802 /thumb 拉取（hash 检测每帧做，编码节流防高频画面反复重编码）。
+// 2026-08-21 修复：不再调用 captureSingleFrameImage 二次渲染——daemon（无前台 UI/熄屏）下
+// 在采集回调内二次 CARenderServerRenderDisplay 会崩溃（server 首帧后即退出，崩溃循环根因）。
+static void tvUpdateThumbCache(CVPixelBufferRef pb) {
     if (gClientCount > 0 || !gThumbPushEnabled || gScreenLocked) return;   // 屏幕流互斥 + 开关 + 锁屏停留最后一帧
+    if (!pb) return;
     NSString *h = [[TRScreenHasher sharedHasher] computeHashHexForCurrentFrame];
     if (!h) return;
     pthread_mutex_lock(&gThumbLock);
     BOOL changed = !gThumbHash || ![h isEqualToString:gThumbHash];
     pthread_mutex_unlock(&gThumbLock);
     if (!changed) return;   // 画面无变化不更新
-    // 编码节流：画面高频变化时不每帧重渲染（hash 检测每帧做，编码 ≥1s 一次）
+    // 编码节流：画面高频变化时不每帧重编码（hash 检测每帧做，编码 ≥1s 一次）
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
     if (now - gLastThumbEncodeTs < 1.0) return;
-    UIImage *img = [[ScreenCapturer sharedCapturer] captureSingleFrameImage];
-    if (!img) return;
+    // 从采集帧（pb，已由 handleFramebuffer lock）直接编码——零二次渲染
+    CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pb];
+    if (!ciImage) return;
+    static CIContext *thumbCiContext;
+    static dispatch_once_t thumbCtxOnce;
+    dispatch_once(&thumbCtxOnce, ^{ thumbCiContext = [CIContext context]; });
+    CGRect extent = CGRectMake(0, 0, CVPixelBufferGetWidth(pb), CVPixelBufferGetHeight(pb));
+    CGImageRef cgImage = [thumbCiContext createCGImage:ciImage fromRect:extent];
+    if (!cgImage) return;
+    UIImage *img = [UIImage imageWithCGImage:cgImage];
+    CGImageRelease(cgImage);
     // 缩尺寸：按宽 320 等比缩放
     CGFloat scale = 320.0 / img.size.width;
     if (scale >= 1.0) scale = 1.0;
