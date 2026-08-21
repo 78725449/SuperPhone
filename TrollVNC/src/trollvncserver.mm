@@ -2051,8 +2051,8 @@ NS_INLINE void unlockAllClientsBlocking(void) {
     rfbReleaseClientIterator(it);
 }
 
-// 2026-08-21：缩略图缓存更新（定义见 gClientCount 之后，采集回调先声明后调用）
-static void tvUpdateThumbCache(void);
+// 2026-08-21：缩略图缓存更新（定义见 gClientCount 之后，采集回调先声明后调用；pb 为采集帧）
+static void tvUpdateThumbCache(CVPixelBufferRef pb);
 
 static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 
