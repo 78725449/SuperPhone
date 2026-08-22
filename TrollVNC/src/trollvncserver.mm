@@ -4461,17 +4461,24 @@ static BOOL tvDisconnectRemoteClients(void) {
 
     rfbClientPtr cl = NULL;
     rfbClientIteratorPtr it = rfbGetClientIterator(gScreen);
+    // 2026-08-22 崩溃修复：先快照要断开的客户端，迭代器外逐个 rfbCloseClient——
+    // 迭代器遍历中直接关闭客户端会使 libvncserver 迭代器失效（访问已清理节点）→ SIGSEGV 崩溃
+    // （设备端进程重启 → 隧道/注册反复重连「hello」→ 控制卡连接中）
+    NSMutableArray *targets = [NSMutableArray array];
     while ((cl = rfbClientIteratorNext(it))) {
         NSString *host = (cl && cl->host) ? [NSString stringWithUTF8String:cl->host] : @"";
         BOOL isLoopback = [host isEqualToString:@"127.0.0.1"] || [host isEqualToString:@"::1"] ||
                           [host isEqualToString:@"localhost"] || [host hasPrefix:@"127."] ||
                           [host hasPrefix:@"::ffff:127."];
         if (!isLoopback) {
-            rfbCloseClient(cl);
+            [targets addObject:[NSValue valueWithPointer:cl]];
         }
     }
-
     rfbReleaseClientIterator(it);
+    // 迭代器已释放，逐个关闭（同一线程串行，快照指针有效）
+    for (NSValue *v in targets) {
+        rfbCloseClient((rfbClientPtr)v.pointerValue);
+    }
     return YES;
 }
 
