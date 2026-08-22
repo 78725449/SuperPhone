@@ -30,9 +30,6 @@
 /** 停止隧道客户端，断开连接 */
 - (void)stop;
 
-/** 查询本地 RFB 会话是否活跃（rfb.start/rfb.stop 命令驱动） */
-+ (BOOL)isRfbActive;
-
 /**
  * 命令处理器（隧道 CMD 帧到达时调用，返回 ack 字典）
  * 由 TRGatewayClient 注入，复用现有命令处理逻辑（query/set/invoke/restart/ping）。

@@ -24,8 +24,15 @@ class ThumbRfbDecoder {
     this.jpeg = null;          // 最新 JPEG Buffer
     this.maxPending = 1024 * 1024;  // 握手阶段 pending 上限；init 后按全屏帧调整
     this.lastNotifyTs = 0;          // onJpeg 节流时间戳
+    this.paused = false;            // 会话期间暂停：不发增量请求（拉模型下设备即不推帧）
     this.onSend = null;        // (Buffer) => void，上行握手字节回调
     this.onJpeg = null;        // jpeg 更新回调
+  }
+  pause() { this.paused = true; }
+  resume() {
+    if (!this.paused) return;
+    this.paused = false;
+    if (this.fb && this.w > 0) this._requestUpdate(true); // 补发增量请求即恢复推送
   }
   feed(data) {
     if (this.state === 'dead') { this.pending = Buffer.alloc(0); return; }
@@ -97,6 +104,16 @@ class ThumbRfbDecoder {
         return true;
       }
       case 'update': {
+        // 多客户端并存（proto:2）后设备剪贴板变化会向所有客户端广播 ServerCutText
+        // （type 3，[type:1][pad:3][len:4][text]）——解码器只关心 FramebufferUpdate，
+        // 遇到即整条跳过（否则会被当 rect 头解析导致错乱死亡）
+        if (this.pending.length >= 1 && this.pending[0] === 3) {
+          if (this.pending.length < 8) return false;
+          const cutLen = this.pending.readUInt32BE(4);
+          if (this.pending.length < 8 + cutLen) return false;
+          this.pending = this.pending.subarray(8 + cutLen);
+          return true;
+        }
         if (this.pending.length < 4) return false;
         const numRects = this.pending.readUInt16BE(2);
         let off = 4;
@@ -138,6 +155,7 @@ class ThumbRfbDecoder {
   }
   _send(b) { if (this.onSend) this.onSend(Buffer.isBuffer(b) ? b : Buffer.from(b)); }
   _requestUpdate(incremental) {
+    if (this.paused) return; // 会话期间暂停：不发请求（连接保留，恢复时补发）
     const m = Buffer.alloc(10);
     m.writeUInt8(3, 0); m.writeUInt8(incremental ? 1 : 0, 1);
     m.writeUInt16BE(0, 2); m.writeUInt16BE(0, 4);
@@ -369,15 +387,27 @@ const sessionsByDevice = new Map();   // deviceId -> Set<ws>
 const sessionGroup = new Map();       // ws -> { group, deviceId }???????????
 const sessionBroadcaster = new Map(); // ws -> true
 const registeredDevices = new Map(); // deviceId -> { sock, lastHeartbeat }
-// Phase 7：设备隧道连接（deviceId -> { sock, wsSet }），跨网络 RFB 透传 + 命令复用
+// Phase 7：设备隧道连接（deviceId -> { sock, channels, controller, thumbRfb }），
+// proto:2 通道复用：单隧道多路 5901 连接（chan 0 缩略图 + 会话通道），跨网络 RFB 透传 + 命令复用
 const tunnels = new Map();
 // 隧道帧协议常量（type:1B + length:4B BE + payload）
-const FT_DATA    = 0x01;  // RFB 透传数据
 const FT_PING    = 0x02;  // 心跳请求
 const FT_PONG    = 0x03;  // 心跳响应
 const FT_CMD     = 0x04;  // 命令 JSON（网关→设备）
 const FT_CMDACK  = 0x05;  // 命令 ack JSON（设备→网关）
 const FT_STATE   = 0x07;  // 被控状态上报（设备→网关，JSON {controlled:bool}）
+// 2026-08-23 通道复用协议（proto:2）：单隧道多路 5901 连接，网关缩略图与 noVNC 控制流并存
+// （取代 proto:1 的 rfb.start/stop 轮换——多客户端本是 LibVNCServer 原生能力）
+const FT_CHAN_OPEN  = 0x08;  // 通道建立（网关→设备）：payload [chanId:2BE][kind:1B]（kind 0=thumb 1=session）
+const FT_CHAN_ACK   = 0x09;  // 通道建立确认（设备→网关）：payload [chanId:2BE][ok:1B]
+const FT_CHAN_DATA  = 0x0A;  // 通道 RFB 数据（双向）：payload [chanId:2BE][rfb字节]
+const FT_CHAN_CLOSE = 0x0B;  // 通道关闭（双向）：payload [chanId:2BE][reason:1B]（0=正常 1=对端EOF 2=错误）
+const TUNNEL_PROTO    = 2;   // 隧道协议版本（tunnel_hello.proto，不匹配即拒绝）
+const CHAN_ID_THUMB   = 0;   // 缩略图通道固定 chanId=0；会话通道从 1 起单调分配
+const CHAN_KIND_THUMB = 0, CHAN_KIND_SESSION = 1;
+// 构造通道帧 payload
+const chanPayload = (chanId, ...rest) => { const b = Buffer.alloc(2 + rest.length); b.writeUInt16BE(chanId, 0); rest.forEach((v, i) => b.writeUInt8(v, 2 + i)); return b; };
+const chanDataPayload = (chanId, data) => Buffer.concat([chanPayload(chanId), data]);
 
 // 向已注册设备下发 JSON 命令（写注册 socket；v1 仅 ping 验证，set 类留 B4）
 function sendToDevice(deviceId, obj) {
@@ -459,19 +489,55 @@ function getDeviceSessions(deviceId) {
   return sessionsByDevice.get(deviceId);
 }
 
-// 把上游输入字节广播给同组的其它会话（写往它们各自的 TCP 连接）
+// 把上游输入字节广播给同组的其它会话（proto:2：经各目标会话的通道下行到目标设备 5901）
 function broadcastInput(fromWs, groupName, data) {
   if (!groupName) return;
   for (const [ws, info] of sessionGroup) {
     if (ws === fromWs || !info || info.group !== groupName) continue;
     const targetTun = tunnels.get(info.deviceId);
-    if (targetTun && targetTun.sock && !targetTun.sock.destroyed && targetTun.sock.writable) {
-      try { writeTunnelFrame(targetTun.sock, FT_DATA, data); } catch { /* ignore */ }
+    if (targetTun && targetTun.sock && !targetTun.sock.destroyed && targetTun.sock.writable
+        && info.chanId != null && targetTun.channels.has(info.chanId)) {
+      try { writeTunnelFrame(targetTun.sock, FT_CHAN_DATA, chanDataPayload(info.chanId, data)); } catch { /* ignore */ }
     }
   }
 }
 
 // ---------- WebSocket <-> VNC 桥接 ----------
+// proto:2 会话通道辅助：缩略图在会话期间暂停请求（RFB 拉模型——不发
+// FramebufferUpdateRequest 设备即不推帧，连接/握手状态完整保留，零流量），
+// 会话通道全断后补发一个增量请求即恢复推送（无重连、无竞态）
+function pauseThumb(tun) {
+  if (tun.thumbRfb && !tun.thumbRfb.paused) tun.thumbRfb.pause();
+}
+function resumeThumb(tun) {
+  if (tun.thumbRfb && tun.thumbRfb.paused) tun.thumbRfb.resume();
+}
+function hasSessionChannels(tun) {
+  for (const ch of tun.channels.values()) if (ch.kind === CHAN_KIND_SESSION) return true;
+  return false;
+}
+// ACK 放行（或超时强制放行）：把通道缓冲的握手字节下发，跳过设备端已主动
+// 写入的 12B 协议版本（"RFB 003." 前缀——再写一次 5901 会收到两个版本行致协议错乱）
+function releaseChPendingUp(tun, ch) {
+  let up = ch.pendingUp;
+  if (up.length >= 12 && up.subarray(0, 12).toString('latin1').startsWith('RFB 003.')) {
+    up = up.subarray(12);
+  }
+  if (up.length) {
+    try { writeTunnelFrame(tun.sock, FT_CHAN_DATA, chanDataPayload(ch.id, up)); } catch { /* noop */ }
+  }
+  ch.pendingUp = Buffer.alloc(0);
+}
+// 缩略图通道重开（chan 0 EOF / ACK 失败后的 2s 退避重试；已就绪则跳过）
+function scheduleThumbOpen(tun) {
+  if (tun.thumbRetryTimer) return;
+  tun.thumbRetryTimer = setTimeout(() => {
+    tun.thumbRetryTimer = null;
+    if (tun.sock && !tun.sock.destroyed && tun.sock.writable && !tun.thumbRfb) {
+      writeTunnelFrame(tun.sock, FT_CHAN_OPEN, chanPayload(CHAN_ID_THUMB, CHAN_KIND_THUMB));
+    }
+  }, 2000);
+}
 function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
   const dev = findDevice(deviceId);
   if (!dev) {
@@ -485,61 +551,9 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
     return;
   }
   if (isBroadcast) sessionBroadcaster.set(ws, true);
-  if (grp) sessionGroup.set(ws, { group: grp, deviceId });
   const sessions = getDeviceSessions(deviceId);
   sessions.add(ws);
-  // Phase 7.2 修复：WS 会话必须注册进 tun.wsSet（RFB 数据订阅集合），
-  // 否则 FT_DATA 无订阅者，设备回传的画面字节只会进 pending 缓冲导致黑屏。
-  // 首个会话触发 rfb.start、末个会话 rfb.stop（on-demand RFB 引用计数）。
-  tun.wsSet.add(ws);
-  // 新会话建立：取消延迟 rfb.stop（快速进出时避免 stop/start 乒乓抖动，提升流畅度）
-  if (tun.stopTimer) {
-    clearTimeout(tun.stopTimer);
-    tun.stopTimer = null;
-  }
-  // 同设备仅保留一个活跃会话：设备端仅 1 条隧道 + 1 个 5901 连接（_localFd），
-  // 多个会话（含未清理的残留、直控与同步并存等）同时上行会共同驱动 5901 协议状态机，
-  // 握手/输入字节相互串扰 → noVNC 在消息循环收到非法字节 "Unexpected server message (type N)" 断开。
-  // 顶掉旧会话后按"首会话"语义触发 5901 重建，新会话拿到干净握手；ctrl 间抢占由下方分支处理。
-  for (const other of [...tun.wsSet]) {
-    if (other === ws || other.isController) continue;
-    // 已关闭的 ws（readyState !== OPEN）也需从 wsSet/sessions 中剔除：
-    // 否则 wsSet.size 虚高 → isFirstSession 误判为 false → viewOnly 会话不触发 rfb.start 重建 → 黑屏
-    if (other.readyState !== other.OPEN) {
-      tun.wsSet.delete(other);
-      sessions.delete(other);
-      sessionGroup.delete(other);
-      sessionBroadcaster.delete(other);
-      if (tun.controller === other) tun.controller = null;
-      continue;
-    }
-    tun.wsSet.delete(other);
-    sessions.delete(other);
-    sessionGroup.delete(other);
-    sessionBroadcaster.delete(other);
-    if (tun.controller === other) tun.controller = null;
-    try { other.close(4001, 'preempted by new session'); } catch { /* noop */ }
-  }
-  const isFirstSession = tun.wsSet.size === 1;
-  // ctrl 会话（唯一控制者）无条件重建设备 5901：接管场景（新 ctrl 顶掉旧 ctrl）必须重建，
-  // 否则新 noVNC 的握手字节会转发到旧 5901 连接上，协议状态错乱导致黑屏；
-  // viewOnly 会话仍仅在"首个会话"（wsSet 0→1）时触发，避免多会话互相打断。
-  const needRfbRebuild = isCtrl || isFirstSession;
-
-  // 无订阅期间的 RFB 握手头（pending 缓冲）补发给新会话，避免 noVNC 悬挂黑屏。
-  // 注意：仅"不触发重建"的会话才可复用旧缓冲数据；触发重建（ctrl / 首会话）的
-  // 会话即将 stop→start 全新 5901 连接，旧 pending 是上一个会话的残留帧
-  // （退出时 rfb.stop 延迟 800ms 下发，期间旧连接仍在推帧被缓冲），
-  // 直接补发会让 noVNC 把旧帧当版本响应 → "Invalid server version" 黑屏。
-  if (!needRfbRebuild && tun.pending && tun.pending.length) {
-    const pv = tun.pending;
-    tun.pending = Buffer.alloc(0);
-    try { ws.send(pv); } catch { /* ignore */ }
-  }
-  ws.isController = !!isCtrl;
-  console.log(`[vnc] tunnel bridge ${dev.name} (${deviceId}) ctrl=${isCtrl ? 'YES' : 'viewOnly'} grp=${grp || '-'}${isBroadcast ? ' MASTER' : ''} sessions=${tun.wsSet.size}`);
-
-  // 控制会话抢占：新 ctrl 顶掉旧 ctrl
+  // 控制会话抢占：新 ctrl 顶掉旧 ctrl（业务层唯一控制者，4001 语义不变）
   if (isCtrl) {
     const old = tun.controller;
     if (old && old !== ws && old.readyState === old.OPEN) {
@@ -547,110 +561,69 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
     }
     tun.controller = ws;
   }
-  // on-demand RFB：强制设备侧重建本地 5901（stop→start），确保新会话拿到全新 RFB 握手，
-  // 避免复用旧连接导致 "Invalid server version" / 协议错乱黑屏。
-  // ack 驱动：设备端同步 connect 后回 ack 携带结果——收到 ack 才精确放行缓冲的握手字节
-  // （替代固定 400ms 窗口，消除设备冷启动/慢连接的竞态）；connect 失败则显式断开控制会话报错，
-  // 3s 超时兜底（旧设备不 ack 时强制放行，防永久卡死）。
-  if (needRfbRebuild && tun.sock && !tun.sock.destroyed && tun.sock.writable) {
-    const rid = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const mkCmd = (cmd, id) => Buffer.from(JSON.stringify({ type: 'cmd', cmd, id: id || ('s' + Date.now().toString(36)) }), 'utf8');
-    // 2026-08-22 根本修复：不再预发 rfb.stop——rfb.start 设备端本就无条件重连
-    // （先关旧 fd 再 connect，见 TRTunnelClient），预发 rfb.stop 会让设备端先重连
-    // 缩略图客户端、随即被 rfb.start 关掉 → 5901 连接竞争 → 连续「控制→断开→再控制」
-    // 时新会话握手被旧连接残留干扰 → 卡在加载中。只发 rfb.start 消除该中间态。
-    // 重建窗口期内缓冲上行握手字节
-    // 重建即将开始全新 RFB 连接：丢弃上一个会话残留的下行缓冲（防污染新会话握手）
-    tun.pending = Buffer.alloc(0);
-    tun.pendingUp = Buffer.alloc(0);
-    // 2026-08-21 修复：noVNC 握手字节缓冲到 rfb.start ack 后放行（ack 时跳过协议版本——
-    // 设备端已在 rfb.start connect 后主动写入 "RFB 003.008\n"，见 TRTunnelClient）。
-    // 缓冲窗口保证 noVNC 版本不会在 connect 前/后产生重复写入竞态。
-    tun.pendingUpUntil = Date.now() + 3000; // 兜底：ack 正常会在设备 connect 完成后提前结束
-    tun.rebuild = { id: rid, timer: null };
-    // 兜底超时：ack 丢失/旧设备不 ack 时强制放行，避免握手字节永久卡在缓冲
-    tun.rebuild.timer = setTimeout(() => {
-      if (tun.rebuild && tun.rebuild.id === rid) {
-        tun.pendingUpUntil = 0;
-        console.log(`[vnc] rfb.start ack timeout, force release (${deviceId})`);
-        if (tun.pendingUp && tun.pendingUp.length) {
-          // 同 ack 放行：跳过设备端已主动写入的协议版本（见 ack 处理分支）
-          let up = tun.pendingUp;
-          if (up.length >= 12 && up.subarray(0, 12).toString('latin1').startsWith('RFB 003.')) {
-            up = up.subarray(12);
-          }
-          if (up.length) {
-            try { writeTunnelFrame(tun.sock, FT_DATA, up); } catch { /* noop */ }
-          }
-        }
-        tun.pendingUp = null;
-        tun.rebuild = null;
-      }
-    }, 3000);
-    tun.mode = 'stream'; // 屏幕流态：FT_DATA 转发 noVNC（退出缩略图态）
-    tun.thumbRfb = null;
-    try { writeTunnelFrame(tun.sock, FT_CMD, mkCmd('rfb.start', rid)); } catch { /* noop */ }
-  }
+  // proto:2：每个会话分配独立通道（设备端各 connect 一条 5901 连接，LibVNCServer
+  // 原生多客户端 per-client 编码，无连接轮换）；viewOnly 与任何会话并存（原单连接
+  // 约束下"新会话顶旧 viewOnly"的互斥随通道化一起消失）
+  const chanId = tun.nextChan++;
+  const ch = { id: chanId, kind: CHAN_KIND_SESSION, ws, ready: false, pendingUp: Buffer.alloc(0), timer: null };
+  tun.channels.set(chanId, ch);
+  if (grp) sessionGroup.set(ws, { group: grp, deviceId, chanId });
+  ws.isController = !!isCtrl;
+  console.log(`[vnc] tunnel bridge ${dev.name} (${deviceId}) chan=${chanId} ctrl=${isCtrl ? 'YES' : 'viewOnly'} grp=${grp || '-'}${isBroadcast ? ' MASTER' : ''} sessions=${sessions.size}`);
+  // 有会话通道：缩略图暂停请求（连接保留，恢复零成本）
+  pauseThumb(tun);
+
+  // CHAN_OPEN 下发：设备端同步 connect 5901 + 主动写协议版本后回 CHAN_ACK；
+  // ACK 前缓冲 noVNC 上行握手字节（防写入未就绪连接，取代 proto:1 的 pendingUpUntil 窗口）
+  writeTunnelFrame(tun.sock, FT_CHAN_OPEN, chanPayload(chanId, CHAN_KIND_SESSION));
+  // 3s 兜底：设备僵死不回 ACK 时强制放行，防握手字节永久卡缓冲
+  ch.timer = setTimeout(() => {
+    const cur = tun.channels.get(chanId);
+    if (cur === ch && !ch.ready) {
+      ch.ready = true;
+      releaseChPendingUp(tun, ch);
+    }
+  }, 3000);
 
   ws.on('message', (data, isBinary) => {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    // 设备 5901 重建窗口期内缓冲上行字节（等 rfb.start 重建完成后再放行），
-    // 避免 noVNC 握手字节发到旧/未就绪连接
-    if (tun.pendingUpUntil && Date.now() < tun.pendingUpUntil) {
-      tun.pendingUp = Buffer.concat([tun.pendingUp || Buffer.alloc(0), buf]);
-      if (tun.pendingUp.length > 64 * 1024) {
-        tun.pendingUp = tun.pendingUp.subarray(tun.pendingUp.length - 64 * 1024);
+    if (!tun.channels.has(chanId)) return; // 通道已清理（设备 EOF 等）
+    // ACK 前缓冲（等设备 5901 connect 完成）；RFB 握手必需字节（版本响应/ClientInit/
+    // PixelFormat）viewOnly 会话同样要走——noVNC viewOnly 本身不发输入事件，放行是安全的
+    if (!ch.ready) {
+      ch.pendingUp = Buffer.concat([ch.pendingUp, buf]);
+      if (ch.pendingUp.length > 64 * 1024) {
+        ch.pendingUp = ch.pendingUp.subarray(ch.pendingUp.length - 64 * 1024);
       }
       return;
     }
-    // RFB 握手必需字节（版本响应/ClientInit/PixelFormat 等）在 viewOnly 会话也要转发，
-    // 否则 noVNC 握手被卡死导致黑屏。noVNC 的 viewOnly 模式本身不会发送输入事件，
-    // 因此允许所有会话上行转发是安全的；输入转发仅广播主控触发。
-    const ok = writeTunnelFrame(tun.sock, FT_DATA, buf);
-    console.log(`[vnc] ws->tunnel ${deviceId} bytes=${buf.length} hex=${buf.toString('hex')} wrote=${ok}`);
+    writeTunnelFrame(tun.sock, FT_CHAN_DATA, chanDataPayload(chanId, buf));
+    // 同步群控：主控输入经各目标会话的通道广播到目标设备
     if (isBroadcast && grp) broadcastInput(ws, grp, buf);
   });
 
   const cleanup = () => {
-    // close/error 双触发幂等保护：已清理过则直接返回
-    if (!tun.wsSet.has(ws)) return;
+    // close/error 双触发幂等保护：通道已删（设备 EOF 路径先删通道再关 ws）则直接返回
+    if (!tun.channels.has(chanId)) return;
+    tun.channels.delete(chanId);
+    if (ch.timer) { clearTimeout(ch.timer); ch.timer = null; }
     sessions.delete(ws);
     sessionGroup.delete(ws);
     sessionBroadcaster.delete(ws);
-    tun.wsSet.delete(ws);
-    if (tun.controller === ws) {
-      tun.controller = null;
+    if (tun.controller === ws) tun.controller = null;
+    // 通知设备端关闭对应 5901 连接（通道生命周期 = 会话生命周期）
+    if (tun.sock && !tun.sock.destroyed && tun.sock.writable) {
+      try { writeTunnelFrame(tun.sock, FT_CHAN_CLOSE, chanPayload(chanId, 0)); } catch { /* noop */ }
     }
-    // 最后一个会话断开：清空 pending（旧会话残留数据失效，防补发给新会话造成握手错乱）+ 延迟 rfb.stop
-    if (tun.wsSet.size === 0) {
-      tun.pending = Buffer.alloc(0);
-      // 会话全断：作废设备 5901 重建窗口的缓冲与 ack 等待状态
-      tun.pendingUp = null;
-      tun.pendingUpUntil = 0;
-      if (tun.rebuild) {
-        if (tun.rebuild.timer) clearTimeout(tun.rebuild.timer);
-        tun.rebuild = null;
-      }
-      if (tun.stopTimer) clearTimeout(tun.stopTimer);
-      if (tun.sock && !tun.sock.destroyed && tun.sock.writable) {
-        // debounce 800ms：快速重进时设备 5901 连接保持，减少 stop/start 乒乓
-        tun.stopTimer = setTimeout(() => {
-          tun.stopTimer = null;
-          if (!tun.sock || tun.sock.destroyed || !tun.sock.writable) return;
-          const rfbStop = Buffer.from(JSON.stringify({ type: 'cmd', cmd: 'rfb.stop', id: 'e' + Date.now().toString(36) }), 'utf8');
-          tun.mode = 'thumb';       // 回缩略图态
-          tun.thumbRfb = null;      // 丢弃旧解码器，下次缩略图态重建
-          try { writeTunnelFrame(tun.sock, FT_CMD, rfbStop); } catch { /* noop */ }
-        }, 800);
-      }
-    }
+    // 会话通道归零：恢复缩略图请求（连接未动，补发增量请求即恢复推送）
+    if (!hasSessionChannels(tun)) resumeThumb(tun);
   };
   ws.on('close', (code, reason) => {
-    console.log(`[vnc] ws closed device=${deviceId} code=${code} reason=${reason ? reason.toString() : ''}`);
+    console.log(`[vnc] ws closed device=${deviceId} chan=${chanId} code=${code} reason=${reason ? reason.toString() : ''}`);
     cleanup();
   });
   ws.on('error', (err) => {
-    console.log(`[vnc] ws error device=${deviceId}: ${err && err.message}`);
+    console.log(`[vnc] ws error device=${deviceId} chan=${chanId}: ${err && err.message}`);
     cleanup();
   });
 }
@@ -1577,75 +1550,88 @@ const tunnelServer = net.createServer((sock) => {
   let frameBuf = Buffer.alloc(0);  // 帧解析缓冲
 
   /**
-   * 处理一个完整帧（DATA/CMDACK/PING/PONG）
+   * 处理一个完整帧（CHAN_DATA/CHAN_ACK/CHAN_CLOSE/CMDACK/PING/PONG/STATE）
    * @param {number} type 帧类型
    * @param {Buffer} payload 负载
    * @returns {void}
    */
   const handleFrame = (type, payload) => {
-    if (type === FT_DATA) {
+    if (type === FT_CHAN_DATA) {
+      // 通道 RFB 数据（设备→网关）：按 chanId 分发——0 喂缩略图解码器，其余发对应会话 WS
+      if (payload.length < 2) return;
       const rec = tunnels.get(deviceId);
       if (!rec) return;
-      if (rec.pendingUpUntil && Date.now() < rec.pendingUpUntil) return;
-      if (rec.mode === 'thumb') {
-        // 缩略图态：喂给缩略图 RFB 解码器（网关自己解码 framebuffer）
-        if (!rec.thumbRfb) {
-          rec.thumbRfb = new ThumbRfbDecoder();
-          rec.thumbRfb.onSend = (bytes) => { try { writeTunnelFrame(sock, FT_DATA, bytes); } catch { /* noop */ } };
-          rec.thumbRfb.onJpeg = () => { notifyDevicesChanged('thumb', deviceId); };
-        }
-        rec.thumbRfb.feed(payload);
+      const chanId = payload.readUInt16BE(0);
+      const data = payload.subarray(2);
+      if (chanId === CHAN_ID_THUMB) {
+        if (rec.thumbRfb) rec.thumbRfb.feed(data);
       } else {
-        // 屏幕流态：转发给 noVNC 订阅者
-        if (rec.wsSet.size > 0) {
-          rec.pending = Buffer.alloc(0);
-          for (const ws of rec.wsSet) {
-            if (ws.readyState === ws.OPEN) { try { ws.send(payload); } catch { /* ignore */ } }
-          }
-        } else {
-          rec.pending = Buffer.concat([rec.pending, payload]);
-          if (rec.pending.length > 64 * 1024) rec.pending = rec.pending.subarray(rec.pending.length - 64 * 1024);
+        const ch = rec.channels.get(chanId);
+        if (ch && ch.ws && ch.ws.readyState === ch.ws.OPEN) {
+          try { ch.ws.send(data); } catch { /* ignore */ }
         }
+      }
+    } else if (type === FT_CHAN_ACK) {
+      // 通道建立确认（设备→网关）：[chanId:2BE][ok:1B]
+      // ok=设备端 connect 5901 成功——此刻起放行该通道缓冲的上行握手字节
+      if (payload.length < 3) return;
+      const rec = tunnels.get(deviceId);
+      if (!rec) return;
+      const chanId = payload.readUInt16BE(0);
+      const ok = payload[2];
+      if (chanId === CHAN_ID_THUMB) {
+        // 缩略图通道就绪：创建解码器（onSend 输出封装为 chan 0 下行；设备端对通道
+        // 首包 12B "RFB 003." 重复版本有对称过滤）
+        if (ok) {
+          rec.thumbRfb = new ThumbRfbDecoder();
+          rec.thumbRfb.onSend = (bytes) => { try { writeTunnelFrame(sock, FT_CHAN_DATA, chanDataPayload(CHAN_ID_THUMB, bytes)); } catch { /* noop */ } };
+          rec.thumbRfb.onJpeg = () => { notifyDevicesChanged('thumb', deviceId); };
+          // 若已有会话（如 5901 重启后重开 chan 0），保持暂停语义
+          if (hasSessionChannels(rec)) rec.thumbRfb.pause();
+        } else {
+          console.log(`[tunnel] thumb chan ack failed (${deviceId}), retry in 2s`);
+          scheduleThumbOpen(rec);
+        }
+        return;
+      }
+      const ch = rec.channels.get(chanId);
+      if (!ch || ch.ready) return;
+      if (ch.timer) { clearTimeout(ch.timer); ch.timer = null; }
+      if (ok) {
+        ch.ready = true;
+        releaseChPendingUp(rec, ch);
+      } else {
+        // connect 5901 失败：显式断开会话（前端提示"画面服务不可用"），不静默黑屏
+        console.log(`[vnc] chan ${chanId} ack failed (${deviceId}), closing session`);
+        rec.channels.delete(chanId);
+        try { ch.ws.close(4005, 'device RFB unavailable'); } catch { /* noop */ }
+        if (!hasSessionChannels(rec)) resumeThumb(rec);
+      }
+    } else if (type === FT_CHAN_CLOSE) {
+      // 通道关闭（设备→网关）：设备端 5901 连接 EOF（服务重启/异常断开）
+      if (payload.length < 2) return;
+      const rec = tunnels.get(deviceId);
+      if (!rec) return;
+      const chanId = payload.readUInt16BE(0);
+      if (chanId === CHAN_ID_THUMB) {
+        // 缩略图通道断开：丢弃解码器，退避重试 CHAN_OPEN（设备 5901 恢复后自愈）
+        console.log(`[tunnel] thumb chan closed (${deviceId}), retry in 2s`);
+        rec.thumbRfb = null;
+        scheduleThumbOpen(rec);
+      } else {
+        const ch = rec.channels.get(chanId);
+        if (!ch) return; // 会话已自行关闭（幂等）
+        rec.channels.delete(chanId);
+        if (ch.timer) { clearTimeout(ch.timer); ch.timer = null; }
+        // 关 WS 会触发 cleanup，但通道已删故不会再向设备发 CHAN_CLOSE（对端已关）
+        try { ch.ws.close(4006, 'device rfb eof'); } catch { /* noop */ }
+        if (!hasSessionChannels(rec)) resumeThumb(rec);
       }
     } else if (type === FT_CMDACK) {
       // cmd ack: match pending cmds
       let ack;
       try { ack = JSON.parse(payload.toString('utf8')); } catch { return; }
       console.log(`[tunnel] FT_CMDACK from ${deviceId} cmd=${ack && ack.cmd} ok=${ack && ack.ok}`);
-      // rfb.start ack：设备 5901 就绪确认（ack 驱动精确放行握手字节）
-      const tunRec = tunnels.get(deviceId);
-      if (tunRec && tunRec.rebuild && ack && ack.cmd === 'rfb.start' && ack.id === tunRec.rebuild.id) {
-        if (tunRec.rebuild.timer) { clearTimeout(tunRec.rebuild.timer); tunRec.rebuild.timer = null; }
-        tunRec.pendingUpUntil = 0; // 结束下行丢弃窗口（设备 5901 已就绪）
-        if (ack.ok) {
-          // connect 成功：放行缓冲的握手字节，noVNC 必然拿到 server version 出画面
-          console.log(`[vnc] rfb.start ack ok, release handshake bytes (${deviceId})`);
-          if (tunRec.pendingUp && tunRec.pendingUp.length) {
-            // 2026-08-21 根因修复（与设备端 TRTunnelClient 主动发协议版本配套）：
-            // 设备端在 rfb.start connect 后已主动写入 "RFB 003.008\n"，若此处再放行
-            // noVNC 的协议版本，设备端会收到两个协议版本 → 协议错乱。故跳过前 12 字节
-            // 协议版本（仅当以 "RFB 003." 开头时），放行其余（SetEncodings 等后续字节）。
-            let up = tunRec.pendingUp;
-            if (up.length >= 12 && up.subarray(0, 12).toString('latin1').startsWith('RFB 003.')) {
-              const skipped = up.subarray(12);
-              up = skipped.length ? skipped : null;
-              console.log(`[vnc] skip duplicate version, release ${up ? up.length : 0}B (${deviceId})`);
-            }
-            if (up && up.length) {
-              try { writeTunnelFrame(sock, FT_DATA, up); } catch { /* noop */ }
-            }
-          }
-        } else {
-          // connect 失败：显式断开控制会话（前端提示"画面服务不可用"），不静默黑屏
-          console.log(`[vnc] rfb.start ack failed (${deviceId}), closing ctrl session`);
-          if (tunRec.controller && tunRec.controller.readyState === 1) {
-            try { tunRec.controller.close(4005, 'device RFB unavailable'); } catch { /* noop */ }
-          }
-        }
-        tunRec.pendingUp = null;
-        tunRec.rebuild = null;
-        return;
-      }
       const p = ack && ack.id ? pendingCmds.get(String(ack.id)) : undefined;
       if (p) {
         clearTimeout(p.timer);
@@ -1707,6 +1693,14 @@ const tunnelServer = net.createServer((sock) => {
       let hello;
       try { hello = JSON.parse(line); } catch (e) { sock.destroy(); return; }
       if (hello.type !== 'tunnel_hello' || !hello.deviceId) { sock.destroy(); return; }
+      // proto:2 fail-fast：协议不匹配（旧 IPA/旧网关混部）立即拒绝——通道帧与旧
+      // FT_DATA/rfb.start 语义互不兼容，静默降级只会产生协议污染黑屏，难排查
+      if (hello.proto !== TUNNEL_PROTO) {
+        console.error(`[tunnel] proto mismatch from ${hello.deviceId}: got ${hello.proto}, need ${TUNNEL_PROTO}, rejecting`);
+        sock.write(JSON.stringify({ type: 'tunnel_ack', ok: false, error: `proto mismatch: need ${TUNNEL_PROTO}` }) + '\n');
+        sock.destroy();
+        return;
+      }
       // 校验 deviceId 是否已注册（可选校验 token）
       deviceId = hello.deviceId;
       dev = findDevice(deviceId);
@@ -1720,13 +1714,25 @@ const tunnelServer = net.createServer((sock) => {
       if (old && old.sock !== sock) {
         try { old.sock.destroy(); } catch { /* noop */ }
       }
-      tunnels.set(deviceId, { sock, wsSet: new Set(), controller: null, pending: Buffer.alloc(0), thumbRfb: null, mode: 'thumb', controlled: false, controlledSource: null });
-      sock.write(JSON.stringify({ type: 'tunnel_ack', ok: true }) + '\n');
+      tunnels.set(deviceId, {
+        sock,
+        channels: new Map(),   // chanId -> { id, kind, ws, ready, pendingUp, timer }
+        nextChan: 1,           // 会话通道号分配器（0 固定缩略图）
+        controller: null,
+        thumbRfb: null,        // 缩略图解码器（chan 0 ACK 成功后创建）
+        thumbRetryTimer: null, // chan 0 EOF/失败重试定时器
+        controlled: false,
+        controlledSource: null,
+      });
+      sock.write(JSON.stringify({ type: 'tunnel_ack', ok: true, proto: TUNNEL_PROTO }) + '\n');
       framed = true;
       dev.online = true;
       dev.lastSeen = Date.now();
       saveDb();
-      console.log(`[tunnel] established for device ${deviceId} (${dev.name})`);
+      console.log(`[tunnel] established for device ${deviceId} (${dev.name}) proto=${TUNNEL_PROTO}`);
+      // 隧道就绪即开缩略图通道（chan 0）：设备端 connect 5901 + 主动写版本后回 ACK，
+      // ACK 后网关创建 ThumbRfbDecoder 开始缩略图拉流
+      writeTunnelFrame(sock, FT_CHAN_OPEN, chanPayload(CHAN_ID_THUMB, CHAN_KIND_THUMB));
       // buf 中剩余字节作为首批帧数据
       if (buf.length > 0) {
         feedFrame(buf);
@@ -1738,13 +1744,13 @@ const tunnelServer = net.createServer((sock) => {
         const rec = tunnels.get(deviceId);
         if (rec && rec.sock === sock) {
           tunnels.delete(deviceId);
-          // 关闭关联的 WS 会话，避免挂起（客户端可重连）
-          if (rec.wsSet) {
-            for (const ws of rec.wsSet) {
-              try { ws.close(4002, 'tunnel closed'); } catch { /* noop */ }
-            }
-            rec.wsSet.clear();
+          // 关闭关联的 WS 会话与通道状态，避免挂起（客户端可重连）
+          if (rec.thumbRetryTimer) { clearTimeout(rec.thumbRetryTimer); rec.thumbRetryTimer = null; }
+          for (const ch of rec.channels.values()) {
+            if (ch.timer) { clearTimeout(ch.timer); ch.timer = null; }
+            try { ch.ws.close(4002, 'tunnel closed'); } catch { /* noop */ }
           }
+          rec.channels.clear();
           // 注册通道仍存活则保持在线，否则判离线
           if (dev) {
             const regAlive = registeredDevices.has(deviceId);

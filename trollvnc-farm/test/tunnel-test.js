@@ -1,4 +1,5 @@
-// ????????? -> ??? -> WS ??/??/??/?????/????
+// 隧道通道复用测试（proto:2）：注册 -> 隧道 -> 会话通道（CHAN_OPEN/ACK/DATA/CLOSE）
+// 覆盖：viewOnly 订阅、控制器输入、ctrl 抢占 4001、同步群控广播
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -40,22 +41,26 @@ child.stdout.on('data', (d) => (childOut += d));
 child.stderr.on('data', (d) => (childOut += d));
 const auth = { Authorization: `Bearer ${TOKEN}` };
 
-// ---------- ?????? server/?????? ----------
-const FT_DATA = 0x01, FT_CMD = 0x04, FT_CMDACK = 0x05;
+// ---------- 与 server/index.js 对齐的隧道帧协议（proto:2）----------
+const FT_CHAN_OPEN = 0x08, FT_CHAN_ACK = 0x09, FT_CHAN_DATA = 0x0A, FT_CHAN_CLOSE = 0x0B;
 function encodeFrame(type, payload) {
   const buf = Buffer.isBuffer(payload) ? payload : Buffer.from(payload || []);
   const h = Buffer.alloc(5);
   h[0] = type; h.writeUInt32BE(buf.length, 1);
   return Buffer.concat([h, buf]);
 }
+const chanData = (chanId, data) => {
+  const h = Buffer.alloc(2); h.writeUInt16BE(chanId, 0);
+  return Buffer.concat([h, Buffer.isBuffer(data) ? data : Buffer.from(data)]);
+};
 
-/** ??????? + ??? + ??? */
+/** 假设备：注册 + 隧道握手（proto:2）+ 帧解析 + 自动应答 CHAN_OPEN */
 class FakeDevice {
   constructor(deviceId, name, vncPort) {
     this.deviceId = deviceId; this.name = name; this.vncPort = vncPort;
     this.regSock = null; this.tunSock = null;
     this.frameBuf = Buffer.alloc(0);
-    this.frames = [];           // ?????? {type, payload}
+    this.frames = [];           // 收到的帧 {type, payload}
     this._waiters = [];
   }
   _tcp(port) {
@@ -80,8 +85,7 @@ class FakeDevice {
   }
   async openTunnel() {
     this.tunSock = await this._tcp(TUN_PORT);
-    this.tunSock.write(JSON.stringify({ type: 'tunnel_hello', deviceId: this.deviceId }) + '\n');
-    // ? tunnel_ack?????????
+    this.tunSock.write(JSON.stringify({ type: 'tunnel_hello', deviceId: this.deviceId, proto: 2 }) + '\n');
     await new Promise((res, rej) => {
       let buf = '';
       const onData = (d) => {
@@ -95,7 +99,6 @@ class FakeDevice {
             const ack = JSON.parse(line);
             if (!ack.ok) return rej(new Error('tunnel_ack not ok'));
           } catch (e) { return rej(e); }
-          // ????????
           if (rest.length) this._feed(Buffer.from(rest, 'utf8'));
           res();
         }
@@ -115,17 +118,14 @@ class FakeDevice {
       this.frames.push(frame);
       this.frameBuf = this.frameBuf.subarray(5 + len);
       for (const w of [...this._waiters]) w(frame);
-      // 模拟设备：FT_CMD(rfb.start/stop) 自动回 ack（echo id），网关 ack 驱动据此精确放行握手字节
-      if (type === FT_CMD) {
-        let cmd = '', id = null;
-        try { const j = JSON.parse(frame.payload.toString('utf8')); cmd = j.cmd; id = j.id; } catch { /* noop */ }
-        if (cmd === 'rfb.start' || cmd === 'rfb.stop') {
-          this.tunSock.write(encodeFrame(FT_CMDACK, Buffer.from(JSON.stringify({ type: 'ack', cmd, id, ok: true }))));
-        }
+      // 模拟设备：CHAN_OPEN 自动回 CHAN_ACK ok（connect 5901 成功）
+      if (type === FT_CHAN_OPEN && payload.length >= 3) {
+        const ack = Buffer.from([payload[0], payload[1], 1]);
+        this.tunSock.write(encodeFrame(FT_CHAN_ACK, ack));
       }
     }
   }
-  sendData(data) { this.tunSock.write(encodeFrame(FT_DATA, data)); }
+  sendChanData(chanId, data) { this.tunSock.write(encodeFrame(FT_CHAN_DATA, chanData(chanId, data))); }
   nextFrame(type, timeoutMs = 4000) {
     return new Promise((res, rej) => {
       const t = setTimeout(() => rej(new Error('nextFrame timeout')), timeoutMs);
@@ -170,7 +170,7 @@ try {
   });
   check('register -> device source=register', true);
 
-  // ???????????WS ????????
+  // 无隧道设备 WS 拒绝 4003（无直连回退）
   const addRes = await fetch(`http://127.0.0.1:${PORT}/api/devices`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...auth },
     body: JSON.stringify({ name: 'NoTunnel', host: '127.0.0.1', port: 5999 }),
@@ -185,53 +185,59 @@ try {
   });
   check('no-tunnel WS rejected 4003 (no direct fallback)', noTunRejected);
 
-  // ???
+  // 开隧道（proto:2）
   await d1.openTunnel();
   const baseWs = `ws://127.0.0.1:${PORT}/ws/vnc/${encodeURIComponent(d1.deviceId)}?token=${TOKEN}`;
 
-  // ?????viewOnly ?? WS ???? DATA
+  // viewOnly 会话：独立通道，设备上行 CHAN_DATA(chanId) -> WS
   const sub = await wsConnect(baseWs);
   const subGot = [];
   sub.on('message', (d) => subGot.push(Buffer.from(d)));
-  await new Promise((r) => setTimeout(r, 200));
-  d1.sendData(Buffer.from([0x01, 0x02, 0x03]));
+  // 等网关下发 CHAN_OPEN（会话通道，chanId!=0；隧道建立时已有 chan 0 缩略图 OPEN）并自动 ack 后，设备推数据
+  await new Promise((r) => setTimeout(r, 300));
+  const subChan = d1.frames.find((f) => f.type === FT_CHAN_OPEN && f.payload.readUInt16BE(0) !== 0);
+  check('viewOnly session gets CHAN_OPEN', !!subChan);
+  const subChanId = subChan ? subChan.payload.readUInt16BE(0) : 0;
+  d1.sendChanData(subChanId, Buffer.from([0x01, 0x02, 0x03]));
   await waitFor(() => subGot.some((b) => b.equals(Buffer.from([0x01, 0x02, 0x03]))));
-  check('viewOnly subscriber receives tunnel DATA', true);
+  check('viewOnly subscriber receives channel DATA', true);
 
-  // viewOnly 会话上行可转发（握手必需字节；只读由 noVNC 客户端保证）。
-  // 注意：须在 ctrl 加入前验证——同设备仅 1 个活跃会话，ctrl 加入会顶掉 viewOnly（4001）
+  // viewOnly 上行转发到设备（握手必需字节；只读由 noVNC 客户端保证）
   d1.frames = [];
   sub.send(Buffer.from([0x99]));
   await new Promise((r) => setTimeout(r, 400));
-  check('viewOnly subscriber upstream forwarded to tunnel', d1.frames.filter((f) => f.type === FT_DATA).length === 1);
+  const upFrames = d1.frames.filter((f) => f.type === FT_CHAN_DATA && f.payload.readUInt16BE(0) === subChanId);
+  check('viewOnly subscriber upstream forwarded to tunnel', upFrames.length === 1);
 
-  // ???? -> ?? FT_DATA
-  d1.frames = []; // 清空 viewOnly 上行验证的旧 FT_DATA 帧（nextFrame 不消费匹配帧）
+  // 控制器输入 -> 设备通道
+  d1.frames = [];
   const ctrl = await wsConnect(`${baseWs}&ctrl=1`);
-  const ctrlFrameP = d1.nextFrame(FT_DATA);
+  await new Promise((r) => setTimeout(r, 300));
+  const ctrlChan = d1.frames.find((f) => f.type === FT_CHAN_OPEN && f.payload.readUInt16BE(0) !== 0);
+  const ctrlChanId = ctrlChan ? ctrlChan.payload.readUInt16BE(0) : 0;
+  const ctrlFrameP = d1.nextFrame(FT_CHAN_DATA);
   ctrl.send(Buffer.from([0x10, 0x20]));
   const got = await ctrlFrameP;
-  check('controller input -> tunnel FT_DATA', got.payload.equals(Buffer.from([0x10, 0x20])));
+  check('controller input -> tunnel CHAN_DATA', got.payload.readUInt16BE(0) === ctrlChanId && got.payload.subarray(2).equals(Buffer.from([0x10, 0x20])));
 
-  // ???????????????4001?
+  // 新控制器抢占旧控制器（4001）
   const ctrl2 = await wsConnect(`${baseWs}&ctrl=1`);
   const preempted = await waitClose(ctrl, 4001);
   check('new controller preempts old (4001)', preempted);
 
-  // ????????????master ???????2??
+  // 同步群控：master 输入经目标设备会话通道广播
   const d2 = new FakeDevice('dev-bbbb-0002', 'PhoneB', 5901);
   await d2.register();
   await d2.openTunnel();
-  // ???????? WS ??????????viewOnly ?????
   const d2sub = await wsConnect(`ws://127.0.0.1:${PORT}/ws/vnc/${encodeURIComponent(d2.deviceId)}?token=${TOKEN}&grp=wall1`);
   const master = await wsConnect(`${baseWs}&grp=wall1&broadcast=1&ctrl=1`);
-  // 等 ack 驱动重建完成（设备 5901 就绪、重建窗口结束）：窗口内首个上行字节会被缓冲为握手字节，
-  // 不执行广播；真实 noVNC 在握手完成前不会发输入，故此处需等待重建完成再发广播输入
   await new Promise((r) => setTimeout(r, 300));
-  const d2FrameP = d2.nextFrame(FT_DATA);
+  const d2Chan = d2.frames.find((f) => f.type === FT_CHAN_OPEN && f.payload.readUInt16BE(0) !== 0);
+  const d2ChanId = d2Chan ? d2Chan.payload.readUInt16BE(0) : 0;
+  const d2FrameP = d2.nextFrame(FT_CHAN_DATA);
   master.send(Buffer.from([0xaa, 0xbb]));
   const bcast = await d2FrameP;
-  check('broadcast input -> target device tunnel frame', bcast.payload.equals(Buffer.from([0xaa, 0xbb])));
+  check('broadcast input -> target device channel', bcast.payload.readUInt16BE(0) === d2ChanId && bcast.payload.subarray(2).equals(Buffer.from([0xaa, 0xbb])));
 
   sub.close(); ctrl2.close(); d2sub.close(); master.close(); d1.close(); d2.close();
 } catch (e) {

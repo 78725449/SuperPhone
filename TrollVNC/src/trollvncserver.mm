@@ -4706,9 +4706,9 @@ static void tvPublishClientConnectedNotif(NSString *host, BOOL remoteControl) {
         @"clientHost" : host,
     };
 
-    // 2026-08-21 控制知情通知：隧道 rfb.start 的连接在 socket 层是本地 127.0.0.1（loopback），
-    // 原 loopback 整体豁免会误伤该远程控制会话；此处按调用方分流（newClientHook）：
-    // remoteControl=YES 弹「远程控制已建立」（host 为 loopback 无展示意义），
+    // 2026-08-21 控制知情通知：隧道会话通道（proto:2 CHAN_OPEN）的连接在 socket 层是
+    // 本地 127.0.0.1（loopback），原 loopback 整体豁免会误伤该远程控制会话；此处按调用方
+    // 分流（newClientHook）：remoteControl=YES 弹「远程控制已建立」（host 为 loopback 无展示意义），
     // NO 保留带来源 IP 的连接文案（5801 直连等非本地连接）。
     NSString *localizedContent;
     if (remoteControl) {
@@ -4894,7 +4894,7 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
     // 2026-08-21 控制知情通知：凡控制会话建立即弹（设计 3.6；silent 配置在
     // tvPublishClientConnectedNotif 内统一短路，connectOnly/all 均弹）。
     // - 非本地连接（5801 直连页 noVNC，host=PC IP）：立即弹带来源 IP 的连接通知（现有行为）。
-    // - loopback 连接：可能是隧道 rfb.start（TRTunnelClient 本地 connect 127.0.0.1:5901，
+    // - loopback 连接：可能是隧道会话通道（TRTunnelClient 本地 connect 127.0.0.1:5901，
     //   socket 层为 loopback，语义是远程控制会话）或 mgmt 探测（TRCapabilityRegistry
     //   cap.hello mgmt=true）。延迟 1s 后再弹：mgmt 探测在握手后立即发 cap.hello 并被从
     //   gClientStates 移除条目 → 不弹；条目仍在 = 活跃非 mgmt 控制会话 → 弹「远程控制已建立」
@@ -4921,7 +4921,7 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
         notify_post("com.82flex.trollvnc.control-active");
     }
 
-    // 2026-08-22 惰性启动：首个 5901 客户端（含 5801 直连、rfb.start）触发采集启动 + 升频，
+    // 2026-08-22 惰性启动：首个 5901 客户端（含 5801 直连、隧道通道）触发采集启动 + 升频，
     // 替代「服务启动即常驻采集」。已启动则只升频（隧道握手成功可能已低频启动 @CaptureFps）。
     if (gClientCount > 0 && gFrameHandler) {
         if (!gIsCaptureStarted) {

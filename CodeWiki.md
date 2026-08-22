@@ -116,13 +116,13 @@
   → 此后每 30s hello；90s 无心跳判离线；重连退避由设备侧拨号
 ```
 
-**控制会话**：
+**控制会话（proto:2 通道化）**：
 ```
 浏览器/控制端 → WS /ws/vnc/:id（8080）
-  → 网关查 tunnels[deviceId]：无隧道 → ws.close(4003, 'no tunnel')；有 → 桥接
-  → 网关发 rfb.start(id)（FT_CMD 帧）→ 设备同步 connect 本地 5901，ack 回 ok=connect
-  → 网关收到匹配 id 的 ack 才精确放行缓冲的握手字节（3s 超时兜底）
-  → connect 失败 → 显式 close 会话（4005 "画面服务不可用"）
+  → 网关查 tunnels[deviceId]：无隧道 → ws.close(4003, 'no tunnel')；有 → 分配 chanId → 发 CHAN_OPEN(chanId, session)
+  → 设备同步 connect 本地 5901 + 主动写 RFB 003.008 → 回 CHAN_ACK(ok)
+  → 网关收到 ACK 才放行该通道缓冲的握手字节（跳过 12B 重复版本；3s 超时兜底）
+  → connect 失败 → 显式 close 会话（4005 "画面服务不可用"）；缩略图通道（chan 0）常驻并存
 ```
 
 ---
@@ -285,33 +285,37 @@ New project/
 
 #### 4.1.5 TRTunnelClient — 隧道客户端
 
-**文件**：`TrollVNC/src/TRTunnelClient.h`（41 行）+ `.mm`（612 行）
+**文件**：`TrollVNC/src/TRTunnelClient.h`（38 行）+ `.mm`（~740 行）
 **类名**：`TRTunnelClient`（单例）
 
-**核心职责**：设备侧隧道客户端（BSD socket / TCP + 帧封装）；注册到网关成功后由 TRGatewayClient._startTunnel 启动，建立到网关 18181 的隧道连接；握手后进入帧封装透传模式，让 RFB 裸字节透传与 JSON 心跳/命令在同一隧道上共存；通过 select() 多路复用隧道与本地 127.0.0.1:5901 双向数据流；每 30s 发 PING 心跳；CMD 帧复用 commandHandler；独立线程运行，断线退避重连。
+**核心职责**：设备侧隧道客户端（BSD socket / TCP + 帧封装）；注册到网关成功后由 TRGatewayClient._startTunnel 启动，建立到网关 18181 的隧道连接；握手后进入帧封装透传模式（proto:2 通道复用），让多路 RFB 连接（chan 0 缩略图 + 会话通道）与 JSON 心跳/命令在同一隧道上共存；通过 select() 多路复用隧道与全部通道 fd 的双向数据流；每 30s 发 PING 心跳；CMD 帧复用 commandHandler；独立线程运行，断线退避重连。
 
 **关键方法**：
 
 | 方法 | 行号 | 作用 |
 |---|---|---|
 | `- startWithHost:port:deviceId:token:` | L132 | 参数校验 + 已启动时参数变化则先 stop 再重启，否则幂等返回 |
-| `- _connectAndRun` | L205 | TCP connect → _sendHandshakeHello → _recvHandshakeAck → 初始化 _localFd=-1（standby） → _passthroughLoop |
-| `- _passthroughLoop:` | L361 | select 多路复用——tunnel 可读 → _appendFrameData → _processFramesTunnel；_localFd 可读 → 封装 FT_DATA 写隧道；本地 5901 EOF 仅清理 _localFd 回 standby |
-| `- _processFramesTunnel:` | L479 | 循环解析帧——FT_DATA 写本地 5901；FT_PONG 标记存活；FT_PING 回 FT_PONG；FT_CMD 解析 JSON（rfb.start/rfb.stop 同步处理并维护 gRfbActive，其他委托 commandHandler） |
-| `- _writeFrame:fd:type:data:length:` | L592 | 写 5 字节头（1B type + 4B BE length）+ payload，处理部分写 |
+| `- _connectAndRun` | L205 | TCP connect → _sendHandshakeHello（proto:2）→ _recvHandshakeAck → 等待网关 CHAN_OPEN → _passthroughLoop |
+| `- _passthroughLoop:` | L361 | select 多路复用——tunnel 可读 → _appendFrameData → _processFramesTunnel；通道 fd 可读 → 反查 chanId 封装 CHAN_DATA 写隧道；通道 EOF 仅清理该通道（_closeChannel） |
+| `- _processFramesTunnel:` | L479 | 循环解析帧——CHAN_OPEN 同步 connect 5901 + 主动写版本 + 回 CHAN_ACK；CHAN_DATA 写对应通道 fd（未知通道丢弃+回 CHAN_CLOSE）；CHAN_CLOSE 关通道；FT_PONG 标记存活；FT_PING 回 FT_PONG；FT_CMD 委托 commandHandler |
+| `- _closeChannel:reason:` | L~665 | 关通道 fd、清表项、会话通道归零时降频+上报被控结束、EOF 时回 CHAN_CLOSE 通知网关 |
+| `- _writeFrame:fd:type:data:length:` | L~700 | 写 5 字节头（1B type + 4B BE length）+ payload，处理部分写 |
 | `- _appendFrameData:length:` | L436 | 动态扩容帧缓冲（初始 8KB，倍增到 16MB 上限） |
-| `+ isRfbActive` | L673 | 本地 RFB 会话是否活跃（rfb.start/stop 驱动 gRfbActive） |
 
-**FT_ 帧类型常量**（L33-38）：
-- `FT_DATA=0x01` 双向 RFB 透传
+**FT_ 帧类型常量**（L35-46）：
 - `FT_PING=0x02` 心跳请求（设备→网关，每 30s）
 - `FT_PONG=0x03` 心跳响应（双向）
 - `FT_CMD=0x04` 命令 JSON（网关→设备）
 - `FT_CMDACK=0x05` 命令 ack JSON（设备→网关）
+- `FT_STATE=0x07` 被控状态上报（设备→网关）
+- `FT_CHAN_OPEN=0x08` 通道建立（网关→设备，[chanId:2BE][kind:1B]）
+- `FT_CHAN_ACK=0x09` 通道建立确认（设备→网关，[chanId:2BE][ok:1B]）
+- `FT_CHAN_DATA=0x0A` 通道 RFB 数据（双向，[chanId:2BE][rfb字节]）
+- `FT_CHAN_CLOSE=0x0B` 通道关闭（双向，[chanId:2BE][reason:1B]）
 
-**关键常量**：`kTunnelPingInterval=30.0`、`kTunnelSelectTimeout=5.0`、`kTunnelMinRetryDelay=2.0`、`kTunnelMaxRetryDelay=30.0`、`kLocalRfbPort=5901`、`kDefaultTunnelPort=18181`、`kFrameHeaderSize=5`、`kMaxFramePayload=16MB`、`kReadBufSize=64KB`
+**关键常量**：`kTunnelPingInterval=30.0`、`kTunnelSelectTimeout=5.0`、`kTunnelMinRetryDelay=2.0`、`kTunnelMaxRetryDelay=30.0`、`kLocalRfbPort=5901`、`kDefaultTunnelPort=18181`、`kFrameHeaderSize=5`、`kMaxFramePayload=16MB`、`kReadBufSize=64KB`、`kTunnelProto=2`、`kChanIdThumb=0`
 
-**特殊命令**：`rfb.start`/`rfb.stop` 由隧道客户端同步处理（不委托 commandHandler），ack 携带 connect 结果供网关精确放行缓冲字节
+**通道模型（proto:2，2026-08-23）**：通道表 `_channels`（chanId→5901 fd）；chan 0 固定缩略图（隧道握手后网关即开），会话通道从 1 起网关单调分配；CHAN_OPEN 同步 connect 5901 + 主动写 `RFB 003.008\n`（5901 握手窗口 0-50ms 极窄）+ 回 CHAN_ACK；会话通道开/关驱动升降频（capture-active/idle）与被控上报（controlled YES/NO）。rfb.start/rfb.stop 已移除。
 
 ---
 
@@ -672,23 +676,29 @@ API 全部前缀 `/api`，统一走 `authOk`（Bearer Token 或 `?token=`，无 
 | `^/ws/control/([^/]+)$` | — | `handleControlSocket`（AI 工具 JSON 行控制端点） |
 | 其它 | — | `ws.close(4000,'unknown ws path')`（WS 注册端点已废弃） |
 
-#### 5.1.3 隧道帧协议与处理
+#### 5.1.3 隧道帧协议与处理（proto:2 通道复用）
 
 帧格式：`1B type + 4B 大端 length + payload`（writeTunnelFrame 实现，5B 头 + 可选 payload）
 
 | 常量 | 值 | 方向 | 作用 |
 |---|---|---|---|
-| `FT_DATA` | 0x01 | 双向 | RFB 透传字节（WS↔设备 5901） |
 | `FT_PING` | 0x02 | 设备→网关 | 心跳请求，网关立即回 FT_PONG |
 | `FT_PONG` | 0x03 | 网关→设备 | 心跳响应 |
 | `FT_CMD` | 0x04 | 网关→设备 | 命令 JSON（`{type:'cmd',cmd,id,ts,...}`） |
-| `FT_CMDACK` | 0x05 | 设备→网关 | 命令 ack JSON（含 rfb.start/rfb.stop ack） |
+| `FT_CMDACK` | 0x05 | 设备→网关 | 命令 ack JSON |
+| `FT_STATE` | 0x07 | 设备→网关 | 被控状态上报（`{controlled,source}`） |
+| `FT_CHAN_OPEN` | 0x08 | 网关→设备 | 通道建立（`[chanId:2BE][kind:1B]`，kind 0=thumb 1=session） |
+| `FT_CHAN_ACK` | 0x09 | 设备→网关 | 通道建立确认（`[chanId:2BE][ok:1B]`） |
+| `FT_CHAN_DATA` | 0x0A | 双向 | 通道 RFB 数据（`[chanId:2BE][rfb字节]`） |
+| `FT_CHAN_CLOSE` | 0x0B | 双向 | 通道关闭（`[chanId:2BE][reason:1B]`，0=正常 1=对端EOF 2=错误） |
 
 `feedFrame` 解析器：frameBuf 累积，每帧读 5B 头取 type+len，`len>16MB` 直接 sock.destroy() 防内存炸；不完整帧等下次 chunk
 
 `handleFrame` 分支：
-- `FT_DATA`：缩略图态（`rec.mode==='thumb'`）喂 `rec.thumbRfb.feed` 解码（Raw 编码 → JPEG，onJpeg 广播 thumb 事件）；屏幕流态广播给 tun.wsSet 全部订阅者；无订阅者缓冲进 tun.pending（64KB 滚动截断）；处于 5901 重建窗口（pendingUpUntil）时丢弃旧连接残留帧防污染
-- `FT_CMDACK`：先识别 rfb.start ack（匹配 tun.rebuild.id），ok 则放行缓冲的握手字节（pendingUp），fail 则 controller.close(4005,'device RFB unavailable')；其余 ack 按 ack.id 匹配 pendingCmds 解析 Promise
+- `FT_CHAN_DATA`：按 chanId 分发——chan 0 喂 `rec.thumbRfb.feed` 解码（Raw 编码 → JPEG，onJpeg 广播 thumb 事件）；其余按 `rec.channels.get(chanId)` 找到会话 WS 直发（无订阅者即丢弃，通道隔离）
+- `FT_CHAN_ACK`：chan 0 → 创建 ThumbRfbDecoder（onSend 封装 chan 0 下行，有会话则 pause）；会话通道 → `ch.ready=true` 放行缓冲握手字节（releaseChPendingUp 跳过 12B 重复协议版本），ack fail → `ch.ws.close(4005,'device RFB unavailable')`
+- `FT_CHAN_CLOSE`：chan 0 → 丢弃解码器 + 2s 退避重开（scheduleThumbOpen）；会话通道 → 删通道 + `ch.ws.close(4006,'device rfb eof')` + 会话归零时 resumeThumb
+- `FT_CMDACK`：按 ack.id 匹配 pendingCmds 解析 Promise
 - `FT_PING`：回 PONG；`FT_PONG`：仅作存活证明
 
 #### 5.1.4 sendDeviceCmd 逻辑
@@ -699,7 +709,7 @@ API 全部前缀 `/api`，统一走 `authOk`（Bearer Token 或 `?token=`，无 
 3. **回退注册通道**：隧道不可用时 sendToDevice(deviceId, payload)（往注册 socket 写 JSON + '\n'）
 4. 挂起 pendingCmds.set(cid, {resolve, timer, cmd, deviceId})，超时清理并 resolve(null)
 
-#### 5.1.5 单会话约束（4001/4002/4003/4005）
+#### 5.1.5 会话通道（4001/4002/4003/4005，proto:2 通道化）
 
 `handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl)`：
 
@@ -707,15 +717,16 @@ API 全部前缀 `/api`，统一走 `authOk`（Bearer Token 或 `?token=`，无 
 |---|---|
 | 4004 | findDevice(deviceId) 找不到设备 |
 | 4003 | 隧道不存在（tunnels.get 为空/sock 已毁/不可写）—— 禁止直连回退 |
-| 4001 | 同设备新会话顶掉旧会话（普通会话被新会话/新 ctrl 顶掉，旧 ctrl 被新 ctrl 顶掉） |
-| 4002 | 隧道关闭时一并关闭其 wsSet 内全部 WS 会话 |
-| 4005 | rfb.start ack 失败（设备 5901 不可用），关闭 ctrl 会话 |
+| 4001 | 新 ctrl 顶掉旧 ctrl（业务层唯一控制者；viewOnly 与任何会话并存，不再被顶） |
+| 4002 | 隧道关闭时一并关闭其 channels 内全部会话 WS |
+| 4005 | CHAN_ACK 失败（设备 5901 不可用），关闭对应会话 |
+| 4006 | 设备端 5901 EOF 回 CHAN_CLOSE，关闭对应会话 |
 
-**核心约束**：
-- 同设备仅 1 条隧道 + 1 个 5901 连接；新 WS 会话进入时循环把 tun.wsSet 内非自身、非 ctrl、非已关闭的旧会话踢出（close(4001,'preempted by new session')）
-- `isFirstSession = tun.wsSet.size === 1`；`needRfbRebuild = isCtrl || isFirstSession`：触发 rfb.stop → rfb.start 强制设备侧重建 5901，保证新 noVNC 拿到全新握手；非重建会话才补发 tun.pending 旧缓冲
-- 重建窗口期上行字节缓冲到 tun.pendingUp（64KB 滚动），收到 rfb.start ack ok 才放行；3s 兜底超时强制放行防永久卡死；ack fail 则 controller.close(4005)
-- cleanup() 幂等（if (!tun.wsSet.has(ws)) return），最后会话断开 debounce 800ms 下发 rfb.stop 防 stop/start 乒乓
+**核心约束（proto:2 通道化，2026-08-23）**：
+- 每个 WS 会话分配独立通道（`tun.nextChan++`），发 CHAN_OPEN(chanId, session)；设备端各 connect 一条 5901（LibVNCServer 原生多客户端），无连接轮换、无 rfb.start/stop、无「首会话重建」语义
+- ACK 前上行字节缓冲到通道 `ch.pendingUp`（64KB 滚动），收到 CHAN_ACK ok 才放行（releaseChPendingUp 跳过 12B 重复协议版本）；3s 兜底超时强制放行；ack fail 则 `ch.ws.close(4005)`
+- 缩略图暂停/恢复：会话通道存在期间 `tun.thumbRfb.pause()`（不发增量请求，连接保留零流量）；会话通道归零 `resumeThumb()`（补发增量请求即恢复）
+- cleanup() 幂等（`if (!tun.channels.has(chanId)) return`），通道删除后向设备发 CHAN_CLOSE；设备 EOF 路径先删通道再关 WS
 
 #### 5.1.6 关键函数清单
 
@@ -726,7 +737,11 @@ API 全部前缀 `/api`，统一走 `authOk`（Bearer Token 或 `?token=`，无 
 | `sortDevices` | order 升序在前 → addedAt 升序在后 → id 字典序兜底，稳定排序 |
 | `writeTunnelFrame` | 写 5B 头帧（1B type + 4B BE length + payload） |
 | `sendDeviceCmd` | 命令下发 + 等 ack（隧道优先，注册通道回退，5s/15s 超时） |
-| `handleVncSocket` | WS↔VNC 桥接 + 单会话约束 + rfb 重建 + pending 缓冲管理 |
+| `chanPayload/chanDataPayload` | 通道帧 payload 构造（[chanId:2BE] + kind/reason/rfb字节） |
+| `pauseThumb/resumeThumb/hasSessionChannels` | 缩略图暂停/恢复与会话通道存在判定 |
+| `releaseChPendingUp` | ACK 放行缓冲握手字节（跳过 12B 重复协议版本） |
+| `scheduleThumbOpen` | chan 0 EOF/ACK 失败后 2s 退避重开 |
+| `handleVncSocket` | WS↔VNC 桥接 + 会话通道生命周期管理 |
 | `handleControlSocket` | AI 工具 WS 控制端点（JSON 行 cmd→ack 透传） |
 | `handleApi` | REST API 路由分发（含 batch 分支优先级） |
 | `GET /api/devices/:id/thumb` | 缩略图读回（2026-08-22 统一到 RFB）：`trec.thumbRfb.jpeg` 有值 → 200 `{thumb: base64, ts}`；无 → 204；设备不存在 → 404 |
@@ -746,21 +761,16 @@ dev = {
   configs?: object, screen?: {width,height}, httpPort?: number
 }
 
-// 隧道记录（tunnels.get(deviceId)）
+// 隧道记录（tunnels.get(deviceId)，proto:2 通道复用）
 tun = {
   sock,                  // 隧道 TCP socket
-  wsSet: Set<ws>,        // RFB 数据订阅集合
-  controller: ws|null,   // 唯一控制者
-  pending: Buffer,       // 无订阅期间下行缓冲（64KB 滚动）
-  pendingUp: Buffer|null, // 重建窗口期上行缓冲
-  pendingUpUntil: number, // 重建窗口截止时间戳
-  rebuild: {id, timer}|null, // rfb.start 重建 ack 跟踪
-  stopTimer,             // debounce rfb.stop 800ms
-  _dataCount,            // FT_DATA 诊断计数
-  thumbRfb: ThumbRfbDecoder|null,  // 缩略图态 RFB 解码器（Raw→JPEG，2026-08-22）
-  mode: 'thumb'|'ctrl',            // 隧道态：缩略图/控制
+  channels: Map<chanId, {id, kind, ws, ready, pendingUp, timer}>, // 通道表（chan 0 缩略图 + 会话通道）
+  nextChan: 1,           // 会话通道号分配器（0 固定缩略图）
+  controller: ws|null,   // 唯一控制者（业务层）
+  thumbRfb: ThumbRfbDecoder|null,  // 缩略图通道解码器（Raw→JPEG，2026-08-22）
+  thumbRetryTimer,       // chan 0 EOF/失败重开定时器（2s）
   controlled: boolean,             // 被控状态（2026-08-22）
-  controlledSource: '5801'|'tunnel'|null, // 被控来源（2026-08-22：5801 直连 / 隧道 rfb.start）
+  controlledSource: '5801'|'tunnel'|null, // 被控来源（2026-08-22：5801 直连 / 隧道会话通道）
 }
 
 // 命令挂起表（pendingCmds.get(cid)）
@@ -806,7 +816,7 @@ tun = {
 | `scheduleFocusReconnect` / `reconnectFocusRfb` | 聚焦画面断线重连（首立即、后续 2s 间隔，上限 8 次；1000/1001/4001 不重连；visibilitychange 回前台触发） |
 
 **关键模式**：
-- **卡片墙缩略图事件驱动（2026-08-22 统一到 RFB）**：设备 5901 经隧道 FT_DATA 发 RFB Raw 流 → 网关 ThumbRfbDecoder 解码产 JPEG → 广播 `{type:'thumb', deviceId}` → 前端收到后补拉该设备缩略图（fetchThumb，不触发全量刷新）；screen.hash/screenshot 轮询门控已移除
+- **卡片墙缩略图事件驱动（2026-08-22 统一到 RFB + 2026-08-23 proto:2）**：设备 5901 经隧道 CHAN_DATA(0)（chan 0 缩略图通道）发 RFB Raw 流 → 网关 ThumbRfbDecoder 解码产 JPEG → 广播 `{type:'thumb', deviceId}` → 前端收到后补拉该设备缩略图（fetchThumb，不触发全量刷新）；screen.hash/screenshot 轮询门控已移除
 - **聚焦抢占语义**：主控连接始终带 grp+broadcast，勾选同步设备无需重建主控；新 ctrl 顶旧 ctrl 由网关 4001 处理
 - **剪贴板显式双向搬运**（2026-08-17 决策）：
   - 复制 = 拉：copyFromFocusedDevice → invokeCap('','id','clipboard.get') → farmWriteClipboardToControl（IPA 走原生桥 writeClipboard，浏览器走 navigator.clipboard.writeText 降级 execCommand('copy')）
@@ -942,16 +952,16 @@ script app.js?v=170（type=module）
 | # | 文件 | 测什么 |
 |---|---|---|
 | 1 | `smoke.js` | 冒烟：启动 FakeVncServer、POST /api/devices 返回 201、无 token 返回 401、GET 列表包含设备、无隧道 WS 被拒 4003 |
-| 2 | `tunnel-test.js` | 隧道全链路：FakeDevice（register + openTunnel 握手 + 帧解析 + rfb.start/stop 自动 ack）；viewOnly 订阅收到 FT_DATA；viewOnly 上行可转发；ctrl 输入→FT_DATA；新 ctrl 顶掉旧 ctrl（4001）；broadcast 输入→目标设备隧道帧 |
+| 2 | `tunnel-test.js` | 隧道通道复用（proto:2）：FakeDevice（register + openTunnel 握手 proto:2 + 帧解析 + CHAN_OPEN 自动 ack）；viewOnly 会话收 CHAN_OPEN + 收到 CHAN_DATA；viewOnly 上行→CHAN_DATA；ctrl 输入→CHAN_DATA；新 ctrl 顶掉旧 ctrl（4001）；broadcast 输入→目标设备会话通道 |
 | 3 | `register-test.js` | P0 注册/心跳/命令：WS /ws/register 已废弃（4000）；TCP 注册带 manifest，能力字段被网关剥离不入库；invoke ack 往返；不 ack 设备 invoke→504；configs set ack；断开→离线→离线 invoke 504；TCP hello 保活；batch 端点可达 |
 | 4 | `dedupe-test.js` | 去重/身份合并：同 deviceId 重复注册仍 1 条、旧连接被关；manual+register 同 host:port 合并为 deviceId；已注册设备不被 manual 降级 |
 | 5 | `caps-test.js` | caps.js 自包含定义契约：BATCH_CAPS=20 且每项含 id/title/icon/category/params、含 service.restart；CONFIG_DEFS=30（2026-08-21 由 29 增加，六板块 group 均非空、仅 FabAutoCollapse 为 null、不含 BonjourEnabled/ViewOnlyPassword）且不含 Port$ 项且每项含 reload；KEY_DEFS=10；groupByCategory=3 组；GESTURE_DEFS=3 |
 | 6 | `gesture-test.js` | gesture.js 契约：GESTURE_DEFS 与 resolveGesture 三态覆盖一致；normalizePoint 中心/越界钳制/无 rect 兜底；pinch scale>1/<1/钳制 [0.5,2.0]/≈1 跳过 null；未知类型 null |
-| 7 | `pending-replay-test.js` | 回归：会话 A 退出后 100ms 内（debounce rfb.stop 未下发）设备推旧残留帧→网关应缓冲不转发；debounce rfb.stop 到达；重进会话 B 触发 stop→start 重建；会话 B 600ms 窗口内不得收到旧残留数据 |
+| 7 | `pending-replay-test.js` | 回归（proto:2 通道隔离）：会话 A 建立收 CHAN_OPEN + 画面帧；A 关闭网关下发 CHAN_CLOSE；设备推旧通道残留帧 → 按 chanId 分发无订阅者丢弃；重进会话 B 新通道号 ≠ A；会话 B 600ms 窗口内不得收到旧残留数据 |
 | 8 | `press-test.js` | press.js 时序：volup 按下 down、抬起 up、不补 click；home 双击→home.double；单击窗口超时→click；按住 900ms→home.long；power 三击→power.triple |
 | 9 | `order-test.js` | 卡片墙 order 排序：注册 a/b/c 初始按 addedAt；PATCH b=1/a=3 → [b,a,c]；相同 order 按 id 字典序兜底；清除 order（null）回到注册时间段；order=-1/100000 拒绝 400 |
 | 10 | `events-test.js` | 设备变更推送（2026-08-18）：/ws/events 订阅后设备 register 上线收到 register 事件；DELETE 删除收到 delete 事件；事件为 {type,deviceId,ts} 轻量通知；非 /ws/events 连接不进入订阅集合；心跳 ping→pong（2026-08-19） |
-| 11 | `tunnel-thumb-test.js` | 缩略图 RFB 流（2026-08-22 统一到 RFB）：FakeDevice 经隧道发 RFB Raw 流 → 网关 ThumbRfbDecoder 解码 → GET /api/devices/:id/thumb 读回 base64（200）；无缩略图 204；无隧道设备 204；未知设备 404 |
+| 11 | `tunnel-thumb-test.js` | 缩略图 RFB 流（2026-08-22 统一到 RFB + 2026-08-23 proto:2）：隧道握手后网关开 chan 0 → 假设备回 CHAN_ACK → 经 CHAN_DATA(0) 发 RFB Raw 流 → 网关 ThumbRfbDecoder 解码 → GET /api/devices/:id/thumb 读回 base64（200）；无缩略图 204；无隧道设备 204；未知设备 404 |
 
 **辅助文件**（不属于 npm test）：
 - `fake-rfb-server.js`：smoke 用的假 VNC echo server
@@ -1081,11 +1091,17 @@ length:4B (big-endian)
 
 | 常量 | 值 | 方向 | 作用 |
 |---|---|---|---|
-| FT_DATA | 0x01 | 双向 | RFB 透传字节 |
 | FT_PING | 0x02 | 设备→网关 | 心跳请求 |
 | FT_PONG | 0x03 | 双向 | 心跳响应 |
 | FT_CMD | 0x04 | 网关→设备 | 命令 JSON |
 | FT_CMDACK | 0x05 | 设备→网关 | 命令 ack JSON |
+| FT_STATE | 0x07 | 设备→网关 | 被控状态上报（{controlled, source}） |
+| FT_CHAN_OPEN | 0x08 | 网关→设备 | 通道建立（[chanId:2BE][kind:1B]，0=thumb 1=session） |
+| FT_CHAN_ACK | 0x09 | 设备→网关 | 通道建立确认（[chanId:2BE][ok:1B]） |
+| FT_CHAN_DATA | 0x0A | 双向 | 通道 RFB 数据（[chanId:2BE][rfb字节]） |
+| FT_CHAN_CLOSE | 0x0B | 双向 | 通道关闭（[chanId:2BE][reason:1B]，0=正常 1=对端EOF 2=错误） |
+
+> 2026-08-23 proto:2：FT_DATA(0x01) 删除，RFB 数据统一走 FT_CHAN_DATA（chanId 分流）。通道复用让缩略图（chan 0）与控制流（会话通道）并存，取代 rfb.start/stop 轮换。
 
 ### 7.3 注册通道（18081，JSON 行）
 
@@ -1100,9 +1116,9 @@ length:4B (big-endian)
 ### 7.4 隧道握手（18181）
 
 ```
-设备→网关: {type:'tunnel_hello', deviceId}     // 握手（行）
-网关→设备: {type:'tunnel_ack', ok, error?}     // 握手 ack（行）
-握手后切帧模式（feedFrame）
+设备→网关: {type:'tunnel_hello', deviceId, proto:2}   // 握手（行，proto 不匹配网关拒绝）
+网关→设备: {type:'tunnel_ack', ok, error?}           // 握手 ack（行）
+握手后切帧模式（feedFrame）；网关即发 CHAN_OPEN(chan 0, thumb) 开缩略图通道
 ```
 
 ### 7.5 控制端点（/ws/control/:id，JSON 行）
@@ -1120,7 +1136,8 @@ length:4B (big-endian)
 4002 tunnel closed
 4003 no tunnel: device not registered
 4004 device not found
-4005 device RFB unavailable (rfb.start ack failed)
+4005 device RFB unavailable (CHAN_ACK failed)
+4006 device rfb eof (设备端 5901 EOF 回 CHAN_CLOSE)
 ```
 
 ---
@@ -1183,7 +1200,7 @@ length:4B (big-endian)
 4. **控制 Tab 路径**：TVNCConsoleWebViewController.buildConsoleURL → `https://{host}:8080/?container=ipa&token=&selfId=` → WKWebView 加载 → farmBridge 桥（writeClipboard / setTabBarHidden）
 5. **客户端列表路径**：TVNCClientListController → TVNCControlConnect 127.0.0.1:5901 RFB 3.8 握手 + cap.hello（mgmt=YES 豁免）→ TVNCControlInvoke clients.list / clients.disconnect / clients.block / clients.unblock
 6. **命令通道路径**：前端 → POST /api/devices/:id/invoke|configs|restart|ping → 网关 sendDeviceCmd：隧道 FT_CMD 帧优先，注册通道 JSON 行回退 → 设备 TRGatewayClient → TRCapabilityRegistry.invoke/setConfig → executor 执行 → ACK → 网关回调用端（默认 5s 等待 ack，超时/离线 504）
-7. **卡片墙缩略图路径（2026-08-22 统一到 RFB）**：隧道握手成功 → TRTunnelClient connect 本地 5901（缩略图客户端 = 首个 RFB 客户端）+ 采集惰性启动（tunnel-connected 通知 @ CaptureFps）→ 采集帧 → framebuffer → tile 脏矩形检测 → libvncserver 编码 Raw → 5901 → TRTunnelClient 透传 → 隧道 FT_DATA → 网关 ThumbRfbDecoder 解码（Raw → JPEG）→ 缓存 jpeg + 广播 `{type:'thumb', deviceId}` → 前端 fetchThumb GET /api/devices/:id/thumb 渲染（原 screen.hash/screenshot 轮询门控已移除）
+7. **卡片墙缩略图路径（2026-08-22 统一到 RFB + 2026-08-23 proto:2）**：隧道握手成功 → 网关发 CHAN_OPEN(chan 0) → 设备 connect 本地 5901（缩略图客户端 = 首个 RFB 客户端）+ 采集惰性启动（tunnel-connected 通知 @ CaptureFps）→ 采集帧 → framebuffer → tile 脏矩形检测 → libvncserver 编码 Raw → 5901 → 设备通道表 chan 0 → 隧道 CHAN_DATA(0) → 网关 ThumbRfbDecoder 解码（Raw → JPEG）→ 缓存 jpeg + 广播 `{type:'thumb', deviceId}` → 前端 fetchThumb GET /api/devices/:id/thumb 渲染（原 screen.hash/screenshot 轮询门控已移除）
 
 ### 8.3 端口契约矩阵
 

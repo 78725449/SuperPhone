@@ -1,4 +1,5 @@
-// 缩略图 RFB 流测试：模拟设备 5901 经隧道发 RFB Raw 流 → 网关 ThumbRfbDecoder 解码 → GET /api/devices/:id/thumb 读回 base64
+// 缩略图 RFB 流测试（proto:2）：隧道握手后网关开 chan 0（缩略图通道）→ 假设备回 CHAN_ACK →
+// 网关 ThumbRfbDecoder 经 CHAN_DATA(0) 握手解码 Raw 帧 → GET /api/devices/:id/thumb 读回 base64
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -39,19 +40,24 @@ child.stdout.on('data', (d) => (childOut += d));
 child.stderr.on('data', (d) => (childOut += d));
 const auth = { Authorization: `Bearer ${TOKEN}` };
 
-// ---------- 与 server/index.js 对齐的隧道帧协议 ----------
-const FT_DATA = 0x01;
+// ---------- 与 server/index.js 对齐的隧道帧协议（proto:2）----------
+const FT_CHAN_ACK = 0x09, FT_CHAN_DATA = 0x0A;
+const CHAN_ID_THUMB = 0;
 function encodeFrame(type, payload) {
   const buf = Buffer.isBuffer(payload) ? payload : Buffer.from(payload || []);
   const h = Buffer.alloc(5);
   h[0] = type; h.writeUInt32BE(buf.length, 1);
   return Buffer.concat([h, buf]);
 }
+const chanData = (chanId, data) => {
+  const h = Buffer.alloc(2); h.writeUInt16BE(chanId, 0);
+  return Buffer.concat([h, Buffer.isBuffer(data) ? data : Buffer.from(data)]);
+};
 
-// 假 RFB 服务器：模拟设备 5901，经隧道 FT_DATA 与网关 ThumbRfbDecoder 握手并发一个 Raw 帧
+// 假 RFB 服务器：模拟设备 5901，经隧道 CHAN_DATA(0) 与网关 ThumbRfbDecoder 握手并发一个 Raw 帧
 class FakeRfbServer {
   constructor(sock) { this.sock = sock; this.pending = Buffer.alloc(0); this.step = 0; this.w = 2; this.h = 2; }
-  send(payload) { this.sock.write(encodeFrame(FT_DATA, payload)); }
+  send(payload) { this.sock.write(encodeFrame(FT_CHAN_DATA, chanData(CHAN_ID_THUMB, payload))); }
   start() { this.send(Buffer.from('RFB 003.008\n', 'latin1')); }
   feed(payload) { this.pending = Buffer.concat([this.pending, payload]); this._advance(); }
   _advance() {
@@ -100,7 +106,7 @@ class FakeRfbServer {
   }
 }
 
-/** 简化假设备：注册 + 隧道握手 + 隧道帧解析（分片缓冲拼接） */
+/** 简化假设备：注册 + 隧道握手（proto:2）+ 隧道帧解析（分片缓冲拼接）+ 自动应答 CHAN_OPEN */
 class FakeDevice {
   constructor(deviceId, name, vncPort) {
     this.deviceId = deviceId; this.name = name; this.vncPort = vncPort;
@@ -130,7 +136,7 @@ class FakeDevice {
   }
   async openTunnel() {
     this.tunSock = await this._tcp(TUN_PORT);
-    this.tunSock.write(JSON.stringify({ type: 'tunnel_hello', deviceId: this.deviceId }) + '\n');
+    this.tunSock.write(JSON.stringify({ type: 'tunnel_hello', deviceId: this.deviceId, proto: 2 }) + '\n');
     let buf = Buffer.alloc(0);
     await new Promise((res, rej) => {
       const onData = (d) => {
@@ -162,6 +168,11 @@ class FakeDevice {
       if (this.tunBuf.length < 5 + len) break;  // 不完整，等更多数据
       const payload = this.tunBuf.subarray(5, 5 + len);
       this.tunBuf = this.tunBuf.subarray(5 + len);
+      // 模拟设备：CHAN_OPEN 自动回 CHAN_ACK ok（缩略图通道 connect 5901 成功）
+      if (type === 0x08 && payload.length >= 3) {
+        const ack = Buffer.from([payload[0], payload[1], 1]);
+        this.tunSock.write(encodeFrame(FT_CHAN_ACK, ack));
+      }
       if (this.onFrame) this.onFrame(type, payload);
     }
   }
@@ -183,14 +194,14 @@ try {
   });
   check('register -> device source=register', true);
 
-  // 开隧道（缩略图态）后、RFB 流到达前：无缩略图缓存 → 204
+  // 开隧道（proto:2）后、缩略图 RFB 流到达前：无缩略图缓存 → 204
   await d1.openTunnel();
   const noThumb = await fetch(`http://127.0.0.1:${PORT}/api/devices/${d1.deviceId}/thumb`, { headers: auth });
   check('no thumbnail yet -> 204', noThumb.status === 204);
 
-  // 假 RFB 服务器经隧道 FT_DATA 与网关 ThumbRfbDecoder 握手并发一个 2x2 Raw 帧
+  // 假 RFB 服务器经隧道 CHAN_DATA(0) 与网关 ThumbRfbDecoder 握手并发一个 2x2 Raw 帧
   const rfb = new FakeRfbServer(d1.tunSock);
-  d1.onFrame = (type, payload) => { if (type === FT_DATA) rfb.feed(payload); };
+  d1.onFrame = (type, payload) => { if (type === FT_CHAN_DATA && payload.readUInt16BE(0) === CHAN_ID_THUMB) rfb.feed(payload.subarray(2)); };
   rfb.start();
 
   // 轮询读缓存端点：网关解码 Raw → JPEG → base64（200 + 非空 thumb）

@@ -1,11 +1,13 @@
 /**
- * 复现/回归测试：会话退出后重进，网关不得把旧会话残留数据（tun.pending）补发给新会话
- * 背景：退出会话 A 时 rfb.stop 延迟 800ms 下发，期间设备 5901 旧连接仍在推最后几帧
- *       → 网关 wsSet.size==0 缓冲到 tun.pending；重进会话 B 时 handleVncSocket 把
- *       tun.pending 直接 ws.send 给新 noVNC → noVNC 当版本响应解析 → "Invalid server version" 黑屏。
+ * 回归测试（proto:2 通道复用）：会话退出后重进，旧会话通道残留数据不得污染新会话
+ * 背景：proto:1 时代会话 A 退出时 rfb.stop 延迟 800ms 下发，期间旧 5901 连接仍在推帧
+ *       → 网关缓冲到 tun.pending；重进会话 B 时补发给新 noVNC → "Invalid server version" 黑屏。
+ * proto:2 通道化后：每个会话独立通道（chanId），设备上行按 chanId 分发——会话 A 关闭后
+ * 其通道即删，残留帧（设备仍推的旧通道数据）无订阅者被丢弃，天然隔离。
  * 验证点：
- *   1) 会话 B 建立后不得收到会话 A 的残留数据（旧帧 = 乱码源头）
- *   2) 会话 B 重建（rfb.start ack）后，设备推的新数据正常转发
+ *   1) 会话 A 建立（CHAN_OPEN→ACK）后收到画面帧
+ *   2) 会话 A 关闭 → 网关下发 CHAN_CLOSE
+ *   3) 会话 B 建立（新通道）后收到新帧；会话 A 通道的残留数据不发给会话 B
  */
 import { spawn } from 'node:child_process';
 import net from 'node:net';
@@ -50,14 +52,21 @@ const firstMsg = (ws, timeoutMs = 4000) => new Promise((res) => {
   ws.on('message', onMsg);
 });
 
+const FT_CHAN_OPEN = 0x08, FT_CHAN_ACK = 0x09, FT_CHAN_DATA = 0x0A, FT_CHAN_CLOSE = 0x0B;
 let regSock, tunSock, framed = false;
 let preFrame = Buffer.alloc(0), frameBuf = Buffer.alloc(0);
 const frames = [], waiters = [];
-const parseCmd = (f) => { try { return f.type === 4 ? JSON.parse(f.payload.toString('utf8')).cmd : null; } catch { return null; } };
-const waitCmd = (cmd) => new Promise((res) => {
-  const i = frames.findIndex((f) => parseCmd(f) === cmd);
-  if (i >= 0) { res(frames.splice(i, 1)[0].payload); return; }
-  waiters.push({ cmd, res });
+const chanOf = (f) => (f.type === FT_CHAN_DATA || f.type === FT_CHAN_CLOSE) && f.payload.length >= 2 ? f.payload.readUInt16BE(0) : null;
+const waitChanOpen = () => new Promise((res) => {
+  // 只匹配会话通道（chanId!=0；隧道建立时已有 chan 0 缩略图 OPEN）
+  const i = frames.findIndex((f) => f.type === FT_CHAN_OPEN && f.payload.readUInt16BE(0) !== 0);
+  if (i >= 0) { res(frames.splice(i, 1)[0]); return; }
+  waiters.push({ kind: 'open', res });
+});
+const waitChanClose = () => new Promise((res) => {
+  const i = frames.findIndex((f) => f.type === FT_CHAN_CLOSE);
+  if (i >= 0) { res(frames.splice(i, 1)[0]); return; }
+  waiters.push({ kind: 'close', res });
 });
 const sendTunnelFrame = (type, payload) => {
   const h = Buffer.alloc(5);
@@ -66,15 +75,13 @@ const sendTunnelFrame = (type, payload) => {
   tunSock.write(h);
   tunSock.write(payload);
 };
-const ackRfb = (payload) => {
-  let rid = null;
-  try { rid = JSON.parse(payload.toString('utf8')).id; } catch { /* noop */ }
-  const ackBuf = Buffer.from(JSON.stringify({ type: 'ack', cmd: parseCmd({ type: 4, payload }) || '', id: rid, ok: true }));
-  const h = Buffer.alloc(5);
-  h[0] = 0x05;
-  h.writeUInt32BE(ackBuf.length, 1);
-  tunSock.write(h);
-  tunSock.write(ackBuf);
+const chanData = (chanId, data) => {
+  const h = Buffer.alloc(2); h.writeUInt16BE(chanId, 0);
+  return Buffer.concat([h, data]);
+};
+const ackChan = (payload) => {
+  const ack = Buffer.from([payload[0], payload[1], 1]);
+  sendTunnelFrame(FT_CHAN_ACK, ack);
 };
 
 try {
@@ -86,7 +93,7 @@ try {
   await new Promise((res, rej) => { regSock.once('connect', res); regSock.once('error', rej); });
   regSock.write(JSON.stringify({ type: 'register', deviceId: DEVICE_ID, name: 'PendingTest', vncPort: 5901 }) + '\n');
 
-  // 隧道握手 + 帧解析 + rfb.start/stop 自动 ack
+  // 隧道握手（proto:2）+ 帧解析 + CHAN_OPEN 自动 ack
   tunSock = net.connect(TUN_PORT, '127.0.0.1');
   await new Promise((res, rej) => { tunSock.once('connect', res); tunSock.once('error', rej); });
   tunSock.on('data', (chunk) => {
@@ -107,57 +114,56 @@ try {
       const payload = Buffer.from(frameBuf.subarray(5, 5 + len));
       frameBuf = frameBuf.subarray(5 + len);
       const f = { type, payload };
-      const cmd = parseCmd(f);
-      const wi = waiters.findIndex((w) => (cmd !== null ? w.cmd === cmd : false));
-      if (wi >= 0) waiters.splice(wi, 1)[0].res(payload);
+      const wi = waiters.findIndex((w) => (w.kind === 'open' && f.type === FT_CHAN_OPEN && f.payload.readUInt16BE(0) !== 0) || (w.kind === 'close' && f.type === FT_CHAN_CLOSE));
+      if (wi >= 0) waiters.splice(wi, 1)[0].res(f);
       else frames.push(f);
-      if (cmd === 'rfb.start' || cmd === 'rfb.stop') ackRfb(payload);
+      if (type === FT_CHAN_OPEN && payload.length >= 3) ackChan(payload);
     }
   });
-  tunSock.write(JSON.stringify({ type: 'tunnel_hello', deviceId: DEVICE_ID }) + '\n');
+  tunSock.write(JSON.stringify({ type: 'tunnel_hello', deviceId: DEVICE_ID, proto: 2 }) + '\n');
   for (let i = 0; i < 40 && !framed; i++) await wait(50);
   check('隧道建立', framed, '');
 
   const wsUrl = `ws://127.0.0.1:${PORT}/ws/vnc/${encodeURIComponent(DEVICE_ID)}`;
 
-  // ---- 会话 A（ctrl）：正常建立 + 画面转发 ----
+  // ---- 会话 A（ctrl）：建立 + 画面转发 ----
   const wsA = new WebSocket(`${wsUrl}?ctrl=1`);
   await new Promise((res, rej) => { wsA.on('open', res); wsA.on('error', rej); });
-  // 2026-08-22 根本修复：重建只发 rfb.start（设备端无条件重连），不再预发 rfb.stop
-  const t1 = await Promise.race([waitCmd('rfb.start'), wait(4000).then(() => null)]);
-  check('会话A 触发重建 rfb.start', !!t1, '');
+  const openA = await Promise.race([waitChanOpen(), wait(4000).then(() => null)]);
+  check('会话A 收到 CHAN_OPEN', !!openA, '');
+  const chanA = openA ? openA.payload.readUInt16BE(0) : 0;
   const data1 = Buffer.from('RFB 003.008\n' + 'A'.repeat(16), 'latin1'); // 模拟画面帧
   const wsAFirst = firstMsg(wsA);
-  sendTunnelFrame(0x01, data1);
+  sendTunnelFrame(FT_CHAN_DATA, chanData(chanA, data1));
   const got1 = await wsAFirst;
   check('会话A 收到画面帧', !!got1 && got1.equals(data1), got1 ? 'len=' + got1.length : '未收到');
 
-  // ---- 退出会话 A ----
+  // ---- 退出会话 A：网关下发 CHAN_CLOSE ----
   wsA.close();
-  await wait(100); // < 800ms：rfb.stop 尚未下发，旧连接仍在推帧
+  const closeA = await Promise.race([waitChanClose(), wait(3000).then(() => null)]);
+  check('会话A 关闭后网关下发 CHAN_CLOSE', !!closeA && chanOf(closeA) === chanA, '');
 
-  // ---- 设备推旧连接残留帧（会话 A 的最后几帧）→ 网关应缓冲而非转发 ----
-  const data2 = Buffer.from('OLD-LEFTOVER-FRAME-' + Date.now(), 'utf8'); // 旧残留数据（修复前会被补发给会话 B）
-  sendTunnelFrame(0x01, data2);
+  // ---- 设备仍推旧通道残留帧（会话 A 的最后几帧）→ 按 chanId 分发，无订阅者被丢弃 ----
+  const data2 = Buffer.from('OLD-LEFTOVER-FRAME-' + Date.now(), 'utf8');
+  sendTunnelFrame(FT_CHAN_DATA, chanData(chanA, data2));
   await wait(100);
-  // 等 debounce 的 rfb.stop 到达设备（网关清理阶段结束）
-  const debounceStop = await Promise.race([waitCmd('rfb.stop'), wait(3000).then(() => null)]);
-  check('退出后 debounce rfb.stop 下发', !!debounceStop, '');
 
   // ---- 重进：会话 B（ctrl）----
   const wsB = new WebSocket(`${wsUrl}?ctrl=1`);
   await new Promise((res, rej) => { wsB.on('open', res); wsB.on('error', rej); });
   const wsBFirst = firstMsg(wsB, 600); // 600ms 观察窗口：修复前这里会立即收到 data2（乱码源头）
-  const t2 = await Promise.race([waitCmd('rfb.start'), wait(4000).then(() => null)]);
-  check('会话B 触发重建 rfb.start', !!t2, '');
+  const openB = await Promise.race([waitChanOpen(), wait(4000).then(() => null)]);
+  check('会话B 收到 CHAN_OPEN', !!openB, '');
+  const chanB = openB ? openB.payload.readUInt16BE(0) : 0;
+  check('会话B 通道号不同于会话A', chanB !== chanA, `A=${chanA} B=${chanB}`);
   const replay = await wsBFirst;
-  check('会话B 未收到旧会话残留数据（pending 不补发）', !replay || !replay.equals(data2),
+  check('会话B 未收到旧会话残留数据（通道隔离）', !replay || !replay.equals(data2),
     replay ? '收到残留=' + replay.length + 'B' : '无残留数据');
 
-  // ---- 重建完成（ack 已回）后，设备推新帧 → 会话 B 应正常收到 ----
+  // ---- 会话 B 通道推新帧 → 正常收到 ----
   const data3 = Buffer.from('RFB 003.008\n' + 'B'.repeat(16), 'latin1');
   const wsBNew = firstMsg(wsB);
-  sendTunnelFrame(0x01, data3);
+  sendTunnelFrame(FT_CHAN_DATA, chanData(chanB, data3));
   const got3 = await wsBNew;
   check('会话B 收到新画面帧', !!got3 && got3.equals(data3), got3 ? 'len=' + got3.length : '未收到');
 

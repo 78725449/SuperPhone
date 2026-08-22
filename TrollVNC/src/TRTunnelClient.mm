@@ -28,20 +28,26 @@
 #import <string.h>
 #import <time.h>
 #import <unistd.h>
-#import <QuartzCore/QuartzCore.h>   // CACurrentMediaTime（缩略图延迟重连计时）
 #import <pthread.h>
 #import <notify.h>
 
-// 帧类型常量
-static const uint8_t kFrameTypeData    = 0x01;  // RFB 透传数据
-static const uint8_t kFrameTypePing    = 0x02;  // 心跳请求（设备→网关）
-static const uint8_t kFrameTypePong    = 0x03;  // 心跳响应（网关→设备）
-static const uint8_t kFrameTypeCmd     = 0x04;  // 命令 JSON（网关→设备）
-static const uint8_t kFrameTypeCmdAck  = 0x05;  // 命令 ack JSON（设备→网关）
-static const uint8_t kFrameTypeState   = 0x07;  // 被控状态上报（设备→网关，JSON {"controlled":bool}）
+// 帧类型常量（proto:2 通道复用协议，2026-08-23）
+static const uint8_t kFrameTypePing     = 0x02;  // 心跳请求（设备→网关）
+static const uint8_t kFrameTypePong     = 0x03;  // 心跳响应（网关→设备）
+static const uint8_t kFrameTypeCmd      = 0x04;  // 命令 JSON（网关→设备）
+static const uint8_t kFrameTypeCmdAck   = 0x05;  // 命令 ack JSON（设备→网关）
+static const uint8_t kFrameTypeState    = 0x07;  // 被控状态上报（设备→网关，JSON {"controlled":bool}）
+static const uint8_t kFrameTypeChanOpen = 0x08;  // 通道建立（网关→设备）：[chanId:2BE][kind:1B]
+static const uint8_t kFrameTypeChanAck  = 0x09;  // 通道建立确认（设备→网关）：[chanId:2BE][ok:1B]
+static const uint8_t kFrameTypeChanData = 0x0A;  // 通道 RFB 数据（双向）：[chanId:2BE][rfb字节]
+static const uint8_t kFrameTypeChanClose= 0x0B;  // 通道关闭（双向）：[chanId:2BE][reason:1B]
 
-// 本地 RFB 会话活跃标记（rfb.start/stop 命令驱动）
-static BOOL gRfbActive = NO;
+// 隧道协议版本（tunnel_hello.proto，网关不匹配即拒绝）
+static const int kTunnelProto = 2;
+// 通道号与类型
+static const uint16_t kChanIdThumb   = 0;   // 缩略图通道固定 0
+static const uint8_t  kChanKindThumb = 0;   // 缩略图通道
+static const uint8_t  kChanKindSession = 1; // 会话通道（noVNC 控制/观看）
 
 // 心跳/超时/重连参数
 static const NSTimeInterval kTunnelPingInterval  = 30.0;   // 心跳间隔默认值（HeartbeatIntervalSec 未设置时）
@@ -85,8 +91,9 @@ static void TRTunnelLog(const char *fmt, ...) {
     size_t _frameBufLen;
     size_t _frameBufCap;
     BOOL _restartLocal;
-    int _localFd;
-    double _thumbReconnectAt;   // 缩略图客户端延迟重连时间戳（CACurrentMediaTime，0=无；rfb.stop 后置，rfb.start 取消）
+    // proto:2 通道表：chanId(NSNumber) -> 本地 5901 fd(NSNumber)。
+    // 单隧道多路 5901 连接（chan 0 缩略图 + 会话通道），select 循环单线程私有，无需加锁
+    NSMutableDictionary<NSNumber *, NSNumber *> *_channels;
     int _tunnelFd;              // 当前隧道 socket fd（握手成功后赋值，供被控状态上报复用）
     pthread_mutex_t _writeMutex;  // _writeFrame 串行化（worker/主线程并发写同一隧道 fd）
     BOOL _controlled;           // 最近一次上报的被控状态（去重）
@@ -122,6 +129,7 @@ static void TRTunnelLog(const char *fmt, ...) {
         _port = kDefaultTunnelPort;
         pthread_mutex_init(&_writeMutex, NULL);
         _tunnelFd = -1;   // 显式初始化，防御 alloc 清零得到 0 的时序隐患
+        _channels = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -269,42 +277,29 @@ static void TRTunnelLog(const char *fmt, ...) {
     TVLog(@"[tunnel] handshake ok, entering passthrough mode");
     _retryDelay = kTunnelMinRetryDelay;
 
-    // 4. local RFB connected on demand (rfb.start); standby after handshake
-    _localFd = -1;
-    _thumbReconnectAt = 0; // 新隧道会话：复位延迟重连标记
+    // 4. 通道由网关 CHAN_OPEN 驱动（proto:2）：隧道就绪后网关先开 chan 0（缩略图），
+    //    会话时再开会话通道——设备端在 CHAN_OPEN 处理处同步 connect 5901 + 主动写版本
     _connected = YES;
     // 被控状态上报：握手成功后缓存当前隧道 fd，安装通知监听（首次），复位去重标记
     _tunnelFd = tunnelFd;
     [self _installControlStateListeners];
     _controlled = NO;
-    TRTunnelLog("handshake ok, standby (local RFB on rfb.start)");
-
-    // 2026-08-22 统一到 RFB：隧道握手成功后立即 connect 本地 5901（缩略图客户端，Raw 编码），
-    // 供网关作为 RFB 客户端解码缩略图；同时通知 trollvncserver 采集惰性启动 + 缩略图帧率（CaptureFps）。
-    if (_localFd < 0) {
-        _localFd = [self _connectLocalRfb];
-        TRTunnelLog("thumb client: local connect -> fd=%d", _localFd);
-    }
-    if (_localFd >= 0) {
-        // 缩略图态同样需 connect 后立即主动写版本（5901 握手窗口 0-50ms 极窄，绕过网关往返延迟）
-        const char kLocalVersion[] = "RFB 003.008\n";
-        ssize_t vw = write(_localFd, kLocalVersion, sizeof(kLocalVersion) - 1);
-        TRTunnelLog("thumb client: local write version -> %zd", vw);
-    }
-    // 通知采集帧率档 = 缩略图态（CaptureFps）
+    // 通知采集惰性启动（缩略图态基线帧率 CaptureFps；会话通道打开时升频）
     notify_post("com.82flex.trollvnc.capture-idle");
-    // 通知采集惰性启动（缩略图态）
     notify_post("com.82flex.trollvnc.tunnel-connected");
+    TRTunnelLog("handshake ok, waiting for CHAN_OPEN (thumb chan 0)");
 
-    // 5. select passthrough (standby: tunnel only)
+    // 5. select passthrough (channels driven)
     BOOL normalExit = [self _passthroughLoop:tunnelFd];
 
     // 6. cleanup
     _connected = NO;
-    // 2026-08-21：隧道断开（网关重启/断网）时 rfb.stop 到不了设备端，必须在此复位
-    // RFB 会话活跃标记——否则 gRfbActive 残留 YES 会导致会话状态错误
-    gRfbActive = NO;
-    if (_localFd >= 0) { close(_localFd); _localFd = -1; }
+    // 隧道断开（网关重启/断网）：关闭全部通道 fd 并清表
+    for (NSNumber *fdNum in [_channels allValues]) {
+        int fd = fdNum.intValue;
+        if (fd >= 0) close(fd);
+    }
+    [_channels removeAllObjects];
     close(tunnelFd);
     _tunnelFd = -1;  // 隧道已关闭，复位上报 fd（避免 write 到已关闭/复用的 fd）
     [self _resetFrameBuf];
@@ -322,6 +317,7 @@ static void TRTunnelLog(const char *fmt, ...) {
     NSMutableDictionary *hello = [NSMutableDictionary dictionary];
     hello[@"type"] = @"tunnel_hello";
     hello[@"deviceId"] = _deviceId;
+    hello[@"proto"] = @(kTunnelProto); // proto:2 通道复用协议（网关不匹配即拒绝）
     if (_token.length) hello[@"token"] = _token;
     NSData *json = [NSJSONSerialization dataWithJSONObject:hello options:0 error:NULL];
     if (!json) return NO;
@@ -400,11 +396,10 @@ static void TRTunnelLog(const char *fmt, ...) {
 
 /**
  * select 多路复用双向透传循环
- * 隧道可读 → 帧解析 → DATA 写本地 5901 / PONG 重置心跳 / CMD 调 commandHandler 回 CMDACK
- * 本地 5901 可读 → 封装 DATA 帧写隧道
+ * 隧道可读 → 帧解析 → CHAN_DATA 写对应通道 fd / PONG 重置心跳 / CMD 调 commandHandler 回 CMDACK
+ * 通道 fd 可读 → 封装 CHAN_DATA 帧写隧道（按 chanId）
  * 按 HeartbeatIntervalSec（默认 30s）间隔发 PING 心跳帧
  * @param tunnelFd 隧道 socket fd
- * @param localFd  本地 RFB socket fd
  * @return YES 表示因 stop 正常退出；NO 表示连接异常断开（需重连）
  */
 - (BOOL)_passthroughLoop:(int)tunnelFd {
@@ -413,34 +408,20 @@ static void TRTunnelLog(const char *fmt, ...) {
     time_t lastPing = time(NULL);
 
     while (_started && ![[NSThread currentThread] isCancelled]) {
-        // rfb.start/stop 已在命令解析处同步执行（关旧 fd/connect 5901 并回 ack），
-        // 此处直接进入 select，避免标记驱动的延迟与重复重建。
-        // 2026-08-22：rfb.stop / 本地 EOF 的延迟缩略图重连（500ms 后且 _localFd 空闲时执行）
-        if (_thumbReconnectAt > 0 && _localFd < 0 && CACurrentMediaTime() >= _thumbReconnectAt) {
-            _thumbReconnectAt = 0;
-            _localFd = [self _connectLocalRfb];
-            if (_localFd >= 0) {
-                const char kLocalVersion[] = "RFB 003.008\n";
-                ssize_t vw = write(_localFd, kLocalVersion, sizeof(kLocalVersion) - 1);
-                TRTunnelLog("delayed reconnect thumb client (rfb.stop/EOF) fd=%d vw=%zd", _localFd, vw);
-            }
-        }
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(tunnelFd, &rfds);
         int maxFd = tunnelFd;
-        if (_localFd >= 0) { FD_SET(_localFd, &rfds); if (_localFd > maxFd) maxFd = _localFd; }
-        struct timeval tv;
-        if (_thumbReconnectAt > 0 && _localFd < 0) {
-            // 有挂起的延迟重连：select 超时缩短到剩余时间，保证到点即重连
-            double remain = _thumbReconnectAt - CACurrentMediaTime();
-            if (remain < 0) remain = 0;
-            tv.tv_sec = (time_t)remain;
-            tv.tv_usec = (suseconds_t)((remain - (time_t)remain) * 1000000);
-        } else {
-            tv.tv_sec = (time_t)kTunnelSelectTimeout;
-            tv.tv_usec = 0;
+        // 通道 fd 全部加入 select 读集合（chan 0 缩略图 + 会话通道）
+        for (NSNumber *fdNum in [_channels allValues]) {
+            int fd = fdNum.intValue;
+            if (fd < 0) continue;
+            FD_SET(fd, &rfds);
+            if (fd > maxFd) maxFd = fd;
         }
+        struct timeval tv;
+        tv.tv_sec = (time_t)kTunnelSelectTimeout;
+        tv.tv_usec = 0;
         int sel = select(maxFd + 1, &rfds, NULL, NULL, &tv);
         if (sel < 0) {
             free(readBuf);
@@ -470,29 +451,31 @@ static void TRTunnelLog(const char *fmt, ...) {
                 return NO;
             }
         }
-        // local 5901 readable
-        if (_localFd >= 0 && FD_ISSET(_localFd, &rfds)) {
-            ssize_t n = read(_localFd, readBuf, kReadBufSize);
+        // 通道 fd readable：反查 chanId，封装 CHAN_DATA 上行
+        for (NSNumber *chanNum in [_channels allKeys]) {
+            int fd = [_channels[chanNum] intValue];
+            if (fd < 0 || !FD_ISSET(fd, &rfds)) continue;
+            ssize_t n = read(fd, readBuf, kReadBufSize);
             if (n <= 0) {
-                // 本地 5901 连接关闭（rfb.stop 或服务端断开）是正常事件：
-                // 仅清理本地 fd 回 standby，绝不能退出隧道（否则隧道重连导致网关 4002 tunnel closed）
-                // 2026-08-21：会话结束即复位 RFB 活跃标记——rfb.stop 可能未到（客户端异常断开/
-                // 服务端 EOF），残留 YES 会导致会话状态错误
-                gRfbActive = NO;
-                close(_localFd);
-                _localFd = -1;
-                // 隧道控制会话异常结束（服务端 EOF/rfb.stop 未到）：上报被控状态
-                [self _reportControlState:NO source:nil];
-                notify_post("com.82flex.trollvnc.capture-idle");
-                // 2026-08-22：异常断开同样延迟重连缩略图客户端（与 rfb.stop 一致）——
-                // 避免紧邻 rfb.start 重建时 5901 连接竞争（重连由循环内检查执行）
-                _thumbReconnectAt = CACurrentMediaTime() + 0.5;
-                TRTunnelLog("local RFB closed (EOF), delayed reconnect thumb client");
+                // 本地 5901 连接关闭（服务端断开/异常）是正常事件：仅清理该通道，
+                // 绝不能退出隧道（否则隧道重连导致网关 4002 tunnel closed）
+                [self _closeChannel:chanNum.unsignedShortValue reason:1];
                 continue;
             }
-            TRTunnelLog("local readable, read %zd bytes, sending FT_DATA", n);
-            if (![self _writeFrame:tunnelFd type:kFrameTypeData data:readBuf length:(size_t)n]) {
-                TRTunnelLog("FT_DATA write to tunnel failed");
+            TRTunnelLog("chan %@ readable, read %zd bytes, sending CHAN_DATA", chanNum, n);
+            // 封装 [chanId:2BE][rfb字节]
+            uint8_t hdr[2];
+            uint16_t cid = chanNum.unsignedShortValue;
+            hdr[0] = (uint8_t)(cid >> 8);
+            hdr[1] = (uint8_t)(cid & 0xFF);
+            uint8_t *frame = (uint8_t *)malloc(2 + (size_t)n);
+            if (!frame) { free(readBuf); return NO; }
+            memcpy(frame, hdr, 2);
+            memcpy(frame + 2, readBuf, (size_t)n);
+            BOOL ok = [self _writeFrame:tunnelFd type:kFrameTypeChanData data:frame length:2 + (size_t)n];
+            free(frame);
+            if (!ok) {
+                TRTunnelLog("CHAN_DATA write to tunnel failed");
                 free(readBuf);
                 return NO;
             }
@@ -567,40 +550,73 @@ static void TRTunnelLog(const char *fmt, ...) {
 
         const uint8_t *payload = _frameBuf + kFrameHeaderSize;
         switch (type) {
-            case kFrameTypeData:
-                if (payloadLen > 0) {
-                    // 2026-08-21 修复：standby（_localFd=-1，本地 5901 已断/rfb.stop 后）收到
-                    // DATA 帧（网关放行的客户端输入）时，原逻辑 write(-1) 失败 → return NO
-                    // → 整条隧道断开重连 → 网关侧 4002/4003 风暴 + CMD 帧黑洞（invoke 504）。
-                    // 已死会话的输入字节无意义，丢弃并告警；隧道保持，网关侧会话重建时
-                    // 重走 rfb.start（server 真死则明确 4005）。
-                    if (_localFd < 0) {
-                        TVLog(@"[tunnel] drop DATA frame in standby (local RFB down), %u bytes", payloadLen);
-                        TRTunnelLog("drop DATA in standby, %u bytes", payloadLen);
-                        break;
+            case kFrameTypeChanOpen: {
+                // 通道建立（网关→设备）：[chanId:2BE][kind:1B]
+                // 同步 connect 本地 5901 + 主动写协议版本（5901 握手窗口 0-50ms 极窄，
+                // 绕过网关往返延迟），回 CHAN_ACK 携带 connect 结果——网关据此精确放行
+                // 该通道缓冲的握手字节（替代 proto:1 的 rfb.start ack 窗口）
+                if (payloadLen < 3) break;
+                uint16_t chanId = ((uint16_t)payload[0] << 8) | payload[1];
+                uint8_t kind = payload[2];
+                int fd = [self _connectLocalRfb];
+                BOOL ok = (fd >= 0);
+                if (ok) {
+                    _channels[@(chanId)] = @(fd);
+                    const char kLocalVersion[] = "RFB 003.008\n";
+                    ssize_t vw = write(fd, kLocalVersion, sizeof(kLocalVersion) - 1);
+                    TRTunnelLog("CHAN_OPEN chan=%u kind=%u fd=%d vw=%zd", chanId, kind, fd, vw);
+                    if (kind == kChanKindSession) {
+                        // 会话通道：升频到 FrameRateSpec（屏幕流）+ 上报被控状态
+                        notify_post("com.82flex.trollvnc.capture-active");
+                        [self _reportControlState:YES source:@"tunnel"];
                     }
-                    // 2026-08-21 根因修复（与主动写协议版本配套）：rfb.start connect 后本进程
-                    // 已主动向本地 5901 写入 "RFB 003.008\n"，网关 ack 放行的 noVNC 协议版本
-                    // （同样 12B "RFB 003."）若再次写入即重复 → 设备端协议错乱。此处过滤：
-                    // 12B 且以 "RFB 003." 开头的帧视为重复协议版本，丢弃（后续 SetEncodings 等照常）。
-                    if (payloadLen == 12 && memcmp(payload, "RFB 003.", 8) == 0) {
-                        TRTunnelLog("drop duplicate client version (%u bytes)", payloadLen);
-                        break;
+                } else {
+                    TVLog(@"[tunnel] CHAN_OPEN chan=%u local connect failed", chanId);
+                    TRTunnelLog("CHAN_OPEN chan=%u connect failed", chanId);
+                }
+                uint8_t ackBuf[3];
+                ackBuf[0] = (uint8_t)(chanId >> 8);
+                ackBuf[1] = (uint8_t)(chanId & 0xFF);
+                ackBuf[2] = ok ? 1 : 0;
+                [self _writeFrame:tunnelFd type:kFrameTypeChanAck data:ackBuf length:3];
+                break;
+            }
+            case kFrameTypeChanData: {
+                // 通道 RFB 数据（网关→设备）：[chanId:2BE][rfb字节]
+                if (payloadLen < 2) break;
+                uint16_t chanId = ((uint16_t)payload[0] << 8) | payload[1];
+                NSNumber *fdNum = _channels[@(chanId)];
+                if (!fdNum) {
+                    // 未知通道：丢弃 + 回 CHAN_CLOSE（重同步，防协议污染）
+                    TVLog(@"[tunnel] CHAN_DATA for unknown chan %u, dropping", chanId);
+                    uint8_t closeBuf[3];
+                    closeBuf[0] = (uint8_t)(chanId >> 8);
+                    closeBuf[1] = (uint8_t)(chanId & 0xFF);
+                    closeBuf[2] = 2; // reason=错误
+                    [self _writeFrame:tunnelFd type:kFrameTypeChanClose data:closeBuf length:3];
+                    break;
+                }
+                int fd = fdNum.intValue;
+                size_t off = 2;
+                while (off < payloadLen) {
+                    ssize_t w = write(fd, payload + off, payloadLen - off);
+                    TRTunnelLog("CHAN_DATA chan=%u write local fd=%d -> %zd (off=%zu)", chanId, fd, w, off);
+                    if (w <= 0) {
+                        TVLog(@"[tunnel] write local RFB failed (chan %u)", chanId);
+                        TRTunnelLog("write local RFB failed w=%zd errno=%d", w, errno);
+                        return NO;
                     }
-                    // 写入本地 RFB（处理部分写）
-                    size_t off = 0;
-                    while (off < payloadLen) {
-                        ssize_t w = write(_localFd, payload + off, payloadLen - off);
-                        TRTunnelLog("DATA payloadLen=%u write local fd=%d -> %zd (off=%zu)", payloadLen, _localFd, w, off);
-                        if (w <= 0) {
-                            TVLog(@"[tunnel] write local RFB failed");
-                            TRTunnelLog("write local RFB failed w=%zd errno=%d", w, errno);
-                            return NO;
-                        }
-                        off += (size_t)w;
-                    }
+                    off += (size_t)w;
                 }
                 break;
+            }
+            case kFrameTypeChanClose: {
+                // 通道关闭（网关→设备）：[chanId:2BE][reason:1B]
+                if (payloadLen < 2) break;
+                uint16_t chanId = ((uint16_t)payload[0] << 8) | payload[1];
+                [self _closeChannel:chanId reason:0];
+                break;
+            }
             case kFrameTypePong:
                 // 心跳响应：收到即表示链路存活
                 break;
@@ -613,72 +629,6 @@ static void TRTunnelLog(const char *fmt, ...) {
                 NSDictionary *cmd = [NSJSONSerialization JSONObjectWithData:
                     [NSData dataWithBytes:payload length:payloadLen] options:0 error:NULL];
                 if (![cmd isKindOfClass:[NSDictionary class]]) break;
-                if ([[cmd objectForKey:@"cmd"] isEqualToString:@"rfb.start"]) {
-                    // 全新 RFB 会话：同步重建本地 5901 连接（先关旧 fd 再 connect），
-                    // ack 携带 connect 结果——网关据此精确放行缓冲的握手字节（替代固定窗口），
-                    // connect 失败时网关显式报错，避免 noVNC 静默黑屏。
-                    _thumbReconnectAt = 0; // 取消 rfb.stop 的延迟缩略图重连（本命令无条件重连）
-                    if (_localFd >= 0) { close(_localFd); _localFd = -1; }
-                    _localFd = [self _connectLocalRfb];
-                    BOOL ok = (_localFd >= 0);
-                    // 2026-08-21：RFB 会话活跃标记（= ok：connect 成功才有画面流）
-                    gRfbActive = ok;
-                    // 隧道控制开始：上报被控状态（connect 成功 = 远程控制会话建立）
-                    if (ok) [self _reportControlState:YES source:@"tunnel"];
-                    TRTunnelLog("rfb.start: local connect -> fd=%d", _localFd);
-                    if (ok) {
-                        // 控制态：通知 trollvncserver 升频到 FrameRateSpec（屏幕流）
-                        notify_post("com.82flex.trollvnc.capture-active");
-                        // 2026-08-21 根因修复：设备端 5901 握手窗口极窄（实测 0-50ms 抖动）——
-                        // 客户端 connect 后必须立即发回协议版本，否则服务端主动关闭（EOF）。
-                        // noVNC 协议版本经「网关 ack → 放行 → 隧道」链路到达有毫秒级延迟，
-                        // 间歇性超出窗口 → 隧道 EOF → 黑屏。此处 connect 后立即主动写入
-                        // 固定协议版本 "RFB 003.008\n"，绕过网关往返，确保窗口内完成握手。
-                        // 网关 ack 放行时会跳过已主动发送的协议版本（见网关侧 skipVersion）。
-                        const char kLocalVersion[] = "RFB 003.008\n";
-                        ssize_t vw = write(_localFd, kLocalVersion, sizeof(kLocalVersion) - 1);
-                        TRTunnelLog("rfb.start: local write version -> %zd", vw);
-                    } else {
-                        TVLog(@"[tunnel] rfb.start: local connect failed, keep standby");
-                        // connect 失败回缩略图态降频
-                        notify_post("com.82flex.trollvnc.capture-idle");
-                        // 2026-08-22：connect 失败补上报被控状态 NO（避免旧会话 YES 残留）
-                        [self _reportControlState:NO source:nil];
-                    }
-                    NSDictionary *ack0 = @{ @"type": @"ack", @"cmd": @"rfb.start",
-                                            @"id": cmd[@"id"] ?: [NSNull null], @"ok": @(ok) };
-                    NSData *ackJson0 = [NSJSONSerialization dataWithJSONObject:ack0 options:0 error:NULL];
-                    if (ackJson0) {
-                        [self _writeFrame:tunnelFd type:kFrameTypeCmdAck data:ackJson0.bytes length:ackJson0.length];
-                    }
-                    break;
-                }
-                if ([[cmd objectForKey:@"cmd"] isEqualToString:@"rfb.stop"]) {
-                    // 会话结束：同步关闭本地 5901 连接，回 standby
-                    // 2026-08-21：RFB 会话活跃标记复位
-                    gRfbActive = NO;
-                    // 隧道控制结束：上报被控状态
-                    [self _reportControlState:NO source:nil];
-                    if (_localFd >= 0) {
-                        TRTunnelLog("rfb.stop: closing local RFB fd=%d", _localFd);
-                        close(_localFd);
-                        _localFd = -1;
-                    }
-                    notify_post("com.82flex.trollvnc.capture-idle");
-                    // 2026-08-22 根本修复：延迟重连缩略图客户端——rfb.stop 后可能紧邻
-                    // rfb.start（网关重建会话只发 rfb.start），立即重连会被 rfb.start
-                    // 无条件重连关掉 → 5901 连接竞争 → 连续「控制→断开→再控制」卡加载中。
-                    // 延迟 500ms 且仅在 _localFd 仍空闲（未被 rfb.start 占用）时重连，
-                    // 消除该中间态（重连由 _passthroughLoop 循环内检查执行）。
-                    _thumbReconnectAt = CACurrentMediaTime() + 0.5;
-                    NSDictionary *ack0 = @{ @"type": @"ack", @"cmd": @"rfb.stop",
-                                            @"id": cmd[@"id"] ?: [NSNull null], @"ok": @YES };
-                    NSData *ackJson0 = [NSJSONSerialization dataWithJSONObject:ack0 options:0 error:NULL];
-                    if (ackJson0) {
-                        [self _writeFrame:tunnelFd type:kFrameTypeCmdAck data:ackJson0.bytes length:ackJson0.length];
-                    }
-                    break;
-                }
                 NSDictionary *ack = self.commandHandler ? self.commandHandler(cmd) : nil;
                 if (!ack) {
                     ack = @{ @"type": @"ack",
@@ -707,6 +657,40 @@ static void TRTunnelLog(const char *fmt, ...) {
         _frameBufLen = remain;
     }
     return YES;
+}
+
+/**
+ * 关闭一个通道：关本地 5901 fd、清表项、按需降频/上报被控状态、通知网关
+ * @param chanId 通道号（0=缩略图，其余=会话）
+ * @param reason 0=网关主动关闭（不回通知）；1=本地 EOF（回 CHAN_CLOSE 通知网关）
+ */
+- (void)_closeChannel:(uint16_t)chanId reason:(uint8_t)reason {
+    NSNumber *fdNum = _channels[@(chanId)];
+    if (!fdNum) return;
+    int fd = fdNum.intValue;
+    if (fd >= 0) close(fd);
+    [_channels removeObjectForKey:@(chanId)];
+    BOOL isSession = (chanId != kChanIdThumb);
+    if (isSession) {
+        // 会话通道关闭：若已无任何会话通道，降频 + 上报被控结束
+        BOOL anySession = NO;
+        for (NSNumber *cid in _channels) {
+            if (cid.unsignedShortValue != kChanIdThumb) { anySession = YES; break; }
+        }
+        if (!anySession) {
+            notify_post("com.82flex.trollvnc.capture-idle");
+            [self _reportControlState:NO source:nil];
+        }
+    }
+    if (reason == 1) {
+        // 本地 EOF：通知网关关闭该通道（网关清理会话 / 重开缩略图通道）
+        uint8_t closeBuf[3];
+        closeBuf[0] = (uint8_t)(chanId >> 8);
+        closeBuf[1] = (uint8_t)(chanId & 0xFF);
+        closeBuf[2] = 1;
+        [self _writeFrame:_tunnelFd type:kFrameTypeChanClose data:closeBuf length:3];
+    }
+    TRTunnelLog("chan %u closed (reason=%u)", chanId, reason);
 }
 
 /**
@@ -745,7 +729,7 @@ static void TRTunnelLog(const char *fmt, ...) {
 }
 
 /** 被控状态上报：状态变化时经隧道 FT_STATE 帧推网关（去重，避免重复推送）
- *  source：@"5801"（非 loopback 直连控制）/ @"tunnel"（隧道 rfb.start 控制）；controlled=NO 时忽略 */
+ *  source：@"5801"（非 loopback 直连控制）/ @"tunnel"（隧道会话通道控制）；controlled=NO 时忽略 */
 - (void)_reportControlState:(BOOL)controlled source:(NSString *)source {
     if (controlled == _controlled && [source isEqualToString:_controlledSource]) return;
     _controlled = controlled;
@@ -768,11 +752,6 @@ static void TRTunnelLog(const char *fmt, ...) {
         dispatch_get_main_queue(), ^(int t) { (void)t; [self _reportControlState:YES source:@"5801"]; });
     notify_register_dispatch("com.82flex.trollvnc.control-idle", &idleTok,
         dispatch_get_main_queue(), ^(int t) { (void)t; [self _reportControlState:NO source:nil]; });
-}
-
-/** 本地 RFB 会话是否活跃（rfb.start/stop 命令驱动） */
-+ (BOOL)isRfbActive {
-    return gRfbActive;
 }
 
 @end
