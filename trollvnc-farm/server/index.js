@@ -979,8 +979,9 @@ async function handleApi(req, res, url) {
         return true;
       }
       // 2026-08-22：断开被控（5801 直连等外部控制端）——设备端 clients.disconnect id=REMOTE
+      // 参数名 clientId（TRCapabilityRegistry 能力契约），内部转 id 调 trollvncserver
       if (req.method === 'POST' && sub === 'disconnect') {
-        const ack = await sendDeviceCmd(id, { cmd: 'invoke', cap: 'clients.disconnect', params: { id: 'REMOTE' } }, 8000);
+        const ack = await sendDeviceCmd(id, { cmd: 'invoke', cap: 'clients.disconnect', params: { clientId: 'REMOTE' } }, 8000);
         sendJson(res, 200, { ok: !!(ack && ack.ok !== false), deviceId: dev.id, error: ack && ack.error });
         return true;
       }

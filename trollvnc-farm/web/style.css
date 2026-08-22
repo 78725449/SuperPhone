@@ -220,10 +220,11 @@ main {
   opacity: 0; transition: opacity .15s ease;
   pointer-events: none;
 }
-.tile:not(.tile-offline):not(.tile-mock):hover::after { opacity: 1; }
-/* 聚焦态（主控已在大屏）与直控态（直接控制）不显示引导提示 */
+.tile:not(.tile-offline):not(.tile-mock):not(.tile-controlled):hover::after { opacity: 1; }
+/* 聚焦态（主控已在大屏）、直控态（直接控制）与被控制中（tile-controlled）不显示引导提示 */
 #workspace.focus-open .tile::after,
-#wall.direct-mode .tile::after { display: none; }
+#wall.direct-mode .tile::after,
+.tile.tile-controlled::after { display: none; }
 
 /* 布局切换按钮 + 下拉菜单 */
 .layout-switch { position: relative; display: inline-flex; }

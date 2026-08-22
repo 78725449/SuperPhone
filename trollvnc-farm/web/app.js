@@ -341,9 +341,9 @@ function createWallTile(d) {
     if (batchMode) { toggleSelect(d.id); return; }
     if (directMode) return; // 直控模式：点击卡片直达 RFB 控制（canvas 输入事件由 noVNC 处理），不聚焦、无悬停提示
     if (syncMode) { toggleSync(d.id); return; } // 同步选择模式：点卡片切换同步（选中态=边框高亮+同步中）
-    // 2026-08-22：被 5801 直连控制 → 提示断开接管（避免与 5801 并存导致协议串流）
-    if (dev.controlled && dev.controlledSource === '5801') {
-      if (confirm(`设备「${dev.name}」正在被 5801 控制，是否断开并接管？`)) {
+    // 2026-08-22：被控制中（5801 直连 / 隧道）→ 提示断开接管（避免并存导致协议串流）
+    if (dev.controlled) {
+      if (confirm(`设备「${dev.name}」正在被控制，是否断开并接管？`)) {
         disconnectControlled(dev).then((ok) => { if (ok) enterFocus(dev); });
       }
       return;
@@ -2059,13 +2059,14 @@ function updateWallTile(inst, d) {
   inst.device = d;
   const tile = inst.tile;
   tile.classList.toggle('direct-active', directRfbs.has(d.id)); // 直控描边随卡片重建同步
+  tile.classList.toggle('tile-controlled', !!d.controlled); // 被控制中：隐藏 hover 引导提示
   tile.querySelector('.tname').textContent = d.name;
   tile.querySelector('.dot').className = 'dot ' + (d.online ? 'on' : 'off');
   const tv = tile.querySelector('.tv');
-  // 2026-08-22：被 5801 直连控制 → 不显示画面（停止缩略图获取，避免泄露被控画面）；
+  // 2026-08-22：被控制中（5801 直连 / 隧道）→ 不显示画面（停止缩略图获取，避免泄露被控画面）；
   // 被控解除后恢复缩略图获取
-  const controlledBy5801 = d.controlled && d.controlledSource === '5801' && d.online;
-  if (controlledBy5801) {
+  const isControlled = d.controlled && d.online;
+  if (isControlled) {
     if (inst.rfb) stopWallRfb(inst);
   } else if (!d.controlled && !inst.paused && !inst.rfb) {
     startWallRfb(inst);
@@ -2078,9 +2079,9 @@ function updateWallTile(inst, d) {
     if (!mask) {
       mask = document.createElement('div');
       mask.className = 'ctrl-mask';
-      mask.textContent = controlledBy5801 ? '被 5801 控制中' : '被控制中';
+      mask.textContent = d.controlledSource === '5801' ? '被 5801 控制中' : '被控制中';
       tile.appendChild(mask);
-    } else if (controlledBy5801) {
+    } else if (d.controlledSource === '5801') {
       mask.textContent = '被 5801 控制中';
     }
   } else if (mask) {
