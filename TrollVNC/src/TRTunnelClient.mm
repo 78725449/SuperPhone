@@ -286,6 +286,14 @@ static void TRTunnelLog(const char *fmt, ...) {
     if (_localFd < 0) {
         _localFd = [self _connectLocalRfb];
         TRTunnelLog("thumb client: local connect -> fd=%d", _localFd);
+        // 2026-08-23 启动竞态修复：隧道握手成功时 trollvncserver 可能尚未监听 5901
+        // （watchdog 重启服务初始化约 0.6s，比隧道握手慢）→ connect 失败 _localFd=-1。
+        // 置延迟重连标记，由 _passthroughLoop 循环内 0.5s 后自动重试直到 5901 就绪，
+        // 否则缩略图客户端永久缺失 → rfb.start ok=false → 控制卡加载中。
+        if (_localFd < 0) {
+            _thumbReconnectAt = CACurrentMediaTime() + 0.5;
+            TRTunnelLog("thumb client: connect failed, schedule delayed retry");
+        }
     }
     if (_localFd >= 0) {
         // 缩略图态同样需 connect 后立即主动写版本（5901 握手窗口 0-50ms 极窄，绕过网关往返延迟）
@@ -442,6 +450,10 @@ static void TRTunnelLog(const char *fmt, ...) {
                 const char kLocalVersion[] = "RFB 003.008\n";
                 ssize_t vw = write(_localFd, kLocalVersion, sizeof(kLocalVersion) - 1);
                 TRTunnelLog("delayed reconnect thumb client (rfb.stop/EOF) fd=%d vw=%zd", _localFd, vw);
+            } else {
+                // 2026-08-23 启动竞态：5901 仍未就绪（服务启动比隧道握手慢）→ 继续 arm，
+                // 由下一轮循环再试，直到 connect 成功或隧道结束。
+                _thumbReconnectAt = CACurrentMediaTime() + 0.5;
             }
         }
         fd_set rfds;
@@ -639,8 +651,11 @@ static void TRTunnelLog(const char *fmt, ...) {
                     // noVNC 握手由网关代理（回放缓存 ServerInit），SetPixelFormat/SetEncodings
                     // 在同一已握手连接上转发 → trollvncserver 切换推帧编码/帧率。连接不重建
                     // → 服务端零残留 → 零崩溃 → 无反复注册/隧道重连。
-                    _thumbReconnectAt = 0; // 取消异常断开的延迟缩略图重连
+                    if (_localFd >= 0) _thumbReconnectAt = 0; // 连接已建立：取消异常断开的延迟缩略图重连
                     gRfbActive = (_localFd >= 0); // 连接保持：有常驻连接即视为活跃
+                    // 2026-08-23 启动竞态兜底：若缩略图客户端尚未建立（服务启动比隧道慢，
+                    // _localFd<0），保留 _thumbReconnectAt 重连标记由 _passthroughLoop 循环
+                    // 0.5s 后自动补建连接；不重建、不阻塞，等待 5901 就绪。
                     // 隧道控制开始：上报被控状态（连接保持 = 控制会话建立）
                     if (_localFd >= 0) [self _reportControlState:YES source:@"tunnel"];
                     TRTunnelLog("rfb.start: connection kept (no rebuild) fd=%d", _localFd);
