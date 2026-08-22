@@ -760,6 +760,7 @@ tun = {
   thumbRfb: ThumbRfbDecoder|null,  // 缩略图态 RFB 解码器（Raw→JPEG，2026-08-22）
   mode: 'thumb'|'ctrl',            // 隧道态：缩略图/控制
   controlled: boolean,             // 被控状态（2026-08-22）
+  controlledSource: '5801'|'tunnel'|null, // 被控来源（2026-08-22：5801 直连 / 隧道 rfb.start）
 }
 
 // 命令挂起表（pendingCmds.get(cid)）

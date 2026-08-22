@@ -4453,6 +4453,28 @@ static BOOL tvDisconnectAllClients(void) {
     return YES;
 }
 
+/** 断开所有非 loopback 客户端（2026-08-22）：5801 直连等外部控制端（host 非 127.0.0.1）。
+ *  隧道缩略图/控制客户端（loopback）保留——网关「断开被控」只踢外部控制端，不影响隧道链路。 */
+static BOOL tvDisconnectRemoteClients(void) {
+    if (!gScreen)
+        return NO;
+
+    rfbClientPtr cl = NULL;
+    rfbClientIteratorPtr it = rfbGetClientIterator(gScreen);
+    while ((cl = rfbClientIteratorNext(it))) {
+        NSString *host = (cl && cl->host) ? [NSString stringWithUTF8String:cl->host] : @"";
+        BOOL isLoopback = [host isEqualToString:@"127.0.0.1"] || [host isEqualToString:@"::1"] ||
+                          [host isEqualToString:@"localhost"] || [host hasPrefix:@"127."] ||
+                          [host hasPrefix:@"::ffff:127."];
+        if (!isLoopback) {
+            rfbCloseClient(cl);
+        }
+    }
+
+    rfbReleaseClientIterator(it);
+    return YES;
+}
+
 // --- RFB 扩展 handler 实现（screen.* / clients.*，复用上方辅助函数，前向声明见任务 1）---
 
 /** 处理 screen.hash：返回当前屏幕 pHash（16 字符 hex）
@@ -4572,6 +4594,12 @@ static NSDictionary *tvExtHandleClientsDisconnect(rfbClientPtr cl, NSDictionary 
     BOOL shouldBlock = [params[@"block"] boolValue];
     if ([cid isEqualToString:@"ALL"]) {
         tvDisconnectAllClients();
+        return tvExtOk(nil);
+    }
+    // 2026-08-22：REMOTE = 断开所有非 loopback 客户端（5801 直连等外部控制端），
+    // 网关「断开被控」一次调用即可，无需先 clients.list 找 ID
+    if ([cid isEqualToString:@"REMOTE"]) {
+        tvDisconnectRemoteClients();
         return tvExtOk(nil);
     }
     if (cid.length != 8) return tvExtErr(@"InvalidID");

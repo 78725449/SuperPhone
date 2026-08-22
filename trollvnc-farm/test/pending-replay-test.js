@@ -123,9 +123,9 @@ try {
   // ---- 会话 A（ctrl）：正常建立 + 画面转发 ----
   const wsA = new WebSocket(`${wsUrl}?ctrl=1`);
   await new Promise((res, rej) => { wsA.on('open', res); wsA.on('error', rej); });
-  const s1 = await Promise.race([waitCmd('rfb.stop'), wait(4000).then(() => null)]);
+  // 2026-08-22 根本修复：重建只发 rfb.start（设备端无条件重连），不再预发 rfb.stop
   const t1 = await Promise.race([waitCmd('rfb.start'), wait(4000).then(() => null)]);
-  check('会话A 触发重建 stop→start', !!s1 && !!t1, '');
+  check('会话A 触发重建 rfb.start', !!t1, '');
   const data1 = Buffer.from('RFB 003.008\n' + 'A'.repeat(16), 'latin1'); // 模拟画面帧
   const wsAFirst = firstMsg(wsA);
   sendTunnelFrame(0x01, data1);
@@ -148,9 +148,8 @@ try {
   const wsB = new WebSocket(`${wsUrl}?ctrl=1`);
   await new Promise((res, rej) => { wsB.on('open', res); wsB.on('error', rej); });
   const wsBFirst = firstMsg(wsB, 600); // 600ms 观察窗口：修复前这里会立即收到 data2（乱码源头）
-  const s2 = await Promise.race([waitCmd('rfb.stop'), wait(4000).then(() => null)]);
   const t2 = await Promise.race([waitCmd('rfb.start'), wait(4000).then(() => null)]);
-  check('会话B 触发重建 stop→start', !!s2 && !!t2, '');
+  check('会话B 触发重建 rfb.start', !!t2, '');
   const replay = await wsBFirst;
   check('会话B 未收到旧会话残留数据（pending 不补发）', !replay || !replay.equals(data2),
     replay ? '收到残留=' + replay.length + 'B' : '无残留数据');

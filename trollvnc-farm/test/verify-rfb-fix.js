@@ -96,11 +96,10 @@ check('2 隧道建立（进入帧模式）', framed, '');
 const wsUrl = `ws://${HOST}:${WS_PORT}/ws/vnc/${encodeURIComponent(DEVICE_ID)}`;
 const ws1 = new WebSocket(wsUrl);
 await new Promise((res, rej) => { ws1.on('open', res); ws1.on('error', rej); });
-console.log('  ...WS(viewOnly) 已连接，等待 5901 重建（stop→start）');
-const stop1 = await Promise.race([waitCmd('rfb.stop'), wait(4000).then(() => null)]);
+console.log('  ...WS(viewOnly) 已连接，等待 5901 重建（rfb.start）');
 const start1 = await Promise.race([waitCmd('rfb.start'), wait(4000).then(() => null)]);
-check('3 首会话（viewOnly）触发 5901 重建 stop→start', !!stop1 && !!start1,
-  `${stop1 ? 'stop' : '无stop'}→${start1 ? 'start' : '无start'}`);
+check('3 首会话（viewOnly）触发 5901 重建 rfb.start', !!start1,
+  `${start1 ? 'start' : '无start'}`);
 
 // ---------- 4. 设备回传 RFB 字节，WS 应收到（黑屏根因验证） ----------
 const rfbBytes = Buffer.from('RFB 003.008\n\x00\x00\x01\x00', 'latin1');
@@ -124,10 +123,9 @@ check('5 viewOnly 会话上行转发到隧道（握手兼容）', dataFramesAfte
 console.log('  ...WS(ctrl) 已连接，验证非首会话也触发重建');
 const ws2 = new WebSocket(`${wsUrl}?ctrl=1`);
 await new Promise((res, rej) => { ws2.on('open', res); ws2.on('error', rej); });
-const stop2 = await Promise.race([waitCmd('rfb.stop'), wait(4000).then(() => null)]);
 const start2 = await Promise.race([waitCmd('rfb.start'), wait(4000).then(() => null)]);
-check('6 ctrl 会话无条件重建（非首会话仍 stop→start）', !!stop2 && !!start2,
-  `${stop2 ? 'stop' : '无stop'}→${start2 ? 'start' : '无start'}`);
+check('6 ctrl 会话无条件重建（非首会话仍 rfb.start）', !!start2,
+  `${start2 ? 'start' : '无start'}`);
 
 // ---------- 7. 关闭全部会话 -> rfb.stop ----------
 const stopP = waitCmd('rfb.stop');

@@ -91,14 +91,13 @@ tunSock.write(JSON.stringify({ type: 'tunnel_hello', deviceId: DEVICE_ID }) + '\
 for (let i = 0; i < 40 && !framed; i++) await wait(50);
 check('1 隧道建立', framed);
 
-// 3. ctrl WS 会话（首会话：先 rfb.stop 再 rfb.start 重建，全新握手）
+// 3. ctrl WS 会话（首会话：只发 rfb.start 重建，全新握手——2026-08-22 不再预发 rfb.stop）
 const ws = new WebSocket(`ws://${HOST}:${WS_PORT}/ws/vnc/${DEVICE_ID}?ctrl=1`);
 await new Promise((res, rej) => { ws.on('open', res); ws.on('error', rej); });
-const stopCmd1 = await Promise.race([waitCmd('rfb.stop'), wait(4000).then(() => null)]);
 const startFrame = await Promise.race([waitCmd('rfb.start'), wait(4000).then(() => null)]);
 let startCmd = null;
 try { startCmd = startFrame ? JSON.parse(startFrame.toString('utf8')) : null; } catch { /* noop */ }
-check('2 首会话触发 5901 重建 stop→start', !!stopCmd1 && !!startCmd && startCmd.cmd === 'rfb.start',
+check('2 首会话触发 5901 重建 rfb.start', !!startCmd && startCmd.cmd === 'rfb.start',
   startCmd ? startCmd.cmd : '无');
 
 // 4. 客户端发版本选择(0x01) → 隧道应收到 FT_DATA

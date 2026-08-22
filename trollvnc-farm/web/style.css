@@ -312,7 +312,10 @@ main {
   position: absolute; left: 0; top: 0; width: 100%; height: 100%;
   object-fit: contain;              /* 完整显示画面（不同比例设备留黑边），保证卡片统一规格 */
   pointer-events: none; background: #000;
+  opacity: 0;                       /* 2026-08-22：缩略图就绪淡入（fetchThumb 加 .loaded 触发） */
+  transition: opacity .25s ease;
 }
+.tile .thumb.loaded { opacity: 1; }
 /* 横屏显示偏好（2026-08-19）：缩略图逆时针旋转 90° 铺满横容器——竖屏截图旋转后比例与横
    容器互倒（容器宽高比 h/w，旋转后 w/h）。布局盒按 --tile-land-h 反算为竖盒（宽=容器高）
    再旋转，视觉恰为容器尺寸填满。rotate(-90deg) 为逆时针（实测 90deg 内容上下颠倒）。
@@ -363,11 +366,30 @@ main {
 .tile.tile-offline { opacity: .55; }
 .tile.tile-offline .tv { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; }
 .offline-ph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
   text-align: center;
   font-size: 11px;
   color: var(--muted);
   padding: 2px 4px;
   line-height: 1.4;
+}
+/* 卡片墙缩略图加载动画（2026-08-22）：与聚焦画面/5801 同款旋转 spinner，缩小尺寸；
+   仅「加载中…」占位带 .spin，已连接/离线/未注册等文本占位不受影响 */
+.offline-ph .spin {
+  flex: 0 0 auto;
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid rgba(124, 92, 255, .2); border-top-color: #7C5CFF;
+  animation: spin .8s linear infinite;
+  margin-right: 6px;
+}
+/* 加载中占位叠加在最后画面上方（2026-08-22）：退出控制后无论有无最后一帧都显示，
+   缩略图链路重建完成（fetchThumb 拉到）后移除——复用 .offline-ph 动画，不新增 */
+.offline-ph.overlay {
+  position: absolute; inset: 0; z-index: 3;
+  background: rgba(0, 0, 0, .35);
 }
 
 /* 移动端悬浮信号按钮（白色圆底 WiFi 图标，可拖动；点击展开操作菜单） */
@@ -613,6 +635,11 @@ main {
 .wall-grid.batch-mode .tile-checkbox,
 .wall-list.batch-mode .tile-checkbox { display: block; }
 .tile.tile-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* 直控模式描边（2026-08-22）：直控中的设备卡片主题色描边，与普通卡片区分 */
+.tile.direct-active {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }

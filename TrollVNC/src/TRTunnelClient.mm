@@ -28,6 +28,7 @@
 #import <string.h>
 #import <time.h>
 #import <unistd.h>
+#import <QuartzCore/QuartzCore.h>   // CACurrentMediaTime（缩略图延迟重连计时）
 #import <pthread.h>
 #import <notify.h>
 
@@ -85,9 +86,11 @@ static void TRTunnelLog(const char *fmt, ...) {
     size_t _frameBufCap;
     BOOL _restartLocal;
     int _localFd;
+    double _thumbReconnectAt;   // 缩略图客户端延迟重连时间戳（CACurrentMediaTime，0=无；rfb.stop 后置，rfb.start 取消）
     int _tunnelFd;              // 当前隧道 socket fd（握手成功后赋值，供被控状态上报复用）
     pthread_mutex_t _writeMutex;  // _writeFrame 串行化（worker/主线程并发写同一隧道 fd）
     BOOL _controlled;           // 最近一次上报的被控状态（去重）
+    NSString *_controlledSource; // 最近一次上报的被控来源（@"5801" 直连 / @"tunnel" 隧道，去重）
 }
 @end
 
@@ -268,6 +271,7 @@ static void TRTunnelLog(const char *fmt, ...) {
 
     // 4. local RFB connected on demand (rfb.start); standby after handshake
     _localFd = -1;
+    _thumbReconnectAt = 0; // 新隧道会话：复位延迟重连标记
     _connected = YES;
     // 被控状态上报：握手成功后缓存当前隧道 fd，安装通知监听（首次），复位去重标记
     _tunnelFd = tunnelFd;
@@ -411,14 +415,32 @@ static void TRTunnelLog(const char *fmt, ...) {
     while (_started && ![[NSThread currentThread] isCancelled]) {
         // rfb.start/stop 已在命令解析处同步执行（关旧 fd/connect 5901 并回 ack），
         // 此处直接进入 select，避免标记驱动的延迟与重复重建。
+        // 2026-08-22：rfb.stop / 本地 EOF 的延迟缩略图重连（500ms 后且 _localFd 空闲时执行）
+        if (_thumbReconnectAt > 0 && _localFd < 0 && CACurrentMediaTime() >= _thumbReconnectAt) {
+            _thumbReconnectAt = 0;
+            _localFd = [self _connectLocalRfb];
+            if (_localFd >= 0) {
+                const char kLocalVersion[] = "RFB 003.008\n";
+                ssize_t vw = write(_localFd, kLocalVersion, sizeof(kLocalVersion) - 1);
+                TRTunnelLog("delayed reconnect thumb client (rfb.stop/EOF) fd=%d vw=%zd", _localFd, vw);
+            }
+        }
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(tunnelFd, &rfds);
         int maxFd = tunnelFd;
         if (_localFd >= 0) { FD_SET(_localFd, &rfds); if (_localFd > maxFd) maxFd = _localFd; }
         struct timeval tv;
-        tv.tv_sec = (time_t)kTunnelSelectTimeout;
-        tv.tv_usec = 0;
+        if (_thumbReconnectAt > 0 && _localFd < 0) {
+            // 有挂起的延迟重连：select 超时缩短到剩余时间，保证到点即重连
+            double remain = _thumbReconnectAt - CACurrentMediaTime();
+            if (remain < 0) remain = 0;
+            tv.tv_sec = (time_t)remain;
+            tv.tv_usec = (suseconds_t)((remain - (time_t)remain) * 1000000);
+        } else {
+            tv.tv_sec = (time_t)kTunnelSelectTimeout;
+            tv.tv_usec = 0;
+        }
         int sel = select(maxFd + 1, &rfds, NULL, NULL, &tv);
         if (sel < 0) {
             free(readBuf);
@@ -460,16 +482,12 @@ static void TRTunnelLog(const char *fmt, ...) {
                 close(_localFd);
                 _localFd = -1;
                 // 隧道控制会话异常结束（服务端 EOF/rfb.stop 未到）：上报被控状态
-                [self _reportControlState:NO];
-                // 控制会话结束 → 回缩略图态：重连 5901（缩略图客户端）+ 通知降频
-                _localFd = [self _connectLocalRfb];
-                if (_localFd >= 0) {
-                    const char kLocalVersion[] = "RFB 003.008\n";
-                    ssize_t vw = write(_localFd, kLocalVersion, sizeof(kLocalVersion) - 1);
-                    TRTunnelLog("thumb client: reconnect + write version -> fd=%d vw=%zd", _localFd, vw);
-                }
+                [self _reportControlState:NO source:nil];
                 notify_post("com.82flex.trollvnc.capture-idle");
-                TRTunnelLog("local RFB closed (EOF), reconnect thumb client fd=%d", _localFd);
+                // 2026-08-22：异常断开同样延迟重连缩略图客户端（与 rfb.stop 一致）——
+                // 避免紧邻 rfb.start 重建时 5901 连接竞争（重连由循环内检查执行）
+                _thumbReconnectAt = CACurrentMediaTime() + 0.5;
+                TRTunnelLog("local RFB closed (EOF), delayed reconnect thumb client");
                 continue;
             }
             TRTunnelLog("local readable, read %zd bytes, sending FT_DATA", n);
@@ -599,13 +617,14 @@ static void TRTunnelLog(const char *fmt, ...) {
                     // 全新 RFB 会话：同步重建本地 5901 连接（先关旧 fd 再 connect），
                     // ack 携带 connect 结果——网关据此精确放行缓冲的握手字节（替代固定窗口），
                     // connect 失败时网关显式报错，避免 noVNC 静默黑屏。
+                    _thumbReconnectAt = 0; // 取消 rfb.stop 的延迟缩略图重连（本命令无条件重连）
                     if (_localFd >= 0) { close(_localFd); _localFd = -1; }
                     _localFd = [self _connectLocalRfb];
                     BOOL ok = (_localFd >= 0);
                     // 2026-08-21：RFB 会话活跃标记（= ok：connect 成功才有画面流）
                     gRfbActive = ok;
                     // 隧道控制开始：上报被控状态（connect 成功 = 远程控制会话建立）
-                    if (ok) [self _reportControlState:YES];
+                    if (ok) [self _reportControlState:YES source:@"tunnel"];
                     TRTunnelLog("rfb.start: local connect -> fd=%d", _localFd);
                     if (ok) {
                         // 控制态：通知 trollvncserver 升频到 FrameRateSpec（屏幕流）
@@ -623,6 +642,8 @@ static void TRTunnelLog(const char *fmt, ...) {
                         TVLog(@"[tunnel] rfb.start: local connect failed, keep standby");
                         // connect 失败回缩略图态降频
                         notify_post("com.82flex.trollvnc.capture-idle");
+                        // 2026-08-22：connect 失败补上报被控状态 NO（避免旧会话 YES 残留）
+                        [self _reportControlState:NO source:nil];
                     }
                     NSDictionary *ack0 = @{ @"type": @"ack", @"cmd": @"rfb.start",
                                             @"id": cmd[@"id"] ?: [NSNull null], @"ok": @(ok) };
@@ -637,20 +658,19 @@ static void TRTunnelLog(const char *fmt, ...) {
                     // 2026-08-21：RFB 会话活跃标记复位
                     gRfbActive = NO;
                     // 隧道控制结束：上报被控状态
-                    [self _reportControlState:NO];
+                    [self _reportControlState:NO source:nil];
                     if (_localFd >= 0) {
                         TRTunnelLog("rfb.stop: closing local RFB fd=%d", _localFd);
                         close(_localFd);
                         _localFd = -1;
                     }
-                    // 控制会话结束 → 回缩略图态：重连 5901（缩略图客户端）+ 主动写版本 + 通知降频
-                    _localFd = [self _connectLocalRfb];
-                    if (_localFd >= 0) {
-                        const char kLocalVersion[] = "RFB 003.008\n";
-                        ssize_t vw = write(_localFd, kLocalVersion, sizeof(kLocalVersion) - 1);
-                        TRTunnelLog("rfb.stop: reconnect thumb client fd=%d vw=%zd", _localFd, vw);
-                    }
                     notify_post("com.82flex.trollvnc.capture-idle");
+                    // 2026-08-22 根本修复：延迟重连缩略图客户端——rfb.stop 后可能紧邻
+                    // rfb.start（网关重建会话只发 rfb.start），立即重连会被 rfb.start
+                    // 无条件重连关掉 → 5901 连接竞争 → 连续「控制→断开→再控制」卡加载中。
+                    // 延迟 500ms 且仅在 _localFd 仍空闲（未被 rfb.start 占用）时重连，
+                    // 消除该中间态（重连由 _passthroughLoop 循环内检查执行）。
+                    _thumbReconnectAt = CACurrentMediaTime() + 0.5;
                     NSDictionary *ack0 = @{ @"type": @"ack", @"cmd": @"rfb.stop",
                                             @"id": cmd[@"id"] ?: [NSNull null], @"ok": @YES };
                     NSData *ackJson0 = [NSJSONSerialization dataWithJSONObject:ack0 options:0 error:NULL];
@@ -724,11 +744,14 @@ static void TRTunnelLog(const char *fmt, ...) {
     return YES;
 }
 
-/** 被控状态上报：状态变化时经隧道 FT_STATE 帧推网关（去重，避免重复推送） */
-- (void)_reportControlState:(BOOL)controlled {
-    if (controlled == _controlled) return;
+/** 被控状态上报：状态变化时经隧道 FT_STATE 帧推网关（去重，避免重复推送）
+ *  source：@"5801"（非 loopback 直连控制）/ @"tunnel"（隧道 rfb.start 控制）；controlled=NO 时忽略 */
+- (void)_reportControlState:(BOOL)controlled source:(NSString *)source {
+    if (controlled == _controlled && [source isEqualToString:_controlledSource]) return;
     _controlled = controlled;
-    NSDictionary *msg = @{ @"type": @"state", @"controlled": @(controlled) };
+    _controlledSource = source;
+    NSDictionary *msg = @{ @"type": @"state", @"controlled": @(controlled),
+                           @"source": source ?: @"tunnel" };
     NSData *json = [NSJSONSerialization dataWithJSONObject:msg options:0 error:NULL];
     if (json && _tunnelFd >= 0) {
         [self _writeFrame:_tunnelFd type:kFrameTypeState data:json.bytes length:json.length];
@@ -742,9 +765,9 @@ static void TRTunnelLog(const char *fmt, ...) {
     installed = YES;
     static int activeTok = 0, idleTok = 0;
     notify_register_dispatch("com.82flex.trollvnc.control-active", &activeTok,
-        dispatch_get_main_queue(), ^(int t) { (void)t; [self _reportControlState:YES]; });
+        dispatch_get_main_queue(), ^(int t) { (void)t; [self _reportControlState:YES source:@"5801"]; });
     notify_register_dispatch("com.82flex.trollvnc.control-idle", &idleTok,
-        dispatch_get_main_queue(), ^(int t) { (void)t; [self _reportControlState:NO]; });
+        dispatch_get_main_queue(), ^(int t) { (void)t; [self _reportControlState:NO source:nil]; });
 }
 
 /** 本地 RFB 会话是否活跃（rfb.start/stop 命令驱动） */

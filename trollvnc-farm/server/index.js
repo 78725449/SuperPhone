@@ -555,8 +555,11 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
   if (needRfbRebuild && tun.sock && !tun.sock.destroyed && tun.sock.writable) {
     const rid = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const mkCmd = (cmd, id) => Buffer.from(JSON.stringify({ type: 'cmd', cmd, id: id || ('s' + Date.now().toString(36)) }), 'utf8');
-    // 先 rfb.stop（断开设备侧可能残留的旧 5901 连接），重建窗口期内缓冲上行握手字节
-    try { writeTunnelFrame(tun.sock, FT_CMD, mkCmd('rfb.stop')); } catch { /* noop */ }
+    // 2026-08-22 根本修复：不再预发 rfb.stop——rfb.start 设备端本就无条件重连
+    // （先关旧 fd 再 connect，见 TRTunnelClient），预发 rfb.stop 会让设备端先重连
+    // 缩略图客户端、随即被 rfb.start 关掉 → 5901 连接竞争 → 连续「控制→断开→再控制」
+    // 时新会话握手被旧连接残留干扰 → 卡在加载中。只发 rfb.start 消除该中间态。
+    // 重建窗口期内缓冲上行握手字节
     // 重建即将开始全新 RFB 连接：丢弃上一个会话残留的下行缓冲（防污染新会话握手）
     tun.pending = Buffer.alloc(0);
     tun.pendingUp = Buffer.alloc(0);
@@ -831,7 +834,9 @@ async function handleApi(req, res, url) {
       // 2026-08-22：附带被控状态（隧道 FT_STATE 上报缓存在 tunnels，设备列表合并输出供前端遮罩）
       const list = sortDevices().map((d) => {
         const trec = tunnels.get(d.id);
-        return { ...d, controlled: !!(trec && trec.controlled) };
+        // 2026-08-22：附带被控来源（5801/tunnel），前端据此决定「断开接管」交互
+        return { ...d, controlled: !!(trec && trec.controlled),
+                 controlledSource: (trec && trec.controlled) ? (trec.controlledSource || 'tunnel') : null };
       });
       sendJson(res, 200, { devices: list });
       return true;
@@ -971,6 +976,12 @@ async function handleApi(req, res, url) {
         const ack = await sendDeviceCmd(id, { cmd: 'invoke', cap, params: body.params || {} }, timeoutMs);
         if (!ack) { sendJson(res, 504, { error: 'ack timeout', cap }); return true; }
         sendJson(res, 200, { ok: ack.ok !== false, cap, deviceId: dev.id, ack });
+        return true;
+      }
+      // 2026-08-22：断开被控（5801 直连等外部控制端）——设备端 clients.disconnect id=REMOTE
+      if (req.method === 'POST' && sub === 'disconnect') {
+        const ack = await sendDeviceCmd(id, { cmd: 'invoke', cap: 'clients.disconnect', params: { id: 'REMOTE' } }, 8000);
+        sendJson(res, 200, { ok: !!(ack && ack.ok !== false), deviceId: dev.id, error: ack && ack.error });
         return true;
       }
       // Phase 4.6：重启设备服务（单台）
@@ -1651,7 +1662,10 @@ const tunnelServer = net.createServer((sock) => {
       try { st = JSON.parse(payload.toString('utf8')); } catch { return; }
       if (st && typeof st.controlled === 'boolean') {
         const trec = tunnels.get(deviceId);
-        if (trec) trec.controlled = st.controlled;
+        if (trec) {
+          trec.controlled = st.controlled;
+          trec.controlledSource = st.source || 'tunnel'; // 2026-08-22：被控来源（5801 直连 / tunnel 隧道）
+        }
         notifyDevicesChanged('state', deviceId);
       }
     }
@@ -1705,7 +1719,7 @@ const tunnelServer = net.createServer((sock) => {
       if (old && old.sock !== sock) {
         try { old.sock.destroy(); } catch { /* noop */ }
       }
-      tunnels.set(deviceId, { sock, wsSet: new Set(), controller: null, pending: Buffer.alloc(0), thumbRfb: null, mode: 'thumb', controlled: false });
+      tunnels.set(deviceId, { sock, wsSet: new Set(), controller: null, pending: Buffer.alloc(0), thumbRfb: null, mode: 'thumb', controlled: false, controlledSource: null });
       sock.write(JSON.stringify({ type: 'tunnel_ack', ok: true }) + '\n');
       framed = true;
       dev.online = true;

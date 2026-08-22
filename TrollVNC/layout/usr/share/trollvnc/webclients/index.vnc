@@ -278,6 +278,8 @@ import RFB from './novnc/core/rfb.js';
   var status = document.getElementById('status');
   var statusText = document.getElementById('statusText');
   var isConnected = false;   // RFB 是否已建立连接（驱动信号按钮延迟轮询）
+  var userDisconnect = false; // 2026-08-22：用户主动断开标记（区分「被网关断开」被动断开提示）
+  var kickedByGateway = false; // 2026-08-22：被网关断开标记（禁止自动重连，避免与网关控制并存串流）
   var sigTimer = null;       // 延迟轮询定时器（每 3s 同源 fetch 测 RTT）
   // rfb 提升为可重建引用（2026-08-15）：后台挂起 WS 断开后切回前台自动重连（对齐控制台 focus 机制）
   var rfb = null;
@@ -366,9 +368,15 @@ import RFB from './novnc/core/rfb.js';
       isConnected = false;
       stopSigPoll();
       setFabSignal(null, '设备未连接（拖动调整位置，点击展开操作）');
-      // 2026-08-15：非主动断开（1006 后台挂起等）触发重建；主动断开（1000/1001）不重连
+      // 2026-08-22：被动断开（非用户主动，网关/设备端断开）→ 明确提示「连接已被网关断开」
       var msg = (e && e.detail && e.detail.message) ? '：' + e.detail.message : '';
-      setStatus('已断开' + msg + '（目标 ' + url + '）', false);
+      if (userDisconnect) {
+        setStatus('已断开' + msg + '（目标 ' + url + '）', false);
+      } else {
+        kickedByGateway = true; // 被网关/设备端断开：禁止自动重连（避免与网关控制并存串流）
+        setStatus('连接已被网关断开' + msg + '（目标 ' + url + '）', false);
+      }
+      userDisconnect = false;
     });
     rfb.addEventListener('error', function () {
       isConnected = false;
@@ -421,6 +429,7 @@ import RFB from './novnc/core/rfb.js';
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState !== 'visible') return;
     if (!rfb) return;
+    if (kickedByGateway) return; // 2026-08-22：被网关断开后不自动重连（刷新页面才恢复）
     if (rfb._rfbConnectionState !== 'connected') {
       recreateRfb();
     }
@@ -660,6 +669,7 @@ import RFB from './novnc/core/rfb.js';
         else document.documentElement.requestFullscreen().catch(function () {});
         break;
       case 'disc':
+        userDisconnect = true; // 2026-08-22：主动断开标记（disconnect 事件据此区分提示文案）
         try { rfb.disconnect(); } catch (e) {}
         break;
     }

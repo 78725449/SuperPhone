@@ -341,6 +341,13 @@ function createWallTile(d) {
     if (batchMode) { toggleSelect(d.id); return; }
     if (directMode) return; // 直控模式：点击卡片直达 RFB 控制（canvas 输入事件由 noVNC 处理），不聚焦、无悬停提示
     if (syncMode) { toggleSync(d.id); return; } // 同步选择模式：点卡片切换同步（选中态=边框高亮+同步中）
+    // 2026-08-22：被 5801 直连控制 → 提示断开接管（避免与 5801 并存导致协议串流）
+    if (dev.controlled && dev.controlledSource === '5801') {
+      if (confirm(`设备「${dev.name}」正在被 5801 控制，是否断开并接管？`)) {
+        disconnectControlled(dev).then((ok) => { if (ok) enterFocus(dev); });
+      }
+      return;
+    }
     enterFocus(dev); // 离线设备由 enterFocus 收编进连接态浮层（不再弹 alert）
   });
   tile.querySelector('.tmore').addEventListener('click', (e) => {
@@ -376,11 +383,9 @@ function startWallRfb(inst) {
     if (inst.statusEl) inst.statusEl.textContent = '未注册';
     return;
   }
-  // 2026-08-22：已有画面（直控 canvas 残留）或退出直控截图（_lastFrame）时不设「加载中…」占位——
-  // 保留最后画面，fetchThumb 拉到缩略图后替换，避免退出直控时卡片闪「加载中…」
-  if (!tv.querySelector('canvas') && !inst._lastFrame) {
-    tv.innerHTML = '<div class="offline-ph">加载中…</div>';
-  } else if (inst._lastFrame) {
+  // 2026-08-22：退出控制后统一显示「加载中…」占位（叠加在最后画面上方，无画面则纯占位），
+  // 缩略图链路重建完成（fetchThumb 拉到）后移除——复用 .offline-ph 动画，不新增
+  if (inst._lastFrame) {
     // 退出直控截图：先显示最后画面（img），fetchThumb 拉到缩略图后替换
     let img = tv.querySelector('img.thumb');
     if (!img) {
@@ -389,7 +394,19 @@ function startWallRfb(inst) {
       img.alt = '';
       tv.appendChild(img);
     }
+    img.classList.add('loaded'); // 立即显示截图（不淡入，退出直控要立刻看到画面）
     img.src = inst._lastFrame;
+  }
+  // 统一叠加「加载中…」占位（有画面时叠加在上方，无画面时纯占位；覆盖已有「已连接」占位）
+  let ph = tv.querySelector('.offline-ph');
+  if (!ph) {
+    ph = document.createElement('div');
+    ph.className = 'offline-ph overlay';
+    ph.innerHTML = '<i class="spin"></i><span>加载中…</span>';
+    tv.appendChild(ph);
+  } else {
+    ph.className = 'offline-ph overlay';
+    ph.innerHTML = '<i class="spin"></i><span>加载中…</span>';
   }
   // rfb 字段仅为兼容既有 stopWallRfb/updateWallTile 引用，实为缩略图获取状态标记
   inst.rfb = { kind: 'thumb', closed: false, fetching: false };
@@ -427,11 +444,16 @@ async function fetchThumb(inst) {
       img.className = 'thumb';
       img.alt = '';
       tv.appendChild(img);
+      // 淡入：下一帧加 .loaded 触发 opacity transition（同帧加类会合并样式不触发动画）
+      requestAnimationFrame(() => img.classList.add('loaded'));
     }
     // 2026-08-22：移除直控残留 canvas（退出直控后 .tv 里 canvas 与 img 共存，canvas 会盖住缩略图）
     const oldCanvas = tv.querySelector('canvas');
     if (oldCanvas) oldCanvas.remove();
     img.src = `data:image/jpeg;base64,${data.thumb}`;
+    // 2026-08-22：缩略图就绪，移除「加载中…」占位（最后画面快照 → 实时缩略图）
+    const ph = tv.querySelector('.offline-ph');
+    if (ph) ph.remove();
     if (data.ts) inst.tile.dataset.ts = data.ts;
     if (inst.statusEl) inst.statusEl.textContent = '';
   } catch (e) {
@@ -1442,6 +1464,31 @@ document.addEventListener('keydown', async (e) => {
 // 传达设备长按（rfb.js patch 0x1/0x0），与电脑端鼠标按住一致。原 __farmPasteLongPress 已删除。
 
 // ---------- 聚焦视图 ----------
+/**
+ * 断开设备被控状态（5801 直连等外部控制端）
+ * 网关 POST /api/devices/:id/disconnect → 设备端 clients.disconnect id=REMOTE（断开所有非 loopback 客户端）
+ * @param {object} dev 设备对象
+ * @returns {Promise<boolean>} 是否成功
+ */
+async function disconnectControlled(dev) {
+  try {
+    const headers = TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
+    const res = await fetch(`/api/devices/${encodeURIComponent(dev.id)}/disconnect`, { method: 'POST', headers });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok) {
+      dev.controlled = false;
+      dev.controlledSource = null;
+      toast(`已断开「${dev.name}」的被控状态`, 'info');
+      return true;
+    }
+    toast('断开被控失败' + (data.error ? `：${data.error}` : ''), 'error');
+    return false;
+  } catch (e) {
+    toast('断开被控失败', 'error');
+    return false;
+  }
+}
+
 async function enterFocus(d) {
   if (focus && focus.device.id === d.id) return;
   if (focus) exitFocus();
@@ -1645,6 +1692,17 @@ function exitFocus() {
   if (dev) dev.controlled = false;
   const inst = wallInstances.get(devId);
   if (inst && inst.tile) {
+    // 2026-08-22：退出大屏控制前截图最后画面（与退出直控 exitDirectMode 一致）——
+    // noVNC disconnect 会移除 canvas，截图保留最后画面，restoreWallTile → startWallRfb
+    // 先显示它，缩略图就绪后替换，避免退出时卡片闪「加载中…」
+    const c = $('focusStage') && $('focusStage').querySelector('canvas');
+    console.log('[exitFocus] stage=', !!$('focusStage'), 'canvas=', !!c);
+    if (c) {
+      try {
+        inst._lastFrame = c.toDataURL('image/jpeg', 0.7);
+        console.log('[exitFocus] lastFrame len=', inst._lastFrame ? inst._lastFrame.length : 0);
+      } catch (e) { inst._lastFrame = null; console.log('[exitFocus] toDataURL err=', e); }
+    }
     const mask = inst.tile.querySelector('.ctrl-mask');
     if (mask) mask.remove();
   }
@@ -1862,6 +1920,7 @@ const directRfbs = new Map();    // deviceId -> RFB（非 ctrl 可输入连接�
 function startDirectRfb(d) {
   const inst = wallInstances.get(d.id);
   if (!inst) return null;
+  inst.tile.classList.add('direct-active'); // 直控描边：与普通卡片区分
   const exist = directRfbs.get(d.id);
   if (exist) return exist;
   stopWallRfb(inst); // 停缩略图获取
@@ -1886,18 +1945,19 @@ function startDirectRfb(d) {
     // 设备离线/隧道断/服务端断开：清理直控标记，恢复缩略图获取
     if (directRfbs.get(d.id) === rfb) {
       directRfbs.delete(d.id);
+      inst.tile.classList.remove('direct-active'); // 直控结束移除描边
       const o = tv.querySelector('.focus-status-ov');
       if (o) o.remove();
-      // 2026-08-22：主动退出直控（directMode=false）时延迟恢复缩略图——保留 canvas 最后画面，
-      // 等网关缩略图链路重建（设备端 rfb.stop 重连缩略图客户端 → 网关重新解码）后再替换，
-      // 避免立即 startWallRfb 清空 canvas 闪「加载中…」占位。异常断开（directMode=true）立即恢复。
+      // 2026-08-22：主动退出直控（directMode=false）立即恢复缩略图——_lastFrame 截图
+      // （exitDirectMode 退出前已截）由 startWallRfb 先显示，不闪「加载中…」、不黑屏；
+      // 无截图则显示加载中动画。异常断开（directMode=true）同样立即恢复。
       if (directMode) {
         startWallRfb(inst);
         updateDirectBtn();
         const code = e && e.detail && e.detail.code;
         toast(`设备「${d.name}」直控已断开` + (code ? `（${code}）` : ''), 'error');
       } else {
-        setTimeout(() => { if (!directRfbs.has(d.id)) startWallRfb(inst); }, 1200);
+        startWallRfb(inst);
         updateDirectBtn();
       }
     }
@@ -1939,8 +1999,6 @@ function exitDirectMode() {
   directMode = false;
   const wall = $('wall');
   if (wall) wall.classList.remove('direct-mode');
-  // 2026-08-22：记录本次关闭的直控设备 id——它们延迟恢复缩略图（保留 canvas 最后画面）
-  const closedDirectIds = new Set(directRfbs.keys());
   // 先 close 全部直控 RFB（必须真正断开 WS，否则残留会话持续占用设备推流，
   // 再次进入直控时会话堆积 → 服务端 sessions=2/3…，还会与后续 rfb.stop 互扰）。
   // 注意 stopWallRfb 只处理 inst.rfb（截图轮询），直控 RFB 在 directRfbs 中，须显式 close。
@@ -1953,6 +2011,7 @@ function exitDirectMode() {
       // ② 本地置 controlled=false + 移除「被控制中」遮罩 + 清理加载浮层
       // ③ 然后才 closeRfb
       if (inst.tile) {
+        inst.tile.classList.remove('direct-active'); // 先去除描边（点击退出瞬间视觉立即反馈）
         const c = inst.tile.querySelector('.tv canvas');
         if (c) {
           try { inst._lastFrame = c.toDataURL('image/jpeg', 0.7); } catch (e) { inst._lastFrame = null; }
@@ -1971,16 +2030,12 @@ function exitDirectMode() {
   updateDirectBtn();
   // 2026-08-22：断开后本地 controlled=false 保持（不 refreshDevices 覆盖），
   // 网关 rfb.stop 上报 controlled=false 后经 state 事件/后续刷新保持，无需延迟 hack。
-  // 刚 close 的直控设备延迟恢复缩略图——保留 canvas 最后画面（截图），
-  // 等网关缩略图链路重建（设备端 rfb.stop 重连缩略图客户端 → 网关重新解码）后再替换，
-  // 避免立即 startWallRfb 清空 canvas 闪「加载中…」占位。其余设备立即恢复。
+  // 立即恢复缩略图：_lastFrame 截图（退出前已截）由 startWallRfb 先显示，不闪「加载中…」、
+  // 不黑屏；无截图（连接失败/黑屏）则显示加载中动画。网关缩略图链路重建后经
+  // refreshDevices/事件再拉新缩略图替换，无需 1200ms 延迟。
   for (const inst of wallInstances.values()) {
     if (inst.device.online !== true || inst.paused) continue;
-    if (closedDirectIds.has(inst.device.id)) {
-      setTimeout(() => { if (!directRfbs.has(inst.device.id)) startWallRfb(inst); }, 1200);
-    } else {
-      startWallRfb(inst);
-    }
+    startWallRfb(inst);
   }
 }
 
@@ -2003,9 +2058,18 @@ function updateDirectBtn() {
 function updateWallTile(inst, d) {
   inst.device = d;
   const tile = inst.tile;
+  tile.classList.toggle('direct-active', directRfbs.has(d.id)); // 直控描边随卡片重建同步
   tile.querySelector('.tname').textContent = d.name;
   tile.querySelector('.dot').className = 'dot ' + (d.online ? 'on' : 'off');
   const tv = tile.querySelector('.tv');
+  // 2026-08-22：被 5801 直连控制 → 不显示画面（停止缩略图获取，避免泄露被控画面）；
+  // 被控解除后恢复缩略图获取
+  const controlledBy5801 = d.controlled && d.controlledSource === '5801' && d.online;
+  if (controlledBy5801) {
+    if (inst.rfb) stopWallRfb(inst);
+  } else if (!d.controlled && !inst.paused && !inst.rfb) {
+    startWallRfb(inst);
+  }
   // 被控状态遮罩（2026-08-22）：设备被控制（隧道 rfb.start / 5801 直连）时叠加「被控制中」遮罩，
   // 网关经 /api/devices 附带 controlled 字段（隧道 FT_STATE 上报），此处按需增删遮罩元素。
   // 直控模式（directMode）下设备由本端自己控制，不显示「被控制中」遮罩。
@@ -2014,8 +2078,10 @@ function updateWallTile(inst, d) {
     if (!mask) {
       mask = document.createElement('div');
       mask.className = 'ctrl-mask';
-      mask.textContent = '被控制中';
+      mask.textContent = controlledBy5801 ? '被 5801 控制中' : '被控制中';
       tile.appendChild(mask);
+    } else if (controlledBy5801) {
+      mask.textContent = '被 5801 控制中';
     }
   } else if (mask) {
     mask.remove();
@@ -2119,7 +2185,7 @@ function doOp(op) {
       if (document.fullscreenElement) document.exitFullscreen();
       else document.documentElement.requestFullscreen().catch(() => {});
       break;
-    case 'disc': try { rfb.disconnect(); } catch (e) {} exitFocus(); break;
+    case 'disc': exitFocus(); break; // 2026-08-22：不再先 rfb.disconnect()——exitFocus 内先截图再 closeRfb，先 disconnect 会移除 canvas 导致截图失败（canvas= false）
   }
 }
 
