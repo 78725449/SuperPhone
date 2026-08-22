@@ -28,6 +28,8 @@
 #import <string.h>
 #import <time.h>
 #import <unistd.h>
+#import <fcntl.h>                          // O_NONBLOCK（非阻塞 connect）
+#import <errno.h>                          // EINPROGRESS（非阻塞 connect 状态）
 #import <QuartzCore/QuartzCore.h>   // CACurrentMediaTime（缩略图延迟重连计时）
 #import <pthread.h>
 #import <notify.h>
@@ -384,15 +386,32 @@ static void TRTunnelLog(const char *fmt, ...) {
 - (int)_connectLocalRfb {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
+    // 2026-08-22 非阻塞 connect：connect 最多等 1s，绝不阻塞 select 循环——
+    // 若 trollvncserver 瞬时忙/不 accept，阻塞 connect 会卡死隧道循环 → 不响应网关心跳
+    // → 隧道超时重连（设备端反复 hello）→ 控制卡连接中（瘫痪）。非阻塞保证隧道永稳。
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(kLocalRfbPort);
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        close(fd);
-        return -1;
+        if (errno != EINPROGRESS) { close(fd); return -1; }
+        // connect 进行中：等待可写（最多 1s），完成或超时
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        FD_SET(fd, &wfds);
+        struct timeval tv;
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        if (select(fd + 1, NULL, &wfds, NULL, &tv) <= 0) { close(fd); return -1; }
+        int soerr = 0;
+        socklen_t slen = sizeof(soerr);
+        getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &slen);
+        if (soerr != 0) { close(fd); return -1; }
     }
+    fcntl(fd, F_SETFL, flags); // 恢复原阻塞模式（select 已保证可读写，阻塞 read/write 安全）
     return fd;
 }
 
