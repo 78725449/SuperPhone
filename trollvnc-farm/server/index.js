@@ -603,6 +603,22 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
       }
       return;
     }
+    // 2026-08-22：rfb.start ack 后窗口内跳过 noVNC 重复协议版本——设备端已在 rfb.start
+    // connect 后主动写 "RFB 003.008\n"，若此处再透传 noVNC 版本，trollvncserver 收到两个版本
+    // → 协议错乱 → noVNC "Unexpected server message (type 82/70/...=RFB 003.008\n 的 ASCII)"
+    // （版本在 ack 后到达时 pendingUp 为空，放行逻辑漏跳，此处兜底）
+    if (tun.skipVersionUntil && Date.now() < tun.skipVersionUntil) {
+      if (buf.length >= 12 && buf.subarray(0, 12).toString('latin1').startsWith('RFB 003.')) {
+        const rest = buf.subarray(12);
+        if (!rest.length) return;
+        const ok2 = writeTunnelFrame(tun.sock, FT_DATA, rest);
+        console.log(`[vnc] skip duplicate version (post-ack), release ${rest.length}B (${deviceId})`);
+        if (isBroadcast && grp) broadcastInput(ws, grp, rest);
+        tun.skipVersionUntil = 0;
+        return;
+      }
+      tun.skipVersionUntil = 0; // 非版本字节：正常透传
+    }
     // RFB 握手必需字节（版本响应/ClientInit/PixelFormat 等）在 viewOnly 会话也要转发，
     // 否则 noVNC 握手被卡死导致黑屏。noVNC 的 viewOnly 模式本身不会发送输入事件，
     // 因此允许所有会话上行转发是安全的；输入转发仅广播主控触发。
@@ -1617,6 +1633,8 @@ const tunnelServer = net.createServer((sock) => {
       if (tunRec && tunRec.rebuild && ack && ack.cmd === 'rfb.start' && ack.id === tunRec.rebuild.id) {
         if (tunRec.rebuild.timer) { clearTimeout(tunRec.rebuild.timer); tunRec.rebuild.timer = null; }
         tunRec.pendingUpUntil = 0; // 结束下行丢弃窗口（设备 5901 已就绪）
+        // 2026-08-22：放行后 2s 窗口内跳过 noVNC 重复协议版本（版本在 ack 后到达时 pendingUp 为空）
+        tunRec.skipVersionUntil = Date.now() + 2000;
         if (ack.ok) {
           // connect 成功：放行缓冲的握手字节，noVNC 必然拿到 server version 出画面
           console.log(`[vnc] rfb.start ack ok, release handshake bytes (${deviceId})`);
@@ -1720,7 +1738,7 @@ const tunnelServer = net.createServer((sock) => {
       if (old && old.sock !== sock) {
         try { old.sock.destroy(); } catch { /* noop */ }
       }
-      tunnels.set(deviceId, { sock, wsSet: new Set(), controller: null, pending: Buffer.alloc(0), thumbRfb: null, mode: 'thumb', controlled: false, controlledSource: null });
+      tunnels.set(deviceId, { sock, wsSet: new Set(), controller: null, pending: Buffer.alloc(0), thumbRfb: null, mode: 'thumb', controlled: false, controlledSource: null, skipVersionUntil: 0 });
       sock.write(JSON.stringify({ type: 'tunnel_ack', ok: true }) + '\n');
       framed = true;
       dev.online = true;
