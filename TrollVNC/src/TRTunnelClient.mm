@@ -633,37 +633,20 @@ static void TRTunnelLog(const char *fmt, ...) {
                     [NSData dataWithBytes:payload length:payloadLen] options:0 error:NULL];
                 if (![cmd isKindOfClass:[NSDictionary class]]) break;
                 if ([[cmd objectForKey:@"cmd"] isEqualToString:@"rfb.start"]) {
-                    // 全新 RFB 会话：同步重建本地 5901 连接（先关旧 fd 再 connect），
-                    // ack 携带 connect 结果——网关据此精确放行缓冲的握手字节（替代固定窗口），
-                    // connect 失败时网关显式报错，避免 noVNC 静默黑屏。
-                    _thumbReconnectAt = 0; // 取消 rfb.stop 的延迟缩略图重连（本命令无条件重连）
-                    if (_localFd >= 0) { close(_localFd); _localFd = -1; }
-                    _localFd = [self _connectLocalRfb];
+                    // 2026-08-22 切换推帧方式（连接保持）：5901 连接从不重建（缩略图客户端常驻，
+                    // 隧道握手成功后建立）。rfb.start 只做三件事：取消异常断开的延迟重连、
+                    // 上报被控状态 YES、通知 trollvncserver 升频（推帧方式：缩略图帧率 → 屏幕流帧率）。
+                    // noVNC 握手由网关代理（回放缓存 ServerInit），SetPixelFormat/SetEncodings
+                    // 在同一已握手连接上转发 → trollvncserver 切换推帧编码/帧率。连接不重建
+                    // → 服务端零残留 → 零崩溃 → 无反复注册/隧道重连。
+                    _thumbReconnectAt = 0; // 取消异常断开的延迟缩略图重连
+                    gRfbActive = (_localFd >= 0); // 连接保持：有常驻连接即视为活跃
+                    // 隧道控制开始：上报被控状态（连接保持 = 控制会话建立）
+                    if (_localFd >= 0) [self _reportControlState:YES source:@"tunnel"];
+                    TRTunnelLog("rfb.start: connection kept (no rebuild) fd=%d", _localFd);
+                    // 控制态：通知 trollvncserver 升频到 FrameRateSpec（屏幕流）
+                    notify_post("com.82flex.trollvnc.capture-active");
                     BOOL ok = (_localFd >= 0);
-                    // 2026-08-21：RFB 会话活跃标记（= ok：connect 成功才有画面流）
-                    gRfbActive = ok;
-                    // 隧道控制开始：上报被控状态（connect 成功 = 远程控制会话建立）
-                    if (ok) [self _reportControlState:YES source:@"tunnel"];
-                    TRTunnelLog("rfb.start: local connect -> fd=%d", _localFd);
-                    if (ok) {
-                        // 控制态：通知 trollvncserver 升频到 FrameRateSpec（屏幕流）
-                        notify_post("com.82flex.trollvnc.capture-active");
-                        // 2026-08-21 根因修复：设备端 5901 握手窗口极窄（实测 0-50ms 抖动）——
-                        // 客户端 connect 后必须立即发回协议版本，否则服务端主动关闭（EOF）。
-                        // noVNC 协议版本经「网关 ack → 放行 → 隧道」链路到达有毫秒级延迟，
-                        // 间歇性超出窗口 → 隧道 EOF → 黑屏。此处 connect 后立即主动写入
-                        // 固定协议版本 "RFB 003.008\n"，绕过网关往返，确保窗口内完成握手。
-                        // 网关 ack 放行时会跳过已主动发送的协议版本（见网关侧 skipVersion）。
-                        const char kLocalVersion[] = "RFB 003.008\n";
-                        ssize_t vw = write(_localFd, kLocalVersion, sizeof(kLocalVersion) - 1);
-                        TRTunnelLog("rfb.start: local write version -> %zd", vw);
-                    } else {
-                        TVLog(@"[tunnel] rfb.start: local connect failed, keep standby");
-                        // connect 失败回缩略图态降频
-                        notify_post("com.82flex.trollvnc.capture-idle");
-                        // 2026-08-22：connect 失败补上报被控状态 NO（避免旧会话 YES 残留）
-                        [self _reportControlState:NO source:nil];
-                    }
                     NSDictionary *ack0 = @{ @"type": @"ack", @"cmd": @"rfb.start",
                                             @"id": cmd[@"id"] ?: [NSNull null], @"ok": @(ok) };
                     NSData *ackJson0 = [NSJSONSerialization dataWithJSONObject:ack0 options:0 error:NULL];
@@ -673,23 +656,17 @@ static void TRTunnelLog(const char *fmt, ...) {
                     break;
                 }
                 if ([[cmd objectForKey:@"cmd"] isEqualToString:@"rfb.stop"]) {
-                    // 会话结束：同步关闭本地 5901 连接，回 standby
-                    // 2026-08-21：RFB 会话活跃标记复位
+                    // 2026-08-22 切换推帧方式（连接保持）：5901 连接从不重建。rfb.stop 只做两件事：
+                    // 上报被控状态 NO + 通知 trollvncserver 降频（回缩略图帧率）。连接保持（常驻
+                    // 缩略图客户端），回缩略图态由网关 ThumbRfbDecoder 复用连接发 SetEncodings(Raw)
+                    // 切回推帧方式，不触发本端 close/重连。
                     gRfbActive = NO;
                     // 隧道控制结束：上报被控状态
                     [self _reportControlState:NO source:nil];
-                    if (_localFd >= 0) {
-                        TRTunnelLog("rfb.stop: closing local RFB fd=%d", _localFd);
-                        close(_localFd);
-                        _localFd = -1;
-                    }
+                    // 回缩略图态：通知 trollvncserver 降频（CaptureFps 缩略图帧率）
                     notify_post("com.82flex.trollvnc.capture-idle");
-                    // 2026-08-22 根本修复：延迟重连缩略图客户端——rfb.stop 后可能紧邻
-                    // rfb.start（网关重建会话只发 rfb.start），立即重连会被 rfb.start
-                    // 无条件重连关掉 → 5901 连接竞争 → 连续「控制→断开→再控制」卡加载中。
-                    // 延迟 500ms 且仅在 _localFd 仍空闲（未被 rfb.start 占用）时重连，
-                    // 消除该中间态（重连由 _passthroughLoop 循环内检查执行）。
-                    _thumbReconnectAt = CACurrentMediaTime() + 0.5;
+                    // 连接保持：不 close _localFd、不触发延迟重连（常驻缩略图客户端）
+                    TRTunnelLog("rfb.stop: connection kept (no rebuild) fd=%d", _localFd);
                     NSDictionary *ack0 = @{ @"type": @"ack", @"cmd": @"rfb.stop",
                                             @"id": cmd[@"id"] ?: [NSNull null], @"ok": @YES };
                     NSData *ackJson0 = [NSJSONSerialization dataWithJSONObject:ack0 options:0 error:NULL];

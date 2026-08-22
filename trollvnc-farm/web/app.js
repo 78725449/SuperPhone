@@ -341,11 +341,9 @@ function createWallTile(d) {
     if (batchMode) { toggleSelect(d.id); return; }
     if (directMode) return; // 直控模式：点击卡片直达 RFB 控制（canvas 输入事件由 noVNC 处理），不聚焦、无悬停提示
     if (syncMode) { toggleSync(d.id); return; } // 同步选择模式：点卡片切换同步（选中态=边框高亮+同步中）
-    // 2026-08-22：被控制中（5801 直连 / 隧道）→ 提示断开接管（避免并存导致协议串流）
+    // 2026-08-22：被控制中（5801 直连 / 隧道）→ 卡片浮层显示「断开/接管」按钮（替代 confirm）
     if (dev.controlled) {
-      if (confirm(`设备「${dev.name}」正在被控制，是否断开并接管？`)) {
-        disconnectControlled(dev).then((ok) => { if (ok) enterFocus(dev); });
-      }
+      showCtrlActions(dev, tile);
       return;
     }
     enterFocus(dev); // 离线设备由 enterFocus 收编进连接态浮层（不再弹 alert）
@@ -1464,6 +1462,55 @@ document.addEventListener('keydown', async (e) => {
 // 传达设备长按（rfb.js patch 0x1/0x0），与电脑端鼠标按住一致。原 __farmPasteLongPress 已删除。
 
 // ---------- 聚焦视图 ----------
+/**
+ * 被控制中卡片浮层：显示「断开 / 接管」两个按钮（2026-08-22，替代浏览器 confirm）
+ * 断开 = 只断开被控状态留在卡片墙；接管 = 先断开再进入控制
+ * @param {object} dev 设备对象
+ * @param {HTMLElement} tile 卡片元素
+ * @returns {void}
+ */
+function showCtrlActions(dev, tile) {
+  hideCtrlActions();
+  const ov = document.createElement('div');
+  ov.className = 'ctrl-actions';
+  ov.innerHTML = `
+    <div class="ctrl-actions-title">设备「${dev.name}」正在被控制</div>
+    <div class="ctrl-actions-btns">
+      <button class="ctrl-actions-btn disc">断开</button>
+      <button class="ctrl-actions-btn take">接管</button>
+    </div>`;
+  tile.appendChild(ov);
+  ov.querySelector('.disc').addEventListener('click', (e) => {
+    e.stopPropagation();
+    disconnectControlled(dev).then((ok) => {
+      if (ok) {
+        hideCtrlActions();
+        const inst = wallInstances.get(dev.id);
+        if (inst) updateWallTile(inst, dev); // 立即移除遮罩 + 恢复缩略图
+      }
+    });
+  });
+  ov.querySelector('.take').addEventListener('click', (e) => {
+    e.stopPropagation();
+    disconnectControlled(dev).then((ok) => {
+      if (ok) { hideCtrlActions(); enterFocus(dev); }
+    });
+  });
+  // 点击浮层外关闭（延迟注册，避免本次卡片点击冒泡误关）
+  setTimeout(() => {
+    document.addEventListener('click', function onDoc(e) {
+      document.removeEventListener('click', onDoc);
+      if (!ov.contains(e.target)) hideCtrlActions();
+    });
+  }, 0);
+}
+
+/** 关闭被控制中卡片浮层 */
+function hideCtrlActions() {
+  const ov = document.querySelector('.ctrl-actions');
+  if (ov) ov.remove();
+}
+
 /**
  * 断开设备被控状态（5801 直连等外部控制端）
  * 网关 POST /api/devices/:id/disconnect → 设备端 clients.disconnect id=REMOTE（断开所有非 loopback 客户端）

@@ -361,6 +361,21 @@ main {
   font-size: 12px; font-weight: 600; letter-spacing: .5px;
   pointer-events: none;
 }
+/* 被控制中卡片浮层（2026-08-22）：点击被控中卡片显示「断开/接管」按钮（替代浏览器 confirm） */
+.ctrl-actions {
+  position: absolute; inset: 0; z-index: 7;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  background: rgba(5, 8, 14, .72);
+  color: #dfe8f8;
+}
+.ctrl-actions-title { font-size: 12px; font-weight: 600; text-align: center; padding: 0 8px; }
+.ctrl-actions-btns { display: flex; gap: 8px; }
+.ctrl-actions-btn {
+  padding: 6px 14px; border-radius: 8px; border: 1px solid var(--accent);
+  background: transparent; color: var(--accent); font-size: 13px; cursor: pointer;
+}
+.ctrl-actions-btn.take { background: var(--accent); color: #fff; }
+.ctrl-actions-btn:hover { filter: brightness(1.1); }
 /* 聚焦中设备的墙卡片隐藏（2026-08-19 加 !important：列表视图 #wall.wall-list .tile 含 ID 选择器
    specificity 更高会覆盖 display:none，导致聚焦设备卡片残留在屏幕墙） */
 #wall .tile.focused-tile { display: none !important; }

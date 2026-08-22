@@ -76,6 +76,56 @@ const ackRfb = (payload) => {
   tunSock.write(h);
   tunSock.write(ackBuf);
 };
+// 2026-08-22 连接保持：模拟设备端 connect 5901（缩略图客户端）后 trollvncserver 的握手响应——
+// 网关 ThumbRfbDecoder 驱动握手并缓存 ServerInit，供会话（noVNC）握手代理回放
+let rfbBuf = Buffer.alloc(0), rfbStep = 0;
+function feedRfb(payload) {
+  rfbBuf = Buffer.concat([rfbBuf, payload]);
+  for (;;) {
+    if (rfbStep === 0) { // 等设备端协议版本
+      if (rfbBuf.length < 12) return;
+      if (!rfbBuf.subarray(0, 12).toString('latin1').startsWith('RFB 003.')) { rfbBuf = rfbBuf.subarray(1); continue; }
+      rfbBuf = rfbBuf.subarray(12);
+      sendTunnelFrame(0x01, Buffer.from([1, 1])); // SecurityType 列表
+      rfbStep = 1; continue;
+    }
+    if (rfbStep === 1) { // 等 SecurityType 选择
+      if (rfbBuf.length < 1) return;
+      rfbBuf = rfbBuf.subarray(1);
+      sendTunnelFrame(0x01, Buffer.from([0, 0, 0, 0])); // SecurityResult
+      rfbStep = 2; continue;
+    }
+    if (rfbStep === 2) { // 等 ClientInit
+      if (rfbBuf.length < 1) return;
+      rfbBuf = rfbBuf.subarray(1);
+      const si = Buffer.alloc(24);
+      si.writeUInt16BE(2, 0); si.writeUInt16BE(2, 2);
+      si.writeUInt8(32, 4); si.writeUInt8(24, 5); si.writeUInt8(0, 6); si.writeUInt8(1, 7);
+      si.writeUInt16BE(255, 8); si.writeUInt16BE(255, 10); si.writeUInt16BE(255, 12);
+      si.writeUInt8(16, 14); si.writeUInt8(8, 15); si.writeUInt8(0, 16);
+      si.writeUInt32BE(0, 20); // nameLen=0
+      sendTunnelFrame(0x01, si); // ServerInit
+      rfbStep = 3; continue;
+    }
+    return; // 已握手：SetPixelFormat/SetEncodings/FBURequest 等忽略
+  }
+}
+/** 2026-08-22 连接保持：会话握手——网关代理 noVNC 握手（回放版本/SecurityType 列表/SecurityResult/缓存 ServerInit） */
+async function hskSession(ws) {
+  let n = 0;
+  const got4 = new Promise((res) => {
+    const onM = () => { if (++n >= 4) { ws.off('message', onM); res(); } };
+    ws.on('message', onM);
+    setTimeout(() => { ws.off('message', onM); res(); }, 3000); // 兜底：网关未缓存 ServerInit 时继续（测试容错）
+  });
+  ws.send(Buffer.from('RFB 003.008\n', 'latin1'));
+  ws.send(Buffer.from([1]));
+  ws.send(Buffer.from([1]));
+  await got4;
+  ws.send(Buffer.from([0, 0, 0, 0, 32, 24, 0, 1, 255, 0, 255, 0, 255, 0, 16, 8, 0, 0, 0, 0]));
+  ws.send(Buffer.from([2, 0, 0, 1, 0, 0, 0, 0]));
+  ws.send(Buffer.from([3, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0]));
+}
 
 try {
   await waitFor(async () => (await fetch(`http://127.0.0.1:${PORT}/api/state`)).ok);
@@ -111,21 +161,29 @@ try {
       const wi = waiters.findIndex((w) => (cmd !== null ? w.cmd === cmd : false));
       if (wi >= 0) waiters.splice(wi, 1)[0].res(payload);
       else frames.push(f);
+      if (type === 0x01) feedRfb(payload); // 缩略图/会话 RFB 数据：模拟 trollvncserver 握手响应
       if (cmd === 'rfb.start' || cmd === 'rfb.stop') ackRfb(payload);
     }
   });
   tunSock.write(JSON.stringify({ type: 'tunnel_hello', deviceId: DEVICE_ID }) + '\n');
   for (let i = 0; i < 40 && !framed; i++) await wait(50);
   check('隧道建立', framed, '');
+  // 2026-08-22 连接保持：隧道握手成功后设备端即 connect 5901（缩略图客户端）并主动写版本，
+  // 网关 ThumbRfbDecoder 在缩略图态驱动握手（缓存 ServerInit）——模拟之并等待握手完成
+  sendTunnelFrame(0x01, Buffer.from('RFB 003.008\n', 'latin1'));
+  await waitFor(() => rfbStep === 3);
+  await wait(300); // 等网关 ThumbRfbDecoder 处理完 ServerInit 并缓存（会话握手代理回放依赖）
 
   const wsUrl = `ws://127.0.0.1:${PORT}/ws/vnc/${encodeURIComponent(DEVICE_ID)}`;
 
   // ---- 会话 A（ctrl）：正常建立 + 画面转发 ----
   const wsA = new WebSocket(`${wsUrl}?ctrl=1`);
   await new Promise((res, rej) => { wsA.on('open', res); wsA.on('error', rej); });
-  // 2026-08-22 根本修复：重建只发 rfb.start（设备端无条件重连），不再预发 rfb.stop
+  // 2026-08-22 连接保持：控制会话只发 rfb.start 升频（连接不重建），网关代理 noVNC 握手
+  // （回放版本/SecurityType 列表/SecurityResult/缓存 ServerInit），完成前不透传下行
   const t1 = await Promise.race([waitCmd('rfb.start'), wait(4000).then(() => null)]);
-  check('会话A 触发重建 rfb.start', !!t1, '');
+  check('会话A 触发 rfb.start', !!t1, '');
+  await hskSession(wsA); // 会话 A 握手：网关回放 ServerInit 后下行开始透传
   const data1 = Buffer.from('RFB 003.008\n' + 'A'.repeat(16), 'latin1'); // 模拟画面帧
   const wsAFirst = firstMsg(wsA);
   sendTunnelFrame(0x01, data1);
@@ -147,6 +205,7 @@ try {
   // ---- 重进：会话 B（ctrl）----
   const wsB = new WebSocket(`${wsUrl}?ctrl=1`);
   await new Promise((res, rej) => { wsB.on('open', res); wsB.on('error', rej); });
+  await hskSession(wsB); // 2026-08-22 连接保持：会话 B 握手（网关代理回放 ServerInit）
   const wsBFirst = firstMsg(wsB, 600); // 600ms 观察窗口：修复前这里会立即收到 data2（乱码源头）
   const t2 = await Promise.race([waitCmd('rfb.start'), wait(4000).then(() => null)]);
   check('会话B 触发重建 rfb.start', !!t2, '');

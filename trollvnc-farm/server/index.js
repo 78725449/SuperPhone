@@ -26,6 +26,7 @@ class ThumbRfbDecoder {
     this.lastNotifyTs = 0;          // onJpeg 节流时间戳
     this.onSend = null;        // (Buffer) => void，上行握手字节回调
     this.onJpeg = null;        // jpeg 更新回调
+    this.serverInit = null;    // ServerInit 原始字节（w/h + name），供 noVNC 握手代理复用（2026-08-22 连接保持）
   }
   feed(data) {
     if (this.state === 'dead') { this.pending = Buffer.alloc(0); return; }
@@ -74,6 +75,8 @@ class ThumbRfbDecoder {
         this.h = this.pending.readUInt16BE(2);
         const nameLen = this.pending.readUInt32BE(20);
         if (this.pending.length < 24 + nameLen) return false;
+        // 2026-08-22 连接保持：缓存 ServerInit 原始字节（供控制态 noVNC 握手代理回放）
+        this.serverInit = Buffer.from(this.pending.subarray(0, 24 + nameLen));
         this.pending = this.pending.subarray(24 + nameLen);
         this.fb = Buffer.alloc(this.w * this.h * 4);
         this.maxPending = this.w * this.h * 4 + 1024 * 1024; // 一帧全屏 Raw + 余量
@@ -108,7 +111,14 @@ class ThumbRfbDecoder {
           const rh = this.pending.readUInt16BE(off + 6);
           const enc = this.pending.readInt32BE(off + 8);
           off += 12;
-          if (enc !== 0) { this.state = 'dead'; return false; } // 仅 Raw
+          if (enc !== 0) {
+            // 2026-08-22 连接保持：过渡期收到非 Raw 帧（控制态 Tight 残留）——丢弃缓冲并重发
+            // SetEncodings(Raw) + 增量请求，等待 trollvncserver 切回 Raw 推流（不置 dead，自愈）
+            this.pending = Buffer.alloc(0);
+            this._send(Buffer.from([2, 0, 0, 1, 0, 0, 0, 0]));
+            this._requestUpdate(true);
+            return false;
+          }
           const rowBytes = rw * 4;
           if (this.pending.length < off + rowBytes * rh) return false;
           const px = this.pending.subarray(off, off + rowBytes * rh);
@@ -143,6 +153,30 @@ class ThumbRfbDecoder {
     m.writeUInt16BE(0, 2); m.writeUInt16BE(0, 4);
     m.writeUInt16BE(this.w, 6); m.writeUInt16BE(this.h, 8);
     this._send(m);
+  }
+  /**
+   * 2026-08-22 连接保持：复用已握手的 5901 连接回缩略图态（不重新握手）。
+   * 设备端连接从不重建，控制态（noVNC）结束后在同一连接上发
+   * SetPixelFormat(BGRA) + SetEncodings(Raw) + FBURequest，令 trollvncserver 切回 Raw 推流。
+   * @param {Buffer} serverInit 缓存的 ServerInit 字节（取 w/h）
+   */
+  reuse(serverInit) {
+    if (!serverInit || serverInit.length < 24) return;
+    this.w = serverInit.readUInt16BE(0);
+    this.h = serverInit.readUInt16BE(2);
+    this.fb = Buffer.alloc(this.w * this.h * 4);
+    this.maxPending = this.w * this.h * 4 + 1024 * 1024;
+    this.pending = Buffer.alloc(0);
+    this.state = 'update';
+    // 同 init：SetPixelFormat(BGRA) + SetEncodings(Raw) + 增量更新请求
+    const pixfmt = Buffer.alloc(16);
+    pixfmt.writeUInt8(32, 0); pixfmt.writeUInt8(24, 1);
+    pixfmt.writeUInt8(0, 2); pixfmt.writeUInt8(1, 3);
+    pixfmt.writeUInt16BE(255, 4); pixfmt.writeUInt16BE(255, 6); pixfmt.writeUInt16BE(255, 8);
+    pixfmt.writeUInt8(16, 10); pixfmt.writeUInt8(8, 11); pixfmt.writeUInt8(0, 12);
+    this._send(Buffer.concat([Buffer.from([0, 0, 0, 0]), pixfmt]));
+    this._send(Buffer.from([2, 0, 0, 1, 0, 0, 0, 0]));
+    this._requestUpdate(true);
   }
 }
 
@@ -555,45 +589,59 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
   if (needRfbRebuild && tun.sock && !tun.sock.destroyed && tun.sock.writable) {
     const rid = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const mkCmd = (cmd, id) => Buffer.from(JSON.stringify({ type: 'cmd', cmd, id: id || ('s' + Date.now().toString(36)) }), 'utf8');
-    // 2026-08-22 根本修复：不再预发 rfb.stop——rfb.start 设备端本就无条件重连
-    // （先关旧 fd 再 connect，见 TRTunnelClient），预发 rfb.stop 会让设备端先重连
-    // 缩略图客户端、随即被 rfb.start 关掉 → 5901 连接竞争 → 连续「控制→断开→再控制」
-    // 时新会话握手被旧连接残留干扰 → 卡在加载中。只发 rfb.start 消除该中间态。
-    // 重建窗口期内缓冲上行握手字节
-    // 重建即将开始全新 RFB 连接：丢弃上一个会话残留的下行缓冲（防污染新会话握手）
-    tun.pending = Buffer.alloc(0);
+    // 2026-08-22 切换推帧方式（连接保持）：设备端 5901 连接从不重建（缩略图客户端常驻，隧道握手成功后建立）。
+    // 控制会话只做两件事：
+    //   1) 发 rfb.start 让设备端升频（推帧方式：缩略图帧率 → 屏幕流帧率）+ 上报被控状态；
+    //   2) 网关代理 noVNC 握手（回放版本/SecurityType 列表/SecurityResult/缓存的 ServerInit），
+    //      之后 noVNC 的 SetPixelFormat/SetEncodings/FBURequest 在同一已握手连接上转发，
+    //      trollvncserver 切换推帧编码/帧率 → 屏幕流。连接不重建 → 服务端零残留 → 零崩溃。
+    tun.pending = Buffer.alloc(0);        // 丢弃缩略图态残留下行（防污染新会话握手）
     tun.pendingUp = Buffer.alloc(0);
-    // 2026-08-21 修复：noVNC 握手字节缓冲到 rfb.start ack 后放行（ack 时跳过协议版本——
-    // 设备端已在 rfb.start connect 后主动写入 "RFB 003.008\n"，见 TRTunnelClient）。
-    // 缓冲窗口保证 noVNC 版本不会在 connect 前/后产生重复写入竞态。
-    tun.pendingUpUntil = Date.now() + 3000; // 兜底：ack 正常会在设备 connect 完成后提前结束
-    tun.rebuild = { id: rid, timer: null };
-    // 兜底超时：ack 丢失/旧设备不 ack 时强制放行，避免握手字节永久卡在缓冲
-    tun.rebuild.timer = setTimeout(() => {
-      if (tun.rebuild && tun.rebuild.id === rid) {
-        tun.pendingUpUntil = 0;
-        console.log(`[vnc] rfb.start ack timeout, force release (${deviceId})`);
-        if (tun.pendingUp && tun.pendingUp.length) {
-          // 同 ack 放行：跳过设备端已主动写入的协议版本（见 ack 处理分支）
-          let up = tun.pendingUp;
-          if (up.length >= 12 && up.subarray(0, 12).toString('latin1').startsWith('RFB 003.')) {
-            up = up.subarray(12);
-          }
-          if (up.length) {
-            try { writeTunnelFrame(tun.sock, FT_DATA, up); } catch { /* noop */ }
-          }
-        }
-        tun.pendingUp = null;
-        tun.rebuild = null;
-      }
-    }, 3000);
-    tun.mode = 'stream'; // 屏幕流态：FT_DATA 转发 noVNC（退出缩略图态）
+    tun.pendingUpUntil = 0;               // 连接保持：无需缓冲上行等 ack
+    tun.rebuild = null;                   // 无重建：rfb.start ack 仅作升频确认，网关不依赖放行
+    tun.mode = 'stream';                  // 屏幕流态：FT_DATA 转发 noVNC（退出缩略图态）
     tun.thumbRfb = null;
+    tun.noVncHsk = 0;                     // 启动 noVNC 握手代理
+    tun.hskBuf = Buffer.alloc(0);
+    tun.streamReady = false;              // 握手代理完成前不透传下行（丢弃缩略图残留帧）
+    tun.skipVersionUntil = 0;
     try { writeTunnelFrame(tun.sock, FT_CMD, mkCmd('rfb.start', rid)); } catch { /* noop */ }
   }
 
   ws.on('message', (data, isBinary) => {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    // 2026-08-22 连接保持：会话握手代理——设备端连接已握手（缩略图态），会话（ctrl/viewOnly）的
+    // 版本/SecurityType 选择/ClientInit 不转发设备端（trollvncserver 不再收握手字节），
+    // 由网关回放版本 + SecurityType 列表 [1,1] + SecurityResult + 缓存的 ServerInit 完成
+    // 会话握手；此后 SetPixelFormat/SetEncodings/FBURequest 在同一连接上转发切推帧。
+    if (tun.mode === 'stream' && tun.noVncHsk < 3) {
+      tun.hskBuf = Buffer.concat([tun.hskBuf, buf]);
+      while (tun.noVncHsk < 3) {
+        if (tun.noVncHsk === 0) {
+          if (tun.hskBuf.length < 12) break;    // noVNC 协议版本 12B 未收齐
+          tun.hskBuf = tun.hskBuf.subarray(12); // 跳过 noVNC 版本（设备端已握手）
+          try { ws.send(Buffer.from('RFB 003.008\n', 'latin1')); ws.send(Buffer.from([1, 1])); } catch { /* ignore */ }
+          tun.noVncHsk = 1;
+        } else if (tun.noVncHsk === 1) {
+          tun.hskBuf = tun.hskBuf.subarray(1);  // 跳过 SecurityType 选择（None=1）
+          try { ws.send(Buffer.from([0, 0, 0, 0])); } catch { /* ignore */ } // SecurityResult OK
+          tun.noVncHsk = 2;
+        } else {
+          tun.hskBuf = tun.hskBuf.subarray(1);  // 跳过 ClientInit
+          if (tun.serverInit) { try { ws.send(tun.serverInit); } catch { /* ignore */ } } // 回缓存 ServerInit
+          tun.noVncHsk = 3;
+          tun.streamReady = true;               // 握手完成：下行开始透传
+        }
+      }
+      const rest = tun.hskBuf;
+      tun.hskBuf = Buffer.alloc(0);
+      if (rest.length) {
+        const ok3 = writeTunnelFrame(tun.sock, FT_DATA, rest);
+        console.log(`[vnc] hsk->tunnel ${deviceId} bytes=${rest.length} hex=${rest.toString('hex')} wrote=${ok3}`);
+        if (isBroadcast && grp) broadcastInput(ws, grp, rest);
+      }
+      return;
+    }
     // 设备 5901 重建窗口期内缓冲上行字节（等 rfb.start 重建完成后再放行），
     // 避免 noVNC 握手字节发到旧/未就绪连接
     if (tun.pendingUpUntil && Date.now() < tun.pendingUpUntil) {
@@ -649,13 +697,17 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
       }
       if (tun.stopTimer) clearTimeout(tun.stopTimer);
       if (tun.sock && !tun.sock.destroyed && tun.sock.writable) {
-        // debounce 800ms：快速重进时设备 5901 连接保持，减少 stop/start 乒乓
+        // debounce 800ms：快速重进时保持屏幕流态，减少推帧方式乒乓
         tun.stopTimer = setTimeout(() => {
           tun.stopTimer = null;
           if (!tun.sock || tun.sock.destroyed || !tun.sock.writable) return;
           const rfbStop = Buffer.from(JSON.stringify({ type: 'cmd', cmd: 'rfb.stop', id: 'e' + Date.now().toString(36) }), 'utf8');
-          tun.mode = 'thumb';       // 回缩略图态
-          tun.thumbRfb = null;      // 丢弃旧解码器，下次缩略图态重建
+          tun.mode = 'thumb';       // 回缩略图态（连接保持，不重建）
+          tun.noVncHsk = 0;         // 重置握手代理
+          tun.hskBuf = Buffer.alloc(0);
+          tun.streamReady = false;
+          tun.skipVersionUntil = 0;
+          tun.thumbRfb = null;      // 丢弃旧解码器；下次缩略图态在已握手连接上 reuse（回 Raw）
           try { writeTunnelFrame(tun.sock, FT_CMD, rfbStop); } catch { /* noop */ }
         }, 800);
       }
@@ -1609,10 +1661,19 @@ const tunnelServer = net.createServer((sock) => {
           rec.thumbRfb = new ThumbRfbDecoder();
           rec.thumbRfb.onSend = (bytes) => { try { writeTunnelFrame(sock, FT_DATA, bytes); } catch { /* noop */ } };
           rec.thumbRfb.onJpeg = () => { notifyDevicesChanged('thumb', deviceId); };
+          // 2026-08-22 连接保持：设备端连接已握手（控制态结束回缩略图），新解码器复用连接
+          // 切回 Raw（发 SetPixelFormat/SetEncodings/update），不重新握手（已握手连接收版本会错乱）
+          if (rec.serverInit) rec.thumbRfb.reuse(rec.serverInit);
         }
         rec.thumbRfb.feed(payload);
+        if (rec.thumbRfb.serverInit) rec.serverInit = rec.thumbRfb.serverInit; // 缓存 ServerInit 供控制态回放
       } else {
-        // 屏幕流态：转发给 noVNC 订阅者
+        // 屏幕流态：noVNC 握手代理完成前丢弃缩略图残留帧（防 noVNC 收到脏数据），完成后透传
+        if (!rec.streamReady && rec.noVncHsk < 3) {
+          rec.pending = Buffer.alloc(0);
+          return;
+        }
+        // 转发给 noVNC 订阅者
         if (rec.wsSet.size > 0) {
           rec.pending = Buffer.alloc(0);
           for (const ws of rec.wsSet) {
@@ -1738,7 +1799,11 @@ const tunnelServer = net.createServer((sock) => {
       if (old && old.sock !== sock) {
         try { old.sock.destroy(); } catch { /* noop */ }
       }
-      tunnels.set(deviceId, { sock, wsSet: new Set(), controller: null, pending: Buffer.alloc(0), thumbRfb: null, mode: 'thumb', controlled: false, controlledSource: null, skipVersionUntil: 0 });
+      tunnels.set(deviceId, { sock, wsSet: new Set(), controller: null, pending: Buffer.alloc(0), thumbRfb: null, mode: 'thumb', controlled: false, controlledSource: null, skipVersionUntil: 0,
+        // 2026-08-22 连接保持：noVNC 握手代理状态（0=等版本 1=等SecurityType选择 2=等ClientInit 3=完成）+
+        // 缩略图态缓存的 ServerInit（控制态握手回放）+
+        // 握手代理期间的 noVNC 上行缓冲 + 下行（设备→网关）是否可透传
+        noVncHsk: 0, hskBuf: Buffer.alloc(0), serverInit: null, streamReady: false });
       sock.write(JSON.stringify({ type: 'tunnel_ack', ok: true }) + '\n');
       framed = true;
       dev.online = true;

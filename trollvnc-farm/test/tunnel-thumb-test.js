@@ -31,6 +31,7 @@ const child = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
     ...process.env,
     FARM_PORT: String(PORT), FARM_REG_PORT: String(REG_PORT), FARM_TUNNEL_PORT: String(TUN_PORT),
     FARM_TOKEN: TOKEN, FARM_DATA_DIR: tmpData, FARM_TLS: '0', FARM_HOST: '127.0.0.1',
+    FARM_MDNS: '0', // 禁用 mDNS 发布：随机端口下避免与并跑测试的 bonjour 服务名冲突（Service name is already in use）
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
