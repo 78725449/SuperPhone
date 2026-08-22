@@ -4840,29 +4840,11 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
     if (!cl->viewOnly && gViewOnly)
         cl->viewOnly = TRUE;
 
-    // 2026-08-22 服务切换自治：新隧道连接（loopback）建立时，踢掉旧的 loopback 非 mgmt 客户端
-    // （缩略图/旧控制残留），保证服务端最多一个活跃隧道连接 → 新连接干净握手、无协议串扰。
-    // 网关只是调用方（rfb.start/rfb.stop 命令），连接管理由 APP 服务端自治。
-    NSString *clHost = (cl && cl->host) ? [NSString stringWithUTF8String:cl->host] : @"";
-    if (tvIsLoopbackHost(clHost)) {
-        NSMutableArray *stale = [NSMutableArray array];
-        rfbClientIteratorPtr it = rfbGetClientIterator(gScreen);
-        rfbClientPtr other;
-        while ((other = rfbClientIteratorNext(it))) {
-            if (other == cl) continue;
-            TVClientState *ost = tvGetClientState(other);
-            if (ost && ost->isMgmtClient) continue; // 跳过管理通道（invoke）
-            NSString *ohost = (other && other->host) ? [NSString stringWithUTF8String:other->host] : @"";
-            if (tvIsLoopbackHost(ohost)) {
-                [stale addObject:[NSValue valueWithPointer:other]];
-            }
-        }
-        rfbReleaseClientIterator(it);
-        // 快照后迭代器外关闭（复用崩溃修复模式：迭代器中 rfbCloseClient 会导致 SIGSEGV）
-        for (NSValue *v in stale) {
-            rfbCloseClient((rfbClientPtr)v.pointerValue);
-        }
-    }
+    // 2026-08-22 回滚：移除 newClientHook 踢旧 loopback 逻辑——rfbCloseClient 在 newClientHook
+    // 回调内操作 libvncserver 客户端列表会访问已释放的 clientData（设备端 rfb.start 已先 close
+    // 旧缩略图 fd，服务端旧连接正被 EOF 清理）→ SIGSEGV → 设备端崩溃 → 隧道反复重连。
+    // libvncserver 本身自动清理 EOF 连接（rfbProcessEvents → clientGoneHook），无需手动踢旧；
+    // 新连接干净握手由网关 skipVersionUntil（跳过重复协议版本）保证。
 
     // 2026-08-17 架构级修复（type 125 根因）：ExtendedClipboard 关闭，剪贴板显式双向搬运
     // 走 0x50/0x80 管理通道（5801 直连页 mgmtRequest / 网关 REST → TRCapabilityRegistry），
