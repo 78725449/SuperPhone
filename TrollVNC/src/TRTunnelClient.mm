@@ -597,6 +597,15 @@ static void TRTunnelLog(const char *fmt, ...) {
                     break;
                 }
                 int fd = fdNum.intValue;
+                // 2026-08-23 恢复（proto:2 改造误删）：重复协议版本过滤——CHAN_OPEN 后本进程
+                // 已主动向本地 5901 写入 "RFB 003.008\n"（抢 0-50ms 握手窗口），网关缩略图
+                // 解码器（chan 0）收到服务端版本后也会回版本行，若再写入 5901 服务端已在
+                // 安全类型阶段 → wrong security type (82) → 断开 → chan 0 循环 EOF。
+                // 12B 且以 "RFB 003." 开头的帧视为重复协议版本，丢弃（后续字节照常）。
+                if (payloadLen - 2 == 12 && memcmp(payload + 2, "RFB 003.", 8) == 0) {
+                    TRTunnelLog("drop duplicate client version (chan %u)", chanId);
+                    break;
+                }
                 size_t off = 2;
                 while (off < payloadLen) {
                     ssize_t w = write(fd, payload + off, payloadLen - off);
