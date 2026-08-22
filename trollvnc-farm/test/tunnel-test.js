@@ -57,10 +57,6 @@ class FakeDevice {
     this.frameBuf = Buffer.alloc(0);
     this.frames = [];           // ?????? {type, payload}
     this._waiters = [];
-    // 2026-08-22 连接保持：模拟设备端 connect 5901（缩略图客户端）后的 RFB 握手——
-    // 网关 ThumbRfbDecoder 驱动握手并缓存 ServerInit，供控制态 noVNC 握手代理回放
-    this.rfbBuf = Buffer.alloc(0);
-    this.rfbStep = 0;           // 0=等版本 1=等SecurityType选择 2=等ClientInit 3=已握手
   }
   _tcp(port) {
     return new Promise((res, rej) => {
@@ -107,11 +103,6 @@ class FakeDevice {
       this.tunSock.on('data', onData);
     });
     this.tunSock.on('data', (d) => this._feed(d));
-    // 2026-08-22 连接保持：隧道握手成功后设备端即 connect 5901（缩略图客户端）并主动写版本，
-    // 网关 ThumbRfbDecoder 在缩略图态驱动握手（缓存 ServerInit）——模拟之并等待握手完成
-    this.sendData(Buffer.from('RFB 003.008\n', 'latin1'));
-    await waitFor(() => this.rfbStep === 3);
-    await new Promise((r) => setTimeout(r, 300)); // 等网关 ThumbRfbDecoder 处理完 ServerInit 并缓存（会话握手代理回放依赖）
   }
   _feed(chunk) {
     this.frameBuf = Buffer.concat([this.frameBuf, chunk]);
@@ -124,8 +115,6 @@ class FakeDevice {
       this.frames.push(frame);
       this.frameBuf = this.frameBuf.subarray(5 + len);
       for (const w of [...this._waiters]) w(frame);
-      // 缩略图/屏幕流 RFB 数据：模拟 trollvncserver 握手响应（连接保持，网关代理 noVNC 握手）
-      if (type === FT_DATA) this._feedRfbData(frame.payload);
       // 模拟设备：FT_CMD(rfb.start/stop) 自动回 ack（echo id），网关 ack 驱动据此精确放行握手字节
       if (type === FT_CMD) {
         let cmd = '', id = null;
@@ -134,41 +123,6 @@ class FakeDevice {
           this.tunSock.write(encodeFrame(FT_CMDACK, Buffer.from(JSON.stringify({ type: 'ack', cmd, id, ok: true }))));
         }
       }
-    }
-  }
-  /** 2026-08-22 模拟 trollvncserver：经隧道响应网关 ThumbRfbDecoder/noVNC 的 RFB 握手字节 */
-  _feedRfbData(payload) {
-    this.rfbBuf = Buffer.concat([this.rfbBuf, payload]);
-    this._advanceRfb();
-  }
-  _advanceRfb() {
-    for (;;) {
-      if (this.rfbStep === 0) { // 等设备端协议版本（网关 ThumbRfbDecoder 写）
-        if (this.rfbBuf.length < 12) return;
-        if (!this.rfbBuf.subarray(0, 12).toString('latin1').startsWith('RFB 003.')) { this.rfbBuf = this.rfbBuf.subarray(1); continue; }
-        this.rfbBuf = this.rfbBuf.subarray(12);
-        this.sendData(Buffer.from([1, 1])); // SecurityType 列表 [1,1]
-        this.rfbStep = 1; continue;
-      }
-      if (this.rfbStep === 1) { // 等 SecurityType 选择
-        if (this.rfbBuf.length < 1) return;
-        this.rfbBuf = this.rfbBuf.subarray(1);
-        this.sendData(Buffer.from([0, 0, 0, 0])); // SecurityResult OK
-        this.rfbStep = 2; continue;
-      }
-      if (this.rfbStep === 2) { // 等 ClientInit
-        if (this.rfbBuf.length < 1) return;
-        this.rfbBuf = this.rfbBuf.subarray(1);
-        const si = Buffer.alloc(24);
-        si.writeUInt16BE(2, 0); si.writeUInt16BE(2, 2);
-        si.writeUInt8(32, 4); si.writeUInt8(24, 5); si.writeUInt8(0, 6); si.writeUInt8(1, 7);
-        si.writeUInt16BE(255, 8); si.writeUInt16BE(255, 10); si.writeUInt16BE(255, 12);
-        si.writeUInt8(16, 14); si.writeUInt8(8, 15); si.writeUInt8(0, 16);
-        si.writeUInt32BE(0, 20); // nameLen=0
-        this.sendData(si); // ServerInit
-        this.rfbStep = 3; continue;
-      }
-      return; // 已握手：SetPixelFormat/SetEncodings/FBURequest 等忽略（测试不断言画面）
     }
   }
   sendData(data) { this.tunSock.write(encodeFrame(FT_DATA, data)); }
@@ -194,28 +148,6 @@ function wsConnect(url) {
     ws.once('open', () => res(ws));
     ws.once('error', rej);
   });
-}
-/**
- * 2026-08-22 连接保持：会话握手——网关代理 noVNC 握手（设备端连接已握手，不重建），
- * 回放版本/SecurityType 列表/SecurityResult/缓存 ServerInit。测试发版本+选择+ClientInit，
- * 等网关回放 4 个响应（含 ServerInit）后发 SetPixelFormat/SetEncodings/FBURequest 完成握手，
- * 此后会话上行（输入等）才会被转发到隧道、下行（画面/数据）才会被透传。
- */
-async function hskSession(ws) {
-  let n = 0;
-  const got4 = new Promise((res) => {
-    const onM = () => { if (++n >= 4) { ws.off('message', onM); res(); } };
-    ws.on('message', onM);
-    setTimeout(() => { ws.off('message', onM); res(); }, 3000); // 兜底：网关未缓存 ServerInit 时继续（测试容错）
-  });
-  ws.send(Buffer.from('RFB 003.008\n', 'latin1')); // noVNC 协议版本（网关跳过，回放服务端版本+SecurityType 列表）
-  ws.send(Buffer.from([1]));                        // SecurityType 选择（网关跳过，回 SecurityResult）
-  ws.send(Buffer.from([1]));                        // ClientInit（网关跳过，回缓存 ServerInit）
-  await got4;
-  // 完成握手：SetPixelFormat + SetEncodings(Raw) + FBURequest（网关转发设备端，trollvncserver 切换推帧）
-  ws.send(Buffer.from([0, 0, 0, 0, 32, 24, 0, 1, 255, 0, 255, 0, 255, 0, 16, 8, 0, 0, 0, 0]));
-  ws.send(Buffer.from([2, 0, 0, 1, 0, 0, 0, 0]));
-  ws.send(Buffer.from([3, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0]));
 }
 function waitClose(ws, code) {
   return new Promise((res) => {
@@ -261,7 +193,6 @@ try {
   const sub = await wsConnect(baseWs);
   const subGot = [];
   sub.on('message', (d) => subGot.push(Buffer.from(d)));
-  await hskSession(sub); // 2026-08-22 连接保持：完成会话握手（网关代理回放 ServerInit）
   await new Promise((r) => setTimeout(r, 200));
   d1.sendData(Buffer.from([0x01, 0x02, 0x03]));
   await waitFor(() => subGot.some((b) => b.equals(Buffer.from([0x01, 0x02, 0x03]))));
@@ -277,14 +208,10 @@ try {
   // ???? -> ?? FT_DATA
   d1.frames = []; // 清空 viewOnly 上行验证的旧 FT_DATA 帧（nextFrame 不消费匹配帧）
   const ctrl = await wsConnect(`${baseWs}&ctrl=1`);
-  await hskSession(ctrl); // 2026-08-22 连接保持：ctrl 会话握手（顶掉 viewOnly 后握手代理重置）
+  const ctrlFrameP = d1.nextFrame(FT_DATA);
   ctrl.send(Buffer.from([0x10, 0x20]));
-  // 精确匹配输入字节（hskSession 的 SetPixelFormat/SetEncodings 也会转发到隧道，需区分）
-  const got = await waitFor(() => {
-    const f = d1.frames.find((x) => x.type === FT_DATA && x.payload.equals(Buffer.from([0x10, 0x20])));
-    return f ? f : null;
-  });
-  check('controller input -> tunnel FT_DATA', got && got.payload.equals(Buffer.from([0x10, 0x20])));
+  const got = await ctrlFrameP;
+  check('controller input -> tunnel FT_DATA', got.payload.equals(Buffer.from([0x10, 0x20])));
 
   // ???????????????4001?
   const ctrl2 = await wsConnect(`${baseWs}&ctrl=1`);
@@ -298,10 +225,9 @@ try {
   // ???????? WS ??????????viewOnly ?????
   const d2sub = await wsConnect(`ws://127.0.0.1:${PORT}/ws/vnc/${encodeURIComponent(d2.deviceId)}?token=${TOKEN}&grp=wall1`);
   const master = await wsConnect(`${baseWs}&grp=wall1&broadcast=1&ctrl=1`);
-  await hskSession(master); // 2026-08-22 连接保持：master 会话握手（顶掉 ctrl2 后握手代理重置）
-  // 等握手完成/推帧切换稳定（连接保持：rfb.start 升频，网关代理握手，无需 ack 重建窗口）
+  // 等 ack 驱动重建完成（设备 5901 就绪、重建窗口结束）：窗口内首个上行字节会被缓冲为握手字节，
+  // 不执行广播；真实 noVNC 在握手完成前不会发输入，故此处需等待重建完成再发广播输入
   await new Promise((r) => setTimeout(r, 300));
-  d2.frames = []; // hskSession(master) 的 SetPixelFormat 会广播到 d2 隧道，清空避免 nextFrame 误匹配
   const d2FrameP = d2.nextFrame(FT_DATA);
   master.send(Buffer.from([0xaa, 0xbb]));
   const bcast = await d2FrameP;

@@ -116,13 +116,13 @@
   → 此后每 30s hello；90s 无心跳判离线；重连退避由设备侧拨号
 ```
 
-**控制会话（2026-08-22 连接保持）**：
+**控制会话**：
 ```
 浏览器/控制端 → WS /ws/vnc/:id（8080）
   → 网关查 tunnels[deviceId]：无隧道 → ws.close(4003, 'no tunnel')；有 → 桥接
-  → 网关发 rfb.start(id)（FT_CMD 帧；只升频不重建）→ 设备端取消延迟重连 + 上报被控状态 + 通知升频，ack 回 ok（无常驻连接才 4005）
-  → 网关代理 noVNC 握手：跳过版本/SecurityType 选择/ClientInit，回放版本 + SecurityType 列表[1,1] + SecurityResult + 缓存 ServerInit；此后 SetPixelFormat/SetEncodings/FBURequest 同一连接转发
-  → connect 失败（无常驻连接）→ 显式 close 会话（4005 "画面服务不可用"）
+  → 网关发 rfb.start(id)（FT_CMD 帧）→ 设备同步 connect 本地 5901，ack 回 ok=connect
+  → 网关收到匹配 id 的 ack 才精确放行缓冲的握手字节（3s 超时兜底）
+  → connect 失败 → 显式 close 会话（4005 "画面服务不可用"）
 ```
 
 ---
@@ -311,7 +311,7 @@ New project/
 
 **关键常量**：`kTunnelPingInterval=30.0`、`kTunnelSelectTimeout=5.0`、`kTunnelMinRetryDelay=2.0`、`kTunnelMaxRetryDelay=30.0`、`kLocalRfbPort=5901`、`kDefaultTunnelPort=18181`、`kFrameHeaderSize=5`、`kMaxFramePayload=16MB`、`kReadBufSize=64KB`
 
-**特殊命令（2026-08-22 连接保持）**：`rfb.start`/`rfb.stop` 由隧道客户端同步处理（不委托 commandHandler）——rfb.start 取消延迟重连 + 上报被控状态 YES + `notify_post("capture-active")` 升频（不 close 不 connect）；rfb.stop 上报被控状态 NO + `notify_post("capture-idle")` 降频（不 close 不重连，缩略图客户端常驻）。ack 仅作升频确认（网关不再依赖放行缓冲）
+**特殊命令**：`rfb.start`/`rfb.stop` 由隧道客户端同步处理（不委托 commandHandler），ack 携带 connect 结果供网关精确放行缓冲字节
 
 ---
 
@@ -687,8 +687,8 @@ API 全部前缀 `/api`，统一走 `authOk`（Bearer Token 或 `?token=`，无 
 `feedFrame` 解析器：frameBuf 累积，每帧读 5B 头取 type+len，`len>16MB` 直接 sock.destroy() 防内存炸；不完整帧等下次 chunk
 
 `handleFrame` 分支：
-- `FT_DATA`：缩略图态（`rec.mode==='thumb'`）喂 `rec.thumbRfb.feed` 解码（Raw 编码 → JPEG，onJpeg 广播 thumb 事件；非 Raw 帧自愈：丢弃缓冲重发 SetEncodings(Raw)+增量请求）；屏幕流态（`rec.mode==='stream'`）广播给 tun.wsSet 全部订阅者（握手代理完成 `streamReady` 前丢弃，防缩略图残留帧污染 noVNC）；无订阅者缓冲进 tun.pending（64KB 滚动截断）；连接保持下无重建窗口，`tun.rebuild` 恒 null（2026-08-22）
-- `FT_CMDACK`：rfb.start ack 仅作升频确认（ok=false 且无常驻连接才 controller.close(4005)）；其余 ack 按 ack.id 匹配 pendingCmds 解析 Promise
+- `FT_DATA`：缩略图态（`rec.mode==='thumb'`）喂 `rec.thumbRfb.feed` 解码（Raw 编码 → JPEG，onJpeg 广播 thumb 事件）；屏幕流态广播给 tun.wsSet 全部订阅者；无订阅者缓冲进 tun.pending（64KB 滚动截断）；处于 5901 重建窗口（pendingUpUntil）时丢弃旧连接残留帧防污染
+- `FT_CMDACK`：先识别 rfb.start ack（匹配 tun.rebuild.id），ok 则放行缓冲的握手字节（pendingUp），fail 则 controller.close(4005,'device RFB unavailable')；其余 ack 按 ack.id 匹配 pendingCmds 解析 Promise
 - `FT_PING`：回 PONG；`FT_PONG`：仅作存活证明
 
 #### 5.1.4 sendDeviceCmd 逻辑
@@ -709,13 +709,13 @@ API 全部前缀 `/api`，统一走 `authOk`（Bearer Token 或 `?token=`，无 
 | 4003 | 隧道不存在（tunnels.get 为空/sock 已毁/不可写）—— 禁止直连回退 |
 | 4001 | 同设备新会话顶掉旧会话（普通会话被新会话/新 ctrl 顶掉，旧 ctrl 被新 ctrl 顶掉） |
 | 4002 | 隧道关闭时一并关闭其 wsSet 内全部 WS 会话 |
-| 4005 | rfb.start ack 失败且无常驻连接（设备 5901 不可用），关闭 ctrl 会话 |
+| 4005 | rfb.start ack 失败（设备 5901 不可用），关闭 ctrl 会话 |
 
-**核心约束（2026-08-22 连接保持）**：
-- 同设备仅 1 条隧道 + 1 个 5901 连接（缩略图客户端常驻，从不重建）；新 WS 会话进入时循环把 tun.wsSet 内非自身、非 ctrl、非已关闭的旧会话踢出（close(4001,'preempted by new session')）
-- `needRfbRebuild = isCtrl || isFirstSession`：仅发 rfb.start 升频（连接保持不重建）；会话进入即切 `tun.mode='stream'` + 启动 noVNC 握手代理（noVncHsk 0→1→2→3：跳过版本/SecurityType 选择/ClientInit，回放版本 + SecurityType 列表[1,1] + SecurityResult + 缓存 ServerInit，完成后 streamReady=true 下行透传）
-- 握手代理期间（streamReady=false）上行缓冲在 hskBuf，下行（缩略图残留帧）丢弃；握手代理完成后的 SetPixelFormat/SetEncodings/FBURequest 同一连接转发设备端
-- 末会话断开 debounce 800ms 下发 rfb.stop → 回缩略图态（mode='thumb' + 重置握手代理），设备端只降频不 close；ThumbRfbDecoder.reuse(serverInit) 复用已握手连接发 SetPixelFormat(BGRA)+SetEncodings(Raw) 切回推帧
+**核心约束**：
+- 同设备仅 1 条隧道 + 1 个 5901 连接；新 WS 会话进入时循环把 tun.wsSet 内非自身、非 ctrl、非已关闭的旧会话踢出（close(4001,'preempted by new session')）
+- `isFirstSession = tun.wsSet.size === 1`；`needRfbRebuild = isCtrl || isFirstSession`：触发 rfb.stop → rfb.start 强制设备侧重建 5901，保证新 noVNC 拿到全新握手；非重建会话才补发 tun.pending 旧缓冲
+- 重建窗口期上行字节缓冲到 tun.pendingUp（64KB 滚动），收到 rfb.start ack ok 才放行；3s 兜底超时强制放行防永久卡死；ack fail 则 controller.close(4005)
+- cleanup() 幂等（if (!tun.wsSet.has(ws)) return），最后会话断开 debounce 800ms 下发 rfb.stop 防 stop/start 乒乓
 
 #### 5.1.6 关键函数清单
 
@@ -726,7 +726,7 @@ API 全部前缀 `/api`，统一走 `authOk`（Bearer Token 或 `?token=`，无 
 | `sortDevices` | order 升序在前 → addedAt 升序在后 → id 字典序兜底，稳定排序 |
 | `writeTunnelFrame` | 写 5B 头帧（1B type + 4B BE length + payload） |
 | `sendDeviceCmd` | 命令下发 + 等 ack（隧道优先，注册通道回退，5s/15s 超时） |
-| `handleVncSocket` | WS↔VNC 桥接 + 单会话约束 + 连接保持（noVNC 握手代理回放缓存 ServerInit，推帧方式切换） |
+| `handleVncSocket` | WS↔VNC 桥接 + 单会话约束 + rfb 重建 + pending 缓冲管理 |
 | `handleControlSocket` | AI 工具 WS 控制端点（JSON 行 cmd→ack 透传） |
 | `handleApi` | REST API 路由分发（含 batch 分支优先级） |
 | `GET /api/devices/:id/thumb` | 缩略图读回（2026-08-22 统一到 RFB）：`trec.thumbRfb.jpeg` 有值 → 200 `{thumb: base64, ts}`；无 → 204；设备不存在 → 404 |
@@ -752,17 +752,13 @@ tun = {
   wsSet: Set<ws>,        // RFB 数据订阅集合
   controller: ws|null,   // 唯一控制者
   pending: Buffer,       // 无订阅期间下行缓冲（64KB 滚动）
-  pendingUp: Buffer|null, // 重建窗口期上行缓冲（连接保持下不再使用，保留兼容）
-  pendingUpUntil: number, // 重建窗口截止时间戳（连接保持下恒 0）
-  rebuild: {id, timer}|null, // rfb.start 重建 ack 跟踪（连接保持下恒 null，2026-08-22）
+  pendingUp: Buffer|null, // 重建窗口期上行缓冲
+  pendingUpUntil: number, // 重建窗口截止时间戳
+  rebuild: {id, timer}|null, // rfb.start 重建 ack 跟踪
   stopTimer,             // debounce rfb.stop 800ms
   _dataCount,            // FT_DATA 诊断计数
   thumbRfb: ThumbRfbDecoder|null,  // 缩略图态 RFB 解码器（Raw→JPEG，2026-08-22）
-  mode: 'thumb'|'stream',          // 隧道态：缩略图/屏幕流（2026-08-22 连接保持）
-  noVncHsk: 0,           // noVNC 握手代理状态（0=等版本→1=等SecurityType选择→2=等ClientInit→3=完成）
-  hskBuf: Buffer,        // 握手代理上行缓冲（握手字节，完成后剩余转隧道）
-  serverInit: Buffer|null, // 缓存 ServerInit 原始字节（缩略图态握手时由 thumbRfb 写入，供控制态回放）
-  streamReady: boolean,  // 握手代理完成：下行开始透传
+  mode: 'thumb'|'ctrl',            // 隧道态：缩略图/控制
   controlled: boolean,             // 被控状态（2026-08-22）
   controlledSource: '5801'|'tunnel'|null, // 被控来源（2026-08-22：5801 直连 / 隧道 rfb.start）
 }
@@ -951,7 +947,7 @@ script app.js?v=170（type=module）
 | 4 | `dedupe-test.js` | 去重/身份合并：同 deviceId 重复注册仍 1 条、旧连接被关；manual+register 同 host:port 合并为 deviceId；已注册设备不被 manual 降级 |
 | 5 | `caps-test.js` | caps.js 自包含定义契约：BATCH_CAPS=20 且每项含 id/title/icon/category/params、含 service.restart；CONFIG_DEFS=30（2026-08-21 由 29 增加，六板块 group 均非空、仅 FabAutoCollapse 为 null、不含 BonjourEnabled/ViewOnlyPassword）且不含 Port$ 项且每项含 reload；KEY_DEFS=10；groupByCategory=3 组；GESTURE_DEFS=3 |
 | 6 | `gesture-test.js` | gesture.js 契约：GESTURE_DEFS 与 resolveGesture 三态覆盖一致；normalizePoint 中心/越界钳制/无 rect 兜底；pinch scale>1/<1/钳制 [0.5,2.0]/≈1 跳过 null；未知类型 null |
-| 7 | `pending-replay-test.js` | 回归（2026-08-22 连接保持适配）：缩略图态模拟握手（feedRfb 状态机）+ hskSession（会话握手代理回放）；会话 A 走握手代理收到画面帧；退出后 debounce rfb.stop；会话 B 握手代理 + 600ms 窗口内不得收到旧残留数据；新帧正常转发 |
+| 7 | `pending-replay-test.js` | 回归：会话 A 退出后 100ms 内（debounce rfb.stop 未下发）设备推旧残留帧→网关应缓冲不转发；debounce rfb.stop 到达；重进会话 B 触发 stop→start 重建；会话 B 600ms 窗口内不得收到旧残留数据 |
 | 8 | `press-test.js` | press.js 时序：volup 按下 down、抬起 up、不补 click；home 双击→home.double；单击窗口超时→click；按住 900ms→home.long；power 三击→power.triple |
 | 9 | `order-test.js` | 卡片墙 order 排序：注册 a/b/c 初始按 addedAt；PATCH b=1/a=3 → [b,a,c]；相同 order 按 id 字典序兜底；清除 order（null）回到注册时间段；order=-1/100000 拒绝 400 |
 | 10 | `events-test.js` | 设备变更推送（2026-08-18）：/ws/events 订阅后设备 register 上线收到 register 事件；DELETE 删除收到 delete 事件；事件为 {type,deviceId,ts} 轻量通知；非 /ws/events 连接不进入订阅集合；心跳 ping→pong（2026-08-19） |
@@ -1124,7 +1120,7 @@ length:4B (big-endian)
 4002 tunnel closed
 4003 no tunnel: device not registered
 4004 device not found
-4005 device RFB unavailable (rfb.start ack failed, no resident connection)
+4005 device RFB unavailable (rfb.start ack failed)
 ```
 
 ---

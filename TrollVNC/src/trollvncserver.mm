@@ -4453,14 +4453,6 @@ static BOOL tvDisconnectAllClients(void) {
     return YES;
 }
 
-/** 判断 host 是否为 loopback（127.0.0.1 / ::1 / localhost）——隧道缩略图/控制客户端是 loopback，
- *  5801 直连等外部控制端是非 loopback。2026-08-22 提取为辅助函数（REMOTE 断开 / 单隧道连接约束复用）。 */
-static BOOL tvIsLoopbackHost(NSString *host) {
-    return [host isEqualToString:@"127.0.0.1"] || [host isEqualToString:@"::1"] ||
-           [host isEqualToString:@"localhost"] || [host hasPrefix:@"127."] ||
-           [host hasPrefix:@"::ffff:127."];
-}
-
 /** 断开所有非 loopback 客户端（2026-08-22）：5801 直连等外部控制端（host 非 127.0.0.1）。
  *  隧道缩略图/控制客户端（loopback）保留——网关「断开被控」只踢外部控制端，不影响隧道链路。 */
 static BOOL tvDisconnectRemoteClients(void) {
@@ -4475,7 +4467,10 @@ static BOOL tvDisconnectRemoteClients(void) {
     NSMutableArray *targets = [NSMutableArray array];
     while ((cl = rfbClientIteratorNext(it))) {
         NSString *host = (cl && cl->host) ? [NSString stringWithUTF8String:cl->host] : @"";
-        if (!tvIsLoopbackHost(host)) {
+        BOOL isLoopback = [host isEqualToString:@"127.0.0.1"] || [host isEqualToString:@"::1"] ||
+                          [host isEqualToString:@"localhost"] || [host hasPrefix:@"127."] ||
+                          [host hasPrefix:@"::ffff:127."];
+        if (!isLoopback) {
             [targets addObject:[NSValue valueWithPointer:cl]];
         }
     }
@@ -4839,12 +4834,6 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
     cl->clientGoneHook = clientGoneHook;
     if (!cl->viewOnly && gViewOnly)
         cl->viewOnly = TRUE;
-
-    // 2026-08-22 回滚：移除 newClientHook 踢旧 loopback 逻辑——rfbCloseClient 在 newClientHook
-    // 回调内操作 libvncserver 客户端列表会访问已释放的 clientData（设备端 rfb.start 已先 close
-    // 旧缩略图 fd，服务端旧连接正被 EOF 清理）→ SIGSEGV → 设备端崩溃 → 隧道反复重连。
-    // libvncserver 本身自动清理 EOF 连接（rfbProcessEvents → clientGoneHook），无需手动踢旧；
-    // 新连接干净握手由网关 skipVersionUntil（跳过重复协议版本）保证。
 
     // 2026-08-17 架构级修复（type 125 根因）：ExtendedClipboard 关闭，剪贴板显式双向搬运
     // 走 0x50/0x80 管理通道（5801 直连页 mgmtRequest / 网关 REST → TRCapabilityRegistry），
