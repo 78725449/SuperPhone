@@ -24,6 +24,7 @@
 #import <string.h>
 #import <sys/socket.h>
 #import <unistd.h>
+#import <notify.h>   // 2026-08-23：客户端变化通知监听（darwin notify，trollvncserver clientGoneHook 触发）
 
 #pragma mark - Networking
 
@@ -150,7 +151,11 @@ static NSDictionary *TVNCControlInvoke(NSString *op, NSDictionary *params) {
 
 // 5901 RFB 控制通道状态
 @property(nonatomic, assign) BOOL controlAvailable;                 // 控制服务可达（clients.list 探测结果）
-@property(nonatomic, strong) NSTimer *pollTimer;                    // 列表轮询定时器（原订阅推送的替代）
+@property(nonatomic, strong) NSTimer *pollTimer;                    // 列表轮询定时器（原订阅推送的替代；现为通知兜底）
+@property(nonatomic, assign) int notifyToken;                       // 客户端变化通知监听 token（darwin notify，0=未注册）
+
+// 2026-08-23：注册客户端变化通知监听（viewDidLoad/viewWillAppear 调用，幂等）
+- (void)registerClientsChangedNotification;
 
 @end
 
@@ -195,20 +200,51 @@ static NSDictionary *TVNCControlInvoke(NSString *op, NSDictionary *params) {
     [self.dataSource applySnapshot:empty animatingDifferences:NO];
 
     [self refresh];
+
+    [self registerClientsChangedNotification];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self startPolling];
+    [self registerClientsChangedNotification]; // 幂等：视图重新出现时补注册（viewWillDisappear 已注销）
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
     [self stopPolling];
+    if (self.notifyToken) { // 视图消失：注销通知监听（与轮询一致，仅在可见时活跃）
+        notify_cancel(self.notifyToken);
+        self.notifyToken = 0;
+    }
 }
 
 - (void)dealloc {
     [self stopPolling];
+    if (self.notifyToken) { // 兜底注销（viewWillDisappear 未走时）
+        notify_cancel(self.notifyToken);
+        self.notifyToken = 0;
+    }
+}
+
+/**
+ * 注册客户端变化通知监听（2026-08-23）：trollvncserver clientGoneHook → clients-changed，
+ * 客户端断开后立即刷新列表，消除「等 5s 轮询才消失」的延迟；轮询保留为兜底
+ * （通知无状态可能丢失，轮询保证 5s 内自愈）。幂等：已注册（notifyToken!=0）则跳过。
+ */
+- (void)registerClientsChangedNotification {
+    if (self.notifyToken != 0)
+        return;
+    __weak typeof(self) weakSelf = self;
+    uint32_t status = notify_register_dispatch("com.82flex.trollvnc.clients-changed", &_notifyToken,
+                                               dispatch_get_main_queue(), ^(int t) {
+                                                   (void)t;
+                                                   [weakSelf refresh];
+                                               });
+    if (status != NOTIFY_STATUS_OK) {
+        self.notifyToken = 0;
+        NSLog(@"clients-changed notify register failed: %u", status);
+    }
 }
 
 /**

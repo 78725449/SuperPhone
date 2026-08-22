@@ -525,7 +525,7 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 
 #### 4.2.7 TVNCClientListController — 客户端列表
 
-**核心职责**：通过 5901 RFB 扩展消息（0x50 请求 / 0x80 响应）执行 `clients.list` / `clients.disconnect` / `clients.block` / `clients.unblock`；冻结/解冻持久化；5s 轮询；右滑操作 + 长按菜单。
+**核心职责**：通过 5901 RFB 扩展消息（0x50 请求 / 0x80 响应）执行 `clients.list` / `clients.disconnect` / `clients.block` / `clients.unblock`；冻结/解冻持久化；**通知驱动即时刷新 + 5s 轮询兜底**（2026-08-23：监听 trollvncserver `clients-changed` darwin 通知即时刷新，轮询保留兜底）；右滑操作 + 长按菜单。
 
 **关键方法**：
 - `TVNCControlConnect()` — 静态；socket connect 127.0.0.1:5901 → RFB 3.8 握手 → 发 `cap.hello {mgmt:YES}` 标记管理客户端

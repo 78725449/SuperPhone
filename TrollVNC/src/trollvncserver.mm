@@ -4785,6 +4785,11 @@ static void clientGoneHook(rfbClientPtr cl) {
         }
     }
 
+    // 2026-08-23：客户端断开即时通知——App（TVNCClientListController）监听此通知立即刷新
+    // 客户端列表，消除「断开后等 5s 轮询才消失」的延迟（轮询保留为兜底）。
+    // 仅非 mgmt 分支（mgmt 探测连接 wasMgmt 已在上面提前 return，不会触发）。
+    notify_post("com.82flex.trollvnc.clients-changed");
+
     // Decrement client count and stop capture if this was the last client.
     if (gClientCount > 0)
         gClientCount--;
