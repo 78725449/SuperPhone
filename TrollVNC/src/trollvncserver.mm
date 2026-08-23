@@ -4005,14 +4005,14 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         if (!data || data.length == 0) return tvExtErr(@"data 不是有效 base64");
         if (data.length > 200 * 1024 * 1024) return tvExtErr(@"文件过大（>200MB）");
         PHAuthorizationStatus st = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelAddOnly];
-        if (st == PHAuthorizationStatusNotDetermined) {
-            [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly handler:^(PHAuthorizationStatus s) {
-                TVLog(@"album.import: 相册授权结果 %ld", (long)s);
-            }];
-            return tvExtErr(@"首次使用需授权相册写入——请在设备上确认权限弹窗后重试");
-        }
-        if (st != PHAuthorizationStatusAuthorized)
+        // 2026-08-23 崩溃修复：daemon（trollvncserver）无前台 UI，调 requestAuthorizationForAccessLevel:
+        // 触发系统 TCC 弹窗会 SIGABRT（5801/5802/5901 全断）。改为不请求授权直接尝试导入——
+        // 进程持有 com.apple.private.security.storage.Photos entitlement（TrollStore 容器权限，
+        // 与 App 外壳共用 TrollVNC.entitlements），TCC 可能直接放行；失败则返回具体错误信息。
+        if (st == PHAuthorizationStatusDenied || st == PHAuthorizationStatusRestricted) {
             return tvExtErr(@"无相册写权限（设置 → 隐私 → 照片 允许添加）");
+        }
+        // NotDetermined：不请求（避免崩溃），直接尝试 performChangesAndWait，由 entitlement 判定
         NSString *ext = filename ? filename.pathExtension.lowercaseString : @"";
         BOOL isVideo = [ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"] || [ext isEqualToString:@"m4v"];
         NSString *tmpName = [NSString stringWithFormat:@"album_import_%ld.%@", (long)[NSDate date].timeIntervalSince1970,
