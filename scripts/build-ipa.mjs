@@ -25,12 +25,14 @@ const log = (...a) => console.error(...a); // stderr 立即刷新，避免管道
 async function api(method, url, body) {
   const res = await fetch(url, { method, headers: h, body: body ? JSON.stringify(body) : undefined });
   if (!res.ok) throw new Error(`${method} ${url} -> ${res.status} ${await res.text()}`);
+  if (res.status === 204) return null; // 无内容响应（workflow_dispatch 等 POST）
   return res.json();
 }
 
 // 1. 解析本地 commit sha、本地 base（HEAD 父提交，diff 基准）与远程 base
 const localSha = execSync(`git rev-parse ${LOCAL}`, { encoding: 'utf8', cwd: CWD }).trim();
-const localBase = execSync(`git rev-parse ${LOCAL}^`, { encoding: 'utf8', cwd: CWD }).trim();
+// 注意：不能写 ${LOCAL}^——cmd/PowerShell 下 ^ 是转义字符，会被吞掉导致 base 解析成自身
+const localBase = execSync(`git rev-parse ${LOCAL}~1`, { encoding: 'utf8', cwd: CWD }).trim();
 const ref = await api('GET', `${API}/repos/${REPO}/git/ref/heads/${BRANCH}`);
 const remoteBase = ref.object.sha;
 log(`[build] local  ${LOCAL} = ${localSha} (base ${localBase})`);
