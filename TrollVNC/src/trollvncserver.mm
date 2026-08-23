@@ -28,6 +28,7 @@
 #import <cstdio>
 #import <cstdlib>
 #import <cstring>
+#import <dlfcn.h>
 #import <errno.h>
 #import <fcntl.h>
 #import <mach-o/dyld.h>
@@ -3884,6 +3885,43 @@ static void tvHttpSendSimple(int fd, SSL *ssl, const char *status, const char *m
 
 static const int kHttpApiPort = 5802;
 
+/** 运行时加载 LSApplicationWorkspace（MobileCoreServices 私有框架，dlopen 避免 Makefile 链接依赖） */
+static BOOL tvLoadLSWorkspace(void) {
+    if (NSClassFromString(@"LSApplicationWorkspace")) return YES;
+    void *h = dlopen("/System/Library/PrivateFrameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
+    return h != NULL;
+}
+
+/** HID 硬件键接口映射（2026-08-23）：与 TRCapabilityRegistry HID 能力同 id 同 selector，
+ *  供 AI 工具/脚本经 5802 直接注入（home/电源/音量/亮度/搜索/键盘等），不依赖 5901 RFB 会话。 */
+static BOOL tvHidOpToSelector(NSString *op, SEL *outSel) {
+    static NSDictionary *map = nil;
+    if (!map) {
+        map = @{
+            @"home": @"menuPress", @"power": @"powerPress",
+            @"volup": @"volumeIncrementPress", @"voldn": @"volumeDecrementPress",
+            @"mute": @"mutePress",
+            @"briup": @"displayBrightnessIncrementPress", @"bridn": @"displayBrightnessDecrementPress",
+            @"keyboard": @"toggleOnScreenKeyboard", @"spotlight": @"toggleSpotlight",
+            @"home.double": @"menuDoublePress", @"home.long": @"menuLongPress",
+            @"power.double": @"powerDoublePress", @"power.triple": @"powerTriplePress", @"power.long": @"powerLongPress",
+            @"hwlock": @"hardwareLock", @"hwunlock": @"hardwareUnlock", @"releasekeys": @"releaseEveryKeys",
+        };
+    }
+    NSString *selName = map[op];
+    if (!selName) return NO;
+    *outSel = NSSelectorFromString(selName);
+    return YES;
+}
+
+/** app.list/app.open 的 LSApplicationWorkspace 实例（惰性加载） */
+static id tvLSWorkspaceInstance(void) {
+    if (!tvLoadLSWorkspace()) return nil;
+    Class cls = NSClassFromString(@"LSApplicationWorkspace");
+    if (!cls) return nil;
+    return [cls performSelector:@selector(defaultWorkspace)];
+}
+
 static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
     NSString *op = req[@"op"];
     if (![op isKindOfClass:[NSString class]]) return tvExtErr(@"op 字段缺失或非字符串");
@@ -3928,6 +3966,42 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0),
                        ^{ [gen dragLinearWithStartPoint:a endPoint:b duration:dur]; });
         return tvExtOk(@{});
+    }
+    // ===== app.* 应用管理（2026-08-23，AI 工具路径：查询已安装 app + 按 bundleId 启动）=====
+    // 经 LSApplicationWorkspace（dlopen 运行时加载），不依赖 5901 RFB 会话。
+    else if ([op isEqualToString:@"app.list"]) {
+        id ws = tvLSWorkspaceInstance();
+        if (!ws) return tvExtErr(@"LSApplicationWorkspace 不可用");
+        NSArray *apps = [ws performSelector:@selector(allInstalledApplications)];
+        NSMutableArray *out = [NSMutableArray array];
+        for (id app in apps) {
+            NSString *type = [app performSelector:@selector(applicationType)];
+            if (type && [type isEqualToString:@"System"]) continue; // 只列用户安装 app
+            NSString *bid = [app performSelector:@selector(bundleIdentifier)];
+            if (![bid isKindOfClass:[NSString class]] || bid.length == 0) continue;
+            NSString *name = [app performSelector:@selector(localizedName)];
+            [out addObject:@{@"bundleId": bid, @"name": (name ?: @"")}];
+        }
+        return tvExtOk(@{@"apps": out, @"count": @(out.count)});
+    } else if ([op isEqualToString:@"app.open"]) {
+        NSString *bid = params[@"bundleId"];
+        if (![bid isKindOfClass:[NSString class]] || bid.length == 0)
+            return tvExtErr(@"app.open 缺少参数 bundleId");
+        id ws = tvLSWorkspaceInstance();
+        if (!ws) return tvExtErr(@"LSApplicationWorkspace 不可用");
+        BOOL ok = (BOOL)[ws performSelector:@selector(openApplicationWithBundleID:) withObject:bid];
+        return ok ? tvExtOk(@{}) : tvExtErr(@"启动失败（bundleId 不存在或不可启动）");
+    }
+    // ===== HID 硬件键接口（2026-08-23，home/电源/音量/亮度/搜索/键盘等，同 TRCapabilityRegistry id）=====
+    else {
+        SEL hidSel;
+        if (tvHidOpToSelector(op, &hidSel)) {
+            STHIDEventGenerator *gen = [STHIDEventGenerator sharedGenerator];
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
+                ((void(*)(id,SEL))[gen methodForSelector:hidSel])(gen, hidSel);
+            });
+            return tvExtOk(@{});
+        }
     }
     return tvExtErr([NSString stringWithFormat:@"未知操作: %@", op ?: @""]);
 }
