@@ -21,6 +21,7 @@
 
 #import <Accelerate/Accelerate.h>
 #import <Foundation/Foundation.h>
+#import <Photos/Photos.h>
 
 #import <arpa/inet.h>
 #import <atomic>
@@ -3991,6 +3992,44 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         if (!ws) return tvExtErr(@"LSApplicationWorkspace 不可用");
         BOOL ok = (BOOL)[ws performSelector:@selector(openApplicationWithBundleID:) withObject:bid];
         return ok ? tvExtOk(@{}) : tvExtErr(@"启动失败（bundleId 不存在或不可启动）");
+    }
+    // ===== album.import 相册导入（2026-08-23，AI 工具路径：照片/视频写入相册）=====
+    // PHPhotoLibrary 标准 API（Photos.framework）；数据经 5802 HTTP JSON base64 传入。
+    // 授权：AddOnly 级别（只写不读）；首次 NotDetermined → 触发系统权限弹窗并提示重试。
+    else if ([op isEqualToString:@"album.import"]) {
+        NSString *dataB64 = params[@"data"];
+        NSString *filename = params[@"filename"];
+        if (![dataB64 isKindOfClass:[NSString class]] || dataB64.length == 0)
+            return tvExtErr(@"album.import 缺少 data（base64）");
+        NSData *data = [[NSData alloc] initWithBase64EncodedString:dataB64 options:0];
+        if (!data || data.length == 0) return tvExtErr(@"data 不是有效 base64");
+        if (data.length > 200 * 1024 * 1024) return tvExtErr(@"文件过大（>200MB）");
+        PHAuthorizationStatus st = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelAddOnly];
+        if (st == PHAuthorizationStatusNotDetermined) {
+            [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly handler:^(PHAuthorizationStatus s) {
+                TVLog(@"album.import: 相册授权结果 %ld", (long)s);
+            }];
+            return tvExtErr(@"首次使用需授权相册写入——请在设备上确认权限弹窗后重试");
+        }
+        if (st != PHAuthorizationStatusAuthorized)
+            return tvExtErr(@"无相册写权限（设置 → 隐私 → 照片 允许添加）");
+        NSString *ext = filename ? filename.pathExtension.lowercaseString : @"";
+        BOOL isVideo = [ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"] || [ext isEqualToString:@"m4v"];
+        NSString *tmpName = [NSString stringWithFormat:@"album_import_%ld.%@", (long)[NSDate date].timeIntervalSince1970,
+                             ext.length ? ext : (isVideo ? @"mp4" : @"jpg")];
+        NSString *tmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:tmpName];
+        NSError *werr = nil;
+        if (![data writeToFile:tmpPath options:NSDataWritingAtomic error:&werr])
+            return tvExtErr([NSString stringWithFormat:@"写临时文件失败: %@", werr.localizedDescription ?: @""]);
+        NSError *perr = nil;
+        BOOL pOk = [PHPhotoLibrary performChangesAndWait:^{
+            NSURL *url = [NSURL fileURLWithPath:tmpPath];
+            if (isVideo) [PHAssetChangeRequest creationRequestForAssetFromVideoAtFileURL:url];
+            else [PHAssetChangeRequest creationRequestForAssetFromImageAtFileURL:url];
+        } error:&perr];
+        [[NSFileManager defaultManager] removeItemAtPath:tmpPath error:nil];
+        if (!pOk) return tvExtErr([NSString stringWithFormat:@"相册导入失败: %@", perr.localizedDescription ?: @""]);
+        return tvExtOk(@{@"size": @(data.length), @"type": isVideo ? @"video" : @"image"});
     }
     // ===== HID 硬件键接口（2026-08-23，home/电源/音量/亮度/搜索/键盘等，同 TRCapabilityRegistry id）=====
     else {

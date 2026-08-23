@@ -884,6 +884,34 @@ async function handleApi(req, res, url) {
         sendJson(res, 200, { thumb: jpeg.toString('base64'), ts: Date.now() });
         return true;
       }
+      // 2026-08-23：相册导入（照片/视频）——前端经网关中转 → 设备 5802 album.import（PHPhotoLibrary）
+      if (req.method === 'POST' && sub === 'album') {
+        const body = await readBody(req).catch(() => ({}));
+        const filename = body.filename;
+        const data = body.data; // base64 文件字节
+        if (typeof filename !== 'string' || !filename || typeof data !== 'string' || !data) {
+          sendJson(res, 400, { error: 'filename/data(base64) required' });
+          return true;
+        }
+        if (!dev.host) { sendJson(res, 502, { error: 'device host unknown' }); return true; }
+        // 转发设备 5802（明文 HTTP，peek 分流兼容）；超时保护
+        const payload = JSON.stringify({ op: 'album.import', params: { filename, data } });
+        const fwd = http.request(
+          { host: dev.host, port: 5802, path: '/', method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } },
+          (r2) => {
+            let d = '';
+            r2.on('data', (c) => { d += c; });
+            r2.on('end', () => {
+              try { const j = JSON.parse(d); sendJson(res, j.ok === false ? 500 : 200, j); }
+              catch { sendJson(res, 502, { error: 'bad device response' }); }
+            });
+          });
+        fwd.setTimeout(30000, () => { fwd.destroy(); if (!res.writableEnded) sendJson(res, 504, { error: 'device 5802 timeout' }); });
+        fwd.on('error', (e) => { if (!res.writableEnded) sendJson(res, 502, { error: 'device 5802 unreachable: ' + e.message }); });
+        fwd.write(payload); fwd.end();
+        return true;
+      }
       if (req.method === 'GET') {
         sendJson(res, 200, { device: dev });
         return true;

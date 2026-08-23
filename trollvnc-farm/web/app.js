@@ -1240,7 +1240,68 @@ function renderCapOps(container, device) {
     keyBtns.forEach((b) => frag.appendChild(b));
   }
   frag.appendChild(buildClipboardBtn('copy'));
+  frag.appendChild(buildUploadBtn());
   container.appendChild(frag);
+}
+
+/**
+ * 上传按钮构建（2026-08-23）：选择照片/视频导入设备相册（经网关 → 设备 5802 album.import）
+ * @returns {HTMLButtonElement}
+ */
+function buildUploadBtn() {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'op';
+  b.title = '上传：选择照片/视频导入设备相册（可多选）';
+  b.innerHTML = '<span class="cap-icon">' +
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>' +
+    '</svg></span><span class="cap-name">上传</span>';
+  b.addEventListener('click', uploadToDeviceAlbum);
+  return b;
+}
+
+/** 上传照片/视频到当前聚焦设备相册（可多选；经网关 POST /api/devices/:id/album 中转设备 5802） */
+async function uploadToDeviceAlbum() {
+  if (!focus) { toast('请先进入设备控制', 'error'); return; }
+  const devId = focus.device.id;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*,video/*';
+  input.multiple = true;
+  input.addEventListener('change', async () => {
+    const files = [...input.files];
+    if (!files.length) return;
+    for (const f of files) {
+      if (f.size > 180 * 1024 * 1024) { toast(`跳过（>180MB）：${f.name}`, 'error'); continue; }
+      toast(`上传中：${f.name} (${(f.size / 1048576).toFixed(1)}MB)`, 'info');
+      try {
+        const buf = await f.arrayBuffer();
+        const res = await fetch(`/api/devices/${encodeURIComponent(devId)}/album`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: f.name, data: bufToBase64(buf) }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (res.ok && j.ok) toast(`已导入相册：${f.name}`, 'success');
+        else toast(`上传失败：${f.name}${j.error ? ' — ' + j.error : ''}`, 'error');
+      } catch (e) {
+        toast(`上传失败：${f.name} — ${e.message}`, 'error');
+      }
+    }
+  });
+  input.click();
+}
+
+/** ArrayBuffer → base64（分块避免调用栈溢出） */
+function bufToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let s = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(s);
 }
 
 /**
@@ -1303,9 +1364,9 @@ function buildActionBtn(op, name, title, svgPaths, cls) {
  * @returns {void}
  */
 const TOAST_CFG = {
-  success: { color: '#34c759', ms: 2000 },  // ✓ 成功 绿
-  error:   { color: '#ff453a', ms: 3500 },  // ✗ 失败 红
-  info:    { color: '#d0d0d0', ms: 2000 },  // 中性 灰
+  success: { ms: 2000 },  // ✓ 成功（绿，类型色样式收敛到 style.css #farmToast[data-type]）
+  error:   { ms: 3500 },  // ✗ 失败（红）
+  info:    { ms: 2000 },  // 中性（accent 蓝）
 };
 let farmToastTimer = null;
 let farmToastLast = { msg: '', at: 0 };
@@ -1320,16 +1381,10 @@ function toast(msg, type = 'info') {
     el.id = 'farmToast';
     document.body.appendChild(el);
   }
+  // 2026-08-23 主题化：视觉样式全部收敛到 style.css #farmToast（毛玻璃 + 主题变量 + 类型色），
+  // 这里仅设文案与 data-type（info/success/error 映射 --toast-accent 左侧条/描边色）
   el.textContent = msg;
-  el.style.cssText =
-    'position:fixed;' +
-    'top:calc(env(safe-area-inset-top, 0px) + 12px);' +
-    'left:50%;transform:translateX(-50%);' +   // 顶部水平居中（避开顶栏左右按钮/批量胶囊行）
-    'z-index:999;max-width:min(80vw, 420px);' +
-    'background:rgba(20,26,40,.92);color:' + cfg.color + ';' +
-    'padding:10px 14px;border-radius:10px;border-left:3px solid ' + cfg.color + ';' +
-    'font:13px/1.4 system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.4);' +
-    'pointer-events:none;transition:opacity .25s;text-align:center;';
+  el.dataset.type = type;
   el.style.opacity = '1';
   if (farmToastTimer) clearTimeout(farmToastTimer);
   farmToastTimer = setTimeout(() => { el.style.opacity = '0'; }, cfg.ms);
@@ -1689,10 +1744,12 @@ async function enterFocus(d) {
       if (fRfb._farmConnTimeout) return; // 已报「连接超时」，closeRfb 触发的断开不覆盖文案
       if (code === 4001) {
         // 2026-08-23：被其它控制端（5801 直连接管 / 同设备新控制）接管 → 画面已断，
-        // 自动执行断开并返回卡片墙（不再停留聚焦画面）；卡片墙随后经被控状态上报
-        // （state 事件 → refreshDevices）显示「被 5801 控制中」遮罩。
+        // 自动执行断开并返回卡片墙（不再停留聚焦画面）；keepControl 保留被控状态 +
+        // refreshDevices 拉网关真实状态渲染「被 5801 控制中」遮罩（设备端上报已去重，
+        // 不能依赖后续 state 事件）。
         toast('设备已被其它端接管，已中断控制', 'error');
-        exitFocus();
+        exitFocus({ keepControl: true });
+        refreshDevices().catch(() => {});
         return;
       }
       const msg = code === 4003 ? '设备隧道未建立（设备可能离线），请退出后重试'
@@ -1744,15 +1801,19 @@ function setFocusOverlay(loading, text) {
 // 2026-08-23：移除自动重连（黑盒回退）——连接/断开失败一律立即明确报错，由用户手动重进。
 // 确定性优先：不静默重试、不无限「连接中」。
 
-function exitFocus() {
+function exitFocus(opts = {}) {
   if (!focus) return;
   const devId = focus.device.id;
+  const keepControl = !!(opts && opts.keepControl); // 2026-08-23：被接管退出（4001）时保留被控状态
   setFocusOverlay(false, null); // 退出隐藏连接浮层
   // 2026-08-22 时序原则：断开时「先清理被控中状态，再断开」——本地置 controlled=false +
   // 移除遮罩，然后才 closeRfb。断开后本地 controlled=false 保持（不 refreshDevices 覆盖），
   // 网关 rfb.stop 上报 controlled=false 后经 state 事件/后续刷新保持，无需延迟 hack。
+  // 2026-08-23 例外：5801 接管（keepControl）时设备实际仍被控，清 controlled=false 会导致
+  // 卡片无「被控中」遮罩且设备端上报已去重（无新 state 事件恢复）——跳过清除，由调用方
+  // refreshDevices 拉网关真实状态渲染遮罩。
   const dev = devices.find((d) => d.id === devId);
-  if (dev) dev.controlled = false;
+  if (dev && !keepControl) dev.controlled = false;
   const inst = wallInstances.get(devId);
   if (inst && inst.tile) {
     // 2026-08-22：退出大屏控制前截图最后画面（与退出直控 exitDirectMode 一致）——
@@ -1767,7 +1828,7 @@ function exitFocus() {
       } catch (e) { inst._lastFrame = null; console.log('[exitFocus] toDataURL err=', e); }
     }
     const mask = inst.tile.querySelector('.ctrl-mask');
-    if (mask) mask.remove();
+    if (mask && !keepControl) mask.remove(); // 被接管退出保留遮罩（设备仍被控）
   }
   // 清除 URL 聚焦参数（2026-08-14）：退出控制后刷新不再自动进入该设备
   try {
@@ -1838,6 +1899,10 @@ function restoreWallTile(id) {
   if (!inst || !inst.paused) return;
   inst.paused = false;
   inst.tile.classList.remove('focused-tile');
+  // 2026-08-23：被接管退出（5801 接管后设备仍被控）→ 不恢复缩略图获取（避免泄露被控画面），
+  // 遮罩由 refreshDevices/updateWallTile 渲染；未控设备正常恢复缩略图。
+  const dev = devices.find((d) => d.id === id);
+  if (dev && dev.controlled && dev.online) return;
   // 退出 focus：恢复卡片墙缩略图获取
   startWallRfb(inst);
 }

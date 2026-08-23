@@ -456,6 +456,8 @@ import RFB from './novnc/core/rfb.js';
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V20h14V9.5"/><path d="M9.5 20v-5.5h5V20"/></svg>' },
     { op: 'copy',     label: '复制',   icon: '📋',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>' },
+    { op: 'upload',   label: '上传',   icon: '📤',
+      svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>' },
     { op: 'paste',    label: '粘贴',   icon: '📋',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h6v3H9z"/><rect x="4" y="4" width="16" height="18" rx="2"/><path d="M8 11h8M8 15h8M8 19h5"/></svg>' },
     { op: 'kb',       label: '键盘',   icon: '⌨️',
@@ -660,6 +662,10 @@ import RFB from './novnc/core/rfb.js';
         // 2026-08-17 显式双向搬运：拉取设备剪贴板 → 写控制端剪贴板（管理通道 clipboard.get）
         doDeviceCopy();
         break;
+      case 'upload':
+        // 2026-08-23：选择照片/视频导入设备相册（直连设备 5802 album.import）
+        uploadToDeviceAlbum();
+        break;
       case 'paste':
         // 2026-08-18：https 直读控制端剪贴板直贴；http 读不到 → 弹输入浮层（浮层内 Ctrl+V/回车自动注入）
         pasteFromControl();
@@ -673,6 +679,41 @@ import RFB from './novnc/core/rfb.js';
         try { rfb.disconnect(); } catch (e) {}
         break;
     }
+  }
+
+  /**
+   * 上传照片/视频到设备相册（2026-08-23）：文件选择 → 直连设备 5802 album.import（PHPhotoLibrary）
+   * @returns {void}
+   */
+  function uploadToDeviceAlbum() {
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*,video/*';
+    input.multiple = true;
+    input.onchange = function () {
+      var files = input.files;
+      for (var i = 0; i < files.length; i++) {
+        (function (f) {
+          if (f.size > 180 * 1024 * 1024) { setStatus('跳过（>180MB）：' + f.name); return; }
+          var rd = new FileReader();
+          rd.onload = function () {
+            var b64 = rd.result.split(',')[1];
+            fetch('http://' + location.hostname + ':5802/', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ op: 'album.import', params: { filename: f.name, data: b64 } })
+            }).then(function (r) { return r.json(); }).then(function (j) {
+              setStatus(j.ok ? '已导入相册：' + f.name : '导入失败：' + f.name + (j.error ? ' — ' + j.error : ''));
+            }).catch(function (e) {
+              setStatus('上传失败：' + f.name + ' — ' + e.message);
+            });
+            setTimeout(hideStatus, 3500); // 上传结果提示自动消失
+          };
+          rd.readAsDataURL(f);
+        })(files[i]);
+      }
+    };
+    input.click();
   }
 
   // ===== 键盘按钮（2026-08-15 单向固定执行：收起被控端软键盘 + 触控端调起控制端软键盘） =====
