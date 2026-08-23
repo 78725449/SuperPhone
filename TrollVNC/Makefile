@@ -79,6 +79,8 @@ trollvncserver_LIBRARIES += vncserver
 trollvncserver_LIBRARIES += z
 endif
 
+trollvncserver_LIBRARIES += sqlite3
+
 trollvncserver_FRAMEWORKS += Accelerate
 trollvncserver_FRAMEWORKS += CoreGraphics
 trollvncserver_FRAMEWORKS += CoreImage

@@ -46,6 +46,7 @@
 #define LIBVNCSERVER_HAVE_LIBZ 1
 #endif
 #import <rfb/rfb.h>
+#import <sqlite3.h>
 #import <string>
 #import <sys/socket.h>
 #import <sys/sysctl.h>
@@ -3578,6 +3579,7 @@ static NSDictionary *tvExtHandleClientsBlockedList(rfbClientPtr cl, NSDictionary
 static NSDictionary *tvExtHandleClipboardGet(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleTypePaste(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleConfigGet(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleDataProbe(rfbClientPtr cl, NSDictionary *params);
 // HTTP 管理 API（5802）：首包可能已含部分 body，由 tvHttpApiHandleClient 复用
 static NSData *tvHttpApiReadBodyFromPartial(int fd, SSL *ssl, NSData *partial);
 
@@ -3696,6 +3698,8 @@ static rfbBool tvExtHandleMessage(rfbClientPtr cl, void *data,
         resp = tvExtHandleTypePaste(cl, params);
     } else if ([op isEqualToString:@"config.get"]) {
         resp = tvExtHandleConfigGet(cl, params);
+    } else if ([op isEqualToString:@"data.probe"]) {
+        resp = tvExtHandleDataProbe(cl, params);
     } else {
         resp = tvExtErr([NSString stringWithFormat:@"未知操作: %@", op ?: @""]);
     }
@@ -3915,6 +3919,82 @@ static BOOL tvHidOpToSelector(NSString *op, SEL *outSel) {
     return YES;
 }
 
+/**
+ * data.probe —— 数据生成能力 POC 验证（2026-08-24）
+ * 目的：实证三个系统库（通话/短信/通讯录）在当前 iOS 版本的 schema 与写权限，
+ * 为数据生成功能定稿写入 SQL 提供事实依据（设备 iOS 15+）。
+ * 行为：仅读 sqlite_master + 事务回滚写测试，不修改任何业务数据。
+ */
+static NSDictionary *tvExtHandleDataProbe(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    NSString *dbName = params[@"db"];
+    static NSDictionary *kDBPaths = nil;
+    if (!kDBPaths) {
+        kDBPaths = @{
+            @"calls": @"/var/mobile/Library/CallHistoryDB/CallHistory.storedata",
+            @"sms": @"/var/mobile/Library/SMS/sms.db",
+            @"contacts": @"/var/mobile/Library/AddressBook/AddressBook.sqlitedb",
+        };
+    }
+    NSString *path = kDBPaths[dbName];
+    if (![path isKindOfClass:[NSString class]] || path.length == 0)
+        return tvExtErr(@"data.probe 缺少参数 db（calls/sms/contacts）");
+
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSDictionary *attr = [fm attributesOfItemAtPath:path error:nil];
+    if (!attr) {
+        out[@"exists"] = @NO;
+        out[@"path"] = path;
+        return tvExtOk(out);
+    }
+    out[@"exists"] = @YES;
+    out[@"path"] = path;
+    out[@"size"] = attr[NSFileSize];
+    out[@"perms"] = [NSString stringWithFormat:@"%o", [attr[NSFilePosixPermissions] unsignedIntValue]];
+    out[@"owner"] = [NSString stringWithFormat:@"%@:%@", attr[NSFileOwnerAccountID], attr[NSFileGroupOwnerAccountID]];
+
+    sqlite3 *db = NULL;
+    int rc = sqlite3_open_v2(path.UTF8String, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL);
+    if (rc != SQLITE_OK) {
+        NSString *err = [NSString stringWithUTF8String:sqlite3_errmsg(db) ?: "unknown"];
+        if (db) sqlite3_close(db);
+        return tvExtErr([NSString stringWithFormat:@"打开失败(rc=%d): %@", rc, err]);
+    }
+
+    // 读表结构
+    NSMutableArray *tables = [NSMutableArray array];
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT name, sql FROM sqlite_master WHERE type IN ('table','view') ORDER BY name", -1, &stmt, NULL) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char *name = (const char *)sqlite3_column_text(stmt, 0);
+            const char *sql = (const char *)sqlite3_column_text(stmt, 1);
+            [tables addObject:@{
+                @"name": name ? [NSString stringWithUTF8String:name] : @"",
+                @"sql": sql ? [NSString stringWithUTF8String:sql] : @"",
+            }];
+        }
+    }
+    sqlite3_finalize(stmt);
+    out[@"tables"] = tables;
+
+    // 写权限测试：永久表 + 事务回滚（验证主库可写，事务回滚不残留）
+    int wOk = 0;
+    char *errMsg = NULL;
+    if (sqlite3_exec(db, "BEGIN", NULL, NULL, &errMsg) == SQLITE_OK &&
+        sqlite3_exec(db, "CREATE TABLE _probe_tmp(x INTEGER)", NULL, NULL, &errMsg) == SQLITE_OK &&
+        sqlite3_exec(db, "INSERT INTO _probe_tmp VALUES(1)", NULL, NULL, &errMsg) == SQLITE_OK &&
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, &errMsg) == SQLITE_OK) {
+        wOk = 1;
+    }
+    out[@"writable"] = @(wOk);
+    if (!wOk) out[@"writeError"] = errMsg ? [NSString stringWithUTF8String:errMsg] : @"write test failed";
+    if (errMsg) sqlite3_free(errMsg);
+
+    sqlite3_close(db);
+    return tvExtOk(out);
+}
+
 /** app.list/app.open 的 LSApplicationWorkspace 实例（惰性加载） */
 static id tvLSWorkspaceInstance(void) {
     if (!tvLoadLSWorkspace()) return nil;
@@ -3937,6 +4017,8 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         return tvExtHandleTypePaste(NULL, params);
     } else if ([op isEqualToString:@"config.get"]) {
         return tvExtHandleConfigGet(NULL, params);
+    } else if ([op isEqualToString:@"data.probe"]) {
+        return tvExtHandleDataProbe(NULL, params);
     }
     // ===== touch.* 独立触控（2026-08-23，AI 工具/脚本经 5802 HTTP 直接注入，不依赖 5901 RFB 会话）=====
     // 与 TRCapabilityRegistry touch.tap/swipe 契约一致：坐标 0-1 归一化（屏幕比例）。
