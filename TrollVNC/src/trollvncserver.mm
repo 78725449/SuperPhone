@@ -4114,7 +4114,7 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
         sqlite3_int64 pk = tvDbScalar(db, @"SELECT MAX(Z_PK) FROM ZCALLRECORD") + 1;
         BOOL ok = tvDbExec(db, [NSString stringWithFormat:
             @"INSERT INTO ZCALLRECORD (Z_PK,Z_ENT,Z_OPT,ZANSWERED,ZCALLTYPE,ZDISCONNECTED_CAUSE,ZORIGINATED,ZREAD,ZVERIFICATIONSTATUS,ZHANDLE_TYPE,ZCALL_CATEGORY,ZDATE,ZDURATION,ZISO_COUNTRY_CODE,ZADDRESS,ZUNIQUE_ID,ZSERVICE_PROVIDER) "
-            @"VALUES (%lld,%lld,1,1,1,0,0,1,4,2,1,%.0f,30.0,'CN',CAST('13800001111' AS BLOB),'%@','com.apple.Telephony')",
+            @"VALUES (%lld,%lld,1,1,1,0,0,1,4,2,1,%.0f,30.0,'CN',CAST('17737148888' AS BLOB),'%@','com.apple.Telephony')",
             pk, ent, now, [[NSUUID UUID] UUIDString]], &dbErr);
         if (ok) tvDbExec(db, [NSString stringWithFormat:@"UPDATE Z_PRIMARYKEY SET Z_MAX=%lld WHERE Z_ENT=%lld", pk, ent], nil);
         out[@"ent"] = @(ent);
@@ -4124,7 +4124,7 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
     } else if ([dbName isEqualToString:@"sms"]) {
         // 2026-08-24 data.read 实证：message.date=纳秒（Cocoa 纪元纳秒，实测 8e17 量级）；真实记录带 account='P:+号码'/date_read/date_delivered
         // service 用 SMS（真实短信；iMessage 需 Apple ID 账号，设备无则信息 App 不显示）
-        NSString *phone = @"13800001111";
+        NSString *phone = @"17737148888";
         NSString *chatGuid = [[NSUUID UUID] UUIDString];
         NSString *msgGuid = [[NSUUID UUID] UUIDString];
         sqlite3_int64 dateNs = (sqlite3_int64)(now * 1000000000.0);
@@ -4161,7 +4161,7 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
         CNMutableContact *contact = [[CNMutableContact alloc] init];
         contact.givenName = @"测试";
         contact.familyName = @"联系人";
-        CNPhoneNumber *pn = [CNPhoneNumber phoneNumberWithStringValue:@"13800002222"];
+        CNPhoneNumber *pn = [CNPhoneNumber phoneNumberWithStringValue:@"17737148888"];
         contact.phoneNumbers = @[[CNLabeledValue labeledValueWithLabel:CNLabelPhoneNumberMobile value:pn]];
         CNSaveRequest *req = [[CNSaveRequest alloc] init];
         [req addContact:contact toContainerWithIdentifier:nil];
