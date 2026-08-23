@@ -1,7 +1,7 @@
 // SuperPhone 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
 // rfb.js?v=2：noVNC 核心为 server 内存 patch，URL 带版本号强制浏览器重新拉取 patch 后的内容避免旧缓存
 import RFB from '/novnc/core/rfb.js?v=4';
-import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=11';
+import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=12';
 import { attachPress } from './press.js';
 import { attachFarmGesture, attachRightHome, resolveGesture } from './gesture.js';
 
@@ -884,7 +884,7 @@ async function showBatchConfigPanel(ids) {
     empty.textContent = '选中设备未上报可配置项';
     card.appendChild(empty);
   } else {
-    // 按能力板块分组渲染（2026-08-21 设计文档 7 章：与 App 设置页一致 连接/直连/画面/交互/保活/关于；
+    // 按能力板块分组渲染（2026-08-21 设计文档 7 章：与 App 设置页一致 连接/直连/画面/交互/保活/关于/定位；
     // group 为 null 或缺失的项 UI 隐藏——FabAutoCollapse 等固定行为项）
     const GROUP_ORDER = [
       { key: 'connection',  title: '连接' },
@@ -893,6 +893,7 @@ async function showBatchConfigPanel(ids) {
       { key: 'interaction', title: '交互' },
       { key: 'keepalive',   title: '保活' },
       { key: 'about',       title: '关于' },
+      { key: 'locsim',      title: '定位模拟' },
     ];
     const inputs = {};
     for (const g of GROUP_ORDER) {
@@ -1321,6 +1322,8 @@ function renderCapOps(container, device) {
     frag.appendChild(buildClipboardBtn('copy'));
     frag.appendChild(buildClipboardBtn('paste'));
     frag.appendChild(buildUploadBtn());
+    frag.appendChild(buildActionBtn('loc', '定位', '修改定位（模拟 GPS 注入）',
+      '<path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7z"/><circle cx="12" cy="9" r="2.5"/>'));
     frag.appendChild(buildKeyBtn(byKey.get('snapshot')));
     frag.appendChild(buildKeyBtn(byKey.get('keyboard')));
     order.slice(1).forEach((key) => { const k = byKey.get(key); if (k) frag.appendChild(buildKeyBtn(k)); });
@@ -1340,6 +1343,8 @@ function renderCapOps(container, device) {
   frag.appendChild(buildClipboardBtn('copy'));
   frag.appendChild(buildClipboardBtn('paste'));
   frag.appendChild(buildUploadBtn());
+  frag.appendChild(buildActionBtn('loc', '定位', '修改定位（模拟 GPS 注入）',
+    '<path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7z"/><circle cx="12" cy="9" r="2.5"/>'));
   frag.appendChild(buildKeyBtn(byKey.get('snapshot')));
   frag.appendChild(buildKeyBtn(byKey.get('keyboard')));
   order.slice(1).forEach((key) => { const k = byKey.get(key); if (k) frag.appendChild(buildKeyBtn(k)); });
@@ -1405,6 +1410,66 @@ function bufToBase64(buf) {
     s += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
   }
   return btoa(s);
+}
+
+/** 定位模拟面板（M2 阶段 1）：预设城市/坐标 → setConfigs 单发聚焦设备；设备端 SimLocationController 自治执行 */
+const LOC_PRESETS = [
+  { name: '北京', lat: 39.9042, lon: 116.4074 },
+  { name: '天安门', lat: 39.9087, lon: 116.3975 },
+  { name: '上海', lat: 31.2304, lon: 121.4737 },
+  { name: '广州', lat: 23.1291, lon: 113.2644 },
+  { name: '深圳', lat: 22.5431, lon: 114.0579 },
+  { name: '成都', lat: 30.5728, lon: 104.0668 },
+  { name: '杭州', lat: 30.2741, lon: 120.1551 },
+];
+async function openLocPanel() {
+  if (!focus) { toast('请先进入设备控制', 'error'); return; }
+  const devName = (focus.device && focus.device.name) || focus.id;
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+  const presetsOpts = ['<option value="">手动输入…</option>']
+    .concat(LOC_PRESETS.map((p) => `<option value="${p.name}">${p.name}</option>`)).join('');
+  card.innerHTML = `<h3>模拟定位 · ${escapeHtml(devName)}</h3>
+    <div class="cfg-row"><span class="cfg-row-label">预设城市（WGS-84）</span><select id="locPreset">${presetsOpts}</select></div>
+    <div class="cfg-row"><span class="cfg-row-label">纬度</span><input id="locLat" type="number" step="0.0001" placeholder="WGS-84，如 39.9042"></div>
+    <div class="cfg-row"><span class="cfg-row-label">经度</span><input id="locLon" type="number" step="0.0001" placeholder="WGS-84，如 116.4074"></div>
+    <div class="cfg-row"><span class="cfg-row-label">精度（米）</span><input id="locAcc" type="number" min="3" max="15" value="5"></div>
+    <div class="modal-btns">
+      <button id="locApply" class="primary">应用定位</button>
+      <button id="locStop">停止定位</button>
+      <button id="locClose">取消</button>
+    </div>`;
+  const preset = card.querySelector('#locPreset');
+  const latInp = card.querySelector('#locLat');
+  const lonInp = card.querySelector('#locLon');
+  const accInp = card.querySelector('#locAcc');
+  preset.addEventListener('change', () => {
+    const p = LOC_PRESETS.find((x) => x.name === preset.value);
+    if (p) { latInp.value = p.lat; lonInp.value = p.lon; }
+  });
+  card.querySelector('#locApply').onclick = async () => {
+    const lat = parseFloat(latInp.value);
+    const lon = parseFloat(lonInp.value);
+    if (!isFinite(lat) || lat < -90 || lat > 90) { toast('✗ 纬度非法（-90~90）', 'error'); return; }
+    if (!isFinite(lon) || lon < -180 || lon > 180) { toast('✗ 经度非法（-180~180）', 'error'); return; }
+    const acc = Math.min(15, Math.max(3, parseFloat(accInp.value) || 5));
+    try {
+      await setConfigs('', focus.id, { SimLocationMode: 'static', SimLocationLat: lat, SimLocationLon: lon, SimLocationAccuracy: acc });
+      toast('✓ 定位已应用（模拟）', 'success');
+    } catch (e) { toast('✗ 应用失败 ' + e.message, 'error'); }
+  };
+  card.querySelector('#locStop').onclick = async () => {
+    try {
+      await setConfigs('', focus.id, { SimLocationMode: 'off' });
+      toast('✓ 已恢复真实定位', 'success');
+    } catch (e) { toast('✗ 停止失败 ' + e.message, 'error'); }
+  };
+  card.querySelector('#locClose').onclick = () => modal.remove();
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+  modal.appendChild(card);
+  document.body.appendChild(modal);
 }
 
 /**
@@ -2422,13 +2487,14 @@ function currentRfb() { return focus ? focus.rfb : null; }
  */
 function doOp(op) {
   const rfb = currentRfb();
-  if (!rfb && op !== 'disc') return;
+  if (!rfb && op !== 'disc' && op !== 'loc') return;
   switch (op) {
     case 'full':
       if (document.fullscreenElement) document.exitFullscreen();
       else document.documentElement.requestFullscreen().catch(() => {});
       break;
     case 'disc': exitFocus(); break; // 2026-08-22：不再先 rfb.disconnect()——exitFocus 内先截图再 closeRfb，先 disconnect 会移除 canvas 导致截图失败（canvas= false）
+    case 'loc': openLocPanel(); break; // 模拟定位面板（M2：预设城市/坐标 → setConfigs 单发聚焦设备）
   }
 }
 

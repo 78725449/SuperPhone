@@ -1059,6 +1059,14 @@ static NSDictionary *TRSearchGatewaySync(void) {
     [self _registerConfig:@"WatchdogExitTimeout" title:@"退出超时" type:@"number" min:@1 max:@60 step:@1 reload:TRConfigReloadHot];
     [self _registerConfig:@"CaptureFps" title:@"采集帧率" type:@"number" min:@1 max:@30 step:@1 reload:TRConfigReloadHot];
     [self _registerConfig:@"HeartbeatIntervalSec" title:@"网关心跳间隔" type:@"number" min:@5 max:@300 step:@5 reload:TRConfigReloadGateway];
+    // 定位模拟（SimLocation*：改定位自治参数，设备端 SimLocationController 巡检感知，instant 语义；group:locsim 见网关 caps.js）
+    [self _registerConfig:@"SimLocationMode" title:@"定位模拟模式" type:@"enum"
+        enumValues:@[@"off",@"static",@"track"] enumTitles:@[@"关闭",@"单点",@"轨迹"] reload:TRConfigReloadInstant];
+    [self _registerConfig:@"SimLocationLat" title:@"目标纬度" type:@"number" min:@(-90) max:@90 step:@0.0001 reload:TRConfigReloadInstant];
+    [self _registerConfig:@"SimLocationLon" title:@"目标经度" type:@"number" min:@(-180) max:@180 step:@0.0001 reload:TRConfigReloadInstant];
+    [self _registerConfig:@"SimLocationAccuracy" title:@"定位精度" type:@"number" min:@3 max:@15 step:@1 reload:TRConfigReloadInstant];
+    [self _registerConfig:@"SimLocationSpeed" title:@"轨迹速度档" type:@"enum"
+        enumValues:@[@"walk",@"cycle",@"drive"] enumTitles:@[@"步行",@"骑行",@"驾车"] reload:TRConfigReloadInstant];
 }
 
 /** 注册配置 schema 表项（内部辅助） */

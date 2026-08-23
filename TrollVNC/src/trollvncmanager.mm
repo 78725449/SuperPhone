@@ -39,6 +39,7 @@
 #import "Logging.h"
 #import "TRWatchDog.h"
 #import "SimLocationManager.h"
+#import "SimLocationController.h"
 #import "libproc.h"
 
 #define SINGLETON_MARKER_PATH "/var/mobile/Library/Caches/com.82flex.trollvnc.manager.pid"
@@ -580,19 +581,8 @@ int main(int argc, const char *argv[]) {
         [TRGatewayClient sharedClient].watchdog = gWatchDog;
         [[TRGatewayClient sharedClient] start];
 
-        // ===== 实验 A 临时触发（验证后删除）：manager 启动 3s 后无条件注入天安门坐标 =====
-        // 目的：验证 root daemon 进程内 CLSimulationManager 注入链路（entitlement locationd.simulation）。
-        // 实验阶段无条件注入，避免用户手动改 plist 开关；验证完成后本段整体移除。
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            CLLocationCoordinate2D tiananmen = CLLocationCoordinate2DMake(39.9087, 116.3975);
-            [[SimLocationManager sharedManager] injectPoint:tiananmen
-                                                   altitude:45.0
-                                                   accuracy:5.0
-                                                     course:0.0
-                                                      speed:0.0];
-            fprintf(stderr, "[manager] ExperimentA: injected Tiananmen (39.9087, 116.3975)\n");
-        });
+        // 改定位自治控制器：读 SimLocation* 参数恢复上次模式 + 启动 10s 巡检（离线自治，C3）
+        [[SimLocationController sharedController] start];
     }
 
     {
@@ -648,6 +638,8 @@ int main(int argc, const char *argv[]) {
                 }
                 // 网关地址/令牌/设备名变更 → 标记重发 register（host 变更由 worker 断开重连）
                 [[TRGatewayClient sharedClient] noteExternalPrefsChanged];
+                // 定位参数变更（App/5801 写 mobile 域后通知）→ 控制器立即重读生效（巡检仍是兜底）
+                [[SimLocationController sharedController] reloadFromPrefs];
                 // watchdog 节流/退出超时：TRWatchDog 属性可热调，即时生效
                 //（2026-08-20 前为 manager 重启级；双域读取保证 mobile 域设置页写入可见）
                 NSUserDefaults *wd = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
