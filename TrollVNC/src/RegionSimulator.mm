@@ -15,30 +15,36 @@
 // 区域有效速度（m/s）
 static const double kRegSpeedWalk = 1.4;
 static const double kRegSpeedDrive = 13.9;
-// 坐标抖动幅度（度 ≈ 0.3m）
-static const double kJitterDeg = 0.3 / 111320.0;
-// 校验收敛容差（总时长偏差上限）
-static const double kConvergeTol = 1.02;
 
 @implementation RegionSimulator
 
 #pragma mark - 公共入口
 
-+ (NSArray<NSDictionary *> *)generateRegionPointsCenter:(CLLocationCoordinate2D)center
-                                                  radius:(double)radiusM
-                                                    mode:(NSString *)mode
-                                             durationMin:(double)durationMin
-                                               startFrom:(CLLocationCoordinate2D)start {
++ (NSDictionary *)generateRegionPlanCenter:(CLLocationCoordinate2D)center
+                                    radius:(double)radiusM
+                                      mode:(NSString *)mode
+                               durationMin:(double)durationMin
+                                startFrom:(CLLocationCoordinate2D)start
+                                  customK:(int)customK {
+    (void)mode; // 速度因子独立于模式（模式只影响算路 transportType），见 §3.4.1
+    (void)start; // 计划只定途经点与时间分配；进入段起点由 Planner 静态绑定 cur
     if (radiusM < 10.0) radiusM = 10.0;
     if (durationMin <= 0) durationMin = 10.0;
-    double speed = [mode isEqualToString:@"drive"] ? kRegSpeedDrive : kRegSpeedWalk;
     double T = durationMin * 60.0;
 
-    // ① 途经点：K 个（3~8，"逛了几个点"），拒绝采样区域内均匀撒点
-    int K = 3 + (int)arc4random_uniform(6);
+    // ① 途经点数 K：自定义 >0 生效（clamp 1~15）；默认 0 → 亚线性饱和（√T×2.5，clamp 3~15，±1 抖动）
+    int K;
+    if (customK > 0) {
+        K = MAX(1, MIN(15, customK));
+    } else {
+        double base = round(sqrt(T / 60.0) * 2.5);
+        int jitter = (int)arc4random_uniform(3) - 1;
+        K = MAX(3, MIN(15, (int)base + jitter));
+    }
+
+    // ② 途经点：拒绝采样区域内均匀撒点（K 个，访问顺序随机）
     NSMutableArray<NSValue *> *wps = [NSMutableArray arrayWithCapacity:K];
     for (int i = 0; i < K; i++) {
-        // 均匀面分布：r = sqrt(u) * R，角度均匀
         double r = sqrt((double)arc4random_uniform(100000) / 100000.0) * radiusM;
         double a = (double)arc4random_uniform(62832) / 10000.0; // 0~2π
         double dLat = r * sin(a) / 111320.0;
@@ -46,7 +52,8 @@ static const double kConvergeTol = 1.02;
         [wps addObject:[NSValue valueWithMKCoordinate:CLLocationCoordinate2DMake(center.latitude + dLat, center.longitude + dLon)]];
     }
 
-    // ② 时间预算：停留占比 ρ 随机（0.15~0.5），各途经点停留时长偏态抽样后归一化到 stayTotal
+    // ③ 停留预算：停留占比 ρ 随机（0.15~0.5），各途经点停留时长偏态抽样后归一化到 stayTotal；
+    //    最后途经点不收尾补满（收尾"逛到某处到点了"停住，不故意拉长停留）
     double rho = 0.15 + (double)arc4random_uniform(3500) / 10000.0;
     double stayTotal = T * rho;
     NSMutableArray<NSNumber *> *staySeconds = [NSMutableArray arrayWithCapacity:K];
@@ -61,29 +68,18 @@ static const double kConvergeTol = 1.02;
         staySeconds[i] = @([staySeconds[i] doubleValue] / staySum * stayTotal);
     }
 
-    // ③ 逐块生成：移动段（自由走插值）+ 停留段（同点微动）；开场先走（首块必移动）→ 收尾到点停
-    NSMutableArray *pts = [NSMutableArray array];
-    CLLocationCoordinate2D cur = start;
-    double moveBudget = T - stayTotal;
+    // ④ 速度因子：每段随机 0.7~1.3（时间不平均；段数 K = 进入段 + 途经点间段）
+    NSMutableArray<NSNumber *> *moveFactors = [NSMutableArray arrayWithCapacity:K];
     for (int i = 0; i < K; i++) {
-        CLLocationCoordinate2D wp = [wps[i] MKCoordinateValue];
-        double segDist = [RegionSimulator _haversineMeters:cur to:wp];
-        double segTime = segDist / speed;
-        if (segTime > moveBudget) segTime = moveBudget; // 时间预算不足：提前到点（轨迹短于预算）
-        [RegionSimulator _appendMovePointsFrom:cur to:wp seconds:segTime speed:speed into:pts];
-        moveBudget -= segTime;
-        double stay = [staySeconds[i] doubleValue];
-        if (i == K - 1) stay += moveBudget; // 收尾：剩余时间补最后停留（保证总时长≈T）
-        [RegionSimulator _appendStayPointsAt:wp seconds:stay into:pts];
-        cur = wp;
-        if (moveBudget <= 0.5) break;
+        double f = 0.7 + (double)arc4random_uniform(6000) / 10000.0;
+        [moveFactors addObject:@(f)];
     }
 
-    // ⑤ 校验收敛：总点数超出 T 容差则截断（停留段已吸收剩余时间，通常不会触发）
-    if (pts.count > (NSUInteger)(T * kConvergeTol)) {
-        [pts removeObjectsInRange:NSMakeRange((NSUInteger)T, pts.count - (NSUInteger)T)];
-    }
-    return pts;
+    return @{ @"waypoints": wps, @"staySeconds": staySeconds, @"moveFactors": moveFactors };
+}
+
++ (double)effectiveSpeedForMode:(NSString *)mode {
+    return [mode isEqualToString:@"drive"] ? kRegSpeedDrive : kRegSpeedWalk;
 }
 
 #pragma mark - 时间分配（行为形状）
@@ -96,15 +92,16 @@ static const double kConvergeTol = 1.02;
     return 120.0 + (double)arc4random_uniform(18000) / 100.0;
 }
 
-#pragma mark - 点序列生成
+#pragma mark - 点序列生成（移动/停留）
 
-// 移动段：等距插值（步长=speed×1s），带转角平滑 + 坐标抖动 + 速度波动（拟人调料）
-+ (void)_appendMovePointsFrom:(CLLocationCoordinate2D)from
-                           to:(CLLocationCoordinate2D)to
-                      seconds:(double)seconds
-                        speed:(double)speed
-                         into:(NSMutableArray *)pts {
-    if (seconds <= 0) return;
+// 降级直线移动段：等距插值（步长=speed×1s），带转角平滑 + 坐标抖动 + 速度波动（拟人调料）
+// 仅用于途经点对 <30m 或 MKDirections 算路失败时（正常移动段走真实道路算路，见 SimItineraryPlanner）
++ (NSArray<NSDictionary *> *)degradedLinePointsFrom:(CLLocationCoordinate2D)from
+                                                 to:(CLLocationCoordinate2D)to
+                                            seconds:(double)seconds
+                                              speed:(double)speed {
+    NSMutableArray *pts = [NSMutableArray array];
+    if (seconds <= 0) return pts;
     NSUInteger steps = (NSUInteger)floor(seconds);
     if (steps < 1) steps = 1;
     double heading = [RegionSimulator _initialBearingFrom:from to:to];
@@ -123,12 +120,13 @@ static const double kConvergeTol = 1.02;
             @"acc": @(3.0 + (double)arc4random_uniform(3000) / 1000.0),        // 3~6m
         }];
     }
+    return pts;
 }
 
-// 停留段：同点微动（±1m 慢速漂移，speed 0.1~0.5m/s），拟人"原地活动"
-+ (void)_appendStayPointsAt:(CLLocationCoordinate2D)at
-                    seconds:(double)seconds
-                       into:(NSMutableArray *)pts {
+// 停留段：同点微动（±1m 慢速漂移，speed 0.1~0.5m/s），拟人"原地活动"；追加到 pts
++ (void)appendStayPointsAt:(CLLocationCoordinate2D)at
+                   seconds:(double)seconds
+                      into:(NSMutableArray *)pts {
     NSUInteger count = (NSUInteger)floor(seconds);
     if (count < 1) count = 1;
     double acc = 3.0 + (double)arc4random_uniform(3000) / 1000.0;

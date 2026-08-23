@@ -45,6 +45,9 @@ NS_ASSUME_NONNULL_BEGIN
                             mode:(NSString *)mode
                       completion:(void (^)(NSArray<NSDictionary *> *points, NSError *error))completion;
 
+/// 两点球面距离（haversine，米）——供 SimItineraryPlanner 区域段逐段算路使用
++ (double)haversineMeters:(CLLocationCoordinate2D)a to:(CLLocationCoordinate2D)b;
+
 @end
 
 NS_ASSUME_NONNULL_END
