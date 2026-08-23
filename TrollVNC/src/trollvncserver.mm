@@ -4077,12 +4077,13 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
 
     if ([dbName isEqualToString:@"calls"]) {
         // Z_ENT：优先 Z_PRIMARYKEY 簿记，回退现有行；Z_PK = max+1
+        // 2026-08-24 data.read 实证：ZDATE=秒；真实记录补 ZSERVICE_PROVIDER/ZVERIFICATIONSTATUS/ZHANDLE_TYPE/ZCALL_CATEGORY/Z_OPT
         sqlite3_int64 ent = tvDbScalar(db, @"SELECT Z_ENT FROM Z_PRIMARYKEY WHERE Z_NAME LIKE '%CallRecord%' LIMIT 1");
         if (!ent) ent = tvDbScalar(db, @"SELECT Z_ENT FROM ZCALLRECORD LIMIT 1");
         sqlite3_int64 pk = tvDbScalar(db, @"SELECT MAX(Z_PK) FROM ZCALLRECORD") + 1;
         BOOL ok = tvDbExec(db, [NSString stringWithFormat:
-            @"INSERT INTO ZCALLRECORD (Z_PK,Z_ENT,Z_OPT,ZANSWERED,ZCALLTYPE,ZDISCONNECTED_CAUSE,ZORIGINATED,ZREAD,ZDATE,ZDURATION,ZISO_COUNTRY_CODE,ZADDRESS,ZUNIQUE_ID) "
-            @"VALUES (%lld,%lld,0,1,1,0,0,1,%.0f,30.0,'CN',CAST('13800001111' AS BLOB),'%@')",
+            @"INSERT INTO ZCALLRECORD (Z_PK,Z_ENT,Z_OPT,ZANSWERED,ZCALLTYPE,ZDISCONNECTED_CAUSE,ZORIGINATED,ZREAD,ZVERIFICATIONSTATUS,ZHANDLE_TYPE,ZCALL_CATEGORY,ZDATE,ZDURATION,ZISO_COUNTRY_CODE,ZADDRESS,ZUNIQUE_ID,ZSERVICE_PROVIDER) "
+            @"VALUES (%lld,%lld,1,1,1,0,0,1,4,2,1,%.0f,30.0,'CN',CAST('13800001111' AS BLOB),'%@','com.apple.Telephony')",
             pk, ent, now, [[NSUUID UUID] UUIDString]], &dbErr);
         if (ok) tvDbExec(db, [NSString stringWithFormat:@"UPDATE Z_PRIMARYKEY SET Z_MAX=%lld WHERE Z_ENT=%lld", pk, ent], nil);
         out[@"ent"] = @(ent);
@@ -4090,9 +4091,11 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
         killTarget = @"com.apple.telephonyutilities.callservicesd";
         (void)ok;
     } else if ([dbName isEqualToString:@"sms"]) {
+        // 2026-08-24 data.read 实证：message.date=纳秒（Cocoa 纪元纳秒，实测 8e17 量级）；真实记录带 account='P:+号码'/date_read/date_delivered
         NSString *phone = @"13800001111";
         NSString *chatGuid = [[NSUUID UUID] UUIDString];
         NSString *msgGuid = [[NSUUID UUID] UUIDString];
+        sqlite3_int64 dateNs = (sqlite3_int64)(now * 1000000000.0);
         BOOL ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO handle (id, service) VALUES ('%@','iMessage')", phone], &dbErr);
         if (ok) {
             sqlite3_int64 hid = tvDbScalar(db, @"SELECT last_insert_rowid()");
@@ -4102,13 +4105,13 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
                 sqlite3_int64 cid = tvDbScalar(db, @"SELECT last_insert_rowid()");
                 out[@"chatId"] = @(cid);
                 ok = tvDbExec(db, [NSString stringWithFormat:
-                    @"INSERT INTO message (guid, text, handle_id, date, service, is_from_me, is_read, is_sent, is_delivered) "
-                    @"VALUES ('%@','%@',%lld,%.0f,'iMessage',0,1,1,1)",
-                    msgGuid, @"这是一条测试短信", hid, now], &dbErr);
+                    @"INSERT INTO message (guid, text, handle_id, date, date_read, date_delivered, service, account, version, is_from_me, is_read, is_sent, is_delivered) "
+                    @"VALUES ('%@','%@',%lld,%lld,%lld,%lld,'iMessage','P:%@',10,0,1,1,1)",
+                    msgGuid, @"这是一条测试短信", hid, dateNs, dateNs, dateNs, phone], &dbErr);
                 if (ok) {
                     sqlite3_int64 mid = tvDbScalar(db, @"SELECT last_insert_rowid()");
                     out[@"messageId"] = @(mid);
-                    ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (%lld,%lld,%.0f)", cid, mid, now], &dbErr);
+                    ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (%lld,%lld,%lld)", cid, mid, dateNs], &dbErr);
                     if (ok) ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (%lld,%lld)", cid, hid], &dbErr);
                 }
             }
@@ -4116,22 +4119,11 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
         killTarget = @"com.apple.imagent";
         (void)ok;
     } else if ([dbName isEqualToString:@"contacts"]) {
-        sqlite3_int64 storeId = tvDbScalar(db, @"SELECT ROWID FROM ABStore LIMIT 1");
-        if (!storeId) {
-            // 设备无默认通讯录源：先建一个本地 ABStore（Name='Local'，Type=0）
-            BOOL okS = tvDbExec(db, [NSString stringWithFormat:
-                @"INSERT INTO ABStore (Name, Type, StoreInternalIdentifier, guid) VALUES ('Local',0,'A%ld','%@')",
-                (long)[[NSDate date] timeIntervalSince1970], [[NSUUID UUID] UUIDString]], &dbErr);
-            if (!okS) {
-                sqlite3_close(db);
-                return tvExtErr([NSString stringWithFormat:@"创建 ABStore 失败: %@", dbErr ?: @""]);
-            }
-            storeId = tvDbScalar(db, @"SELECT last_insert_rowid()");
-        }
+        // 2026-08-24 data.read 实证：真实 ABPerson.StoreID=0（非 ABStore ROWID）、DisplayName=null、guid 带 ':ABPerson' 后缀、日期用秒
         sqlite3_int64 labelId = tvDbScalar(db, @"SELECT ROWID FROM ABMultiValueLabel ORDER BY ROWID LIMIT 1");
         BOOL ok = tvDbExec(db, [NSString stringWithFormat:
-            @"INSERT INTO ABPerson (First, Last, DisplayName, StoreID, CreationDate, ModificationDate, guid) VALUES ('测试','联系人','测试联系人',%lld,%.0f,%.0f,'%@')",
-            storeId, now, now, [[NSUUID UUID] UUIDString]], &dbErr);
+            @"INSERT INTO ABPerson (First, Last, StoreID, CreationDate, ModificationDate, guid) VALUES ('测试','联系人',0,%.0f,%.0f,'%@:ABPerson')",
+            now, now, [[NSUUID UUID] UUIDString]], &dbErr);
         if (ok) {
             sqlite3_int64 pid = tvDbScalar(db, @"SELECT last_insert_rowid()");
             out[@"personId"] = @(pid);
