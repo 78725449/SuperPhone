@@ -228,7 +228,7 @@ POST /api/devices/:id/sms-generate   → sendDeviceCmd invoke data.sms.generate
 
 > 🖥️ **交互原型（UI 定稿参照）**：`outputs/locsim-app-prototype.html`——浏览器打开即可验证四 Tab（位置模拟/联系人/通话/短信）全部交互与最终 UI 形态；后续 UI 开发以该原型为准。
 
-伪装页 = **App 第三 Tab（控制后、设置前）原生页面**，四标签：改定位（daemon 能力已实现）/ **生成通讯录** / **生成短信** / **生成通话记录**。载体与 UI 定稿同通讯录规格 §5.2/§5.4（原生表单直调 `127.0.0.1:5802`，三段式布局 + 占比滑块 + 合计校验 + respring 提示）。生成后提示 respring 生效并提供按钮。
+伪装页 = **App 第三 Tab（控制后、设置前）原生页面**，四标签：改定位（daemon 能力已实现）/ **生成通讯录** / **生成短信** / **生成通话记录**。载体与 UI 定稿同通讯录规格 §5.2/§5.4（原生表单直调 `127.0.0.1:5802`，三段式布局 + 占比滑块 + 合计校验）。生成后 kill 对应 daemon（callservicesd/imagent）生效，无 respring。
 > ⚠️ **respring 已禁用（2026-08-24 项目红线）**：respring（kill SpringBoard）会重启主屏，中断前台 App、打断隧道/注册会话、破坏 daemon 保活链路；数据直写系统库后 kill 对应 daemon（callservicesd/imagent/contactsd）即可让系统 App 读取新数据，respring 属冗余设计。**全文所有涉及 respring 的描述一律作废**，刷新只允许 kill 对应 daemon，禁止按 respring 实现/回归。
 
 ## 6. 实现分层
@@ -247,7 +247,7 @@ POST /api/devices/:id/sms-generate   → sendDeviceCmd invoke data.sms.generate
 ## 7. 验证方案
 
 1. **生成器单测**：固定 seed → 通话条数/状态分布/时长分布合理、号码来自通讯录+陌生池、**陌生号重复度符合 Zipf（少数高频=记住的号/多数低频=真陌生）**；短信构成比例（服务 90%/日常 10%）与时间分布符合配置、内容池模板随机注入；角色反查对互斥备注名 100% 命中
-2. **端到端**：先生成通讯录 50 → 生成通话 20/短信 30 → 系统电话/信息 App 可见 → 通话显示联系人名 → respring 后存在
+2. **端到端**：先生成通讯录 50 → 生成通话 20/短信 30 → 系统电话/信息 App 可见 → 通话显示联系人名 → kill daemon 后仍存在
 3. **依赖**：通讯录为空时调用返回"通讯录为空，请先生成通讯录"
 4. **回归**：网关 npm test 全过；设备端 CI 编译通过
 

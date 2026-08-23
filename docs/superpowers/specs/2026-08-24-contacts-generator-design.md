@@ -135,7 +135,7 @@ POST /api/devices/{deviceId}/contacts-generate
 cap: data.contacts.generate（正式能力，替代 POC data.test 的 contacts 分支）
 params: { count, city, regionLocal, ratios{friend,work,service,family,business}, seed }
 返回: { ok, created: N, personas: N }   // created=实际写入数，personas=生成总数
-行为: 生成 Persona 池 → CNContactStore 批量写入 → kill contactsd → respring 提示
+行为: 生成 Persona 池 → CNContactStore 批量写入 → kill contactsd（数据生效，无 respring）
 ```
 > ⚠️ **respring 已禁用（2026-08-24 项目红线）**：respring（kill SpringBoard）会重启主屏，中断前台 App、打断隧道/注册会话、破坏 daemon 保活链路；数据直写系统库后 kill 对应 daemon（callservicesd/imagent/contactsd）即可让系统 App 读取新数据，respring 属冗余设计。**全文所有涉及 respring 的描述一律作废**，刷新只允许 kill 对应 daemon，禁止按 respring 实现/回归。
 
@@ -192,7 +192,7 @@ POST http://127.0.0.1:5802/  body={ "op":"invoke", "cap":"data.contacts.generate
 
 ```
 填写表单 → 校验 → 生成按钮 → 调 127.0.0.1:5802 {op:'invoke', cap:'data.contacts.generate', params}
-→ toast(成功 created N) → 提示"已写入，需 respring 生效" → 提供「立即 respring」按钮（调 data.respring）
+→ toast(成功 created N) → 提示"已写入，kill contactsd 生效"（刷新完成，无需 respring）
 ```
 
 ### 5.4 UI 定稿（成品形态，2026-08-24 确认）
@@ -211,15 +211,17 @@ POST http://127.0.0.1:5802/  body={ "op":"invoke", "cap":"data.contacts.generate
 **各标签结构**（统一三段式）：
 1. **算法说明区**：顶部浅紫底色文字块，简述生成算法（如"常住地 HLR + 五类关系占比…"）
 2. **表单区**：参数行（label + 控件），占比较多的用滑块（滑轨 + 填充 + 手柄 + 百分比），输入用圆角输入框
-3. **生成区**：紫色实心「生成」按钮 + 底部提示（"基于通讯录生成" / "已写入 N 条 · 需 respring 生效 → 立即 respring"）
+3. **生成区**：紫色实心「生成」按钮 + 底部提示（"基于通讯录生成" / "已写入 N 条 · kill contactsd 生效"）
 
 **交互规范**：
 - 占比滑块组实时合计，底部显示"合计 100% ✓/✗"；不满足 100% 时生成按钮禁用
 - 「重置默认」恢复各标签默认参数
-- 生成按钮点击 → 生成中 → ✓ 已生成；成功后显示"需 respring 生效"并提供「立即 respring」
+- 生成按钮点击 → 生成中 → ✓ 已生成；成功后显示"已写入，kill contactsd 生效"（无 respring）
 - 通话/短信标签顶部提示"基于通讯录生成，请先生成通讯录"（依赖校验）
 
 **视觉**：卡片式表单行（细分割线）、紫色主题强调、原生 UIKit 控件（UISlider/UITextField/UISegmentedControl 风格）
+
+**UI 原型**（可交互预览，浏览器打开）：[locsim-app-prototype.html](../../../outputs/locsim-app-prototype.html)（另一对话窗口定稿原型，四 Tab：位置模拟/联系人/通话/短信；联系人/通话/短信三个标签均为三段式：算法说明块 + 占比滑块表单 + 生成按钮，合计校验/重置默认/种子，与本节描述一致；**后续 UI 开发以该原型为准**）
 
 ## 6. 实现分层
 
@@ -236,7 +238,7 @@ POST http://127.0.0.1:5802/  body={ "op":"invoke", "cap":"data.contacts.generate
 ## 7. 验证方案
 
 1. **生成器单测**：固定 seed 输入 → 断言 Persona 数量/占比/备注模式/号码格式（号段真实、归属地合理、无重复）
-2. **端到端**：表单生成 50 个 → 系统通讯录可见 → 占比统计接近配置值 → respring 后仍存在
+2. **端到端**：表单生成 50 个 → 系统通讯录可见 → 占比统计接近配置值 → kill contactsd 后仍存在
 3. **幂等/累加**：重复生成累加不覆盖；数量大（500）性能可接受
 4. **回归**：网关 `npm test` 全过；设备端 CI 编译通过
 

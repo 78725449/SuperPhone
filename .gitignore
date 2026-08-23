@@ -24,3 +24,6 @@ TrollVNC/.git.bak/
 
 # 隔离 worktree 目录（本地开发用）
 .worktrees/
+
+# 外部开源项目参考代码（拉取深研用，不入库）
+_research/
