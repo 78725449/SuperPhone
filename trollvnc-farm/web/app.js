@@ -987,7 +987,7 @@ function resetKbdShiftTimer() {
  * @param {string} code   DOM code（用于 noVNC qemu 扩展 scancode 路径，可为 null）
  * @returns {void}
  */
-function kbdSendSpecial(keysym, code) {
+function kbdSendSpecial(keysym, code, releaseMs = 60) {
   const rfb = focus && focus.rfb;
   if (!rfb || !rfb._farmConnected) return;
   releaseKbdShift(); // 删除/回车不应带 Shift 修饰，先释放（防连续大写后 Shift 残留）
@@ -995,7 +995,7 @@ function kbdSendSpecial(keysym, code) {
     rfb.sendKey(keysym, code || null, true);
     setTimeout(() => {
       try { rfb.sendKey(keysym, code || null, false); } catch (e) { /* 静默 */ }
-    }, 60);
+    }, releaseMs);
   } catch (e) { /* noVNC API 异常静默忽略 */ }
 }
 
@@ -1145,6 +1145,29 @@ function initTouchKeyboard() {
   // iOS 软键盘不挂 paste 监听；正向粘贴由 FAB 菜单「粘贴」按钮/降级浮层显式提供（pasteToFocusedDevice）。
 }
 initTouchKeyboard();
+
+// ---------- PC 硬键盘删除键长按（2026-08-23，对齐触控端软键盘删除通道） ----------
+// 触控端软键盘删除：iOS 长按删除产生重复 input 事件（inputType=deleteContentBackward）→
+// 每次 kbdSendSpecial 完整 tap（down+up）→ 连发 Backspace。PC 实体键盘长按 = 浏览器 repeat
+// keydown，此前走 noVNC 原生被转成「重复 down 无 up」→ 设备端行为不定（不连续删）。
+// 此处 capture 阶段拦截 Backspace/Delete 走 kbdSendSpecial（软键盘同款通道），repeat 自动连发，
+// 语义两端完全一致。释放延迟用 0ms（软键盘默认 60ms）——PC 浏览器 repeat 间隔约 30ms，
+// 60ms 的 up 会与下次 repeat 的 down 重叠（连发乱序）；短延迟保证每次 tap 完整收尾。
+// 放行场景：修饰组合（Ctrl+Backspace 删整词等，走 noVNC 原生需要 down 保持）、
+// 焦点在输入框（正常编辑）。
+document.addEventListener('keydown', (e) => {
+  const k = e.key;
+  if (k !== 'Backspace' && k !== 'Delete') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return; // 组合键（删整词/删行）放行 noVNC 原生
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return; // 输入框正常编辑
+  const rfb = focus && focus.rfb;
+  if (!rfb || !rfb._farmConnected) return; // 仅聚焦控制且已连接时接管
+  e.preventDefault();
+  e.stopPropagation(); // 阻止 noVNC Keyboard（canvas bubble 监听）收到，避免其重复 down 转发
+  const isBack = k === 'Backspace';
+  kbdSendSpecial(isBack ? 0xff08 : 0xffff, isBack ? 'Backspace' : 'Delete', 0); // 完整 tap，repeat 连发
+}, true); // capture 阶段：先于 canvas 的 bubble 监听
 
 /**
  * 渲染控制台操作菜单（07 §4.1）：按键区（KEY_DEFS 按键对象+按压识别）+ 动作区（本地按钮）

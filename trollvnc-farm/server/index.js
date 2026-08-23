@@ -1640,8 +1640,9 @@ const tunnelServer = net.createServer((sock) => {
         if (!ch) return; // 会话已自行关闭（幂等）
         rec.channels.delete(chanId);
         if (ch.timer) { clearTimeout(ch.timer); ch.timer = null; }
-        // 关 WS 会触发 cleanup，但通道已删故不会再向设备发 CHAN_CLOSE（对端已关）
-        try { ch.ws.close(4006, 'device rfb eof'); } catch { /* noop */ }
+        // reason=3：5801 直连接管（设备端主动让位）→ 4001「已被其它端接管」；否则 5901 EOF → 4006
+        const reason = payload.length >= 3 ? payload[2] : 0;
+        try { ch.ws.close(reason === 3 ? 4001 : 4006, reason === 3 ? 'taken over by direct client' : 'device rfb eof'); } catch { /* noop */ }
         if (!hasSessionChannels(rec)) resumeThumb(rec);
       }
     } else if (type === FT_CMDACK) {

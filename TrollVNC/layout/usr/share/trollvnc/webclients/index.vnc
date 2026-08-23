@@ -718,12 +718,14 @@ import RFB from './novnc/core/rfb.js';
     kbdShiftTimer = setTimeout(releaseKbdShift, 400);
   }
 
-  // 特殊键（退格/回车）→ 向被控端发一次按键事件（down + 60ms 按住 + up，删除键操作被控设备）
-  function kbdSendSpecial(keysym, code) {
+  // 特殊键（退格/回车）→ 向被控端发一次按键事件（down + releaseMs 按住 + up，删除键操作被控设备）
+  // releaseMs：默认 60（软键盘）；PC 硬键盘删除连发传 0（PC repeat 约 30ms，60ms 会与下次 down 重叠）
+  function kbdSendSpecial(keysym, code, releaseMs) {
     if (!rfb) return;
+    if (releaseMs === undefined) releaseMs = 60;
     releaseKbdShift(); // 删除/回车不应带 Shift 修饰，先释放（防连续大写后 Shift 残留）
     try { rfb.sendKey(keysym, code || null, true); } catch (e) { return; }
-    setTimeout(function () { try { rfb.sendKey(keysym, code || null, false); } catch (e) {} }, 60);
+    setTimeout(function () { try { rfb.sendKey(keysym, code || null, false); } catch (e) {} }, releaseMs);
   }
   // 提交软键盘文本：走 pasteToDevice（type.paste 能力注入，写剪贴板+模拟 Cmd+V）。
   // 仅用于中文/emoji/多字符（2026-08-16 起英文/数字 ASCII 改走 kbdSendAscii 键值直发）。
@@ -826,6 +828,24 @@ import RFB from './novnc/core/rfb.js';
       }
     });
   }
+
+  // ===== PC 硬键盘删除键长按（2026-08-23，对齐触控端软键盘删除通道） =====
+  // 软键盘删除：长按产生重复 input 事件（inputType=deleteContentBackward）→ 每次 kbdSendSpecial
+  // 完整 tap（down+up）→ 连发 Backspace。PC 键盘走 noVNC 原生映射（见上 keydown 回退注释），
+  // 浏览器 repeat keydown 被 noVNC 转成「重复 down 无 up」→ 设备端连续注入 keyDown 无 keyUp、
+  // 长按删除行为不定——此处 capture 阶段拦截 Backspace/Delete 走 kbdSendSpecial（软键盘同款通道），
+  // repeat 自动连发，两端语义一致。放行：修饰组合（Ctrl+Backspace 删整词等）、焦点在输入框。
+  document.addEventListener('keydown', function (e) {
+    var k = e.key;
+    if (k !== 'Backspace' && k !== 'Delete') return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return; // 组合键放行 noVNC 原生（删整词/删行需 down 保持）
+    var t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return; // 输入框正常编辑
+    if (!rfb || !rfb._rfbConnectionState || rfb._rfbConnectionState !== 'connected') return; // 仅已连接时接管
+    e.preventDefault();
+    e.stopPropagation(); // 阻止 noVNC Keyboard（canvas bubble 监听）收到，避免其重复 down 转发
+    kbdSendSpecial(k === 'Backspace' ? 0xff08 : 0xffff, k === 'Backspace' ? 'Backspace' : 'Delete', 0); // 完整 tap，repeat 连发
+  }, true); // capture 阶段：先于 canvas 的 bubble 监听
 
   // ===== 粘贴输入（2026-08-15）：与控制台 type.paste 同机制 =====
   // 点击「粘贴」按钮 → 弹浮层 → 粘贴文本 → 回车/确认 → pasteToDevice（写剪贴板 + 模拟 Cmd+V）。

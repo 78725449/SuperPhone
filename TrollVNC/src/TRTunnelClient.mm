@@ -96,6 +96,7 @@ static void TRTunnelLog(const char *fmt, ...) {
     NSMutableDictionary<NSNumber *, NSNumber *> *_channels;
     int _tunnelFd;              // 当前隧道 socket fd（握手成功后赋值，供被控状态上报复用）
     pthread_mutex_t _writeMutex;  // _writeFrame 串行化（worker/主线程并发写同一隧道 fd）
+    BOOL _kickSessionsRequested;  // 5801 直连接管请求（跨线程标志，@synchronized 保护）
     BOOL _controlled;           // 最近一次上报的被控状态（去重）
     NSString *_controlledSource; // 最近一次上报的被控来源（@"5801" 直连 / @"tunnel" 隧道，去重）
 }
@@ -208,6 +209,17 @@ static void TRTunnelLog(const char *fmt, ...) {
  */
 - (BOOL)isConnected {
     return _connected;
+}
+
+/**
+ * 请求断开所有隧道会话通道（5801 直连接管，2026-08-23）：
+ * 仅置标志，由隧道 worker 线程在 select 循环内处理（通道表仅该线程安全访问）。
+ * @return void
+ */
+- (void)requestKickSessions {
+    @synchronized(self) {
+        _kickSessionsRequested = YES;
+    }
 }
 
 #pragma mark - 工作线程主循环
@@ -408,6 +420,22 @@ static void TRTunnelLog(const char *fmt, ...) {
     time_t lastPing = time(NULL);
 
     while (_started && ![[NSThread currentThread] isCancelled]) {
+        // 5801 直连接管（2026-08-23）：隧道会话通道让位——仅本线程访问 _channels，
+        // 在此统一关闭所有会话通道（reason=1 通知网关清理会话 → 网关前端断开），
+        // _closeChannel 自动降频 + 上报被控结束；chan 0 缩略图保留。
+        BOOL kick = NO;
+        @synchronized(self) { kick = _kickSessionsRequested; _kickSessionsRequested = NO; }
+        if (kick) {
+            NSArray<NSNumber *> *sessionChans = [[_channels allKeys]
+                filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(id cid, NSDictionary *bd) {
+                    return [(NSNumber *)cid unsignedShortValue] != kChanIdThumb;
+                }]];
+            for (NSNumber *cid in sessionChans) {
+                TRTunnelLog("kick session chan %u (5801 takeover)", cid.unsignedShortValue);
+                // reason=3：5801 直连接管（区别于本地 EOF 的 1）——网关据此关前端 WS 4001
+                [self _closeChannel:cid.unsignedShortValue reason:3];
+            }
+        }
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(tunnelFd, &rfds);
@@ -671,7 +699,8 @@ static void TRTunnelLog(const char *fmt, ...) {
 /**
  * 关闭一个通道：关本地 5901 fd、清表项、按需降频/上报被控状态、通知网关
  * @param chanId 通道号（0=缩略图，其余=会话）
- * @param reason 0=网关主动关闭（不回通知）；1=本地 EOF（回 CHAN_CLOSE 通知网关）
+ * @param reason 0=网关主动关闭（不回通知）；1=本地 EOF（回 CHAN_CLOSE reason=1）；
+ *               3=5801 直连接管（回 CHAN_CLOSE reason=3，网关据此关前端 WS 4001）
  */
 - (void)_closeChannel:(uint16_t)chanId reason:(uint8_t)reason {
     NSNumber *fdNum = _channels[@(chanId)];
@@ -691,12 +720,12 @@ static void TRTunnelLog(const char *fmt, ...) {
             [self _reportControlState:NO source:nil];
         }
     }
-    if (reason == 1) {
-        // 本地 EOF：通知网关关闭该通道（网关清理会话 / 重开缩略图通道）
+    if (reason == 1 || reason == 3) {
+        // 本地 EOF（1）/ 5801 接管（3）：通知网关关闭该通道（网关清理会话）
         uint8_t closeBuf[3];
         closeBuf[0] = (uint8_t)(chanId >> 8);
         closeBuf[1] = (uint8_t)(chanId & 0xFF);
-        closeBuf[2] = 1;
+        closeBuf[2] = reason;
         [self _writeFrame:_tunnelFd type:kFrameTypeChanClose data:closeBuf length:3];
     }
     TRTunnelLog("chan %u closed (reason=%u)", chanId, reason);

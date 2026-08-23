@@ -61,6 +61,7 @@
 #import "ScreenCapturer.h"
 #import "TRScreenHasher.h"
 #import "TRSelfSignedCert.h"
+#import "TRTunnelClient.h"
 #import <openssl/ssl.h>
 #import <openssl/err.h>
 #import <fcntl.h>
@@ -2043,7 +2044,6 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
         TVLogVerbose(@"sampleBuffer has no image buffer (skip)");
         return;
     }
-    fprintf(stderr, "HFB:0 entry pb=%p\n", pb);
 
     // Busy-drop: if encoders are busy and limit reached, skip this frame (disabled when -Q 0)
     if (gMaxInflightUpdates > 0 && gInflight.load(std::memory_order_relaxed) >= gMaxInflightUpdates) {
@@ -2073,12 +2073,10 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     // Determine rotation and resize framebuffer if orientation implies new dimensions.
     int rotQ = (gOrientationSyncEnabled ? gRotationQuad.load(std::memory_order_relaxed) : 0) & 3;
 
-    fprintf(stderr, "HFB:1 before-resize rotQ=%d gSrc=%dx%d gOut=%dx%d\n", rotQ, gSrcWidth, gSrcHeight, gWidth, gHeight);
 #if DEBUG
     CFAbsoluteTime __tv_tResize0 = CFAbsoluteTimeGetCurrent();
 #endif
     maybeResizeFramebufferForRotation(rotQ);
-    fprintf(stderr, "HFB:2 after-resize\n");
 
 #if DEBUG
     CFAbsoluteTime __tv_tResize1 = CFAbsoluteTimeGetCurrent();
@@ -2207,7 +2205,6 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
         if (cNoScalePadThresholdPx > 0 && dW <= cNoScalePadThresholdPx && dW >= -cNoScalePadThresholdPx &&
             dH <= cNoScalePadThresholdPx && dH >= -cNoScalePadThresholdPx) {
 
-    fprintf(stderr, "HFB:3 before-copy stage=%zux%zu dst=%dx%d bpp=%d\n", (size_t)stage.width, (size_t)stage.height, (int)dstBuf.width, (int)dstBuf.height, gBytesPerPixel);
 #if DEBUG
             CFAbsoluteTime __tv_tPad0 = CFAbsoluteTimeGetCurrent();
 #endif
@@ -2263,7 +2260,6 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 #endif
 
     CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
-    fprintf(stderr, "HFB:4 after-copy+unlock\n");
 
 #if DEBUG
     CFAbsoluteTime __tv_tUnlock1 = CFAbsoluteTimeGetCurrent();
@@ -2411,7 +2407,6 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     CFAbsoluteTime __tv_tHash0 = CFAbsoluteTimeGetCurrent();
 #endif
 
-    fprintf(stderr, "HFB:5 before-hash tileCount=%zu tileSize=%d\n", gTileCount, gTileSize);
     if (cSparseHashDuringDefer && gDeferWindowSec > 0) {
         hashTiledFromBufferSparse((const uint8_t *)gBackBuffer, gWidth, gHeight,
                                   (size_t)gWidth * (size_t)gBytesPerPixel, cHashStrideX, cHashStrideY);
@@ -2439,7 +2434,6 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 #endif
 
     accumulatePendingDirty();
-    fprintf(stderr, "HFB:6 after-pending hasPending=%d\n", gHasPending ? 1 : 0);
 
 #if DEBUG
     CFAbsoluteTime __tv_tPend1 = CFAbsoluteTimeGetCurrent();
@@ -2469,7 +2463,6 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 
     if (!shouldFlush) {
         // Still deferring: do not notify clients yet; keep previous full-hash baseline.
-        fprintf(stderr, "HFB:7 defer-noflush\n");
 
 #if DEBUG
         CFAbsoluteTime __tv_tEnd = CFAbsoluteTimeGetCurrent();
@@ -4922,7 +4915,11 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
     }
 
     // 5801 直连控制开始（非 loopback）：通知 TRTunnelClient 上报被控状态
+    // 2026-08-23 互斥补全：默认断开网关隧道控制直接接管——请求隧道关闭全部会话通道
+    //（网关前端断开、设备上报被控结束），5801 成为唯一控制者；网关随即经 control-active
+    // 上报显示「被 5801 控制中」。无隧道会话时为 no-op（仅缩略图通道保留）。
     if (!isLoopback) {
+        [TRTunnelClient.sharedClient requestKickSessions];
         notify_post("com.82flex.trollvnc.control-active");
     }
 

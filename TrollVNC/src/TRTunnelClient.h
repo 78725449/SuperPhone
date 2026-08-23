@@ -38,4 +38,12 @@
  */
 @property (nonatomic, copy, nullable) NSDictionary *(^commandHandler)(NSDictionary *cmd);
 
+/**
+ * 请求断开所有隧道会话通道（5801 直连接管时调用，2026-08-23）：
+ * 仅置线程安全标志，隧道 worker 线程在 select 循环内统一关闭会话通道（reason=1 通知网关
+ * 清理会话 → 网关前端断开），并自动降频 + 上报被控结束；chan 0 缩略图通道保留。
+ * 无会话通道时为 no-op。5801 直连因此「默认断开网关控制直接接管」。
+ */
+- (void)requestKickSessions;
+
 @end
