@@ -3455,6 +3455,24 @@ static void tvInstallCaptureFramerateListeners(void) {
     TVLog(@"-daemon: capture-framerate listeners installed");
 }
 
+// 前向声明：tvDisconnectRemoteClients 实现在本文件后部（4465），本监听（3459）先调用
+static BOOL tvDisconnectRemoteClients(void);
+
+/** 方向2 互斥（2026-08-23）：隧道控制会话建立 → 断开 5801 直连（非 loopback）客户端。
+ *  TRTunnelClient（trollvncmanager 进程）CHAN_OPEN session 时 notify，本进程监听执行，
+ *  与方向1（5801 接管踢隧道会话）对称，保证任意时刻仅一个控制者。
+ *  依赖 libvncserver rfbClientIterator/rfbCloseClient 内部锁（与 clients.disconnect 0x50 同路径安全）。
+ *  无 5801 客户端时遍历空即 no-op；mgmt 客户端（loopback）不受影响。 */
+static void tvInstallTunnelKickRemoteListener(void) {
+    static int kickTok = 0;
+    notify_register_dispatch("com.82flex.trollvnc.tunnel-kick-remote", &kickTok,
+        dispatch_get_main_queue(), ^(int t) {
+        (void)t;
+        tvDisconnectRemoteClients();
+    });
+    TVLog(@"-daemon: tunnel-kick-remote listener installed");
+}
+
 static void stopBonjour(void) {
     // NSNetService expects interactions on a runloop thread (prefer main).
     if (![NSThread isMainThread]) {
@@ -5671,6 +5689,7 @@ int main(int argc, const char *argv[]) {
         // gFrameHandler 已在 prepareScreenCapturer 就绪；此处仅安装监听，采集在隧道握手成功后启动。
         tvInstallTunnelConnectedListener();
         tvInstallCaptureFramerateListeners();
+        tvInstallTunnelKickRemoteListener(); // 2026-08-23 方向2互斥：隧道控制会话建立踢 5801
 
         // 2026-08-17 架构级：管理操作走独立 HTTP 端口（5802），与 RFB 画面流隔离
         startHttpApiServer();

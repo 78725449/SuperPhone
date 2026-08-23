@@ -597,6 +597,10 @@ static void TRTunnelLog(const char *fmt, ...) {
                         // 会话通道：升频到 FrameRateSpec（屏幕流）+ 上报被控状态
                         notify_post("com.82flex.trollvnc.capture-active");
                         [self _reportControlState:YES source:@"tunnel"];
+                        // 方向2 互斥（2026-08-23）：网关控制会话建立 → 踢 5801 直连（非 loopback）。
+                        // 跨进程 notify 到 trollvncserver 断开 5801 客户端，与方向1（5801 接管踢隧道）
+                        // 对称，保证任意时刻仅一个控制者。无 5801 客户端时对端 no-op。
+                        notify_post("com.82flex.trollvnc.tunnel-kick-remote");
                     }
                 } else {
                     TVLog(@"[tunnel] CHAN_OPEN chan=%u local connect failed", chanId);
