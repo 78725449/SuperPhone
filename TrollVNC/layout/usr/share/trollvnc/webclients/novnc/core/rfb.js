@@ -623,6 +623,10 @@ export default class RFB extends EventTargetMixin {
 
     _socketClose(e) {
         Log.Debug("WebSocket on-close event");
+        // [farm patch 2026-08-23] 保存 WS close code/reason，disconnect 事件 detail 透传
+        // （noVNC 原版 disconnect detail 仅 {clean}，前端拿不到 4001/4003/4005/4006 区分文案）
+        this._lastCloseCode = (e && e.code) || null;
+        this._lastCloseReason = (e && e.reason) || null;
         let msg = "";
         if (e.code) {
             msg = "(code: " + e.code;

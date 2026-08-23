@@ -1684,6 +1684,7 @@ async function enterFocus(d) {
       clearTimeout(connTimer);
       if (!focus || focus.rfb !== fRfb) return;
       const code = e && e.detail ? e.detail.code : null;
+      console.error('[focus] disconnect code=', code, 'detail=', e && e.detail ? JSON.stringify(e.detail) : 'no-detail');
       if (code === 1000 || code === 1001) return; // 主动断开（exitFocus closeRfb）：正常退出不报错
       if (fRfb._farmConnTimeout) return; // 已报「连接超时」，closeRfb 触发的断开不覆盖文案
       if (code === 4001) {
