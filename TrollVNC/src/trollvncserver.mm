@@ -20,6 +20,7 @@
 #endif
 
 #import <Accelerate/Accelerate.h>
+#import <Contacts/Contacts.h>
 #import <Foundation/Foundation.h>
 #import <Photos/Photos.h>
 
@@ -4119,26 +4120,27 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
         (void)ok;
     } else if ([dbName isEqualToString:@"sms"]) {
         // 2026-08-24 data.read 实证：message.date=纳秒（Cocoa 纪元纳秒，实测 8e17 量级）；真实记录带 account='P:+号码'/date_read/date_delivered
+        // service 用 SMS（真实短信；iMessage 需 Apple ID 账号，设备无则信息 App 不显示）
         NSString *phone = @"13800001111";
         NSString *chatGuid = [[NSUUID UUID] UUIDString];
         NSString *msgGuid = [[NSUUID UUID] UUIDString];
         sqlite3_int64 dateNs = (sqlite3_int64)(now * 1000000000.0);
         // handle 表 UNIQUE(id,service)：已存在则复用，避免冲突
-        sqlite3_int64 hid = tvDbScalar(db, [NSString stringWithFormat:@"SELECT ROWID FROM handle WHERE id='%@' AND service='iMessage'", phone]);
+        sqlite3_int64 hid = tvDbScalar(db, [NSString stringWithFormat:@"SELECT ROWID FROM handle WHERE id='%@' AND service='SMS'", phone]);
         BOOL ok = YES;
         if (!hid) {
-            ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO handle (id, service) VALUES ('%@','iMessage')", phone], &dbErr);
+            ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO handle (id, service) VALUES ('%@','SMS')", phone], &dbErr);
             if (ok) hid = tvDbScalar(db, @"SELECT last_insert_rowid()");
         }
         out[@"handleId"] = @(hid);
         if (ok) {
-            ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO chat (guid, chat_identifier, service_name) VALUES ('%@','%@','iMessage')", chatGuid, phone], &dbErr);
+            ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO chat (guid, chat_identifier, service_name) VALUES ('%@','%@','SMS')", chatGuid, phone], &dbErr);
             if (ok) {
                 sqlite3_int64 cid = tvDbScalar(db, @"SELECT last_insert_rowid()");
                 out[@"chatId"] = @(cid);
                 ok = tvDbExec(db, [NSString stringWithFormat:
                     @"INSERT INTO message (guid, text, handle_id, date, date_read, date_delivered, service, account, version, is_from_me, is_read, is_sent, is_delivered) "
-                    @"VALUES ('%@','%@',%lld,%lld,%lld,%lld,'iMessage','P:%@',10,0,1,1,1)",
+                    @"VALUES ('%@','%@',%lld,%lld,%lld,%lld,'SMS','P:%@',10,0,1,1,1)",
                     msgGuid, @"这是一条测试短信", hid, dateNs, dateNs, dateNs, phone], &dbErr);
                 if (ok) {
                     sqlite3_int64 mid = tvDbScalar(db, @"SELECT last_insert_rowid()");
@@ -4151,18 +4153,19 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
         killTarget = @"imagent";
         (void)ok;
     } else if ([dbName isEqualToString:@"contacts"]) {
-        // 2026-08-24 data.read 实证：真实 ABPerson.StoreID=0（非 ABStore ROWID）、DisplayName=null、guid 带 ':ABPerson' 后缀、日期用秒
-        sqlite3_int64 labelId = tvDbScalar(db, @"SELECT ROWID FROM ABMultiValueLabel ORDER BY ROWID LIMIT 1");
-        BOOL ok = tvDbExec(db, [NSString stringWithFormat:
-            @"INSERT INTO ABPerson (First, Last, StoreID, CreationDate, ModificationDate, guid) VALUES ('测试','联系人',0,%.0f,%.0f,'%@:ABPerson')",
-            now, now, [[NSUUID UUID] UUIDString]], &dbErr);
-        if (ok) {
-            sqlite3_int64 pid = tvDbScalar(db, @"SELECT last_insert_rowid()");
-            out[@"personId"] = @(pid);
-            ok = tvDbExec(db, [NSString stringWithFormat:
-                @"INSERT INTO ABMultiValue (record_id, property, identifier, label, value, guid) VALUES (%lld,3,0,%lld,'13800002222','%@')",
-                pid, labelId, [[NSUUID UUID] UUIDString]], &dbErr);
-        }
+        // 2026-08-24 改 CNContactStore 公开 API：DB 直写缺排序/FTS 索引（FirstSort 等）系统列表不显示；
+        // CNContactStore 由系统维护全部字段；需 Contacts.framework + tcc kTCCServiceAddressBook（entitlement 放行，daemon 不弹窗）
+        CNMutableContact *contact = [[CNMutableContact alloc] init];
+        contact.givenName = @"测试";
+        contact.familyName = @"联系人";
+        CNPhoneNumber *pn = [CNPhoneNumber phoneNumberWithStringValue:@"13800002222"];
+        contact.phoneNumbers = @[[CNLabeledValue labeledValueWithLabel:CNLabelPhoneNumberMobile value:pn]];
+        CNSaveRequest *req = [[CNSaveRequest alloc] init];
+        [req addContact:contact toContainerWithIdentifier:nil];
+        CNContactStore *store = [[CNContactStore alloc] init];
+        NSError *cerr = nil;
+        BOOL ok = [store executeSaveRequest:req error:&cerr];
+        if (!ok) dbErr = cerr.localizedDescription ?: @"CNContactStore 写入失败";
         killTarget = @"contactsd";
         (void)ok;
     } else {

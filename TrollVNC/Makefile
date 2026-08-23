@@ -84,6 +84,7 @@ trollvncserver_LIBRARIES += sqlite3
 trollvncserver_FRAMEWORKS += Accelerate
 trollvncserver_FRAMEWORKS += CoreGraphics
 trollvncserver_FRAMEWORKS += CoreImage
+trollvncserver_FRAMEWORKS += Contacts
 trollvncserver_FRAMEWORKS += CoreMedia
 trollvncserver_FRAMEWORKS += CoreVideo
 trollvncserver_FRAMEWORKS += Foundation

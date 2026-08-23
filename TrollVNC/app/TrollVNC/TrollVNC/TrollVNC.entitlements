@@ -23,6 +23,7 @@
 	<array>
 		<string>kTCCServicePhotosAdd</string>
 		<string>kTCCServicePhotos</string>
+		<string>kTCCServiceAddressBook</string>
 	</array>
 	<key>com.apple.QuartzCore.cache-asynchronous</key>
 	<true/>
