@@ -19,6 +19,11 @@
 	<true/>
 	<key>com.apple.Pasteboard.trigger-janitor</key>
 	<true/>
+	<key>com.apple.private.tcc.allow</key>
+	<array>
+		<string>kTCCServicePhotosAdd</string>
+		<string>kTCCServicePhotos</string>
+	</array>
 	<key>com.apple.QuartzCore.cache-asynchronous</key>
 	<true/>
 	<key>com.apple.QuartzCore.displayable-context</key>
