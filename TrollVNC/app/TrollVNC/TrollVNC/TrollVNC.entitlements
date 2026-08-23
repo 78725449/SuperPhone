@@ -151,6 +151,8 @@
 	<true/>
 	<key>com.apple.private.security.storage.Keychains</key>
 	<true/>
+	<key>com.apple.locationd.simulation</key>
+	<true/>
 	<key>com.apple.private.security.storage.Location</key>
 	<true/>
 	<key>com.apple.private.security.storage.Lockdown</key>

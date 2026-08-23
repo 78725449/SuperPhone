@@ -127,6 +127,8 @@ trollvncmanager_FILES += src/ScreenCapturer.mm
 trollvncmanager_FILES += src/TRDaemonBridgeManager.mm
 # 自签证书生成（原 TRCapabilityRegistry 内实现抽出共享，trollvncmanager 与 trollvncserver 各自编译）
 trollvncmanager_FILES += src/TRSelfSignedCert.mm
+# 全系统改定位注入原语（实验 A：root daemon 内 CLSimulationManager 最小验证）
+trollvncmanager_FILES += src/SimLocationManager.mm
 trollvncmanager_FRAMEWORKS += UIKit
 
 trollvncmanager_CFLAGS += -fobjc-arc
@@ -141,6 +143,7 @@ trollvncmanager_FRAMEWORKS += IOKit
 trollvncmanager_FRAMEWORKS += IOSurface
 trollvncmanager_FRAMEWORKS += QuartzCore
 trollvncmanager_FRAMEWORKS += UserNotifications
+trollvncmanager_FRAMEWORKS += CoreLocation
 ifeq ($(THEOS_DEVICE_SIMULATOR),1)
 trollvncmanager_CODESIGN_FLAGS += -f -s - --entitlements src/trollvncmanager.entitlements
 else
