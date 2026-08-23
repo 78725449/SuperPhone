@@ -1,6 +1,6 @@
 // SuperPhone 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
 // rfb.js?v=2：noVNC 核心为 server 内存 patch，URL 带版本号强制浏览器重新拉取 patch 后的内容避免旧缓存
-import RFB from '/novnc/core/rfb.js?v=3';
+import RFB from '/novnc/core/rfb.js?v=4';
 import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=11';
 import { attachPress } from './press.js';
 import { attachFarmGesture, attachRightHome, resolveGesture } from './gesture.js';
@@ -1686,8 +1686,15 @@ async function enterFocus(d) {
       const code = e && e.detail ? e.detail.code : null;
       if (code === 1000 || code === 1001) return; // 主动断开（exitFocus closeRfb）：正常退出不报错
       if (fRfb._farmConnTimeout) return; // 已报「连接超时」，closeRfb 触发的断开不覆盖文案
-      const msg = code === 4001 ? '设备已被其它端接管，已中断控制'
-        : code === 4003 ? '设备隧道未建立（设备可能离线），请退出后重试'
+      if (code === 4001) {
+        // 2026-08-23：被其它控制端（5801 直连接管 / 同设备新控制）接管 → 画面已断，
+        // 自动执行断开并返回卡片墙（不再停留聚焦画面）；卡片墙随后经被控状态上报
+        // （state 事件 → refreshDevices）显示「被 5801 控制中」遮罩。
+        toast('设备已被其它端接管，已中断控制', 'error');
+        exitFocus();
+        return;
+      }
+      const msg = code === 4003 ? '设备隧道未建立（设备可能离线），请退出后重试'
         : code === 4005 ? '设备画面服务不可用（设备端 VNC 未运行）'
         : code === 4006 ? '设备端连接已断开，请退出后重试'
         : `连接已断开${code ? ' (' + code + ')' : ''}`;

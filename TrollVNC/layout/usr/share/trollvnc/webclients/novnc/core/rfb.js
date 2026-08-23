@@ -895,7 +895,9 @@ export default class RFB extends EventTargetMixin {
             case 'disconnected':
                 this.dispatchEvent(new CustomEvent(
                     "disconnect", { detail:
-                                    { clean: this._rfbCleanDisconnect } }));
+                                    { clean: this._rfbCleanDisconnect,
+                                      code: this._lastCloseCode,
+                                      reason: this._lastCloseReason } }));
                 break;
         }
     }
