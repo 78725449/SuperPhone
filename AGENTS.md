@@ -32,6 +32,7 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
 - 状态以网关为准：前端不持久化设备状态，刷新一律从网关拉取。
 - **剪贴板是显式双向搬运（2026-08-17 起，无自动同步）**：复制=拉（clipboard.get）、粘贴=推（type.paste）；**粘贴的 http 降级（2026-08-18 定稿）**：http 读不到控制端剪贴板 → 粘贴按钮与 Ctrl+V **一律弹输入浮层**（PC/触屏统一，浮层内 Ctrl+V 或回车自动注入），https 直读直贴——已废弃隐藏 textarea「第二次点击/Ctrl+V 提交」方案，禁止回归。
 - **光标体系（2026-08-18 定稿）**：触屏端不显示任何光标（无自动消失触点）；PC 端常驻自绘覆盖层光标（网关=深灰圆+浅灰外圈 pcRgba、5801=苹果灰圆）；两端均覆盖 `_refreshCursor`（clear/空操作）屏蔽服务器默认 X 形光标。改光标功能时两端语义对齐、勿回归「自动消失触点」。
+- **respring 禁用（2026-08-24 定稿）**：respring（kill SpringBoard）重启主屏会**中断前台 App、打断隧道/注册会话、破坏 daemon 保活链路**。数据直写系统库后 kill 对应 daemon（callservicesd/imagent/contactsd，见 `说明文档.md` §4.8）即可让系统 App 读取新数据——respring 属**冗余设计**。**全项目禁止使用 respring**：数据刷新/UI 生效/改名一律不得 kill SpringBoard；`data.respring` 能力已删除，禁止回归；`device.rename` 不再重启 SpringBoard（改名不即时生效可接受）。
 - 验证门槛：IPA 改动必须 CI 编译通过；网关改动必须 `npm test` 通过；未验证不声称完成。
 
 ## 开发流程约定（改动前必读）
@@ -61,6 +62,7 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
 - **Windows 快照会丢可执行位**：改 `devkit/*.sh` 或 DEBIAN 脚本后必须恢复 100755，否则 CI before-package 报 Permission denied。
 - 网关测试目录 `test/` 里还有一批手工 `verify-*.mjs` 前端验收脚本（不属于 `npm test`），改前端后可选跑。
 - **手动起网关验证必须全端口隔离**：`FARM_PORT`/`FARM_REG_PORT`/`FARM_TUNNEL_PORT`/`FARM_DATA_DIR`/`FARM_MDNS=0` 全部覆盖（照 test/ 套件写法），否则默认 18081/18181 会劫持局域网真实设备的注册/隧道连接（2026-08-16 实测踩坑）。
+- **运行中的网关不会热加载新路由（2026-08-23 实测）**：Node 启动时即加载 server/index.js 全量路由，此后改代码必须**重启网关进程**才生效；否则新增路由（如 `/api/devices/:id/album`）被 Koa 以 **405 Method Not Allowed** 拒绝、前端报「上传失败」。排查特征：新接口返回 405 / 落到 GET 兜底 `{device}`，而旧功能正常——先查网关进程启动时间（`Get-Process` StartTime）是否早于代码改动时间；`Get-NetTCPConnection -LocalPort 8080` 找 OwningProcess 定位旧进程，`Stop-Process` 后 `npm start` 重启，设备注册/隧道会自动重连。
 - 跨端参数契约（如手势 scale）：一端生成、另一端校验的量必须语义一致并两端钳制/兜底，避免"链路通但语义断"（magnitude 位移量 ≠ 间距比例，曾致 pinch scale 超界被设备端拒绝）。
 - **剪贴板是显式双向搬运（2026-08-17 起，无自动同步）**：复制=拉（clipboard.get / 0x50 clipboard.get）、粘贴=推（type.paste）；设备端不再监听系统剪贴板、不再自动推送，控制端复制不再自动写设备——改剪贴板功能时勿回归自动同步（平台无写入者身份，自动同步只能启发式且有误判边界，已决策弃用）。
 - **CI 秒失败（job 数秒内 failure/cancelled、日志 BlobNotFound）**：先查 check-run annotations（`GET /repos/{repo}/check-runs/{job_id}/annotations`）——billing 拦截（付款失败/支出限额）的权威错误信息在这里，不要误判为 runner 故障或 YAML 语法（2026-08-17 踩坑）。
@@ -68,3 +70,9 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
 - **脚本化删除大段代码后必须做函数深度扫描**：python 按锚点删段可能误删函数闭合（语法配平但作用域错乱、`node --check` 查不出）——用 tokenizer 级深度扫描验证所有顶层函数深度为 0（或预期值）。2026-08-17 两次踩坑：app.js createRbf 闭合误删（copyFromFocusedDevice 不可见→聚焦黑屏）、5801 mgmt 负长度帧死循环。
 - **noVNC 握手死锁（2026-08-23 实测，偶发「连接中→10s 超时」的根因）**：`novnc/core/rfb.js` 的 `_negotiateProtocolVersion()` 结尾**必须显式 `return true`**——缺了它时 `_handleMessage` 在 connecting 态的 while 循环里 `!_initMsg()` 即 break，同一 WS message 里版本行之后的握手字节（LibVNCServer 3.8 安全列表 `01 01`）永不处理，noVNC 卡 Security 态、不发 SecurityType，设备 5901 也在等客户端选安全类型 → 双方死锁。粘包 14B 一包必现、分片 12B+2B 两包正常 → 表现为偶发 ~20% 失败且趋连发。**升级 noVNC 或改动其握手代码后必须核对**；排查特征：前端 connTimer 超时诊断 `init=Security wsReady=open rQunread=2 rQhex=0101`、网关侧失败通道 `tx=12 rx=14`。
 - **noVNC disconnect 事件原版不带 code（2026-08-23 实测，接管/断开文案与自动退出全部失效的根因）**：`_socketClose(e)` 能拿到 WS close code，但 dispatch 的 disconnect 事件 detail **只有 `{clean}`**——前端 `e.detail.code` 恒为 undefined → 4001/4003/4005/4006 分支永远走默认文案「连接已断开」、4001 自动 exitFocus 不触发。已在 `_socketClose` 存 `_lastCloseCode/_lastCloseReason` 并在 disconnected dispatch 透传（网关与 5801 两处 noVNC 均已 patch）。**升级 noVNC 必须核对 disconnect detail 是否含 code**。
+- **respring 全量去除记录（2026-08-24，红线见"架构红线"节）**：respring（kill SpringBoard）重启主屏会中断前台 App、打断隧道/注册会话、破坏 daemon 保活链路，已全项目禁用。去除位置清单（后续出现相关问题时按此对照排查）：
+  1. `TrollVNC/src/trollvncserver.mm`：删除 `data.respring` 能力共 4 处——前置声明（原 ~L3586）、5901 0x50 分派分支（原 ~L3711）、函数体 `tvExtHandleDataRespring`（原 ~L4293-4302）、5802 分派分支（原 ~L4332）。**外部再调 `data.respring` 将返回"未知操作"**（属预期，勿当 bug）。
+  2. `TrollVNC/src/TRCapabilityRegistry.mm`：`device.rename` 移除第 3 步 fork+`killall SpringBoard`（原 ~L721-731）。**改名不再即时生效**——MobileGestalt/DesktopName 写入即时完成，`UIDevice.name` 新值在下次系统重启后更新，属已知行为。
+  3. `TrollVNC/prefs/TrollVNCPrefs/Resources/{en,zh-Hans}.lproj/Root.strings`：删除 3 条 respring 本地化（`"Are you sure you want to respring your device?"`、`"Respring"`、`"Respring to Apply Changes"`）——均无 Root.plist 引用（孤儿条目，删除安全）。
+  4. 文档未删除、补警示说明：`说明文档.md` §4.8、`outputs/数据填充-编码AI执行规格.md`、`outputs/Filza-数据填充-调研报告.md`、`docs/superpowers/specs/*-generator-design.md`（每篇首处加"⚠️ respring 已禁用"并标注全文描述作废）。
+  **排查提示**：数据刷新不生效 → 确认 kill 了对应 daemon（callservicesd/imagent/contactsd）而非依赖 respring；设备改名不更新 → 见第 2 条；外部报"未知操作 data.respring" → 见第 1 条。

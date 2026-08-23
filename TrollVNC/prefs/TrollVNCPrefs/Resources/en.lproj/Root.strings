@@ -26,8 +26,6 @@
 
 "Apply a fixed rotation offset to the captured display. Useful for iPad models with non-standard default orientations." = "Apply a fixed rotation offset to the captured display. Useful for iPad models with non-standard default orientations.";
 
-"Are you sure you want to respring your device?" = "Are you sure you want to respring your device?";
-
 "Assistive Touch Auto-Activation" = "Assistive Touch Auto-Activation";
 
 "Attempts to avoid blocking when swapping buffers; may cause tearing. Can reduce stalls when encoders are slow." = "Attempts to avoid blocking when swapping buffers; may cause tearing. Can reduce stalls when encoders are slow.";
@@ -141,10 +139,6 @@
 "Render a cursor on the server for clients that lack a hardware cursor. May slightly reduce performance." = "Render a cursor on the server for clients that lack a hardware cursor. May slightly reduce performance.";
 
 "Reset to Defaults" = "Reset to Defaults";
-
-"Respring" = "Respring";
-
-"Respring to Apply Changes" = "Respring to Apply Changes";
 
 "Rotate the shared display to follow device orientation changes. “Orientation Offset” applies a fixed rotation for iPad models with non-standard default orientations." = "Rotate the shared display to follow device orientation changes. “Orientation Offset” applies a fixed rotation for iPad models with non-standard default orientations.";
 

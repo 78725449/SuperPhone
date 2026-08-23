@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>定位模拟 · 伪装页交互原型</title>
+<style>
+  :root{
+    --bg:#F5F5F7; --card:#FFFFFF; --text:#171717; --muted:#8A8A8E; --border:#E4E4E8;
+    --brand:#4B3FE3; --brand-soft:#F2F7FF; --brand-text:#1A1759;
+    --blue:#22A5F7; --coral:#F87454; --green:#1DC981;
+    --surface-muted:#EFEFF2; --success:#1DC981;
+    --radius:8px; --radius-card:12px;
+    --spacer-4:4px; --spacer-8:8px; --spacer-12:12px; --spacer-16:16px; --spacer-20:20px;
+    --font-sans:-apple-system,"SF Pro Text","PingFang SC",system-ui,sans-serif;
+    --weight-regular:400; --weight-medium:500;
+    --text-caption:12px/18px; --text-body:14px/20px; --text-title:16px/24px; --text-code:13px/20px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent;}
+  body{font:400 14px/1.5 -apple-system,"SF Pro Text","PingFang SC",system-ui,sans-serif; background:#E9E9EC; color:var(--text); display:flex; flex-direction:column; align-items:center; padding:24px 12px 60px;}
+  h1{font-size:16px; font-weight:600; margin-bottom:4px;}
+  .note{font-size:12px; color:var(--muted); margin-bottom:16px; text-align:center; max-width:340px;}
+  .note b{color:var(--brand);}
+  .phone{position:relative; width:340px; border-radius:36px; border:8px solid #1A1A1C; background:var(--card); overflow:hidden; box-shadow:0 12px 40px rgba(0,0,0,.25);}
+  .sb{display:flex; justify-content:space-between; align-items:center; padding:10px 18px 6px; font-size:12px; font-weight:600;}
+  .sb .clock{font-family:ui-monospace,Menlo,monospace;}
+  .seg{display:flex; gap:4px; margin:4px 12px 8px; padding:3px; background:#F0F0F2; border-radius:999px;}
+  .seg span{flex:1; text-align:center; padding:5px 0; border-radius:999px; font-size:12px; color:var(--muted); font-weight:500;}
+  .seg span.on{background:var(--card); color:var(--text); box-shadow:0 1px 3px rgba(0,0,0,.08);}
+  /* 地图 */
+  .map{position:relative; height:445px; background:#E8ECEF; overflow:hidden; cursor:crosshair; user-select:none;}
+  .map .grid{position:absolute; inset:0; background-image:linear-gradient(rgba(0,0,0,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(0,0,0,.05) 1px,transparent 1px); background-size:28px 28px;}
+  .map .bld{position:absolute; background:#D8DCE0; border:1px solid #C9CDD2; border-radius:4px;}
+  .map .road{position:absolute; left:0; top:0; width:100%; height:100%; pointer-events:none;}
+  .map .road svg{width:100%; height:100%; display:block;}
+  .search{position:absolute; z-index:6; top:10px; left:12px; right:12px; display:flex; align-items:center; gap:8px; background:var(--card); border:1px solid var(--border); border-radius:999px; padding:7px 12px; box-shadow:0 1px 5px rgba(0,0,0,.1); cursor:text;}
+  .search input{flex:1; border:0; outline:0; font-size:13px; background:none; color:var(--text);}
+  .search .loc{color:var(--brand); font-size:15px; cursor:pointer;}
+  .drop{position:absolute; z-index:7; top:44px; left:12px; right:12px; background:var(--card); border:1px solid var(--border); border-radius:12px; box-shadow:0 4px 16px rgba(0,0,0,.12); display:none; overflow:hidden;}
+  .drop div{padding:9px 12px; font-size:13px; border-bottom:1px solid var(--border); cursor:pointer;}
+  .drop div:last-child{border-bottom:0;}
+  .drop div:hover{background:var(--brand-soft);}
+  /* 编排节点锚点标记：水滴图钉，尖指向坐标点；start=紫 / route=蓝 / region=绿；点击删除 */
+  .segMark{position:absolute; z-index:4; transform:translate(-50%,-100%); cursor:pointer; transition:transform .1s;}
+  .segMark::before{content:""; display:block; width:18px; height:18px; border-radius:50% 50% 50% 0; transform:rotate(-45deg); border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.35);}
+  .segMark.start::before{background:var(--brand);}
+  .segMark.route::before{background:var(--chart-series-4);}
+  .segMark.region::before{background:var(--green);}
+  .segMark:hover{transform:translate(-50%,-100%) scale(1.15);}
+  .dot{position:absolute; z-index:3; width:12px; height:12px; border-radius:50%; background:var(--blue); border:2px solid #fff; box-shadow:0 0 0 5px rgba(34,165,247,.28); transform:translate(-50%,-50%);}
+  .pin{position:absolute; z-index:3; transform:translate(-50%,-100%);}
+  .pin::before{content:""; display:block; width:0; height:0; border-left:8px solid transparent; border-right:8px solid transparent; border-bottom:18px solid var(--coral); filter:drop-shadow(0 2px 2px rgba(0,0,0,.25));}
+  .pin::after{content:""; display:block; width:6px; height:6px; border-radius:50%; background:var(--coral); margin:0 auto; margin-top:-3px;}
+  .ring{position:absolute; z-index:2; border:2px dashed var(--brand); border-radius:50%; background:rgba(75,63,227,.12); transform:translate(-50%,-50%); pointer-events:none;}
+  .ringFix{position:absolute; z-index:2; border:2px dashed rgba(75,63,227,.55); border-radius:50%; background:rgba(75,63,227,.08); transform:translate(-50%,-50%); pointer-events:none;}
+  .ring .h{position:absolute; width:16px; height:16px; border-radius:50%; background:var(--brand); border:2px solid #fff; transform:translate(-50%,-50%); cursor:nwse-resize; pointer-events:auto; box-shadow:0 1px 4px rgba(0,0,0,.3);}
+  .hint{position:absolute; z-index:5; top:52px; left:50%; transform:translateX(-50%); background:rgba(20,20,24,.82); color:#fff; font-size:12px; border-radius:999px; padding:3px 12px; white-space:nowrap; pointer-events:none; max-width:92%; text-align:center;}
+  /* 步行/驾车互斥按钮：屏幕左下角区域 */
+  .modeCapsule{position:absolute; z-index:5; left:12px; bottom:12px; display:flex; align-items:center; gap:4px; background:var(--card); border:1px solid var(--border); border-radius:999px; padding:3px 4px; box-shadow:0 1px 4px rgba(0,0,0,.1);}
+  .modeCapsule .opt{font-size:12px; padding:5px 14px; border-radius:999px; color:var(--muted); cursor:pointer; border:1px solid transparent;}
+  .modeCapsule .opt.on{background:var(--brand); color:#fff;}
+  /* 小参数条 */
+  .param{position:absolute; z-index:6; left:12px; right:12px; bottom:12px; background:var(--card); border:1px solid var(--border); border-radius:14px; padding:10px 12px; box-shadow:0 4px 20px rgba(0,0,0,.18); display:none;}
+  .param .h{font-size:13px; font-weight:600; margin-bottom:8px;}
+  .param .row{display:flex; align-items:center; gap:8px; margin-bottom:8px;}
+  .param .row:last-child{margin-bottom:0;}
+  .param .lbl{width:42px; font-size:12px; color:var(--muted); flex:none;}
+  .param .ctl{flex:1; display:flex; gap:6px;}
+  .param select,.param input[type=number]{flex:1; border:1px solid var(--border); border-radius:10px; padding:7px 8px; font-size:13px; background:#fff; outline:none;}
+  .param .btns{display:flex; gap:6px;}
+  .param .btns button{flex:1; border:0; border-radius:10px; padding:8px 0; font-size:13px; cursor:pointer;}
+  .param .btns .ok{background:var(--brand); color:#fff;}
+  .param .btns .no{background:#F0F0F2; color:var(--text);}
+  /* 右侧编排步骤条 */
+  /* 状态条 */
+  .stat{display:flex; align-items:center; gap:6px; padding:6px 12px; font-size:11px; border-bottom:1px solid var(--border); background:var(--card); cursor:pointer;}
+  .stat:active{background:#F0F0F2;}
+  .stat .p{width:8px; height:8px; border-radius:50%; background:#C7C7CC; flex:none;}
+  .stat .p.on{background:var(--green); box-shadow:0 0 0 3px rgba(29,201,129,.2);}
+  .stat .m{font-weight:600;}
+  .stat .spd{font-family:ui-monospace,Menlo,monospace; color:var(--muted); margin-left:16px;}
+  .stat .c{margin-left:auto; font-family:ui-monospace,Menlo,monospace; color:var(--muted);}
+  .stat .arr{color:var(--muted); font-size:9px; transition:transform .15s;}
+  .stat.open .arr{transform:rotate(180deg);}
+  /* 步骤展开列（点击状态条在地图左上展开） */
+  .segPanel{position:absolute; z-index:7; top:50px; left:12px; width:200px; background:var(--card); border:1px solid var(--border); border-radius:14px; box-shadow:0 4px 18px rgba(0,0,0,.16); overflow:hidden;}
+  .segPanel .rn{display:flex; align-items:center; gap:6px; padding:6px 8px; border-bottom:1px solid var(--border); cursor:grab;}
+  .segPanel .rn:active{cursor:grabbing;}
+  .segPanel .rn .n{width:18px; height:18px; border-radius:50%; background:#E5EAFF; color:var(--brand-text); display:flex; align-items:center; justify-content:center; font-size:11px; flex:none;}
+  .segPanel .rn .tt{flex:1; min-width:0;}
+  .segPanel .rn .tt b{display:block; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .segPanel .rn .tt i{display:block; font-style:normal; font-size:10px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .segPanel .rn .x{color:var(--muted); font-size:12px; cursor:pointer; flex:none; padding:2px;}
+  .segPanel .empty{padding:10px 8px; font-size:11px; color:var(--muted); text-align:center; border-bottom:1px solid var(--border);}
+  .segPanel .rn.dragging{opacity:.4;}
+  /* 定位 FAB（右下角圆形开关，图标态） */
+  .fab{position:absolute; z-index:7; right:12px; bottom:12px; width:52px; height:52px; border-radius:50%; background:var(--brand); color:#fff; border:0; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 14px rgba(75,63,227,.45); cursor:pointer;}
+  .fab svg{width:24px; height:24px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;}
+  .fab:active{transform:scale(.94);}
+  /* 子 Tab 面板（模拟定位/联系人/通话记录/短信） */
+  .pane{position:relative; height:473px; background:var(--card);}
+  /* 参数面板（通讯录/短信/通话记录） */
+  .panel-scroll{height:473px; overflow-y:auto; padding:var(--spacer-12);}
+  .algo{background:var(--brand-soft); border-radius:var(--radius); padding:6px 12px; font:var(--weight-regular) var(--text-caption) var(--font-sans); color:var(--brand-text); margin-bottom:var(--spacer-12);}
+  .row{display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--border);}
+  .lbl{font:var(--weight-regular) var(--text-body) var(--font-sans); color:var(--text); white-space:nowrap;}
+  .val{font:var(--weight-medium) var(--text-body) var(--font-sans); color:var(--brand); min-width:44px; text-align:right;}
+  .valm{font:var(--weight-medium) var(--text-caption) var(--font-sans); color:var(--text-muted); min-width:44px; text-align:right;}
+  .inp{background:var(--surface-muted); border:1px solid var(--border); border-radius:var(--radius); padding:4px 10px; font:var(--weight-medium) var(--text-code) var(--font-mono); color:var(--text); min-width:70px; text-align:center; outline:none;}
+  input.inp{width:64px;}
+  .inp.seed{cursor:pointer; color:var(--brand);}
+  .inp.seed:hover{border-color:var(--brand);}
+  .slider{flex:1; margin:0 var(--spacer-12); position:relative; height:4px; background:var(--surface-muted); border-radius:999px; cursor:pointer;}
+  .slider .fill{position:absolute; left:0; top:0; height:100%; background:var(--brand); border-radius:999px;}
+  .slider .knob{position:absolute; top:-4px; width:12px; height:12px; background:var(--brand); border-radius:50%; transform:translateX(-50%); box-shadow:0 1px 3px rgba(0,0,0,.25);}
+  .sum{font:var(--weight-medium) var(--text-caption) var(--font-sans); text-align:right; margin:6px 0 4px;}
+  .sum.ok{color:var(--success);}
+  .sum .rst{color:var(--brand); cursor:pointer;}
+  .sum .rst:hover{text-decoration:underline;}
+  .btn{width:100%; background:var(--brand); color:#fff; border:none; border-radius:var(--radius); padding:10px; font:var(--weight-medium) var(--text-body) var(--font-sans); cursor:pointer;}
+  .btn:active{transform:scale(.98);}
+  .hint{font:var(--weight-regular) var(--text-caption) var(--font-sans); color:var(--text-muted); text-align:center; margin-top:var(--spacer-8);}
+  .hint:empty{display:none;}   /* 生成前不显示，点击生成后反馈提示出现在按钮下方 */
+  .tabbar{display:flex; border-top:1px solid var(--border); padding:5px 0 7px;}
+  .tabbar div{flex:1; text-align:center;}
+  .tabbar .ic{font-size:15px; line-height:18px;}
+  .tabbar .lb{font-size:10px; color:var(--muted);}
+  .tabbar .on .lb{color:var(--brand);}
+  .leg{display:flex; gap:14px; margin-top:14px; font-size:12px; color:var(--muted); flex-wrap:wrap; justify-content:center;}
+  .leg i{display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:4px; vertical-align:-1px;}
+ </style>
+</head>
+<body>
+<h1>数据伪装页 · 交互原型</h1>
+<div class="note">四个子 Tab：<b>模拟定位</b>（地图递增编排）/ <b>联系人</b> / <b>通话记录</b> / <b>短信</b>——拟真数据生成与列表，纯本地模拟不连设备</div>
+
+<div class="phone">
+  <div class="sb"><span class="clock">9:41</span><span>SuperPhone</span><span>▮▯▮</span></div>
+  <div class="seg">
+    <span class="on" data-tab="locsim">位置模拟</span>
+    <span data-tab="contacts">联系人</span>
+    <span data-tab="calls">通话</span>
+    <span data-tab="sms">短信</span>
+  </div>
+  <div class="pane" id="pane-locsim">
+    <div class="stat" id="statBar">
+      <span class="p" id="statP"></span>
+      <span class="m" id="statM">未模拟</span>
+      <span class="spd" id="statSpd"></span>
+      <span class="c" id="statC"></span>
+      <span class="arr" id="statArr">▾</span>
+    </div>
+    <div class="map" id="map">
+      <div class="grid"></div>
+      <div class="bld" style="left:30px;top:70px;width:56px;height:34px"></div>
+      <div class="bld" style="left:150px;top:150px;width:72px;height:44px"></div>
+      <div class="bld" style="left:62px;top:230px;width:48px;height:30px"></div>
+      <div class="bld" style="left:210px;top:262px;width:80px;height:40px"></div>
+      <div class="bld" style="left:150px;top:40px;width:44px;height:26px"></div>
+      <div class="bld" style="left:250px;top:96px;width:40px;height:52px"></div>
+      <div class="bld" style="left:30px;top:150px;width:66px;height:40px"></div>
+      <div class="road"><svg viewBox="0 0 340 445" fill="none">
+        <path id="addedPath" d="" stroke="#4B3FE3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="4 4" opacity="0"/>
+        <path id="growPath" d="" stroke="#3C2ECA" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0"/>
+        <path id="routePath" d="" stroke="#3C2ECA" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="1 5" opacity="0"/>
+        <path id="trackPath" d="" stroke="#22A5F7" stroke-width="1.5" stroke-linecap="round" stroke-dasharray="3 4" opacity="0"/>
+      </svg></div>
+      <div class="search"><span>⌕</span><input id="q" placeholder="搜索位置（CLGeocoder）…" autocomplete="off"><span class="loc" id="geo">◎</span></div>
+      <div class="drop" id="drop"></div>
+      <div class="modeCapsule"><span class="opt on" data-m="walk">🚶 步行</span><span class="opt" data-m="drive">🚗 驾车</span></div>
+      <div class="hint" id="hint">第一次点击设定模拟位置 · 之后点击即添加路线（以上一位置为起点）</div>
+      <div class="ring" id="ring" style="display:none"><div class="h" id="ringHandle"></div></div>
+      <div class="dot" id="curDot" style="display:none"></div>
+      <div class="pin" id="pin" style="display:none"></div>
+      <div class="param" id="param"></div>
+      <button class="fab" id="fabExec" title="开启定位"><svg viewBox="0 0 24 24"><path d="M12 21s-6.2-5.4-6.2-10.2a6.2 6.2 0 1 1 12.4 0C18.2 15.6 12 21 12 21z"/><circle cx="12" cy="10.8" r="2.4"/></svg></button>
+      <div class="segPanel" id="segPanel" style="display:none">
+        <div id="spBody"></div>
+      </div>
+    </div>
+  </div>
+  <!-- 联系人 -->
+  <div class="pane" id="pane-contacts" style="display:none">
+    <div class="panel-scroll">
+      <div class="row"><span class="lbl">生成数量</span><input class="inp" id="cCount" type="number" min="1" max="500" value="50"></div>
+      <div class="row"><span class="lbl">常住地区</span><span class="inp">北京 ▾</span></div>
+      <div class="row"><span class="lbl">本地占比</span><div class="slider" data-slider="clocal" data-idx="0"><div class="fill"></div><div class="knob"></div></div><span class="val" data-val="clocal-0">65%</span></div>
+      <div class="row"><span class="lbl">朋友/熟人</span><div class="slider" data-slider="crel" data-idx="0"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="crel-0">55%</span></div>
+      <div class="row"><span class="lbl">工作/商务</span><div class="slider" data-slider="crel" data-idx="1"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="crel-1">20%</span></div>
+      <div class="row"><span class="lbl">生活服务</span><div class="slider" data-slider="crel" data-idx="2"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="crel-2">12%</span></div>
+      <div class="row"><span class="lbl">家人亲戚</span><div class="slider" data-slider="crel" data-idx="3"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="crel-3">8%</span></div>
+      <div class="row"><span class="lbl">机构商家</span><div class="slider" data-slider="crel" data-idx="4"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="crel-4">5%</span></div>
+      <div class="row"><span class="lbl">随机种子</span><span class="inp seed" id="cSeed" title="点击随机生成">20260824</span></div>
+      <div class="sum ok">合计 <span data-sum="crel">100</span>% ✓ · <span class="rst" data-reset="crel">重置默认</span></div>
+      <button class="btn" data-action="gen" data-kind="c">生成联系人</button>
+      <div class="hint" id="cHint"></div>
+    </div>
+  </div>
+  <!-- 短信 -->
+  <div class="pane" id="pane-sms" style="display:none">
+    <div class="panel-scroll">
+      <div class="row"><span class="lbl">生成条数</span><input class="inp" id="sCount" type="number" min="1" max="500" value="30"></div>
+      <div class="row"><span class="lbl">时间范围</span><span class="inp">最近 3 天 ▾</span></div>
+      <div class="row"><span class="lbl">本人运营商</span><span class="inp">移动 ▾</span></div>
+      <div class="row"><span class="lbl">验证码</span><div class="slider" data-slider="srel" data-idx="0"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="srel-0">35%</span></div>
+      <div class="row"><span class="lbl">快递</span><div class="slider" data-slider="srel" data-idx="1"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="srel-1">20%</span></div>
+      <div class="row"><span class="lbl">银行/金融</span><div class="slider" data-slider="srel" data-idx="2"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="srel-2">15%</span></div>
+      <div class="row"><span class="lbl">运营商</span><div class="slider" data-slider="srel" data-idx="3"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="srel-3">10%</span></div>
+      <div class="row"><span class="lbl">营销/推广</span><div class="slider" data-slider="srel" data-idx="4"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="srel-4">10%</span></div>
+      <div class="row"><span class="lbl">家人/朋友</span><div class="slider" data-slider="srel" data-idx="5"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="srel-5">10%</span></div>
+      <div class="row"><span class="lbl">随机种子</span><span class="inp seed" id="sSeed" title="点击随机生成">20260824</span></div>
+      <div class="sum ok">合计 <span data-sum="srel">100</span>% ✓ · <span class="rst" data-reset="srel">重置默认</span></div>
+      <button class="btn" data-action="gen" data-kind="s">生成短信</button>
+      <div class="hint" id="sHint"></div>
+    </div>
+  </div>
+  <!-- 通话 -->
+  <div class="pane" id="pane-calls" style="display:none">
+    <div class="panel-scroll">
+      <div class="row"><span class="lbl">生成条数</span><input class="inp" id="kCount" type="number" min="1" max="500" value="20"></div>
+      <div class="row"><span class="lbl">时间范围</span><span class="inp">最近 3 天 ▾</span></div>
+      <div class="row"><span class="lbl">本人运营商</span><span class="inp">移动 ▾</span></div>
+      <div class="row"><span class="lbl">联系人内</span><div class="slider" data-slider="krel1" data-idx="0"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="krel1-0">70%</span></div>
+      <div class="row"><span class="lbl">陌生号</span><div class="slider" data-slider="krel1" data-idx="1"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="krel1-1">30%</span></div>
+      <div class="row"><span class="lbl">呼入</span><div class="slider" data-slider="krel2" data-idx="0"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="krel2-0">40%</span></div>
+      <div class="row"><span class="lbl">呼出</span><div class="slider" data-slider="krel2" data-idx="1"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="krel2-1">40%</span></div>
+      <div class="row"><span class="lbl">未接</span><div class="slider" data-slider="krel2" data-idx="2"><div class="fill"></div><div class="knob"></div></div><span class="valm" data-val="krel2-2">20%</span></div>
+      <div class="row"><span class="lbl">随机种子</span><span class="inp seed" id="kSeed" title="点击随机生成">20260824</span></div>
+      <div class="sum ok">选人 <span data-sum="krel1">100</span>% ✓ · 状态 <span data-sum="krel2">100</span>% ✓ · <span class="rst" data-reset="krel1,krel2">重置默认</span></div>
+      <button class="btn" data-action="gen" data-kind="k">生成通话</button>
+      <div class="hint" id="kHint"></div>
+    </div>
+  </div>
+  <div class="tabbar">
+    <div><div class="ic">◉</div><div class="lb">连接</div></div>
+    <div><div class="ic">▦</div><div class="lb">控制</div></div>
+    <div class="on"><div class="ic">▣</div><div class="lb">伪装</div></div>
+    <div><div class="ic">⚙</div><div class="lb">设置</div></div>
+  </div>
+</div>
+
+<div class="leg">
+  <span><i style="background:#22A5F7"></i>当前位置</span>
+  <span><i style="background:#F87454"></i>选中点</span>
+  <span><i style="background:#4B3FE3"></i>区域/编排</span>
+  <span><i style="background:#3C2ECA"></i>路线草稿</span>
+</div>
+
+<script>
+/* ========== 坐标系统：北京局部地图，像素↔经纬度线性映射 ========== */
+var CENTER = { lat: 39.9062, lon: 116.3901 };   // 地图中心
+var PX_PER_DEG = 90000;                          // 0.001°≈11px（≈10m/px）
+var map = document.getElementById('map');
+var MW = 340, MH = 400;
+function latToY(lat){ return (CENTER.lat - lat) * PX_PER_DEG + MH / 2; }
+function lonToX(lon){ return (lon - CENTER.lon) * PX_PER_DEG + MW / 2; }
+function yToLat(y){ return CENTER.lat - (y - MH / 2) / PX_PER_DEG; }
+function xToLon(x){ return CENTER.lon + (x - MW / 2) / PX_PER_DEG; }
+function degToPx(deg){ return deg * PX_PER_DEG; }
+
+/* ========== GCJ-02 → WGS-84（公开数学，与设备端契约一致） ========== */
+var a = 6378245.0, ee = 0.00669342162296594323;
+function outOfChina(lat, lon){ return lon < 72.004 || lon > 137.8347 || lat < 0.8293 || lat > 55.8271; }
+function transformLat(x, y){
+  var ret = -100.0 + 2.0*x + 3.0*y + 0.2*y*y + 0.1*x*y + 0.2*Math.sqrt(Math.abs(x));
+  ret += (20.0*Math.sin(6.0*x*Math.PI) + 20.0*Math.sin(2.0*x*Math.PI)) * 2.0/3.0;
+  ret += (20.0*Math.sin(y*Math.PI) + 40.0*Math.sin(y/3.0*Math.PI)) * 2.0/3.0;
+  ret += (160.0*Math.sin(y/12.0*Math.PI) + 320.0*Math.sin(y*Math.PI/30.0)) * 2.0/3.0;
+  return ret;
+}
+function transformLon(x, y){
+  var ret = 300.0 + x + 2.0*y + 0.1*x*x + 0.1*x*y + 0.1*Math.sqrt(Math.abs(x));
+  ret += (20.0*Math.sin(6.0*x*Math.PI) + 20.0*Math.sin(2.0*x*Math.PI)) * 2.0/3.0;
+  ret += (20.0*Math.sin(x*Math.PI) + 40.0*Math.sin(x/3.0*Math.PI)) * 2.0/3.0;
+  ret += (150.0*Math.sin(x/12.0*Math.PI) + 300.0*Math.sin(x/30.0*Math.PI)) * 2.0/3.0;
+  return ret;
+}
+function gcj02ToWgs84(lat, lon){
+  if (outOfChina(lat, lon)) return { lat: lat, lon: lon };
+  var dLat = transformLat(lon - 105.0, lat - 35.0);
+  var dLon = transformLon(lon - 105.0, lat - 35.0);
+  var radLat = lat / 180.0 * Math.PI;
+  var magic = Math.sin(radLat); magic = 1 - ee * magic * magic;
+  var sqrtMagic = Math.sqrt(magic);
+  dLat = (dLat * 180.0) / ((a * (1 - ee)) / (magic * sqrtMagic) * Math.PI);
+  dLon = (dLon * 180.0) / (a / sqrtMagic * Math.cos(radLat) * Math.PI);
+  return { lat: lat - dLat, lon: lon - dLon };
+}
+function haversineKm(p1, p2){
+  var R = 6371, dLat = (p2.lat - p1.lat)*Math.PI/180, dLon = (p2.lon - p1.lon)*Math.PI/180;
+  var s = Math.sin(dLat/2)**2 + Math.cos(p1.lat*Math.PI/180)*Math.cos(p2.lat*Math.PI/180)*Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+function fmt(v, n){ return (+v).toFixed(n == null ? 4 : n); }
+
+/* ========== 状态 ========== */
+var S = {
+  cur: null,            // 模拟位置 {lat,lon}（递增式：每段终点即下一段起点）
+  hasStart: false,      // 是否已设定起点（第一次点击/搜索）
+  locating: false,      // 定位开关（设起点自动开启；停止=关闭注入，位置停最后坐标）
+  mode: 'walk',         // 路线模式（步行/驾车，全局）
+  segments: [],         // 编排段 [{type:'start'|'route'|'region', ...}]
+  preview: null,        // 地图预览 {type, pts|circle}
+  region: null,         // 区域 {center:{lat,lon}, rM, rPx}
+  addedRoutes: [],      // 已加入编排的路线点序列（地图常显）
+  addedRings: [],       // 已加入编排的区域圆 {center, rPx}
+};
+
+var presets = [
+  { name: '当前位置', lat: null, lon: null },
+  { name: '北京·天安门', lat: 39.9087, lon: 116.3975 },
+  { name: '北京·国贸', lat: 39.9085, lon: 116.4595 },
+  { name: '上海·外滩', lat: 31.2397, lon: 121.4998 },
+  { name: '广州·珠江新城', lat: 23.1140, lon: 113.3200 },
+  { name: '深圳·市民中心', lat: 22.5431, lon: 114.0579 },
+  { name: '成都·春熙路', lat: 30.6540, lon: 104.0800 },
+];
+
+/* ========== 元素 ========== */
+var hint = document.getElementById('hint');
+var pin = document.getElementById('pin');
+var curDot = document.getElementById('curDot');
+var ring = document.getElementById('ring');
+var ringHandle = document.getElementById('ringHandle');
+var param = document.getElementById('param');
+var routePath = document.getElementById('routePath');
+var addedPath = document.getElementById('addedPath');
+var growPath = document.getElementById('growPath');
+var trackPath = document.getElementById('trackPath');
+var q = document.getElementById('q');
+var drop = document.getElementById('drop');
+var gridEl = document.querySelector('.grid');
+
+function setHint(t){ hint.textContent = t; }
+function show(e){ e.style.display = e.style.display === 'none' ? (e.getAttribute('data-v')||'block') : e.style.display; }
+
+/* ========== 地图缩放（滚轮/捏合：锚定鼠标位置，重绘全部坐标元素） ========== */
+function renderMap(){
+  gridEl.style.backgroundSize = Math.max(14, PX_PER_DEG / 3200) + 'px ' + Math.max(14, PX_PER_DEG / 3200) + 'px';
+  if (S.cur) placeCur(S.cur.lat, S.cur.lon);
+  if (S.preview && S.preview.gcj) placePin(S.preview.gcj.lat, S.preview.gcj.lon);
+  else if (pin.style.display !== 'none') pin.style.display = 'none';
+  if (S.region){ S.region.rPx = degToPx(S.region.rM / 111320); placeRing(S.region.center, S.region.rPx); }
+  else if (ring.style.display !== 'none') ring.style.display = 'none';
+  renderMarks();
+  renderOverlaysFromSegments();
+}
+function zoomAt(mx, my, factor){
+  var lon = xToLon(mx), lat = yToLat(my);
+  PX_PER_DEG = Math.max(20000, Math.min(600000, PX_PER_DEG * factor));
+  CENTER.lon = lon - (mx - MW / 2) / PX_PER_DEG;
+  CENTER.lat = lat + (my - MH / 2) / PX_PER_DEG;
+  renderMap();
+}
+map.addEventListener('wheel', function(e){
+  e.preventDefault();
+  var r = map.getBoundingClientRect();
+  zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.15 : 1 / 1.15);
+}, { passive: false });
+
+/* 位置标记 */
+function placePin(lat, lon){
+  pin.style.display = 'block';
+  pin.style.left = lonToX(lon) + 'px';
+  pin.style.top = latToY(lat) + 'px';
+}
+function placeCur(lat, lon){
+  curDot.style.display = 'block';
+  curDot.style.left = lonToX(lon) + 'px';
+  curDot.style.top = latToY(lat) + 'px';
+}
+function drawRoute(pts){
+  if (!pts || pts.length < 2){ routePath.setAttribute('d',''); routePath.style.opacity = 0; return; }
+  var d = pts.map(function(p,i){
+    var x = lonToX(p.lon), y = latToY(p.lat);
+    return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+  }).join(' ');
+  routePath.setAttribute('d', d);
+  routePath.style.opacity = 1;
+}
+function clearRoute(){ routePath.setAttribute('d',''); routePath.style.opacity = 0; }
+
+/* 已加入编排的路线/区域：地图常显（区别于预览中的单条路线） */
+function drawAddedRoutes(){
+  if (!S.addedRoutes.length){ addedPath.setAttribute('d',''); addedPath.style.opacity = 0; return; }
+  var d = S.addedRoutes.map(function(pts){
+    return pts.map(function(p,i){
+      var x = lonToX(p.lon), y = latToY(p.lat);
+      return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+    }).join(' ');
+  }).join(' ');
+  addedPath.setAttribute('d', d);
+  addedPath.style.opacity = 1;
+}
+function renderOverlays(){
+  drawAddedRoutes();
+  map.querySelectorAll('.ringFix').forEach(function(n){ n.remove(); });
+  S.addedRings.forEach(function(rc){
+    var d = document.createElement('div');
+    d.className = 'ringFix';
+    d.style.left = lonToX(rc.center.lon) + 'px';
+    d.style.top = latToY(rc.center.lat) + 'px';
+    d.style.width = (rc.rPx * 2) + 'px';
+    d.style.height = (rc.rPx * 2) + 'px';
+    map.appendChild(d);
+  });
+  renderMarks();
+}
+/* 每个编排节点一个可点击标记：start=紫 / route 终点=蓝 / region 中心=绿；点击删除该段，路线自适应重连 */
+function renderMarks(){
+  map.querySelectorAll('.segMark').forEach(function(n){ n.remove(); });
+  S.segments.forEach(function(s, i){
+    var p = s.type === 'route' ? s.to : (s.type === 'region' ? s.center : { lat: s.lat, lon: s.lon });
+    var d = document.createElement('div');
+    d.className = 'segMark ' + (s.type === 'start' ? 'start' : (s.type === 'route' ? 'route' : 'region'));
+    d.style.left = lonToX(p.lon) + 'px';
+    d.style.top = latToY(p.lat) + 'px';
+    d.title = '第 ' + (i+1) + ' 段 · 点击删除（路线自动重连）';
+    (function(idx){ d.addEventListener('click', function(e){ e.stopPropagation(); deleteSegment(idx); }); })(i);
+    map.appendChild(d);
+  });
+}
+/* 删除段：splice → 重链（后段起点=前段终点）→ 重画 → 模拟位置回退 */
+function deleteSegment(i){
+  S.segments.splice(i, 1);
+  relinkSegments();
+  renderRail();
+  renderOverlaysFromSegments();
+  recomputeCur();
+}
+/* 路线自适应重连：route 段 from/pts 重算为「前一段终点 → 本段终点」 */
+function relinkSegments(){
+  var cur = null;
+  S.segments.forEach(function(s){
+    if (s.type === 'start'){ cur = { lat: s.lat, lon: s.lon }; }
+    else if (s.type === 'route'){
+      s.from = cur || s.from;
+      s.km = haversineKm(s.from, s.to);
+      var mps = s.mode === 'drive' ? 13.9 : 1.4;
+      s.secs = Math.round(s.km * 1000 / mps);
+      s.pts = [];
+      for (var i = 0; i <= 24; i++){
+        s.pts.push({ lat: s.from.lat + (s.to.lat - s.from.lat) * i / 24, lon: s.from.lon + (s.to.lon - s.from.lon) * i / 24 });
+      }
+      cur = { lat: s.to.lat, lon: s.to.lon };
+    } else if (s.type === 'region'){ cur = { lat: s.center.lat, lon: s.center.lon }; }
+  });
+}
+/* 从当前 segments 重建 overlay（删除段/排序后保持一致） */
+function renderOverlaysFromSegments(){
+  S.addedRoutes = []; S.addedRings = [];
+  S.segments.forEach(function(s){
+    if (s.type === 'route' && s.pts) S.addedRoutes.push(s.pts);
+    else if (s.type === 'region'){
+      S.addedRings.push({ center: { lat: s.center.lat, lon: s.center.lon }, rPx: degToPx(s.rM / 111320) });
+      if (s.pts) S.addedRoutes.push(s.pts);   // 区域漫游生长轨迹一并画
+    }
+  });
+  renderOverlays();
+}
+/* 区域漫游生长：区域中心撒 K 个途经点，从起点（上一位置）逐段生长到各途经点
+ * 途经点数 K：自定义 N>0 → 用 N（clamp 1~15）；默认 0 → 亚线性随机
+ *   （√T × 2.5，clamp 3~15，±1 抖动：短时多逛几个、长时间饱和 ~15，不线性堆积）
+ * 每次生成 K 与途经点位置均随机。原型为直线模拟；生产端为 MKDirections 逐段真实道路算路拼接 */
+function regionWaypointCount(durMin, custom){
+  if (custom && custom > 0) return Math.max(1, Math.min(15, custom));
+  var T = durMin || 10;
+  var base = Math.round(Math.sqrt(T) * 2.5);
+  var jitter = Math.floor(Math.random() * 3) - 1;
+  return Math.max(3, Math.min(15, base + jitter));
+}
+function genRegionWaypoints(center, rPx, durMin, customK){
+  var K = regionWaypointCount(durMin || 10, customK);
+  var wps = [];
+  for (var i = 0; i < K; i++){
+    var r = Math.sqrt(Math.random()) * rPx;
+    var a = Math.random() * Math.PI * 2;
+    wps.push({ lat: center.lat + Math.sin(a) * r / PX_PER_DEG, lon: center.lon + Math.cos(a) * r / PX_PER_DEG });
+  }
+  return wps;
+}
+function drawGrow(pts){
+  var d = pts.map(function(p, i){
+    var x = lonToX(p.lon), y = latToY(p.lat);
+    return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+  }).join(' ');
+  growPath.setAttribute('d', d);
+  growPath.style.opacity = 1;
+}
+function growRegionRoute(start, center, rPx, dur, mode, customK, onDone){
+  var wps = genRegionWaypoints(center, rPx, dur, customK);
+  var all = [{ lat: start.lat, lon: start.lon }];
+  var idx = 0;
+  var baseTick = 260;
+  /* 移动段：每段速度因子随机（0.7~1.3，走走停停快慢不一）→ 距离相同段耗时不同 */
+  function moveTo(to, cb){
+    var from = all[all.length - 1];
+    var distPx = Math.hypot(lonToX(to.lon) - lonToX(from.lon), latToY(to.lat) - latToY(from.lat));
+    var speedF = 0.7 + Math.random() * 0.6;
+    var steps = Math.max(3, Math.min(40, Math.round(distPx / (30 * speedF))));
+    var i = 1;
+    (function step(){
+      if (i > steps){ cb(); return; }
+      all.push({ lat: from.lat + (to.lat - from.lat) * i / steps, lon: from.lon + (to.lon - from.lon) * i / steps });
+      drawGrow(all);
+      i++;
+      setTimeout(step, baseTick * (1.25 - speedF * 0.55));   // 慢段每步更慢
+    })();
+  }
+  /* 偏态停留：70% 短（1~2 节拍，路过/看手机）、30% 长（4~8 节拍，排队/购物） */
+  function stayAt(cb){
+    var n = Math.random() < 0.7 ? (1 + Math.floor(Math.random() * 2)) : (4 + Math.floor(Math.random() * 5));
+    var k = 0;
+    (function s(){
+      if (k >= n){ cb(); return; }
+      k++;
+      setTimeout(s, baseTick);
+    })();
+  }
+  (function nextSeg(){
+    if (idx >= wps.length){
+      growPath.setAttribute('d', ''); growPath.style.opacity = 0;
+      onDone(all);
+      return;
+    }
+    var to = wps[idx];
+    moveTo(to, function(){
+      idx++;
+      if (idx >= wps.length){ nextSeg(); return; }
+      stayAt(nextSeg);
+    });
+  })();
+}
+
+/* 区域圆：中心 + 半径（像素与米） */
+function placeRing(center, rPx){
+  ring.style.display = 'block';
+  ring.style.left = lonToX(center.lon) + 'px';
+  ring.style.top = latToY(center.lat) + 'px';
+  ring.style.width = (rPx*2) + 'px';
+  ring.style.height = (rPx*2) + 'px';
+  ringHandle.style.left = '100%';
+  ringHandle.style.top = '50%';
+}
+function regionRadiusM(){ return S.region ? S.region.rM : 0; }
+
+/* ========== 状态栏 ========== */
+function setStat(mode, spd, coord){
+  document.getElementById('statM').textContent = mode;
+  document.getElementById('statSpd').textContent = spd || '';
+  document.getElementById('statC').textContent = coord || '';
+  document.getElementById('statP').className = 'p' + (mode.indexOf('模拟') >= 0 ? ' on' : '');
+}
+
+/* ========== 地图手势 ========== */
+var downAt = null, longTimer = null, longFired = false;
+map.addEventListener('mousedown', function(e){
+  if (e.target.closest('.search') || e.target.closest('.segPanel') || e.target.closest('.param') || e.target.closest('.drop') || e.target.closest('.modeCapsule') || e.target.closest('.fab') || e.target.closest('.segMark')) return;
+  if (e.target === ringHandle) return; // 拖半径由 ring 手势处理
+  downAt = { x: e.clientX, y: e.clientY, t: Date.now() };
+  longFired = false;
+  longTimer = setTimeout(function(){
+    longFired = true;
+    startRegionAt(e);
+  }, 500);
+});
+window.addEventListener('mouseup', function(e){
+  clearTimeout(longTimer);
+  if (!downAt) return;
+  var moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y);
+  if (!longFired && moved < 6) onTap(e);          // 单击 = 递增添加
+  downAt = null;
+});
+
+/* 长按 → 区域中心（半径默认 300m，出现把手可拖） */
+function startRegionAt(e){
+  var r = map.getBoundingClientRect();
+  var x = e.clientX - r.left, y = e.clientY - r.top;
+  var center = { lat: yToLat(y), lon: xToLon(x) };
+  S.region = { center: center, rM: 300, rPx: degToPx(300/111320) };
+  S.preview = { type: 'region', center: center, rM: 300 };
+  placeRing(center, S.region.rPx);
+  placePin(center.lat, center.lon);
+  setHint('区域中心已定：拖圆边把手改半径 · 点「区域漫游」继续');
+  showParam('region', center, gcj02ToWgs84(center.lat, center.lon));
+}
+
+/* 圆边把手拖拽改半径 */
+(function(){
+  var dragging = false, startX, startY, startR;
+  ringHandle.addEventListener('mousedown', function(e){
+    e.stopPropagation(); dragging = true;
+    var r = map.getBoundingClientRect();
+    startX = e.clientX; startY = e.clientY;
+    startR = S.region.rPx;
+    document.body.style.cursor = 'nwse-resize';
+  });
+  window.addEventListener('mousemove', function(e){
+    if (!dragging) return;
+    var dx = e.clientX - startX, dy = e.clientY - startY;
+    var newR = Math.max(10, Math.min(160, startR + Math.hypot(dx, dy) * (dx >= 0 ? 1 : -1)));
+    S.region.rPx = newR;
+    S.region.rM = Math.round(newR / PX_PER_DEG * 111320);
+    S.preview.rM = S.region.rM;
+    placeRing(S.region.center, newR);
+  });
+  window.addEventListener('mouseup', function(){
+    if (dragging){ dragging = false; document.body.style.cursor = ''; }
+  });
+})();
+
+/* 单击选点 → 选项卡片 */
+/* 单击地图 → 递增式编排：
+ * 首次点击 = 设定模拟位置（起点基底，不产生路线）
+ * 之后每次点击 = 自动添加路线段（模拟位置 → 点击处，上一位置为起点） */
+function onTap(e){
+  togglePanel(false);          // 地图交互时收起步骤展开列
+  var r = map.getBoundingClientRect();
+  var x = e.clientX - r.left, y = e.clientY - r.top;
+  var g = { lat: yToLat(y), lon: xToLon(x) };      // 显示坐标（点击处）
+  var w = gcj02ToWgs84(g.lat, g.lon);              // WGS-84（存储/展示）
+  if (!S.hasStart){
+    S.hasStart = true;
+    S.cur = { lat: g.lat, lon: g.lon };
+    placeCur(g.lat, g.lon);
+    addSegment({ type: 'start', lat: g.lat, lon: g.lon, wgs: w });
+    S.locating = true;              // 设起点自动开启定位
+    setStat('模拟中 · 定位', '0.0 m/s', fmt(w.lat) + ', ' + fmt(w.lon));
+    setHint('模拟位置已设定：' + fmt(w.lat,4) + ',' + fmt(w.lon,4) + '（WGS-84）· 定位已开启，继续点击即添加路线');
+  } else {
+    addRouteSegment(g, w);
+  }
+}
+
+/* 递增添加路线段：模拟位置（上一位置）→ 点击处，立即加入编排 */
+function addRouteSegment(g, w){
+  var from = S.cur;
+  var km = haversineKm(from, g);
+  var mps = S.mode === 'drive' ? 13.9 : 1.4;
+  var secs = Math.round(km * 1000 / mps);
+  var pts = [];
+  for (var i = 0; i <= 24; i++){
+    pts.push({ lat: from.lat + (g.lat - from.lat) * i / 24, lon: from.lon + (g.lon - from.lon) * i / 24 });
+  }
+  S.cur = { lat: g.lat, lon: g.lon };      // 模拟位置推进到点击处
+  placeCur(g.lat, g.lon);
+  addSegment({ type: 'route', from: from, to: g, pts: pts, wgs: w, mode: S.mode, km: km, secs: secs });
+  if (S.locating) setStat('模拟中 · 定位', '0.0 m/s', fmt(w.lat) + ', ' + fmt(w.lon));
+  setHint('已添加路线 ' + km.toFixed(1) + ' km · 继续点击递增，长按添加区域漫游');
+}
+
+/* 路线模式（步行/驾车）全局切换 */
+document.querySelectorAll('.modeCapsule .opt').forEach(function(o){
+  o.onclick = function(){
+    document.querySelectorAll('.modeCapsule .opt').forEach(function(x){ x.classList.remove('on'); });
+    o.classList.add('on');
+    S.mode = o.dataset.m;
+  };
+});
+
+/* ========== 小参数条（仅区域段：长按后定 时长/模式） ========== */
+function showParam(kind, g, w){
+  param.innerHTML = '';
+  var h = document.createElement('div'); h.className = 'h'; param.appendChild(h);
+  var body = document.createElement('div');
+  if (kind === 'region'){
+    h.textContent = '区域漫游 · 中心 ' + fmt(w.lat, 4) + ',' + fmt(w.lon, 4) + '（WGS-84）';
+    body.innerHTML =
+      '<div class="row"><span class="lbl">进入</span><div class="ctl"><input type="text" value="从上一位置进入区域" disabled></div></div>' +
+      '<div class="row"><span class="lbl">半径</span><div class="ctl"><input type="text" value="' + S.region.rM + ' m（拖圆边把手可调）" disabled></div></div>' +
+      '<div class="row"><span class="lbl">时长</span><div class="ctl"><input type="number" id="pDur" value="10" min="1"> 分钟</div></div>' +
+      '<div class="row"><span class="lbl">途经点</span><div class="ctl"><input type="number" id="pWp" value="0" min="0" max="15"> <span style="color:var(--muted);font-size:11px;white-space:nowrap;">0=随机</span></div></div>' +
+      '<div class="row"><span class="lbl">模式</span><div class="ctl"><select id="pMode"><option value="walk">步行</option><option value="drive">驾车</option></select></div></div>' +
+      '<div class="btns"><button class="no" id="pNo">取消</button><button class="ok" id="pOk">确定</button></div>';
+    body.querySelector('#pOk').onclick = function(){
+      var dur = parseInt(body.querySelector('#pDur').value, 10) || 10;
+      var mode = body.querySelector('#pMode').value;
+      var wp = parseInt(body.querySelector('#pWp').value, 10) || 0;
+      var center = S.region.center;
+      var rPx = S.region.rPx;
+      param.style.display = 'none';
+      ring.style.display = 'none';
+      S.region = null; S.preview = null;
+      var start = S.cur || { lat: 39.9062, lon: 116.3901 };
+      setHint('正在生长区域漫游路线（模拟位置 → 区域途经点）…');
+      // 生长：从上一位置逐段生长到区域内途经点（原型直线模拟；生产=MKDirections 逐段真实道路算路）
+      growRegionRoute(start, center, rPx, dur, mode, wp, function(pts){
+        var last = pts[pts.length - 1];
+        S.cur = { lat: last.lat, lon: last.lon };   // 模拟位置推进到轨迹终点
+        placeCur(S.cur.lat, S.cur.lon);
+        addSegment({ type: 'region', center: center, rM: Math.round(rPx / PX_PER_DEG * 111320), dur: dur, mode: mode, pts: pts });
+        if (S.locating) setStat('模拟中 · 定位', '0.0 m/s', curCoordText());
+        setHint('区域漫游路线已生长完成并加入编排 · 继续点击添加路线或长按加区域');
+      });
+    };
+  }
+  body.querySelector('#pNo').onclick = function(){
+    param.style.display = 'none';
+    if (S.preview && S.preview.type === 'region'){ ring.style.display = 'none'; }
+    pin.style.display = 'none';
+    S.preview = null;
+    setHint('第一次点击设定起点 · 点击即添加路线 · 长按添加区域');
+  };
+  param.appendChild(body);
+  param.style.display = 'block';
+}
+
+/* ========== 编排步骤条 ========== */
+function addSegment(seg){
+  S.segments.push(seg);
+  renderRail();
+  renderOverlaysFromSegments();      // 已加入的路线/区域在地图常显
+  param.style.display = 'none';
+  clearRoute(); ring.style.display = 'none'; pin.style.display = 'none';
+  S.preview = null; S.region = null;
+}
+function renderRail(){
+  var body = document.getElementById('spBody');
+  body.innerHTML = '';
+  if (!S.segments.length){
+    var e = document.createElement('div'); e.className = 'empty'; e.textContent = '暂无行程';
+    body.appendChild(e);
+  }
+  S.segments.forEach(function(s, i){
+    var row = document.createElement('div');
+    row.className = 'rn'; row.draggable = true; row.dataset.i = i;
+    var title, sub;
+    if (s.type === 'start'){ title = '起点'; sub = s.wgs ? fmt(s.wgs.lat,4) + ',' + fmt(s.wgs.lon,4) : fmt(s.lat,4) + ',' + fmt(s.lon,4); }
+    else if (s.type === 'route'){ title = '路线 → 终点'; sub = (s.mode === 'drive' ? '驾车' : '步行') + ' · ' + (s.km ? s.km.toFixed(1) + 'km' : '算路'); }
+    else { title = '区域漫游'; sub = s.rM + 'm · ' + s.dur + 'min'; }
+    row.innerHTML = '<span class="n">' + (i+1) + '</span><span class="tt"><b>' + title + '</b><i>' + sub + '</i></span><span class="x">×</span>';
+    row.querySelector('.x').onclick = function(){
+      deleteSegment(i);   // 统一删除逻辑（含路线重连）
+    };
+    body.appendChild(row);
+  });
+  // 拖拽排序（HTML5 drag）
+  var dragI = null;
+  body.querySelectorAll('.rn').forEach(function(r){
+    r.addEventListener('dragstart', function(){ dragI = +r.dataset.i; r.classList.add('dragging'); });
+    r.addEventListener('dragend', function(){ r.classList.remove('dragging'); });
+    r.addEventListener('dragover', function(e){ e.preventDefault(); });
+    r.addEventListener('drop', function(e){
+      e.preventDefault();
+      var toI = +r.dataset.i; if (dragI === null || dragI === toI) return;
+      var item = S.segments.splice(dragI, 1)[0];
+      S.segments.splice(toI, 0, item);
+      relinkSegments();                 // 排序后路线重连
+      renderRail();
+      renderOverlaysFromSegments();
+    });
+  });
+  // 定位 FAB 常驻右下：定位中=停止图标，否则=定位图标
+  fabExec.style.display = 'block';
+  fabExec.innerHTML = S.locating ? ICON_STOP : ICON_LOC;
+  fabExec.title = S.locating ? '停止定位' : '开启定位';
+}
+/* 定位开关（右下角圆形 FAB）：设起点自动开启；停止=关闭注入，位置停编排最后坐标 */
+var fabExec = document.getElementById('fabExec');
+var ICON_LOC = '<svg viewBox="0 0 24 24"><path d="M12 21s-6.2-5.4-6.2-10.2a6.2 6.2 0 1 1 12.4 0C18.2 15.6 12 21 12 21z"/><circle cx="12" cy="10.8" r="2.4"/></svg>';
+var ICON_STOP = '<svg viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></svg>';
+fabExec.onclick = function(){
+  if (S.locating){ stopSimulation(); return; }
+  startLocating();
+};
+function lastPointOf(seg){
+  if (seg.type === 'route') return seg.to;
+  if (seg.type === 'region') return seg.center;
+  return { lat: seg.lat, lon: seg.lon };
+}
+function curCoordText(){
+  return fmt(S.cur.lat) + ', ' + fmt(S.cur.lon);
+}
+/* 开启定位：从当前模拟位置开始持续模拟（有编排则位置=最后段终点） */
+function startLocating(){
+  if (!S.hasStart && !S.segments.length){ setHint('请先点击地图或搜索设定起点'); return; }
+  S.locating = true;
+  if (S.segments.length){
+    var last = S.segments[S.segments.length - 1];
+    var p = lastPointOf(last);
+    S.cur = { lat: p.lat, lon: p.lon };
+    placeCur(p.lat, p.lon);
+  }
+  setStat('模拟中 · 定位', '0.0 m/s', curCoordText());
+  setHint('定位已开启 · 位置随编排链实时更新');
+  renderRail();
+}
+/* 停止定位：关闭注入，模拟位置停在编排最后一段终点坐标（编排保留，可再开启） */
+function stopSimulation(){
+  S.locating = false;
+  if (S.segments.length){
+    var last = S.segments[S.segments.length - 1];
+    var p = lastPointOf(last);
+    S.cur = { lat: p.lat, lon: p.lon };
+    placeCur(p.lat, p.lon);
+  }
+  setStat('已停止定位', '0.0 m/s', curCoordText());
+  setHint('已停止定位 · 模拟位置停在 ' + curCoordText() + '（可再次开启）');
+  renderRail();
+}
+/* 状态条点击：在该位置展开/收起编排步骤列 */
+var statBar = document.getElementById('statBar');
+function togglePanel(show){
+  var p = document.getElementById('segPanel');
+  var open = show === undefined ? p.style.display !== 'block' : show;
+  p.style.display = open ? 'block' : 'none';
+  statBar.classList.toggle('open', open);
+  if (open) renderRail();
+}
+statBar.onclick = function(e){
+  e.stopPropagation();
+  togglePanel();
+};
+
+/* 删除段后：模拟位置回退到最后剩余段终点（无段则恢复初始并关闭定位） */
+function recomputeCur(){
+  if (!S.segments.length){
+    S.hasStart = false;
+    S.locating = false;
+    S.cur = { lat: 39.9062, lon: 116.3901 };
+    placeCur(S.cur.lat, S.cur.lon);
+    setStat('未模拟', '', '39.9062, 116.3901');
+    setHint('第一次点击设定起点 · 点击即添加路线 · 长按添加区域');
+    renderRail();
+    return;
+  }
+  var last = S.segments[S.segments.length - 1];
+  if (last.type === 'route'){ S.cur = { lat: last.to.lat, lon: last.to.lon }; }
+  else if (last.type === 'region'){ S.cur = { lat: last.center.lat, lon: last.center.lon }; }
+  else { S.cur = { lat: last.lat, lon: last.lon }; }
+  placeCur(S.cur.lat, S.cur.lon);
+}
+
+/* ========== 搜索 ========== */
+q.addEventListener('input', function(){
+  var v = q.value.trim();
+  if (!v){ drop.style.display = 'none'; return; }
+  var hits = presets.filter(function(p){ return p.name.indexOf(v) >= 0; });
+  if (!hits.length){ drop.style.display = 'none'; return; }
+  drop.innerHTML = '';
+  hits.forEach(function(p){
+    var d = document.createElement('div');
+    d.textContent = p.name;
+    d.onclick = function(){
+      drop.style.display = 'none'; q.value = p.name;
+      if (p.lat){
+        // 搜索结果直接作为模拟位置起点（已编排则重置起点）
+        S.segments = []; S.hasStart = false;
+        S.addedRoutes = []; S.addedRings = [];
+        renderOverlays();
+        CENTER = { lat: p.lat, lon: p.lon };
+        S.cur = { lat: p.lat, lon: p.lon };
+        placeCur(p.lat, p.lon);
+        var w = gcj02ToWgs84(p.lat, p.lon);
+        addSegment({ type: 'start', lat: p.lat, lon: p.lon, wgs: w });
+        S.locating = true;   // 搜索设起点自动开启定位
+        setStat('模拟中 · 定位', '0.0 m/s', fmt(w.lat) + ', ' + fmt(w.lon));
+        setHint('搜索点已设为起点：' + p.name + ' · 定位已开启，点击地图添加路线');
+      } else {
+        setHint('当前位置：' + (S.cur ? fmt(S.cur.lat)+','+fmt(S.cur.lon) : '未设置，先点图设起点'));
+      }
+    };
+    drop.appendChild(d);
+  });
+  drop.style.display = 'block';
+});
+document.addEventListener('click', function(e){ if (!e.target.closest('.search')) drop.style.display = 'none'; });
+document.getElementById('geo').onclick = function(){ setHint('原型：搜索框命中预设城市即跳转（生产为 CLGeocoder）'); };
+
+/* ========== 初始化 ========== */
+placeCur(39.9062, 116.3901);
+S.cur = { lat: 39.9062, lon: 116.3901 };
+setStat('未模拟', '', '39.9062, 116.3901');
+renderRail();
+
+/* ========== 子 Tab 切换 ========== */
+document.querySelectorAll('.seg span').forEach(function(s){
+  s.addEventListener('click', function(){
+    document.querySelectorAll('.seg span').forEach(function(x){ x.classList.remove('on'); });
+    s.classList.add('on');
+    ['locsim','contacts','calls','sms'].forEach(function(t){
+      document.getElementById('pane-' + t).style.display = t === s.dataset.tab ? 'block' : 'none';
+    });
+  });
+});
+
+/* ========== 通讯录/短信/通话记录：参数面板（占比滑条 + 合计校验 + 生成反馈） ========== */
+var SLIDER_DEFS = {
+  clocal: { link: false, def: [65] },
+  crel:   { link: true,  def: [55, 20, 12, 8, 5] },
+  srel:   { link: true,  def: [35, 20, 15, 10, 10, 10] },
+  krel1:  { link: true,  def: [70, 30] },
+  krel2:  { link: true,  def: [40, 40, 20] },
+};
+var sliderVals = {};
+Object.keys(SLIDER_DEFS).forEach(function(g){ sliderVals[g] = SLIDER_DEFS[g].def.slice(); });
+
+function renderSlider(group, idx){
+  var s = document.querySelector('[data-slider="' + group + '"][data-idx="' + idx + '"]');
+  if (!s) return;
+  var v = sliderVals[group][idx];
+  s.querySelector('.fill').style.width = v + '%';
+  s.querySelector('.knob').style.left = v + '%';
+  var valEl = document.querySelector('[data-val="' + group + '-' + idx + '"]');
+  if (valEl) valEl.textContent = v + '%';
+}
+function renderGroup(group){
+  sliderVals[group].forEach(function(_, i){ renderSlider(group, i); });
+  var sum = sliderVals[group].reduce(function(a, b){ return a + b; }, 0);
+  document.querySelectorAll('[data-sum="' + group + '"]').forEach(function(el){ el.textContent = sum; });
+}
+
+/* 滑条拖动：联动组（合计 100%）拖动一项，其余按比例缩放 */
+document.querySelectorAll('.slider').forEach(function(s){
+  var group = s.dataset.slider, idx = +s.dataset.idx;
+  var drag = false;
+  s.addEventListener('mousedown', function(e){ drag = true; update(e); e.preventDefault(); });
+  window.addEventListener('mousemove', function(e){ if (drag) update(e); });
+  window.addEventListener('mouseup', function(){ drag = false; });
+  function update(e){
+    var r = s.getBoundingClientRect();
+    var pct = Math.round(((e.clientX - r.left) / r.width) * 100);
+    pct = Math.max(1, Math.min(99, pct));
+    var def = SLIDER_DEFS[group];
+    if (def.link){
+      var arr = sliderVals[group];
+      var oldSum = arr.reduce(function(a, b){ return a + b; }, 0);
+      var others = oldSum - arr[idx];
+      var scale = others > 0 ? (100 - pct) / others : 0;
+      for (var i = 0; i < arr.length; i++){
+        arr[i] = (i === idx) ? pct : Math.max(1, Math.round(arr[i] * scale));
+      }
+      var sum = arr.reduce(function(a, b){ return a + b; }, 0);
+      arr[arr.length - 1] += (100 - sum);   // 余量归最后一项，保证合计 100
+    } else {
+      sliderVals[group][idx] = pct;
+    }
+    renderGroup(group);
+  }
+});
+
+/* 重置默认 */
+document.querySelectorAll('.rst').forEach(function(r){
+  r.addEventListener('click', function(){
+    (r.dataset.reset || '').split(',').forEach(function(g){
+      if (g && SLIDER_DEFS[g]){ sliderVals[g] = SLIDER_DEFS[g].def.slice(); renderGroup(g); }
+    });
+  });
+});
+
+/* 生成反馈：生成中 → 已写入 N 个/条 → 重新生成 */
+document.querySelectorAll('[data-action="gen"]').forEach(function(b){
+  b.addEventListener('click', function(){
+    var kind = b.dataset.kind;
+    var countEl = document.getElementById(kind + 'Count');
+    var hintEl = document.getElementById(kind + 'Hint');
+    var n = countEl ? (parseInt(countEl.value, 10) || 0) : 0;
+    b.textContent = '生成中…';
+    setTimeout(function(){
+      b.textContent = '✓ 已生成';
+      var label = kind === 'c' ? '个' : '条';
+      hintEl.innerHTML = '已写入 <b>' + n + '</b> ' + label + ' · 系统应用即时可见';
+    }, 600);
+    setTimeout(function(){ b.textContent = '重新生成'; }, 1800);
+  });
+});
+Object.keys(SLIDER_DEFS).forEach(renderGroup);
+
+/* 随机种子：数字表示，点击即随机生成新种子 */
+['cSeed', 'sSeed', 'kSeed'].forEach(function(id){
+  var el = document.getElementById(id);
+  el.addEventListener('click', function(){
+    el.textContent = String(10000000 + Math.floor(Math.random() * 89999999));
+  });
+});
+</script>
+</body>
+</html>

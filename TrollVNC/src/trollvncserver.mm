@@ -3583,7 +3583,6 @@ static NSDictionary *tvExtHandleConfigGet(rfbClientPtr cl, NSDictionary *params)
 static NSDictionary *tvExtHandleDataProbe(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleDataRead(rfbClientPtr cl, NSDictionary *params);
-static NSDictionary *tvExtHandleDataRespring(rfbClientPtr cl, NSDictionary *params);
 // HTTP 管理 API（5802）：首包可能已含部分 body，由 tvHttpApiHandleClient 复用
 static NSData *tvHttpApiReadBodyFromPartial(int fd, SSL *ssl, NSData *partial);
 
@@ -3708,8 +3707,6 @@ static rfbBool tvExtHandleMessage(rfbClientPtr cl, void *data,
         resp = tvExtHandleDataTest(cl, params);
     } else if ([op isEqualToString:@"data.read"]) {
         resp = tvExtHandleDataRead(cl, params);
-    } else if ([op isEqualToString:@"data.respring"]) {
-        resp = tvExtHandleDataRespring(cl, params);
     } else {
         resp = tvExtErr([NSString stringWithFormat:@"未知操作: %@", op ?: @""]);
     }
@@ -4290,17 +4287,6 @@ static NSDictionary *tvExtHandleDataRead(rfbClientPtr cl, NSDictionary *params) 
     return tvExtOk(out);
 }
 
-/** data.respring —— 重启 SpringBoard 刷新系统 UI 缓存（通讯录/短信等 App 数据缓存）；
- *  kill SpringBoard 后 launchd 自动拉起，设备隧道/注册自动重连 */
-static NSDictionary *tvExtHandleDataRespring(rfbClientPtr cl, NSDictionary *params) {
-    (void)cl; (void)params;
-    pid_t pid = tvFindPidByName("SpringBoard");
-    if (!pid) return tvExtErr(@"未找到 SpringBoard 进程");
-    if (kill(pid, SIGKILL) != 0)
-        return tvExtErr([NSString stringWithFormat:@"kill SpringBoard(%d) 失败: %s", pid, strerror(errno)]);
-    return tvExtOk(@{@"respring": @YES});
-}
-
 /** app.list/app.open 的 LSApplicationWorkspace 实例（惰性加载） */
 static id tvLSWorkspaceInstance(void) {
     if (!tvLoadLSWorkspace()) return nil;
@@ -4329,8 +4315,6 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         return tvExtHandleDataTest(NULL, params);
     } else if ([op isEqualToString:@"data.read"]) {
         return tvExtHandleDataRead(NULL, params);
-    } else if ([op isEqualToString:@"data.respring"]) {
-        return tvExtHandleDataRespring(NULL, params);
     }
     // ===== touch.* 独立触控（2026-08-23，AI 工具/脚本经 5802 HTTP 直接注入，不依赖 5901 RFB 会话）=====
     // 与 TRCapabilityRegistry touch.tap/swipe 契约一致：坐标 0-1 归一化（屏幕比例）。
