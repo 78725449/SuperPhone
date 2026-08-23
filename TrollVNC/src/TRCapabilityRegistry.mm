@@ -408,7 +408,13 @@ static NSDictionary *TRSearchGatewaySync(void) {
                  @{@"name":@"duration",@"type":@"number",@"required":@NO}]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             CGPoint a, b;
-            if (![self _normPointFromParams:p outPoint:&a error:e]) return nil;
+            NSNumber *x1 = p[@"x1"], *y1 = p[@"y1"];
+            if (![x1 isKindOfClass:[NSNumber class]] || ![y1 isKindOfClass:[NSNumber class]] ||
+                ![self _normToPixelX:x1.doubleValue y:y1.doubleValue outPoint:&a error:e]) {
+                if (e && !*e) *e = [NSError errorWithDomain:@"TRCap" code:1
+                                   userInfo:@{NSLocalizedDescriptionKey:@"缺少起点坐标 x1/y1（0-1 归一化）"}];
+                return nil;
+            }
             NSNumber *x2 = p[@"x2"], *y2 = p[@"y2"];
             if (![x2 isKindOfClass:[NSNumber class]] || ![y2 isKindOfClass:[NSNumber class]] ||
                 ![self _normToPixelX:x2.doubleValue y:y2.doubleValue outPoint:&b error:e]) {
@@ -426,7 +432,13 @@ static NSDictionary *TRSearchGatewaySync(void) {
                  @{@"name":@"duration",@"type":@"number",@"required":@NO}]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             CGPoint a, b;
-            if (![self _normPointFromParams:p outPoint:&a error:e]) return nil;
+            NSNumber *x1 = p[@"x1"], *y1 = p[@"y1"];
+            if (![x1 isKindOfClass:[NSNumber class]] || ![y1 isKindOfClass:[NSNumber class]] ||
+                ![self _normToPixelX:x1.doubleValue y:y1.doubleValue outPoint:&a error:e]) {
+                if (e && !*e) *e = [NSError errorWithDomain:@"TRCap" code:1
+                                   userInfo:@{NSLocalizedDescriptionKey:@"缺少起点坐标 x1/y1（0-1 归一化）"}];
+                return nil;
+            }
             NSNumber *x2 = p[@"x2"], *y2 = p[@"y2"];
             if (![x2 isKindOfClass:[NSNumber class]] || ![y2 isKindOfClass:[NSNumber class]] ||
                 ![self _normToPixelX:x2.doubleValue y:y2.doubleValue outPoint:&b error:e]) {
