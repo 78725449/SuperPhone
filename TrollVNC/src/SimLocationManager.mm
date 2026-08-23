@@ -77,12 +77,20 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
                                                            course:course
                                                             speed:speed
                                                         timestamp:[NSDate date]];
-    [_sim stopLocationSimulation];
-    [_sim clearSimulatedLocations];
-    [_sim appendSimulatedLocation:location];
-    [_sim flush];
-    [_sim startLocationSimulation];
-    _simulating = YES;
+    if (!_simulating) {
+        // 首次：完整启动（stop→clear→append→flush→start）
+        [_sim stopLocationSimulation];
+        [_sim clearSimulatedLocations];
+        [_sim appendSimulatedLocation:location];
+        [_sim flush];
+        [_sim startLocationSimulation];
+        _simulating = YES;
+    } else {
+        // running 态：append-only，不 stop/clear/restart
+        // 依据：TrollBox 实证「stop 后位置异常」是系统 daemon bug，每秒 stop→start 高频触发 → 周期性漂移
+        [_sim appendSimulatedLocation:location];
+        [_sim flush];
+    }
     [SimLocationManager postTimezoneUpdate];
 }
 
