@@ -28,8 +28,11 @@
     }
     // 仅 walk/drive 两个稳定真实档（Apple transportType 公开档）；其他值按 walk 兜底
     MKDirectionsRequest *req = [[MKDirectionsRequest alloc] init];
-    req.source = [MKMapItem placemarkWithCoordinate:from];
-    req.destination = [MKMapItem placemarkWithCoordinate:to];
+    // iOS 14 目标无 MKMapItem placemarkWithCoordinate:（Theos 头不全），用 MKPlacemark initWithCoordinate: 构造
+    MKPlacemark *spm = [[MKPlacemark alloc] initWithCoordinate:from];
+    MKPlacemark *dpm = [[MKPlacemark alloc] initWithCoordinate:to];
+    req.source = [[MKMapItem alloc] initWithPlacemark:spm];
+    req.destination = [[MKMapItem alloc] initWithPlacemark:dpm];
     req.transportType = tt;
     MKDirections *dir = [[MKDirections alloc] initWithRequest:req];
     TVLog(@"[simroute] calculate %@ (%.5f,%.5f)->(%.5f,%.5f)", m, from.latitude, from.longitude, to.latitude, to.longitude);
@@ -43,7 +46,7 @@
         MKPolyline *polyline = route.polyline;
         NSUInteger count = polyline.pointCount;
         if (count < 2) { TVLog(@"[simroute] polyline too short (%lu)", (unsigned long)count); return; }
-        CLLocationCoordinate2D *coords = malloc(count * sizeof(CLLocationCoordinate2D));
+        CLLocationCoordinate2D *coords = (CLLocationCoordinate2D *)malloc(count * sizeof(CLLocationCoordinate2D));
         if (!coords) { TVLog(@"[simroute] malloc failed"); return; }
         [polyline getCoordinates:coords range:NSMakeRange(0, count)];
         NSArray *points = [SimRouteCalculator resample:coords count:count mps:mps];
@@ -63,7 +66,7 @@
 
 + (NSArray *)resample:(CLLocationCoordinate2D *)coords count:(NSUInteger)count mps:(double)mps {
     // 先求累计距离（haversine）
-    double *cum = malloc(count * sizeof(double));
+    double *cum = (double *)malloc(count * sizeof(double));
     if (!cum) return @[];
     cum[0] = 0;
     for (NSUInteger i = 1; i < count; i++) {
