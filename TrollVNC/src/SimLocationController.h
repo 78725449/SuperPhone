@@ -15,12 +15,14 @@ NS_ASSUME_NONNULL_BEGIN
  * SimLocationController - 改定位自治控制器（正式实现）
  *
  * 职责：读取 defaults 中的 SimLocation* 参数（配置型建模），驱动注入状态机
- * （off / static / track），并在 manager 启动/配置变更/失效时自治恢复。
+ * （off / anchor / itinerary），并在 manager 启动/配置变更/失效时自治恢复。
  *
  * 关键设计（对齐《改定位-编码AI执行规格.md》§3.2）：
  * - 参数双域读取：root 域（网关 setConfig 写入）→ mobile 域 plist 回退（App/5801 写入）
  * - 失效巡检 + 参数变更感知合一：10s 定时器，比对参数缓存 + 检查注入状态
- * - track 用 mode A（每秒注入一点，Andromeda 实证姿势），完成后保持终点不 stop
+ * - anchor（位置基底）：中心点 + 微动游走（微步随机游走 + 回中，拟人必需）
+ * - itinerary（动作序列）：轨迹文件逐秒推进（方案 C append-only，不 restart），完成后保持终点
+ * - 当前位置 _current 每次注入后更新，供 status 查询 / 编排初始起点 / 失效恢复
  * - 只感知参数，不改 setConfig 分发机制（instant 语义由本控制器轮询感知）
  */
 @interface SimLocationController : NSObject
@@ -34,9 +36,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)reloadFromPrefs;
 
 /// 上传轨迹点序列（供 `sim.location.track` executor 调用）：
-/// 校验坐标范围 → 原子写轨迹文件（临时文件 rename）→ 写 SimLocationMode=track
+/// 校验坐标范围 → 原子写轨迹文件（临时文件 rename）→ 写 SimLocationMode=itinerary
 /// @return YES 成功；NO 失败并置 error
 + (BOOL)uploadTrackPoints:(NSArray<NSDictionary *> *)points error:(NSError **)error;
+
+/// 当前位置状态（供 `sim.location.status` 查询）：{mode, lat, lon, speed, course}
++ (NSDictionary *)currentStatus;
 
 @end
 

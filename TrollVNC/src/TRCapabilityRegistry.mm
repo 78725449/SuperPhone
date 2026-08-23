@@ -17,6 +17,7 @@
 #import "TRWatchDog.h"
 #import "SimLocationController.h"
 #import "SimRouteCalculator.h"
+#import "SimItineraryPlanner.h"
 #import "Logging.h"
 #import <UIKit/UIKit.h>
 #import <Security/Security.h>
@@ -731,7 +732,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
         return @{@"ok":@YES, @"name":name};
     }];
     // sim.location.track：轨迹点序列上传（大 payload 经 invoke，注册表 Native）——只做"数据搬运 + 触发"，
-    // 点序列由网关 TrajectoryGen 生成（§3.4），executor 落盘 + 切 track，SimLocationController 自治推进。
+    // 点序列由网关 TrajectoryGen 生成（§3.4），executor 落盘 + 切 itinerary，SimLocationController 自治推进。
     [self _registerControl:@"sim.location.track" title:@"上传定位轨迹" icon:@"📍" route:TRCapRouteNative
         params:@[@{@"name":@"points",@"type":@"array",@"required":@YES}]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
@@ -741,9 +742,15 @@ static NSDictionary *TRSearchGatewaySync(void) {
                 if (e) *e = lerr ?: [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"轨迹上传失败"}];
                 return nil;
             }
-            // 立即让 Controller 重读（文件已就绪 + mode=track），不等 10s 巡检
+            // 立即让 Controller 重读（文件已就绪 + mode=itinerary），不等 10s 巡检
             [[SimLocationController sharedController] reloadFromPrefs];
             return @{@"ok":@YES, @"count":@(pts.count)};
+        }];
+    // sim.location.status：当前位置状态（供 web/App 地图实时显示"现在在哪"）
+    [self _registerControl:@"sim.location.status" title:@"定位状态" icon:@"📍" route:TRCapRouteNative
+        params:@[]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            return [SimLocationController currentStatus];
         }];
     // sim.route.calculate：Apple 地图原生算路（两点沿真实道路）——异步算路→落盘→切 track，立即 ack
     // （MKDirections 联网算路 1-3s 超 invoke 5s 超时，故异步执行，设备端自治推进）
@@ -768,6 +775,27 @@ static NSDictionary *TRSearchGatewaySync(void) {
             }
             NSString *mode = [p[@"mode"] isKindOfClass:[NSString class]] ? p[@"mode"] : @"walk";
             [SimRouteCalculator calculateRouteFrom:fromC to:toC mode:mode];
+            return @{@"ok":@YES, @"status":@"calculating"};
+        }];
+    // sim.itinerary：定位编排（route/region/anchor 段按序拼接，段起点静态绑定）
+    // 异步执行：route 段 MKDirections 联网算路 > 5s invoke 超时，立即 ack，SimItineraryPlanner 后台串行生成
+    [self _registerControl:@"sim.itinerary" title:@"定位编排" icon:@"🗺️" route:TRCapRouteNative
+        params:@[
+            @{@"name":@"segments",@"type":@"array",@"required":@YES},
+        ]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            NSArray *segs = p[@"segments"];
+            if (![segs isKindOfClass:[NSArray class]] || segs.count == 0) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"segments 不能为空"}];
+                return nil;
+            }
+            [SimItineraryPlanner submitItinerary:segs completion:^(NSDictionary *result, NSError *err) {
+                if (err) {
+                    TVLog(@"[locsim] itinerary failed: %@", err.localizedDescription ?: @"unknown");
+                } else {
+                    TVLog(@"[locsim] itinerary done: %@", result);
+                }
+            }];
             return @{@"ok":@YES, @"status":@"calculating"};
         }];
 }
@@ -1103,7 +1131,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
     [self _registerConfig:@"HeartbeatIntervalSec" title:@"网关心跳间隔" type:@"number" min:@5 max:@300 step:@5 reload:TRConfigReloadGateway];
     // 定位模拟（SimLocation*：改定位自治参数，设备端 SimLocationController 巡检感知，instant 语义；group:locsim 见网关 caps.js）
     [self _registerConfig:@"SimLocationMode" title:@"定位模拟模式" type:@"enum"
-        enumValues:@[@"off",@"static",@"track"] enumTitles:@[@"关闭",@"单点",@"轨迹"] reload:TRConfigReloadInstant];
+        enumValues:@[@"off",@"anchor",@"itinerary"] enumTitles:@[@"关闭",@"锚点",@"轨迹"] reload:TRConfigReloadInstant];
     [self _registerConfig:@"SimLocationLat" title:@"目标纬度" type:@"number" min:@(-90) max:@90 step:@0.0001 reload:TRConfigReloadInstant];
     [self _registerConfig:@"SimLocationLon" title:@"目标经度" type:@"number" min:@(-180) max:@180 step:@0.0001 reload:TRConfigReloadInstant];
     [self _registerConfig:@"SimLocationAccuracy" title:@"定位精度" type:@"number" min:@3 max:@15 step:@1 reload:TRConfigReloadInstant];

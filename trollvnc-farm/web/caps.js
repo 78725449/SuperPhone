@@ -109,7 +109,7 @@ export const CONFIG_DEFS = [
   { key: 'CaptureFps', title: '采集帧率', type: 'number', min: 1, max: 30, step: 1, reload: 'hot', group: 'display' },
   { key: 'HeartbeatIntervalSec', title: '网关心跳间隔', type: 'number', min: 5, max: 300, step: 5, reload: 'gateway', group: 'keepalive' },
   // 定位模拟（改定位自治参数，group:locsim 独立板块；设备端 SimLocationController 巡检感知，instant 语义）
-  { key: 'SimLocationMode', title: '定位模拟模式', type: 'enum', enumValues: ['off', 'static', 'track'], enumTitles: ['关闭', '单点', '轨迹'], reload: 'instant', group: 'locsim' },
+  { key: 'SimLocationMode', title: '定位模拟模式', type: 'enum', enumValues: ['off', 'anchor', 'itinerary'], enumTitles: ['关闭', '锚点', '轨迹'], reload: 'instant', group: 'locsim' },
   { key: 'SimLocationLat', title: '目标纬度', type: 'number', min: -90, max: 90, step: 0.0001, reload: 'instant', group: 'locsim' },
   { key: 'SimLocationLon', title: '目标经度', type: 'number', min: -180, max: 180, step: 0.0001, reload: 'instant', group: 'locsim' },
   { key: 'SimLocationAccuracy', title: '定位精度', type: 'number', min: 3, max: 15, step: 1, reload: 'instant', group: 'locsim' },

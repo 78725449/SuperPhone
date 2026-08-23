@@ -1,7 +1,7 @@
 // SuperPhone 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
 // rfb.js?v=2：noVNC 核心为 server 内存 patch，URL 带版本号强制浏览器重新拉取 patch 后的内容避免旧缓存
 import RFB from '/novnc/core/rfb.js?v=4';
-import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=12';
+import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=13';
 import { attachPress } from './press.js';
 import { attachFarmGesture, attachRightHome, resolveGesture } from './gesture.js';
 
@@ -1447,7 +1447,19 @@ async function openLocPanel() {
     <div class="cfg-row"><span class="cfg-row-label">终点</span><select id="locTrkTo">${presetsOpts}</select></div>
     <div class="cfg-row"><span class="cfg-row-label">模式</span><select id="locTrkMode"><option value="walk">步行</option><option value="drive">驾车</option></select></div>
     <div class="cfg-row"><span class="cfg-row-label">说明</span><span id="locTrkEst" style="color:var(--muted)">设备端 MKDirections 算路，时长由实际道路距离÷速度决定</span></div>
-    <div class="modal-btns"><button id="locTrkStart">算路并开始移动</button></div>`;
+    <div class="modal-btns"><button id="locTrkStart">算路并开始移动</button></div>
+    <div class="cfg-sec-title">区域漫游（区域内随机途经点 + 随机停留，总时长≈设定）</div>
+    <div class="cfg-row"><span class="cfg-row-label">中心</span><select id="locRegCenter"><option value="">当前位置</option>${presetsOpts}</select></div>
+    <div class="cfg-row"><span class="cfg-row-label">半径（米）</span><input id="locRegRadius" type="number" min="50" step="50" value="500"></div>
+    <div class="cfg-row"><span class="cfg-row-label">时长（分钟）</span><input id="locRegDur" type="number" min="1" step="1" value="10"></div>
+    <div class="cfg-row"><span class="cfg-row-label">模式</span><select id="locRegMode"><option value="walk">步行</option><option value="drive">驾车</option></select></div>
+    <div class="modal-btns"><button id="locRegStart">区域漫游开始</button></div>
+    <div class="cfg-sec-title">编排（当前位置 → 路线 → 区域，段间无缝衔接）</div>
+    <div class="cfg-row"><span class="cfg-row-label">路线终点</span><select id="locItinTo">${presetsOpts}</select></div>
+    <div class="cfg-row"><span class="cfg-row-label">区域半径（米）</span><input id="locItinRadius" type="number" min="50" step="50" value="500"></div>
+    <div class="cfg-row"><span class="cfg-row-label">区域时长（分钟）</span><input id="locItinDur" type="number" min="1" step="1" value="10"></div>
+    <div class="cfg-row"><span class="cfg-row-label">模式</span><select id="locItinMode"><option value="walk">步行</option><option value="drive">驾车</option></select></div>
+    <div class="modal-btns"><button id="locItinStart" class="primary">执行编排</button></div>`;
   const preset = card.querySelector('#locPreset');
   const latInp = card.querySelector('#locLat');
   const lonInp = card.querySelector('#locLon');
@@ -1463,8 +1475,8 @@ async function openLocPanel() {
     if (!isFinite(lon) || lon < -180 || lon > 180) { toast('✗ 经度非法（-180~180）', 'error'); return; }
     const acc = Math.min(15, Math.max(3, parseFloat(accInp.value) || 5));
     try {
-      await setConfigs('', devId, { SimLocationMode: 'static', SimLocationLat: lat, SimLocationLon: lon, SimLocationAccuracy: acc });
-      toast('✓ 定位已应用（模拟）', 'success');
+      await setConfigs('', devId, { SimLocationMode: 'anchor', SimLocationLat: lat, SimLocationLon: lon, SimLocationAccuracy: acc });
+      toast('✓ 已锚点定位（原地微动，拟人）', 'success');
     } catch (e) { toast('✗ 应用失败 ' + e.message, 'error'); }
   };
   card.querySelector('#locStop').onclick = async () => {
@@ -1492,6 +1504,46 @@ async function openLocPanel() {
     } catch (e) { toast('✗ 算路请求失败 ' + e.message, 'error'); }
   };
   card.querySelector('#locClose').onclick = () => modal.remove();
+  // 区域漫游：invoke sim.itinerary（region 段，单段=区域漫游；中心为空=当前位置）
+  const regCenter = card.querySelector('#locRegCenter');
+  const regRadius = card.querySelector('#locRegRadius');
+  const regDur = card.querySelector('#locRegDur');
+  const regMode = card.querySelector('#locRegMode');
+  card.querySelector('#locRegStart').onclick = async () => {
+    const radius = parseFloat(regRadius.value);
+    const dur = parseFloat(regDur.value);
+    if (!isFinite(radius) || radius < 50) { toast('✗ 半径非法（≥50m）', 'error'); return; }
+    if (!isFinite(dur) || dur < 1) { toast('✗ 时长非法（≥1min）', 'error'); return; }
+    const center = LOC_PRESETS.find((x) => x.name === regCenter.value);
+    const seg = { type: 'region', radius, mode: regMode.value, durationMin: dur };
+    if (center) seg.center = { lat: center.lat, lon: center.lon };
+    try {
+      await invokeCap('', devId, 'sim.itinerary', { segments: [seg] });
+      toast('✓ 区域漫游编排中——蓝点稍后区域内随机走动+停留', 'success');
+    } catch (e) { toast('✗ 区域漫游请求失败 ' + e.message, 'error'); }
+  };
+  // 编排：当前位置 → 路线（算路）→ 区域（漫游），段起点静态绑定，前段终点=后段起点
+  const itinTo = card.querySelector('#locItinTo');
+  const itinRadius = card.querySelector('#locItinRadius');
+  const itinDur = card.querySelector('#locItinDur');
+  const itinMode = card.querySelector('#locItinMode');
+  card.querySelector('#locItinStart').onclick = async () => {
+    const to = LOC_PRESETS.find((x) => x.name === itinTo.value);
+    if (!to) { toast('✗ 请选择路线终点', 'error'); return; }
+    const radius = parseFloat(itinRadius.value);
+    const dur = parseFloat(itinDur.value);
+    if (!isFinite(radius) || radius < 50) { toast('✗ 区域半径非法（≥50m）', 'error'); return; }
+    if (!isFinite(dur) || dur < 1) { toast('✗ 区域时长非法（≥1min）', 'error'); return; }
+    try {
+      await invokeCap('', devId, 'sim.itinerary', {
+        segments: [
+          { type: 'route', to: { lat: to.lat, lon: to.lon }, mode: itinMode.value },
+          { type: 'region', radius, mode: itinMode.value, durationMin: dur },
+        ],
+      });
+      toast('✓ 编排中——先沿真实道路到终点，再区域漫游', 'success');
+    } catch (e) { toast('✗ 编排请求失败 ' + e.message, 'error'); }
+  };
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
   modal.appendChild(card);
   document.body.appendChild(modal);

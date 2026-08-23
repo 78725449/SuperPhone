@@ -11,21 +11,34 @@
 
 #import "SimLocationManager.h"
 #import "Logging.h"
+#import <math.h>
 
 // 轨迹点序列文件（大 payload 走文件，对齐 manager pid 平铺命名）
 static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.simloc.json";
 // 巡检间隔：失效检测 + 参数变更感知合一
 static const NSTimeInterval kSimPatrolInterval = 10.0;
-// track 逐点注入间隔（mode A：1s/点）
+// track 逐点注入间隔（itinerary：1s/点）
 static const NSTimeInterval kSimTrackTickInterval = 1.0;
+// anchor 微动游走间隔（1s/步）
+static const NSTimeInterval kSimAnchorTickInterval = 1.0;
+// anchor 微动范围（米）：人在原地附近小幅活动（5~50m 随机取，这里取中位）
+static const double kSimAnchorRangeM = 20.0;
 
 @implementation SimLocationController {
     dispatch_source_t _patrolSource;   // 10s 巡检
-    dispatch_source_t _trackSource;    // track 逐点注入
+    dispatch_source_t _trackSource;    // itinerary 逐点注入
+    dispatch_source_t _anchorSource;   // anchor 微动游走
     NSArray<NSDictionary *> *_trackPoints; // 轨迹点序列（内存缓存）
     NSUInteger _trackIndex;
     NSString *_lastParamsSig;          // 参数指纹（变更检测）
     BOOL _trackFinished;
+    // anchor 基底
+    double _anchorLat, _anchorLon, _anchorAcc;
+    // 当前位置（每次注入后更新；供 status / 编排初始起点 / 失效恢复）
+    double _currentLat, _currentLon, _currentSpeed, _currentCourse;
+    NSString *_currentMode;
+    // anchor 微动游走状态：相对中心偏移（米，局部平面近似）
+    double _currentMx, _currentMy;
 }
 
 + (instancetype)sharedController {
@@ -62,36 +75,107 @@ static const NSTimeInterval kSimTrackTickInterval = 1.0;
     if (![mode isKindOfClass:[NSString class]] || mode.length == 0) mode = @"off";
     TVLog(@"[locsim] apply mode=%@", mode);
     if ([mode isEqualToString:@"off"]) {
+        [self _stopAnchor];
         [self _stopTrack];
+        _currentMode = @"off";
         [[SimLocationManager sharedManager] stop];
-    } else if ([mode isEqualToString:@"static"]) {
+    } else if ([mode isEqualToString:@"anchor"]) {
+        // 位置基底：中心点 + 微动游走（拟人必需，完全静止坐标像假 GPS）
         [self _stopTrack];
-        [self _injectStatic];
-    } else if ([mode isEqualToString:@"track"]) {
-        [self _startTrack]; // _startTrack 内部立即注入轨迹首点（不读 static 旧坐标）
+        [self _startAnchor];
+    } else if ([mode isEqualToString:@"itinerary"]) {
+        // 动作序列：轨迹文件逐秒推进（段起点静态绑定已在生成时确定）
+        [self _stopAnchor];
+        [self _startTrack]; // _startTrack 内部立即注入轨迹首点（不读 anchor 旧坐标）
     } else {
         TVLog(@"[locsim] unknown mode=%@ -> off", mode);
+        [self _stopAnchor];
         [self _stopTrack];
+        _currentMode = @"off";
         [[SimLocationManager sharedManager] stop];
     }
 }
 
-- (void)_injectStatic {
+- (void)_startAnchor {
     double lat = [self _readDouble:@"SimLocationLat" def:0.0];
     double lon = [self _readDouble:@"SimLocationLon" def:0.0];
     double acc = [self _readDouble:@"SimLocationAccuracy" def:5.0];
     if (acc < 3.0) acc = 3.0;
     if (acc > 15.0) acc = 15.0;
-    CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(lat, lon);
-    [[SimLocationManager sharedManager] injectPoint:coord
-                                           altitude:45.0
-                                           accuracy:acc
-                                             course:0.0
-                                              speed:0.0];
-    TVLog(@"[locsim] static injected (%.5f, %.5f) acc=%.1f", lat, lon, acc);
+    _anchorLat = lat;
+    _anchorLon = lon;
+    _anchorAcc = acc;
+    _currentMx = 0.0;
+    _currentMy = 0.0;
+    // 首点注入前必须同步 _current（否则用残留值/0 坐标注入，蓝点闪跳）
+    _currentLat = lat;
+    _currentLon = lon;
+    _currentSpeed = 0.0;
+    _currentCourse = 0.0;
+    _currentMode = @"anchor";
+    [self _injectAnchorPointWithSpeed:0.0 course:0.0];
+    if (!_anchorSource) {
+        _anchorSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(_anchorSource, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSimAnchorTickInterval * NSEC_PER_SEC)),
+                                  (uint64_t)(kSimAnchorTickInterval * NSEC_PER_SEC), 0);
+        __weak typeof(self) weakSelf = self;
+        dispatch_source_set_event_handler(_anchorSource, ^{
+            [weakSelf _anchorTick];
+        });
+        dispatch_resume(_anchorSource);
+    }
+    TVLog(@"[locsim] anchor start (%.5f, %.5f) acc=%.1f", lat, lon, acc);
 }
 
-#pragma mark - track（mode A：每秒注入一点，完成后保持终点）
+- (void)_anchorTick {
+    // 微动游走：微步随机游走 + 范围约束 + 周期回中（相对中心偏移，米制局部平面近似）
+    double step = 0.1 + (double)(arc4random_uniform(400)) / 1000.0; // 0.1~0.5m
+    double ang = (double)(arc4random_uniform(62832)) / 10000.0;     // 0~2π
+    double dx = _currentMx + cos(ang) * step;
+    double dy = _currentMy + sin(ang) * step;
+    double dist = sqrt(dx * dx + dy * dy);
+    if (dist > kSimAnchorRangeM) {
+        // 超出范围：朝中心回拉一半（避免越走越远）
+        double over = dist - kSimAnchorRangeM;
+        dx -= (dx / dist) * over * 0.5;
+        dy -= (dy / dist) * over * 0.5;
+    } else if (dist > 0.01 && (arc4random_uniform(100) < 15)) {
+        // 15% 概率轻微回中（避免长期单方向漂移）
+        double pull = dist * 0.2;
+        dx -= (dx / dist) * pull;
+        dy -= (dy / dist) * pull;
+    }
+    _currentMx = dx;
+    _currentMy = dy;
+    double lat = _anchorLat + dy / 111320.0;
+    double lon = _anchorLon + dx / (111320.0 * cos(_anchorLat * M_PI / 180.0));
+    double course = atan2(dy, dx) * 180.0 / M_PI;
+    if (course < 0) course += 360.0;
+    _currentLat = lat;
+    _currentLon = lon;
+    _currentSpeed = step;
+    _currentCourse = course;
+    _currentMode = @"anchor";
+    [self _injectAnchorPointWithSpeed:step course:course];
+}
+
+- (void)_injectAnchorPointWithSpeed:(double)speed course:(double)course {
+    CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
+    [[SimLocationManager sharedManager] injectPoint:coord
+                                           altitude:45.0
+                                           accuracy:_anchorAcc
+                                             course:course
+                                              speed:speed];
+}
+
+- (void)_stopAnchor {
+    if (_anchorSource) {
+        dispatch_source_cancel(_anchorSource);
+        _anchorSource = nil;
+    }
+}
+
+#pragma mark - itinerary 轨迹推进（每秒注入一点，完成后保持终点）
 
 - (void)_startTrack {
     NSArray *points = [self _loadTrackPoints];
@@ -100,7 +184,8 @@ static const NSTimeInterval kSimTrackTickInterval = 1.0;
         return;
     }
     _trackPoints = points;
-    // 立即注入轨迹首点（不读 SimLocationLat/Lon 旧值——算路只写 mode=track，旧坐标会导致启动漂移）
+    _currentMode = @"itinerary";
+    // 立即注入轨迹首点（不读 anchor 旧坐标——旧坐标会导致启动漂移）
     [self _injectPointDict:points[0]];
     _trackIndex = 1;
     _trackFinished = NO;
@@ -116,13 +201,13 @@ static const NSTimeInterval kSimTrackTickInterval = 1.0;
         [weakSelf _trackTick];
     });
     dispatch_resume(_trackSource);
-    TVLog(@"[locsim] track start, %lu points", (unsigned long)points.count);
+    TVLog(@"[locsim] itinerary start, %lu points", (unsigned long)points.count);
 }
 
 - (void)_trackTick {
     if (_trackIndex >= _trackPoints.count) {
         [self _stopTrack]; // 完成：停 timer，保持终点坐标（不调 stop）
-        TVLog(@"[locsim] track finished, keep final point");
+        TVLog(@"[locsim] itinerary finished, keep final point");
         return;
     }
     [self _injectPointDict:_trackPoints[_trackIndex++]];
@@ -134,12 +219,19 @@ static const NSTimeInterval kSimTrackTickInterval = 1.0;
     double acc = [p[@"acc"] doubleValue];
     if (acc < 3.0) acc = 3.0;
     if (acc > 15.0) acc = 15.0;
+    double speed = [p[@"speed"] doubleValue];
+    double course = [p[@"course"] doubleValue];
     CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(lat, lon);
     [[SimLocationManager sharedManager] injectPoint:coord
                                            altitude:[p[@"alt"] doubleValue] > 0 ? [p[@"alt"] doubleValue] : 45.0
                                            accuracy:acc
-                                             course:[p[@"course"] doubleValue]
-                                              speed:[p[@"speed"] doubleValue]];
+                                             course:course
+                                              speed:speed];
+    // 当前位置更新（供 status / 编排初始起点 / 失效恢复）
+    _currentLat = lat;
+    _currentLon = lon;
+    _currentSpeed = speed;
+    _currentCourse = course;
 }
 
 - (void)_stopTrack {
@@ -208,12 +300,29 @@ static const NSTimeInterval kSimTrackTickInterval = 1.0;
         if (error) *error = werr ?: [NSError errorWithDomain:@"SimLoc" code:6 userInfo:@{NSLocalizedDescriptionKey:@"轨迹文件替换失败"}];
         return NO;
     }
-    // 切 track 模式（root 域；App 写 mobile 域由双域读取兜底）
+    // 切 itinerary 模式（root 域；App 写 mobile 域由双域读取兜底）
     NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
-    [d setObject:@"track" forKey:@"SimLocationMode"];
+    [d setObject:@"itinerary" forKey:@"SimLocationMode"];
     [d synchronize];
     TVLog(@"[locsim] track uploaded: %lu points", (unsigned long)clean.count);
     return YES;
+}
+
+#pragma mark - 当前位置状态（sim.location.status 查询）
+
++ (NSDictionary *)currentStatus {
+    SimLocationController *c = [SimLocationController sharedController];
+    NSString *mode = c->_currentMode ?: @"off";
+    if ([mode isEqualToString:@"off"] || (c->_currentLat == 0 && c->_currentLon == 0)) {
+        return @{ @"mode": mode };
+    }
+    return @{
+        @"mode": mode,
+        @"lat": @(c->_currentLat),
+        @"lon": @(c->_currentLon),
+        @"speed": @(c->_currentSpeed),
+        @"course": @(c->_currentCourse),
+    };
 }
 
 #pragma mark - 巡检（10s：失效恢复 + 参数变更感知）
@@ -234,15 +343,16 @@ static const NSTimeInterval kSimTrackTickInterval = 1.0;
     NSString *mode = [self _readPref:@"SimLocationMode"];
     if (![mode isKindOfClass:[NSString class]] || mode.length == 0) mode = @"off";
     if ([mode isEqualToString:@"off"]) return;
-    if ([mode isEqualToString:@"static"]) {
-        // static 注入失效（locationd 会话中断）则重注入
-        if (![SimLocationManager sharedManager].isSimulating) {
-            TVLog(@"[locsim] static injection lost, re-inject");
-            [self _injectStatic];
+    if ([mode isEqualToString:@"anchor"]) {
+        // anchor 注入失效（locationd 会话中断）或游走 timer 丢失则重启
+        if (![SimLocationManager sharedManager].isSimulating || !_anchorSource) {
+            TVLog(@"[locsim] anchor lost, re-start");
+            [self _startAnchor];
         }
-    } else if ([mode isEqualToString:@"track"]) {
-        if (!_trackSource) {
-            TVLog(@"[locsim] track timer lost, restart track");
+    } else if ([mode isEqualToString:@"itinerary"]) {
+        // 已完成（停在终点）不重播：仅播放中 timer 丢失才重启；进度不持久化，进程重启后从头播
+        if (!_trackFinished && !_trackSource) {
+            TVLog(@"[locsim] itinerary timer lost, restart");
             [self _startTrack];
         }
     }

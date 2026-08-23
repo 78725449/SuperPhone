@@ -19,6 +19,26 @@
 + (void)calculateRouteFrom:(CLLocationCoordinate2D)from
                         to:(CLLocationCoordinate2D)to
                       mode:(NSString *)mode {
+    [SimRouteCalculator calculateRoutePointsFrom:from to:to mode:mode completion:^(NSArray<NSDictionary *> *points, NSError *error) {
+        if (error || points.count < 2) {
+            TVLog(@"[simroute] calculate failed: %@", error.localizedDescription ?: @"too few points");
+            return;
+        }
+        NSError *uerr = nil;
+        if (![SimLocationController uploadTrackPoints:points error:&uerr]) {
+            TVLog(@"[simroute] upload failed: %@", uerr.localizedDescription ?: @"unknown");
+            return;
+        }
+        [[SimLocationController sharedController] reloadFromPrefs];
+        TVLog(@"[simroute] ok: %lu points, mode=%@", (unsigned long)points.count, mode);
+    }];
+}
+
++ (void)calculateRoutePointsFrom:(CLLocationCoordinate2D)from
+                              to:(CLLocationCoordinate2D)to
+                            mode:(NSString *)mode
+                      completion:(void (^)(NSArray<NSDictionary *> *points, NSError *error))completion {
+    if (!completion) return;
     NSString *m = mode.length ? mode : @"walk";
     double mps = 1.4;
     MKDirectionsTransportType tt = MKDirectionsTransportTypeWalking;
@@ -39,26 +59,41 @@
     [dir calculateDirectionsWithCompletionHandler:^(MKDirectionsResponse *response, NSError *error) {
         if (error) {
             TVLog(@"[simroute] MKDirections error: %@", error.localizedDescription);
+            completion(@[], error);
             return;
         }
         MKRoute *route = response.routes.firstObject;
-        if (!route) { TVLog(@"[simroute] no route"); return; }
+        if (!route) {
+            NSError *e = [NSError errorWithDomain:@"SimRoute" code:1 userInfo:@{NSLocalizedDescriptionKey:@"无算路结果"}];
+            TVLog(@"[simroute] no route");
+            completion(@[], e);
+            return;
+        }
         MKPolyline *polyline = route.polyline;
         NSUInteger count = polyline.pointCount;
-        if (count < 2) { TVLog(@"[simroute] polyline too short (%lu)", (unsigned long)count); return; }
+        if (count < 2) {
+            NSError *e = [NSError errorWithDomain:@"SimRoute" code:2 userInfo:@{NSLocalizedDescriptionKey:@"路线过短"}];
+            TVLog(@"[simroute] polyline too short (%lu)", (unsigned long)count);
+            completion(@[], e);
+            return;
+        }
         CLLocationCoordinate2D *coords = (CLLocationCoordinate2D *)malloc(count * sizeof(CLLocationCoordinate2D));
-        if (!coords) { TVLog(@"[simroute] malloc failed"); return; }
+        if (!coords) {
+            NSError *e = [NSError errorWithDomain:@"SimRoute" code:3 userInfo:@{NSLocalizedDescriptionKey:@"内存分配失败"}];
+            completion(@[], e);
+            return;
+        }
         [polyline getCoordinates:coords range:NSMakeRange(0, count)];
         NSArray *points = [SimRouteCalculator resample:coords count:count mps:mps];
         free(coords);
-        if (points.count < 2) { TVLog(@"[simroute] resample too few points"); return; }
-        NSError *uerr = nil;
-        if (![SimLocationController uploadTrackPoints:points error:&uerr]) {
-            TVLog(@"[simroute] upload failed: %@", uerr.localizedDescription ?: @"unknown");
+        if (points.count < 2) {
+            NSError *e = [NSError errorWithDomain:@"SimRoute" code:4 userInfo:@{NSLocalizedDescriptionKey:@"重采样点不足"}];
+            TVLog(@"[simroute] resample too few points");
+            completion(@[], e);
             return;
         }
-        [[SimLocationController sharedController] reloadFromPrefs];
         TVLog(@"[simroute] ok: %lu points, %.1f km, mode=%@", (unsigned long)points.count, route.distance / 1000.0, m);
+        completion(points, nil);
     }];
 }
 

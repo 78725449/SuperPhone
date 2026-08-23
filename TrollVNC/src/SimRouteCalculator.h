@@ -35,6 +35,16 @@ NS_ASSUME_NONNULL_BEGIN
                         to:(CLLocationCoordinate2D)to
                       mode:(NSString *)mode;
 
+/// 异步算路仅返回点序列（不落盘、不切 mode）——供 sim.itinerary 编排逐段拼接使用
+/// @param from 起点（WGS-84）
+/// @param to   终点（WGS-84）
+/// @param mode walk / drive（其他值按 walk 兜底）
+/// @param completion 点序列（§3.3.2 格式）；error 非 nil 时 points 为空数组
++ (void)calculateRoutePointsFrom:(CLLocationCoordinate2D)from
+                              to:(CLLocationCoordinate2D)to
+                            mode:(NSString *)mode
+                      completion:(void (^)(NSArray<NSDictionary *> *points, NSError *error))completion;
+
 @end
 
 NS_ASSUME_NONNULL_END
