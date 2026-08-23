@@ -2,7 +2,6 @@
 // rfb.js?v=2：noVNC 核心为 server 内存 patch，URL 带版本号强制浏览器重新拉取 patch 后的内容避免旧缓存
 import RFB from '/novnc/core/rfb.js?v=4';
 import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=12';
-import { interpolateRoute, haversineMeters, SPEED_DEFS } from './trajectory-gen.js?v=1';
 import { attachPress } from './press.js';
 import { attachFarmGesture, attachRightHome, resolveGesture } from './gesture.js';
 
@@ -1443,12 +1442,12 @@ async function openLocPanel() {
       <button id="locStop">停止定位</button>
       <button id="locClose">取消</button>
     </div>
-    <div class="cfg-sec-title">轨迹模拟（A→B，时长=距离÷速度自动决定）</div>
+    <div class="cfg-sec-title">轨迹模拟（Apple 地图原生算路，沿真实道路）</div>
     <div class="cfg-row"><span class="cfg-row-label">起点</span><select id="locTrkFrom">${presetsOpts}</select></div>
     <div class="cfg-row"><span class="cfg-row-label">终点</span><select id="locTrkTo">${presetsOpts}</select></div>
-    <div class="cfg-row"><span class="cfg-row-label">速度</span><select id="locTrkSpeed"><option value="walk">步行</option><option value="cycle">骑行</option><option value="drive">驾车</option></select></div>
-    <div class="cfg-row"><span class="cfg-row-label">预计</span><span id="locTrkEst" style="color:var(--muted)">选择起点/终点后自动计算</span></div>
-    <div class="modal-btns"><button id="locTrkStart">生成并上传轨迹</button></div>`;
+    <div class="cfg-row"><span class="cfg-row-label">模式</span><select id="locTrkMode"><option value="walk">步行</option><option value="drive">驾车</option></select></div>
+    <div class="cfg-row"><span class="cfg-row-label">说明</span><span id="locTrkEst" style="color:var(--muted)">设备端 MKDirections 算路，时长由实际道路距离÷速度决定</span></div>
+    <div class="modal-btns"><button id="locTrkStart">算路并开始移动</button></div>`;
   const preset = card.querySelector('#locPreset');
   const latInp = card.querySelector('#locLat');
   const lonInp = card.querySelector('#locLon');
@@ -1474,41 +1473,23 @@ async function openLocPanel() {
       toast('✓ 已恢复真实定位', 'success');
     } catch (e) { toast('✗ 停止失败 ' + e.message, 'error'); }
   };
-  // 轨迹：A→B 完整插值（时长=距离÷速度自动决定）→ invoke sim.location.track；超长（>20 万点）前端提示拦截
+  // 轨迹：Apple 地图原生算路（MKDirections）——invoke sim.route.calculate，异步算路→设备端落盘→沿路推进
   const trkFrom = card.querySelector('#locTrkFrom');
   const trkTo = card.querySelector('#locTrkTo');
-  const trkSpeed = card.querySelector('#locTrkSpeed');
+  const trkMode = card.querySelector('#locTrkMode');
   const trkEst = card.querySelector('#locTrkEst');
-  const TRK_MAX_POINTS = 200000; // ≈ walk 280km，超长既不拟真（人不会连续走 N 天）也逼近 16MB 帧上限
-  function updateTrkEstimate() {
-    const from = LOC_PRESETS.find((x) => x.name === trkFrom.value);
-    const to = LOC_PRESETS.find((x) => x.name === trkTo.value);
-    if (!from || !to || from.name === to.name) { trkEst.textContent = '请选择不同的起点/终点'; return; }
-    const dist = haversineMeters(from, to);
-    const mps = SPEED_DEFS[trkSpeed.value];
-    const pts = Math.max(1, Math.round(dist / mps));
-    const mins = Math.max(1, Math.round(pts / 60));
-    trkEst.textContent = `${trkSpeed.value} 约 ${mins} 分钟（${pts.toLocaleString()} 点）${pts > TRK_MAX_POINTS ? ' ⚠ 超限' : ''}`;
-  }
-  trkFrom.addEventListener('change', updateTrkEstimate);
-  trkTo.addEventListener('change', updateTrkEstimate);
-  trkSpeed.addEventListener('change', updateTrkEstimate);
   card.querySelector('#locTrkStart').onclick = async () => {
     const from = LOC_PRESETS.find((x) => x.name === trkFrom.value);
     const to = LOC_PRESETS.find((x) => x.name === trkTo.value);
     if (!from || !to || from.name === to.name) { toast('✗ 请选择不同的起点/终点', 'error'); return; }
-    const dist = haversineMeters(from, to);
-    const mps = SPEED_DEFS[trkSpeed.value];
-    const estPoints = Math.round(dist / mps);
-    if (estPoints > TRK_MAX_POINTS) {
-      toast(`✗ 路线过长（${trkSpeed.value} 约 ${Math.round(estPoints / 3600)} 小时 ${estPoints.toLocaleString()} 点）——请缩短距离或换更快方式`, 'error');
-      return;
-    }
-    const points = interpolateRoute(from, to, { speed: trkSpeed.value }); // 完整路线，不截断
     try {
-      await invokeCap('', devId, 'sim.location.track', { points });
-      toast(`✓ 轨迹已上传 ${points.length.toLocaleString()} 点（${trkSpeed.value}，约 ${Math.round(points.length / 60)} 分钟）`, 'success');
-    } catch (e) { toast('✗ 轨迹上传失败 ' + e.message, 'error'); }
+      await invokeCap('', devId, 'sim.route.calculate', {
+        from: { lat: from.lat, lon: from.lon },
+        to: { lat: to.lat, lon: to.lon },
+        mode: trkMode.value,
+      });
+      toast(`✓ 算路中（${trkMode.value === 'drive' ? '驾车' : '步行'}）——蓝点稍后沿真实道路移动`, 'success');
+    } catch (e) { toast('✗ 算路请求失败 ' + e.message, 'error'); }
   };
   card.querySelector('#locClose').onclick = () => modal.remove();
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });

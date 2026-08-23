@@ -16,6 +16,7 @@
 #import "TRGatewayClient.h"
 #import "TRWatchDog.h"
 #import "SimLocationController.h"
+#import "SimRouteCalculator.h"
 #import "Logging.h"
 #import <UIKit/UIKit.h>
 #import <Security/Security.h>
@@ -743,6 +744,31 @@ static NSDictionary *TRSearchGatewaySync(void) {
             // 立即让 Controller 重读（文件已就绪 + mode=track），不等 10s 巡检
             [[SimLocationController sharedController] reloadFromPrefs];
             return @{@"ok":@YES, @"count":@(pts.count)};
+        }];
+    // sim.route.calculate：Apple 地图原生算路（两点沿真实道路）——异步算路→落盘→切 track，立即 ack
+    // （MKDirections 联网算路 1-3s 超 invoke 5s 超时，故异步执行，设备端自治推进）
+    [self _registerControl:@"sim.route.calculate" title:@"算路轨迹" icon:@"🗺️" route:TRCapRouteNative
+        params:@[
+            @{@"name":@"from",@"type":@"object",@"required":@YES},
+            @{@"name":@"to",@"type":@"object",@"required":@YES},
+            @{@"name":@"mode",@"type":@"string",@"required":@NO},
+        ]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            NSDictionary *from = p[@"from"], *to = p[@"to"];
+            if (![from isKindOfClass:[NSDictionary class]] || ![to isKindOfClass:[NSDictionary class]]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"from/to 缺失"}];
+                return nil;
+            }
+            CLLocationCoordinate2D fromC = CLLocationCoordinate2DMake([from[@"lat"] doubleValue], [from[@"lon"] doubleValue]);
+            CLLocationCoordinate2D toC = CLLocationCoordinate2DMake([to[@"lat"] doubleValue], [to[@"lon"] doubleValue]);
+            if (fromC.latitude < -90.0 || fromC.latitude > 90.0 || fromC.longitude < -180.0 || fromC.longitude > 180.0 ||
+                toC.latitude < -90.0 || toC.latitude > 90.0 || toC.longitude < -180.0 || toC.longitude > 180.0) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey:@"坐标超出 WGS-84 范围"}];
+                return nil;
+            }
+            NSString *mode = [p[@"mode"] isKindOfClass:[NSString class]] ? p[@"mode"] : @"walk";
+            [SimRouteCalculator calculateRouteFrom:fromC to:toC mode:mode];
+            return @{@"ok":@YES, @"status":@"calculating"};
         }];
 }
 

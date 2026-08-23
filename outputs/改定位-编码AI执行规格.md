@@ -167,6 +167,25 @@ App 入口（生产主路径，离线自治）—— 不经网关/注册表
 - **16MB 隧道帧约束**：1 小时轨迹 3600 点 ≈ 200KB、24 小时 ≈ 5MB，均在安全范围；超长轨迹由网关分块多次调用（每块覆盖式，最后一帧携带全量）
 - **App 离线路径不走本能力**：App 直接写轨迹文件 + defaults（同域），Controller 双域读取同样可见
 
+#### 3.3.3 `sim.route.calculate`（注册表 Native 控制能力，Apple 地图原生算路）
+
+```objc
+// 注册（TRCapabilityRegistry _registerNativeCapabilities，route=TRCapRouteNative）
+// capId: sim.route.calculate
+// params: { from: {lat, lon}, to: {lat, lon}, mode: 'walk'|'drive' }
+// 行为：① 校验 from/to 坐标范围
+//       ② 异步 MKDirections 算路（walk→walking 1.4m/s / drive→automobile 13.9m/s；仅两个稳定真实档）
+//       ③ 算路完成：MKRoute.polyline 坐标 → 按速度重采样（步长=speed×1s + 拟人参数，对齐 §3.3.2 格式）
+//       ④ 原子写轨迹文件 + 切 SimLocationMode=track → Controller 自治推进
+//       ⑤ 立即返回 {ok, status:'calculating'}（MKDirections 联网 1-3s 超 invoke 5s 超时，故异步）
+```
+
+要点：
+- **沿真实道路**：MKDirections 返回 MKRoute.polyline 即沿路坐标，重采样后轨迹贴道路，不穿楼
+- **零第三方/零部署**：Apple 原生能力（MKDirections/MapKit），无需 OSRM/路网数据；生产（App 伪装页）与开发（网关 web）同路径
+- **局限**：仅设备端、需设备联网（Apple 服务）、transportType 公开档仅驾车/步行（骑行无公开 API，不提供）
+- **与 sim.location.track 分工**：`sim.route.calculate` = 设备端自动算路生成轨迹；`sim.location.track` = 外部显式上传点序列（GPX 导入/其他来源）——二者都落盘同一轨迹文件 + 切 track
+
 #### 3.3.2 轨迹文件格式（version 字段留演进余地）
 
 ```json
@@ -189,7 +208,7 @@ App 入口（生产主路径，离线自治）—— 不经网关/注册表
 
 **web 面板「模拟定位」**（[trollvnc-farm/web/](file:///c:/Users/Administrator/Documents/ChatGPT/New%20project/trollvnc-farm/web) 新增面板，无构建热更新，开发期调试主力）：
 - 阶段 1：预设城市列表（北京/上海/广州/深圳/成都…，`web/` 一个常量文件）+ 手输坐标 → 单发 `setConfigs({SimLocationMode:'static', SimLocationLat, SimLocationLon, SimLocationAccuracy})`（注册表 setConfig 入口）
-- 阶段 2：轨迹（起点/终点 + 速度档）→ 调 `TrajectoryGen` 生成**完整 A→B 点序列**（时长=距离÷速度自动决定，不截断）→ **`invokeCap('sim.location.track', {points})`**（注册表 invoke 入口，上传落盘 + 切 track）；超长路线（>20 万点，≈walk 280km）前端提示拦截（不拟真 + 逼近 16MB 帧上限），禁止静默截断
+- 阶段 2：轨迹（起点/终点 + 驾车/步行）→ **`invokeCap('sim.route.calculate', {from, to, mode})`**（设备端 Apple 地图原生算路，沿真实道路，异步——立即 ack，蓝点稍后自动沿路移动）
 - 停止：`setConfigs({SimLocationMode:'off'})`
 - 批量差异化（农场）：每台设备独立人设（城市+种子），**逐台循环单发**（configs 同参数不适用，`batchSetConfigs` 只用于同参数场景）
 - 右侧操作列按钮：`renderCapOps` 的 `focusOpsCap`/`opsMenuCap` 各加一个「定位」动作按钮，点开面板（与现有按钮能力同通道）

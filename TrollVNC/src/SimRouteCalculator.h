@@ -1,0 +1,40 @@
+/*
+ This file is part of SuperPhone
+ Copyright (c) 2025 82Flex <82flex@gmail.com> and contributors
+
+ This program is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License version 2
+ as published by the Free Software Foundation.
+*/
+
+#import <Foundation/Foundation.h>
+#import <CoreLocation/CoreLocation.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+/**
+ * SimRouteCalculator - Apple 地图原生算路（MKDirections）
+ *
+ * 两点沿真实道路的轨迹生成：MKDirections 算路 → MKRoute.polyline 坐标 →
+ * 按速度重采样（步长=speed×1s）→ 拟人参数 → 写轨迹文件 + 切 track（SimLocationController 自治推进）。
+ *
+ * 模式（Apple transportType 公开档，仅两个稳定真实档）：
+ * - walk → MKDirectionsTransportTypeWalking（1.4m/s）
+ * - drive → MKDirectionsTransportTypeAutomobile（13.9m/s）
+ *
+ * 异步姿势：invoke 5s 超时内无法等待联网算路，故本类异步执行，算路完成自动落盘 + 触发 Controller，
+ * 不阻塞调用方（网关立即收到 ok/calculating）。
+ */
+@interface SimRouteCalculator : NSObject
+
+/// 异步算路并落盘：MKDirections 完成后 → 重采样插值 → SimLocationController.uploadTrackPoints → reloadFromPrefs
+/// @param from 起点（WGS-84）
+/// @param to   终点（WGS-84）
+/// @param mode walk / drive（其他值按 walk 兜底）
++ (void)calculateRouteFrom:(CLLocationCoordinate2D)from
+                        to:(CLLocationCoordinate2D)to
+                      mode:(NSString *)mode;
+
+@end
+
+NS_ASSUME_NONNULL_END

@@ -63,6 +63,14 @@ const getT = await api(`/api/devices/${encodeURIComponent(devId)}/configs`);
 const ct = getT.j.configs || {};
 check('读回 SimLocationMode=track', ct.SimLocationMode === 'track', `got=${ct.SimLocationMode}`);
 
+// 3.6 route：invoke sim.route.calculate（Apple 原生算路，异步）——只验证请求链路与立即 ack
+const rtR = await api(`/api/devices/${encodeURIComponent(devId)}/invoke`, {
+  method: 'POST', body: JSON.stringify({ cap: 'sim.route.calculate', params: {
+    from: { lat: 39.9042, lon: 116.4074 }, to: { lat: 31.2304, lon: 121.4737 }, mode: 'walk',
+  } }),
+});
+check('invoke sim.route.calculate ok（异步 calculating）', rtR.status === 200 && rtR.j.ok && rtR.j.status === 'calculating', JSON.stringify(rtR.j));
+
 // 4. off 收尾
 const off1 = await api(`/api/devices/${encodeURIComponent(devId)}/configs`, {
   method: 'POST', body: JSON.stringify({ configs: { SimLocationMode: 'off' } }),
