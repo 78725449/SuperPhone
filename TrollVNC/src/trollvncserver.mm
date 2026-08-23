@@ -4159,8 +4159,7 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
         // 2026-08-24 改 CNContactStore 公开 API：DB 直写缺排序/FTS 索引（FirstSort 等）系统列表不显示；
         // CNContactStore 由系统维护全部字段；需 Contacts.framework + tcc kTCCServiceAddressBook（entitlement 放行，daemon 不弹窗）
         CNMutableContact *contact = [[CNMutableContact alloc] init];
-        contact.givenName = @"测试";
-        contact.familyName = @"联系人";
+        contact.familyName = @"测试联系人";  // 全名放单字段（与真实联系人同构，避免"姓 名"顺序反）
         CNPhoneNumber *pn = [CNPhoneNumber phoneNumberWithStringValue:@"17737148888"];
         contact.phoneNumbers = @[[CNLabeledValue labeledValueWithLabel:CNLabelPhoneNumberMobile value:pn]];
         CNSaveRequest *req = [[CNSaveRequest alloc] init];
@@ -4256,16 +4255,27 @@ static NSDictionary *tvExtHandleDataRead(rfbClientPtr cl, NSDictionary *params) 
 
     NSDictionary *qerr = nil;
     NSArray *rows = nil;
+    // table 参数（可选，白名单）：默认读各库主表，可按需读 chat/handle 等关联表排查
+    NSArray *allowed = nil;
+    NSString *defaultTable = nil;
     if ([dbName isEqualToString:@"calls"]) {
-        rows = tvDbQueryRows(db, [NSString stringWithFormat:@"SELECT * FROM ZCALLRECORD ORDER BY ZDATE DESC LIMIT %ld", (long)limit], &qerr);
+        allowed = @[@"ZCALLRECORD", @"ZHANDLE", @"Z_PRIMARYKEY"];
+        defaultTable = @"ZCALLRECORD";
     } else if ([dbName isEqualToString:@"sms"]) {
-        rows = tvDbQueryRows(db, [NSString stringWithFormat:@"SELECT * FROM message ORDER BY date DESC LIMIT %ld", (long)limit], &qerr);
+        allowed = @[@"message", @"chat", @"handle", @"chat_message_join", @"chat_handle_join"];
+        defaultTable = @"message";
     } else if ([dbName isEqualToString:@"contacts"]) {
-        rows = tvDbQueryRows(db, [NSString stringWithFormat:@"SELECT * FROM ABPerson ORDER BY ROWID DESC LIMIT %ld", (long)limit], &qerr);
+        allowed = @[@"ABPerson", @"ABMultiValue", @"ABStore"];
+        defaultTable = @"ABPerson";
     } else {
         sqlite3_close(db);
         return tvExtErr(@"未知 db: calls/sms/contacts");
     }
+    NSString *table = params[@"table"];
+    if (table && ![table isKindOfClass:[NSString class]]) { sqlite3_close(db); return tvExtErr(@"table 必须为字符串"); }
+    if (table && ![allowed containsObject:table]) { sqlite3_close(db); return tvExtErr([NSString stringWithFormat:@"table 不在白名单: %@", table]); }
+    if (!table) table = defaultTable;
+    rows = tvDbQueryRows(db, [NSString stringWithFormat:@"SELECT * FROM %@ ORDER BY ROWID DESC LIMIT %ld", table, (long)limit], &qerr);
     sqlite3_close(db);
 
     NSMutableDictionary *out = [NSMutableDictionary dictionary];
