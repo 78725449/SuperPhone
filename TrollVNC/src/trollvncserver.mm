@@ -3580,6 +3580,7 @@ static NSDictionary *tvExtHandleClipboardGet(rfbClientPtr cl, NSDictionary *para
 static NSDictionary *tvExtHandleTypePaste(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleConfigGet(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleDataProbe(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params);
 // HTTP 管理 API（5802）：首包可能已含部分 body，由 tvHttpApiHandleClient 复用
 static NSData *tvHttpApiReadBodyFromPartial(int fd, SSL *ssl, NSData *partial);
 
@@ -3700,6 +3701,8 @@ static rfbBool tvExtHandleMessage(rfbClientPtr cl, void *data,
         resp = tvExtHandleConfigGet(cl, params);
     } else if ([op isEqualToString:@"data.probe"]) {
         resp = tvExtHandleDataProbe(cl, params);
+    } else if ([op isEqualToString:@"data.test"]) {
+        resp = tvExtHandleDataTest(cl, params);
     } else {
         resp = tvExtErr([NSString stringWithFormat:@"未知操作: %@", op ?: @""]);
     }
@@ -3995,6 +3998,161 @@ static NSDictionary *tvExtHandleDataProbe(rfbClientPtr cl, NSDictionary *params)
     return tvExtOk(out);
 }
 
+// ===== data.test 数据生成写入测试（POC，2026-08-24）=====
+// 向指定库真实写入一条测试数据并 kill 对应 daemon，验证「写入 → 生效」链路。
+// 号码/内容为固定测试值；schema 以 data.probe 实证为准。
+
+/** 当前 Cocoa 纪元秒（2001-01-01 起，三库时间字段统一用此纪元） */
+static double tvCocoaNow(void) {
+    return [[NSDate date] timeIntervalSince1970] - 978307200.0;
+}
+
+/** 执行单条 SQL（无返回行）；成功 YES，失败填 errMsg */
+static BOOL tvDbExec(sqlite3 *db, NSString *sql, NSString **errMsg) {
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql.UTF8String, NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        if (errMsg) *errMsg = err ? [NSString stringWithUTF8String:err] : [NSString stringWithFormat:@"rc=%d", rc];
+        if (err) sqlite3_free(err);
+        return NO;
+    }
+    return YES;
+}
+
+/** 查询标量（第一行第一列 int64），无结果返回 0 */
+static sqlite3_int64 tvDbScalar(sqlite3 *db, NSString *sql) {
+    sqlite3_stmt *stmt = NULL;
+    sqlite3_int64 v = 0;
+    if (sqlite3_prepare_v2(db, sql.UTF8String, -1, &stmt, NULL) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) v = sqlite3_column_int64(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return v;
+}
+
+/** kill 系统 daemon（同 uid 可杀，launchd 自动拉起）；成功返回 nil */
+static NSString *tvKillDaemon(const char *name) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl("/usr/bin/killall", "killall", name, (char *)NULL);
+        _exit(127);
+    }
+    if (pid < 0) return @"fork 失败";
+    int st = 0;
+    waitpid(pid, &st, 0);
+    if (WIFEXITED(st) && WEXITSTATUS(st) == 0) return nil;
+    return [NSString stringWithFormat:@"killall %s 退出码 %d", name, WIFEXITED(st) ? WEXITSTATUS(st) : -1];
+}
+
+static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    NSString *dbName = params[@"db"];
+    static NSDictionary *kDBPaths = nil;
+    if (!kDBPaths) {
+        kDBPaths = @{
+            @"calls": @"/var/mobile/Library/CallHistoryDB/CallHistory.storedata",
+            @"sms": @"/var/mobile/Library/SMS/sms.db",
+            @"contacts": @"/var/mobile/Library/AddressBook/AddressBook.sqlitedb",
+        };
+    }
+    NSString *path = kDBPaths[dbName];
+    if (![path isKindOfClass:[NSString class]] || path.length == 0)
+        return tvExtErr(@"data.test 缺少参数 db（calls/sms/contacts）");
+
+    sqlite3 *db = NULL;
+    int rc = sqlite3_open_v2(path.UTF8String, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL);
+    if (rc != SQLITE_OK) {
+        NSString *e = [NSString stringWithUTF8String:sqlite3_errmsg(db) ?: "unknown"];
+        if (db) sqlite3_close(db);
+        return tvExtErr([NSString stringWithFormat:@"打开失败(rc=%d): %@", rc, e]);
+    }
+
+    NSString *dbErr = nil;
+    NSString *killTarget = nil;
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    double now = tvCocoaNow();
+
+    if ([dbName isEqualToString:@"calls"]) {
+        // Z_ENT：优先 Z_PRIMARYKEY 簿记，回退现有行；Z_PK = max+1
+        sqlite3_int64 ent = tvDbScalar(db, @"SELECT Z_ENT FROM Z_PRIMARYKEY WHERE Z_NAME LIKE '%CallRecord%' LIMIT 1");
+        if (!ent) ent = tvDbScalar(db, @"SELECT Z_ENT FROM ZCALLRECORD LIMIT 1");
+        sqlite3_int64 pk = tvDbScalar(db, @"SELECT MAX(Z_PK) FROM ZCALLRECORD") + 1;
+        BOOL ok = tvDbExec(db, [NSString stringWithFormat:
+            @"INSERT INTO ZCALLRECORD (Z_PK,Z_ENT,Z_OPT,ZANSWERED,ZCALLTYPE,ZDISCONNECTED_CAUSE,ZORIGINATED,ZREAD,ZDATE,ZDURATION,ZISO_COUNTRY_CODE,ZADDRESS,ZUNIQUE_ID) "
+            @"VALUES (%lld,%lld,0,1,1,0,0,1,%.0f,30.0,'CN',CAST('13800001111' AS BLOB),'%@')",
+            pk, ent, now, [[NSUUID UUID] UUIDString]], &dbErr);
+        if (ok) tvDbExec(db, [NSString stringWithFormat:@"UPDATE Z_PRIMARYKEY SET Z_MAX=%lld WHERE Z_ENT=%lld", pk, ent], nil);
+        out[@"ent"] = @(ent);
+        out[@"pk"] = @(pk);
+        killTarget = "callservicesd";
+        (void)ok;
+    } else if ([dbName isEqualToString:@"sms"]) {
+        NSString *phone = @"13800001111";
+        NSString *chatGuid = [[NSUUID UUID] UUIDString];
+        NSString *msgGuid = [[NSUUID UUID] UUIDString];
+        BOOL ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO handle (id, service) VALUES ('%@','iMessage')", phone], &dbErr);
+        if (ok) {
+            sqlite3_int64 hid = tvDbScalar(db, @"SELECT last_insert_rowid()");
+            out[@"handleId"] = @(hid);
+            ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO chat (guid, chat_identifier, service_name) VALUES ('%@','%@','iMessage')", chatGuid, phone], &dbErr);
+            if (ok) {
+                sqlite3_int64 cid = tvDbScalar(db, @"SELECT last_insert_rowid()");
+                out[@"chatId"] = @(cid);
+                ok = tvDbExec(db, [NSString stringWithFormat:
+                    @"INSERT INTO message (guid, text, handle_id, date, service, is_from_me, is_read, is_sent, is_delivered) "
+                    @"VALUES ('%@','%@',%lld,%.0f,'iMessage',0,1,1,1)",
+                    msgGuid, @"这是一条测试短信", hid, now], &dbErr);
+                if (ok) {
+                    sqlite3_int64 mid = tvDbScalar(db, @"SELECT last_insert_rowid()");
+                    out[@"messageId"] = @(mid);
+                    ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (%lld,%lld,%.0f)", cid, mid, now], &dbErr);
+                    if (ok) ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (%lld,%lld)", cid, hid], &dbErr);
+                }
+            }
+        }
+        killTarget = "imagent";
+        (void)ok;
+    } else if ([dbName isEqualToString:@"contacts"]) {
+        sqlite3_int64 storeId = tvDbScalar(db, @"SELECT ROWID FROM ABStore LIMIT 1");
+        if (!storeId) {
+            sqlite3_close(db);
+            return tvExtErr(@"通讯录库 ABStore 为空，无法写入");
+        }
+        sqlite3_int64 labelId = tvDbScalar(db, @"SELECT value FROM ABMultiValueLabel ORDER BY ROWID LIMIT 1");
+        BOOL ok = tvDbExec(db, [NSString stringWithFormat:
+            @"INSERT INTO ABPerson (First, Last, DisplayName, StoreID, CreationDate, ModificationDate) VALUES ('测试','联系人','测试联系人',%lld,%.0f,%.0f)",
+            storeId, now, now], &dbErr);
+        if (ok) {
+            sqlite3_int64 pid = tvDbScalar(db, @"SELECT last_insert_rowid()");
+            out[@"personId"] = @(pid);
+            ok = tvDbExec(db, [NSString stringWithFormat:
+                @"INSERT INTO ABMultiValue (record_id, property, identifier, label, value) VALUES (%lld,3,0,%lld,'13800002222')",
+                pid, labelId], &dbErr);
+        }
+        killTarget = "contactsd";
+        (void)ok;
+    } else {
+        sqlite3_close(db);
+        return tvExtErr(@"未知 db: calls/sms/contacts");
+    }
+
+    // WAL 合并，确保新数据落主库
+    tvDbExec(db, @"PRAGMA wal_checkpoint(TRUNCATE)", nil);
+
+    out[@"db"] = dbName;
+    out[@"written"] = dbErr ? @NO : @YES;
+    if (dbErr) out[@"error"] = dbErr;
+    sqlite3_close(db);
+
+    // kill daemon 生效
+    if (!dbErr && killTarget) {
+        NSString *killErr = tvKillDaemon(killTarget);
+        if (killErr) out[@"killError"] = killErr;
+        else out[@"kill"] = @(killTarget);
+    }
+    return tvExtOk(out);
+}
+
 /** app.list/app.open 的 LSApplicationWorkspace 实例（惰性加载） */
 static id tvLSWorkspaceInstance(void) {
     if (!tvLoadLSWorkspace()) return nil;
@@ -4019,6 +4177,8 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         return tvExtHandleConfigGet(NULL, params);
     } else if ([op isEqualToString:@"data.probe"]) {
         return tvExtHandleDataProbe(NULL, params);
+    } else if ([op isEqualToString:@"data.test"]) {
+        return tvExtHandleDataTest(NULL, params);
     }
     // ===== touch.* 独立触控（2026-08-23，AI 工具/脚本经 5802 HTTP 直接注入，不依赖 5901 RFB 会话）=====
     // 与 TRCapabilityRegistry touch.tap/swipe 契约一致：坐标 0-1 归一化（屏幕比例）。
