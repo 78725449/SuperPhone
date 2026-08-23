@@ -580,25 +580,19 @@ int main(int argc, const char *argv[]) {
         [TRGatewayClient sharedClient].watchdog = gWatchDog;
         [[TRGatewayClient sharedClient] start];
 
-        // ===== 实验 A 临时触发（验证后删除）：SimLocationTestInject=1 时注入天安门坐标 =====
+        // ===== 实验 A 临时触发（验证后删除）：manager 启动 3s 后无条件注入天安门坐标 =====
         // 目的：验证 root daemon 进程内 CLSimulationManager 注入链路（entitlement locationd.simulation）。
-        // 临时开关读 defaults（App/网关可经 configs 通道设置），实验完成后整体移除。
-        {
-            NSUserDefaults *td = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
-            id injectFlag = tvManagerReadPref(td, @"SimLocationTestInject"); // 双域读取：Filza 写 mobile 域 plist 即可触发
-            if ([injectFlag boolValue]) {
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
-                               dispatch_get_main_queue(), ^{
-                    CLLocationCoordinate2D tiananmen = CLLocationCoordinate2DMake(39.9087, 116.3975);
-                    [[SimLocationManager sharedManager] injectPoint:tiananmen
-                                                           altitude:45.0
-                                                           accuracy:5.0
-                                                             course:0.0
-                                                              speed:0.0];
-                    fprintf(stderr, "[manager] SimLocationTestInject: injected (39.9087, 116.3975)\n");
-                });
-            }
-        }
+        // 实验阶段无条件注入，避免用户手动改 plist 开关；验证完成后本段整体移除。
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            CLLocationCoordinate2D tiananmen = CLLocationCoordinate2DMake(39.9087, 116.3975);
+            [[SimLocationManager sharedManager] injectPoint:tiananmen
+                                                   altitude:45.0
+                                                   accuracy:5.0
+                                                     course:0.0
+                                                      speed:0.0];
+            fprintf(stderr, "[manager] ExperimentA: injected Tiananmen (39.9087, 116.3975)\n");
+        });
     }
 
     {
