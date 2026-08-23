@@ -3581,6 +3581,7 @@ static NSDictionary *tvExtHandleTypePaste(rfbClientPtr cl, NSDictionary *params)
 static NSDictionary *tvExtHandleConfigGet(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleDataProbe(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleDataRead(rfbClientPtr cl, NSDictionary *params);
 // HTTP 管理 API（5802）：首包可能已含部分 body，由 tvHttpApiHandleClient 复用
 static NSData *tvHttpApiReadBodyFromPartial(int fd, SSL *ssl, NSData *partial);
 
@@ -3703,6 +3704,8 @@ static rfbBool tvExtHandleMessage(rfbClientPtr cl, void *data,
         resp = tvExtHandleDataProbe(cl, params);
     } else if ([op isEqualToString:@"data.test"]) {
         resp = tvExtHandleDataTest(cl, params);
+    } else if ([op isEqualToString:@"data.read"]) {
+        resp = tvExtHandleDataRead(cl, params);
     } else {
         resp = tvExtErr([NSString stringWithFormat:@"未知操作: %@", op ?: @""]);
     }
@@ -4160,6 +4163,89 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
     return tvExtOk(out);
 }
 
+// ===== data.read 数据读取验证（2026-08-24）=====
+// 读取指定库现有数据（最近 N 条），验证「读取链路 + 系统数据格式」——写入前的先决验证。
+
+/** 查询多行（通用）；INTEGER/FLOAT→number，TEXT→string，BLOB→base64；失败返回空数组并填 outErr */
+static NSArray *tvDbQueryRows(sqlite3 *db, NSString *sql, NSDictionary **outErr) {
+    NSMutableArray *rows = [NSMutableArray array];
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql.UTF8String, -1, &stmt, NULL) != SQLITE_OK) {
+        if (outErr) *outErr = @{@"error": [NSString stringWithUTF8String:sqlite3_errmsg(db) ?: "unknown"]};
+        return rows;
+    }
+    int ncol = sqlite3_column_count(stmt);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        NSMutableDictionary *row = [NSMutableDictionary dictionary];
+        for (int i = 0; i < ncol; i++) {
+            const char *cname = sqlite3_column_name(stmt, i);
+            NSString *k = cname ? [NSString stringWithUTF8String:cname] : [NSString stringWithFormat:@"c%d", i];
+            int t = sqlite3_column_type(stmt, i);
+            if (t == SQLITE_INTEGER) row[k] = @(sqlite3_column_int64(stmt, i));
+            else if (t == SQLITE_FLOAT) row[k] = @(sqlite3_column_double(stmt, i));
+            else if (t == SQLITE_TEXT) {
+                const char *tx = (const char *)sqlite3_column_text(stmt, i);
+                row[k] = tx ? [NSString stringWithUTF8String:tx] : @"";
+            } else if (t == SQLITE_BLOB) {
+                const void *blob = sqlite3_column_blob(stmt, i);
+                int len = sqlite3_column_bytes(stmt, i);
+                row[k] = [[NSData dataWithBytes:blob length:(NSUInteger)len] base64EncodedStringWithOptions:0];
+            } else {
+                row[k] = [NSNull null];
+            }
+        }
+        [rows addObject:row];
+    }
+    sqlite3_finalize(stmt);
+    return rows;
+}
+
+static NSDictionary *tvExtHandleDataRead(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    NSString *dbName = params[@"db"];
+    NSInteger limit = [params[@"limit"] isKindOfClass:[NSNumber class]] ? [params[@"limit"] integerValue] : 5;
+    if (limit < 1 || limit > 50) limit = 5;
+    static NSDictionary *kDBPaths = nil;
+    if (!kDBPaths) {
+        kDBPaths = @{
+            @"calls": @"/var/mobile/Library/CallHistoryDB/CallHistory.storedata",
+            @"sms": @"/var/mobile/Library/SMS/sms.db",
+            @"contacts": @"/var/mobile/Library/AddressBook/AddressBook.sqlitedb",
+        };
+    }
+    NSString *path = kDBPaths[dbName];
+    if (![path isKindOfClass:[NSString class]] || path.length == 0)
+        return tvExtErr(@"data.read 缺少参数 db（calls/sms/contacts）");
+
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path.UTF8String, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK) {
+        NSString *e = [NSString stringWithUTF8String:sqlite3_errmsg(db) ?: "unknown"];
+        if (db) sqlite3_close(db);
+        return tvExtErr([NSString stringWithFormat:@"打开失败: %@", e]);
+    }
+
+    NSDictionary *qerr = nil;
+    NSArray *rows = nil;
+    if ([dbName isEqualToString:@"calls"]) {
+        rows = tvDbQueryRows(db, [NSString stringWithFormat:@"SELECT * FROM ZCALLRECORD ORDER BY ZDATE DESC LIMIT %ld", (long)limit], &qerr);
+    } else if ([dbName isEqualToString:@"sms"]) {
+        rows = tvDbQueryRows(db, [NSString stringWithFormat:@"SELECT * FROM message ORDER BY date DESC LIMIT %ld", (long)limit], &qerr);
+    } else if ([dbName isEqualToString:@"contacts"]) {
+        rows = tvDbQueryRows(db, [NSString stringWithFormat:@"SELECT * FROM ABPerson ORDER BY ROWID DESC LIMIT %ld", (long)limit], &qerr);
+    } else {
+        sqlite3_close(db);
+        return tvExtErr(@"未知 db: calls/sms/contacts");
+    }
+    sqlite3_close(db);
+
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    out[@"db"] = dbName;
+    out[@"count"] = @(rows.count);
+    out[@"rows"] = rows;
+    if (qerr) out[@"error"] = qerr[@"error"];
+    return tvExtOk(out);
+}
+
 /** app.list/app.open 的 LSApplicationWorkspace 实例（惰性加载） */
 static id tvLSWorkspaceInstance(void) {
     if (!tvLoadLSWorkspace()) return nil;
@@ -4186,6 +4272,8 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         return tvExtHandleDataProbe(NULL, params);
     } else if ([op isEqualToString:@"data.test"]) {
         return tvExtHandleDataTest(NULL, params);
+    } else if ([op isEqualToString:@"data.read"]) {
+        return tvExtHandleDataRead(NULL, params);
     }
     // ===== touch.* 独立触控（2026-08-23，AI 工具/脚本经 5802 HTTP 直接注入，不依赖 5901 RFB 会话）=====
     // 与 TRCapabilityRegistry touch.tap/swipe 契约一致：坐标 0-1 归一化（屏幕比例）。
