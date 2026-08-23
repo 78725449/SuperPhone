@@ -1424,7 +1424,8 @@ const LOC_PRESETS = [
 ];
 async function openLocPanel() {
   if (!focus) { toast('请先进入设备控制', 'error'); return; }
-  const devName = (focus.device && focus.device.name) || focus.id;
+  const devId = focus.device.id; // focus 结构：{ device: { id, name }, ... }（同 uploadToDeviceAlbum）
+  const devName = (focus.device && focus.device.name) || devId;
   const modal = document.createElement('div');
   modal.className = 'modal';
   const card = document.createElement('div');
@@ -1456,13 +1457,13 @@ async function openLocPanel() {
     if (!isFinite(lon) || lon < -180 || lon > 180) { toast('✗ 经度非法（-180~180）', 'error'); return; }
     const acc = Math.min(15, Math.max(3, parseFloat(accInp.value) || 5));
     try {
-      await setConfigs('', focus.id, { SimLocationMode: 'static', SimLocationLat: lat, SimLocationLon: lon, SimLocationAccuracy: acc });
+      await setConfigs('', devId, { SimLocationMode: 'static', SimLocationLat: lat, SimLocationLon: lon, SimLocationAccuracy: acc });
       toast('✓ 定位已应用（模拟）', 'success');
     } catch (e) { toast('✗ 应用失败 ' + e.message, 'error'); }
   };
   card.querySelector('#locStop').onclick = async () => {
     try {
-      await setConfigs('', focus.id, { SimLocationMode: 'off' });
+      await setConfigs('', devId, { SimLocationMode: 'off' });
       toast('✓ 已恢复真实定位', 'success');
     } catch (e) { toast('✗ 停止失败 ' + e.message, 'error'); }
   };
