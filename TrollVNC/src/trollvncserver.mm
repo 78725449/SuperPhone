@@ -4033,18 +4033,42 @@ static sqlite3_int64 tvDbScalar(sqlite3 *db, NSString *sql) {
     return v;
 }
 
-/** kill 系统 daemon（同 uid 可杀，launchd 自动拉起；iOS 无 killall，用 launchctl）；成功返回 nil */
-static NSString *tvKillDaemon(NSString *service) {
-    pid_t pid = fork();
-    if (pid == 0) {
-        execl("/bin/launchctl", "launchctl", "kill", "SIGKILL", service.UTF8String, (char *)NULL);
-        _exit(127);
+/** AddressBook.sqlitedb 触发器依赖系统框架注册的自定义函数（ab_generate_guid/ab_update_value_from_trigger），
+ *  直连 sqlite 缺失会报 "no such function"——注册占位：guid 返回随机 UUID，value 触发器 no-op（辅助表不更新，主表写入可用） */
+static void tvDbGuidFunc(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc; (void)argv;
+    NSString *g = [[NSUUID UUID] UUIDString];
+    sqlite3_result_text(ctx, g.UTF8String, -1, SQLITE_TRANSIENT);
+}
+static void tvDbNoopFunc(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc; (void)argv;
+    sqlite3_result_null(ctx);
+}
+
+/** 按进程名查 pid（sysctl 枚举，不依赖 killall/launchctl 命令行工具） */
+static pid_t tvFindPidByName(const char *name) {
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
+    size_t len = 0;
+    if (sysctl(mib, 4, NULL, &len, NULL, 0) != 0) return 0;
+    struct kinfo_proc *procs = (struct kinfo_proc *)malloc(len);
+    if (!procs) return 0;
+    if (sysctl(mib, 4, procs, &len, NULL, 0) != 0) { free(procs); return 0; }
+    int n = (int)(len / sizeof(struct kinfo_proc));
+    pid_t found = 0;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(procs[i].kp_proc.p_comm, name) == 0) { found = procs[i].kp_proc.p_pid; break; }
     }
-    if (pid < 0) return @"fork 失败";
-    int st = 0;
-    waitpid(pid, &st, 0);
-    if (WIFEXITED(st) && WEXITSTATUS(st) == 0) return nil;
-    return [NSString stringWithFormat:@"launchctl kill %@ 退出码 %d", service, WIFEXITED(st) ? WEXITSTATUS(st) : -1];
+    free(procs);
+    return found;
+}
+
+/** kill 系统 daemon（同 uid 直接 POSIX kill，launchd 自动拉起）；成功返回 nil */
+static NSString *tvKillDaemon(NSString *procName) {
+    pid_t pid = tvFindPidByName(procName.UTF8String);
+    if (!pid) return [NSString stringWithFormat:@"未找到进程 %@", procName];
+    if (kill(pid, SIGKILL) != 0)
+        return [NSString stringWithFormat:@"kill %@(%d) 失败: %s", procName, pid, strerror(errno)];
+    return nil;
 }
 
 static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) {
@@ -4069,6 +4093,9 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
         if (db) sqlite3_close(db);
         return tvExtErr([NSString stringWithFormat:@"打开失败(rc=%d): %@", rc, e]);
     }
+    // 注册 AddressBook 触发器依赖的自定义函数占位（无副作用，其他库同样注册无害）
+    sqlite3_create_function(db, "ab_generate_guid", 0, SQLITE_UTF8, NULL, tvDbGuidFunc, NULL, NULL);
+    sqlite3_create_function(db, "ab_update_value_from_trigger", -1, SQLITE_UTF8, NULL, tvDbNoopFunc, NULL, NULL);
 
     NSString *dbErr = nil;
     NSString *killTarget = nil;
@@ -4088,7 +4115,7 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
         if (ok) tvDbExec(db, [NSString stringWithFormat:@"UPDATE Z_PRIMARYKEY SET Z_MAX=%lld WHERE Z_ENT=%lld", pk, ent], nil);
         out[@"ent"] = @(ent);
         out[@"pk"] = @(pk);
-        killTarget = @"com.apple.telephonyutilities.callservicesd";
+        killTarget = @"callservicesd";
         (void)ok;
     } else if ([dbName isEqualToString:@"sms"]) {
         // 2026-08-24 data.read 实证：message.date=纳秒（Cocoa 纪元纳秒，实测 8e17 量级）；真实记录带 account='P:+号码'/date_read/date_delivered
@@ -4096,10 +4123,15 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
         NSString *chatGuid = [[NSUUID UUID] UUIDString];
         NSString *msgGuid = [[NSUUID UUID] UUIDString];
         sqlite3_int64 dateNs = (sqlite3_int64)(now * 1000000000.0);
-        BOOL ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO handle (id, service) VALUES ('%@','iMessage')", phone], &dbErr);
+        // handle 表 UNIQUE(id,service)：已存在则复用，避免冲突
+        sqlite3_int64 hid = tvDbScalar(db, [NSString stringWithFormat:@"SELECT ROWID FROM handle WHERE id='%@' AND service='iMessage'", phone]);
+        BOOL ok = YES;
+        if (!hid) {
+            ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO handle (id, service) VALUES ('%@','iMessage')", phone], &dbErr);
+            if (ok) hid = tvDbScalar(db, @"SELECT last_insert_rowid()");
+        }
+        out[@"handleId"] = @(hid);
         if (ok) {
-            sqlite3_int64 hid = tvDbScalar(db, @"SELECT last_insert_rowid()");
-            out[@"handleId"] = @(hid);
             ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO chat (guid, chat_identifier, service_name) VALUES ('%@','%@','iMessage')", chatGuid, phone], &dbErr);
             if (ok) {
                 sqlite3_int64 cid = tvDbScalar(db, @"SELECT last_insert_rowid()");
@@ -4116,7 +4148,7 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
                 }
             }
         }
-        killTarget = @"com.apple.imagent";
+        killTarget = @"imagent";
         (void)ok;
     } else if ([dbName isEqualToString:@"contacts"]) {
         // 2026-08-24 data.read 实证：真实 ABPerson.StoreID=0（非 ABStore ROWID）、DisplayName=null、guid 带 ':ABPerson' 后缀、日期用秒
@@ -4131,7 +4163,7 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
                 @"INSERT INTO ABMultiValue (record_id, property, identifier, label, value, guid) VALUES (%lld,3,0,%lld,'13800002222','%@')",
                 pid, labelId, [[NSUUID UUID] UUIDString]], &dbErr);
         }
-        killTarget = @"com.apple.contactsd";
+        killTarget = @"contactsd";
         (void)ok;
     } else {
         sqlite3_close(db);
