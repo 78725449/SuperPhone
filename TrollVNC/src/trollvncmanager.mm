@@ -585,7 +585,8 @@ int main(int argc, const char *argv[]) {
         // 临时开关读 defaults（App/网关可经 configs 通道设置），实验完成后整体移除。
         {
             NSUserDefaults *td = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
-            if ([td boolForKey:@"SimLocationTestInject"]) {
+            id injectFlag = tvManagerReadPref(td, @"SimLocationTestInject"); // 双域读取：Filza 写 mobile 域 plist 即可触发
+            if ([injectFlag boolValue]) {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
                                dispatch_get_main_queue(), ^{
                     CLLocationCoordinate2D tiananmen = CLLocationCoordinate2DMake(39.9087, 116.3975);
