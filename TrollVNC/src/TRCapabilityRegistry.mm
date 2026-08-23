@@ -23,6 +23,7 @@
 #import <arpa/inet.h>
 #import <netdb.h>
 #import <unistd.h>
+#import <dlfcn.h>
 
 // trollvncserver 配置热重载入口（hot 级别 key 更新 C 全局变量 + 副作用，setConfig 使用）
 extern int tvReloadConfigForKey(const char *key);
@@ -34,6 +35,18 @@ static const int kRfbPort = 5901;
 // 短命令默认超时：count/list/disconnect/block/unblock/blocked.list/screen.hash 等
 // 本地回环实际响应 <50ms，3 秒超时已含极端 CPU 满载余量
 static const NSTimeInterval kRfbDefaultTimeoutMs = 3000;
+
+/** 运行时加载 LSApplicationWorkspace（MobileCoreServices 私有框架，dlopen 避免 Makefile 链接依赖）。
+ *  app.list/app.open 能力使用（2026-08-23，与 trollvncserver 5802 同实现，能力定义收敛到注册表） */
+static id TRLSWorkspaceInstance(void) {
+    if (!NSClassFromString(@"LSApplicationWorkspace")) {
+        void *h = dlopen("/System/Library/PrivateFrameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
+        if (!h) return nil;
+    }
+    Class cls = NSClassFromString(@"LSApplicationWorkspace");
+    if (!cls) return nil;
+    return [cls performSelector:@selector(defaultWorkspace)];
+}
 
 #pragma mark - 预置读取辅助（未设置时回退默认值）
 
@@ -640,6 +653,33 @@ static NSDictionary *TRSearchGatewaySync(void) {
             *e = [NSError errorWithDomain:@"TRCap" code:6 userInfo:@{NSLocalizedDescriptionKey:@"重启服务失败"}];
             return nil;
         }
+        return @{@"ok":@YES};
+    }];
+    // 2026-08-23：app.list/app.open（AI 工具跨网路径）——与 trollvncserver 5802 同实现（dlopen
+    // LSApplicationWorkspace，MobileCoreServices 私有框架，运行时加载避免 Makefile 链接依赖）。
+    // 使网关隧道 invoke 通道（跨网）可枚举/启动应用，收敛 5802 独立接口的能力定义到注册表唯一地基。
+    [self _registerControl:@"app.list" title:@"应用列表" icon:@"📱" route:TRCapRouteNative params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+        id ws = TRLSWorkspaceInstance();
+        if (!ws) { *e = [NSError errorWithDomain:@"TRCap" code:97 userInfo:@{NSLocalizedDescriptionKey:@"LSApplicationWorkspace 不可用"}]; return nil; }
+        NSArray *apps = [ws performSelector:@selector(allInstalledApplications)];
+        NSMutableArray *out = [NSMutableArray array];
+        for (id app in apps) {
+            NSString *type = [app performSelector:@selector(applicationType)];
+            if (type && [type isEqualToString:@"System"]) continue; // 只列用户安装 app
+            NSString *bid = [app performSelector:@selector(bundleIdentifier)];
+            if (![bid isKindOfClass:[NSString class]] || bid.length == 0) continue;
+            NSString *name = [app performSelector:@selector(localizedName)];
+            [out addObject:@{@"bundleId": bid, @"name": (name ?: @"")}];
+        }
+        return @{@"ok":@YES, @"apps": out, @"count": @(out.count)};
+    }];
+    [self _registerControl:@"app.open" title:@"启动应用" icon:@"🚀" route:TRCapRouteNative params:@[@{@"name":@"bundleId",@"type":@"string",@"required":@YES}] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+        NSString *bid = p[@"bundleId"];
+        if (![bid isKindOfClass:[NSString class]] || bid.length == 0) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"app.open 缺少参数 bundleId"}]; return nil; }
+        id ws = TRLSWorkspaceInstance();
+        if (!ws) { *e = [NSError errorWithDomain:@"TRCap" code:97 userInfo:@{NSLocalizedDescriptionKey:@"LSApplicationWorkspace 不可用"}]; return nil; }
+        BOOL ok = (BOOL)[ws performSelector:@selector(openApplicationWithBundleID:) withObject:bid];
+        if (!ok) { *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey:@"启动失败（bundleId 不存在或不可启动）"}]; return nil; }
         return @{@"ok":@YES};
     }];
     [self _registerControl:@"device.rename" title:@"修改设备名" icon:@"🏷️" route:TRCapRouteNative params:@[@"name"] executor:^NSDictionary *(NSDictionary *p, NSError **e) {

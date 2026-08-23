@@ -912,6 +912,41 @@ async function handleApi(req, res, url) {
         fwd.write(payload); fwd.end();
         return true;
       }
+      // 2026-08-23：AI 工具控制面网关中转——app.list/app.open/touch.tap（跨网修正：走隧道 invoke，
+      // 而非局域网直连 5802）。能力定义已收敛到设备端 TRCapabilityRegistry（唯一地基），
+      // 经隧道 CMD invoke 通道执行，跨网可用（5802 直连仅限局域网 5801 页面场景）。
+      // apps：查已安装应用（过滤 System）
+      if (req.method === 'GET' && sub === 'apps') {
+        const ack = await sendDeviceCmd(id, { cmd: 'invoke', cap: 'app.list', params: {} }, 10000);
+        if (!ack) { sendJson(res, 504, { error: 'device invoke timeout' }); return true; }
+        sendJson(res, ack.ok === false ? 500 : 200, ack);
+        return true;
+      }
+      // app-open：按 bundleId 启动应用
+      if (req.method === 'POST' && sub === 'app-open') {
+        const body = await readBody(req).catch(() => ({}));
+        if (typeof body.bundleId !== 'string' || !body.bundleId) {
+          sendJson(res, 400, { error: 'bundleId required' });
+          return true;
+        }
+        const ack = await sendDeviceCmd(id, { cmd: 'invoke', cap: 'app.open', params: { bundleId: body.bundleId } }, 10000);
+        if (!ack) { sendJson(res, 504, { error: 'device invoke timeout' }); return true; }
+        sendJson(res, ack.ok === false ? 500 : 200, ack);
+        return true;
+      }
+      // touch：点击（0-1 归一化坐标）
+      if (req.method === 'POST' && sub === 'touch') {
+        const body = await readBody(req).catch(() => ({}));
+        if (typeof body.x !== 'number' || typeof body.y !== 'number' ||
+            body.x < 0 || body.x > 1 || body.y < 0 || body.y > 1) {
+          sendJson(res, 400, { error: 'x/y required (0-1 normalized)' });
+          return true;
+        }
+        const ack = await sendDeviceCmd(id, { cmd: 'invoke', cap: 'touch.tap', params: { x: body.x, y: body.y } }, 10000);
+        if (!ack) { sendJson(res, 504, { error: 'device invoke timeout' }); return true; }
+        sendJson(res, ack.ok === false ? 500 : 200, ack);
+        return true;
+      }
       if (req.method === 'GET') {
         sendJson(res, 200, { device: dev });
         return true;
