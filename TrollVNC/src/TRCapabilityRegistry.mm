@@ -15,6 +15,7 @@
 #import "ScreenCapturer.h"
 #import "TRGatewayClient.h"
 #import "TRWatchDog.h"
+#import "SimLocationController.h"
 #import "Logging.h"
 #import <UIKit/UIKit.h>
 #import <Security/Security.h>
@@ -728,6 +729,21 @@ static NSDictionary *TRSearchGatewaySync(void) {
         }
         return @{@"ok":@YES, @"name":name};
     }];
+    // sim.location.track：轨迹点序列上传（大 payload 经 invoke，注册表 Native）——只做"数据搬运 + 触发"，
+    // 点序列由网关 TrajectoryGen 生成（§3.4），executor 落盘 + 切 track，SimLocationController 自治推进。
+    [self _registerControl:@"sim.location.track" title:@"上传定位轨迹" icon:@"📍" route:TRCapRouteNative
+        params:@[@{@"name":@"points",@"type":@"array",@"required":@YES}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            NSArray *pts = p[@"points"];
+            NSError *lerr = nil;
+            if (![SimLocationController uploadTrackPoints:pts error:&lerr]) {
+                if (e) *e = lerr ?: [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"轨迹上传失败"}];
+                return nil;
+            }
+            // 立即让 Controller 重读（文件已就绪 + mode=track），不等 10s 巡检
+            [[SimLocationController sharedController] reloadFromPrefs];
+            return @{@"ok":@YES, @"count":@(pts.count)};
+        }];
 }
 
 /**

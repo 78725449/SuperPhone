@@ -159,6 +159,59 @@ static const NSTimeInterval kSimTrackTickInterval = 1.0;
     return @[];
 }
 
+#pragma mark - 轨迹上传（sim.location.track executor 调用）
+
++ (BOOL)uploadTrackPoints:(NSArray<NSDictionary *> *)points error:(NSError **)error {
+    if (![points isKindOfClass:[NSArray class]] || points.count == 0) {
+        if (error) *error = [NSError errorWithDomain:@"SimLoc" code:1 userInfo:@{NSLocalizedDescriptionKey:@"points 数组不能为空"}];
+        return NO;
+    }
+    NSMutableArray *clean = [NSMutableArray arrayWithCapacity:points.count];
+    for (id item in points) {
+        if (![item isKindOfClass:[NSDictionary class]]) {
+            if (error) *error = [NSError errorWithDomain:@"SimLoc" code:2 userInfo:@{NSLocalizedDescriptionKey:@"points 元素须为对象 {lat,lon,...}"}];
+            return NO;
+        }
+        double lat = [item[@"lat"] doubleValue];
+        double lon = [item[@"lon"] doubleValue];
+        if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) {
+            if (error) *error = [NSError errorWithDomain:@"SimLoc" code:3 userInfo:@{NSLocalizedDescriptionKey:@"坐标超出 WGS-84 范围"}];
+            return NO;
+        }
+        NSMutableDictionary *pt = [item mutableCopy];
+        double acc = [pt[@"acc"] doubleValue];
+        if (!(acc >= 3.0 && acc <= 15.0)) pt[@"acc"] = @(MIN(15.0, MAX(3.0, acc))); // 精度钳制 3~15
+        [clean addObject:pt];
+    }
+    // 原子写：临时文件 + rename，避免 Controller 读到半截 JSON
+    NSDictionary *payload = @{ @"version": @1, @"points": clean };
+    NSError *jerr = nil;
+    NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:&jerr];
+    if (!json) {
+        if (error) *error = jerr ?: [NSError errorWithDomain:@"SimLoc" code:4 userInfo:@{NSLocalizedDescriptionKey:@"轨迹序列化失败"}];
+        return NO;
+    }
+    NSString *tmp = [kSimTrackFilePath stringByAppendingString:@".tmp"];
+    NSError *werr = nil;
+    if (![json writeToFile:tmp options:NSDataWritingAtomic error:&werr]) {
+        if (error) *error = werr ?: [NSError errorWithDomain:@"SimLoc" code:5 userInfo:@{NSLocalizedDescriptionKey:@"轨迹临时文件写入失败"}];
+        return NO;
+    }
+    if ([[NSFileManager defaultManager] fileExistsAtPath:kSimTrackFilePath]) {
+        [[NSFileManager defaultManager] removeItemAtPath:kSimTrackFilePath error:NULL];
+    }
+    if (![[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kSimTrackFilePath error:&werr]) {
+        if (error) *error = werr ?: [NSError errorWithDomain:@"SimLoc" code:6 userInfo:@{NSLocalizedDescriptionKey:@"轨迹文件替换失败"}];
+        return NO;
+    }
+    // 切 track 模式（root 域；App 写 mobile 域由双域读取兜底）
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    [d setObject:@"track" forKey:@"SimLocationMode"];
+    [d synchronize];
+    TVLog(@"[locsim] track uploaded: %lu points", (unsigned long)clean.count);
+    return YES;
+}
+
 #pragma mark - 巡检（10s：失效恢复 + 参数变更感知）
 
 - (void)_startPatrol {

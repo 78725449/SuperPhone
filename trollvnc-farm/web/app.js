@@ -2,6 +2,7 @@
 // rfb.js?v=2：noVNC 核心为 server 内存 patch，URL 带版本号强制浏览器重新拉取 patch 后的内容避免旧缓存
 import RFB from '/novnc/core/rfb.js?v=4';
 import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=12';
+import { interpolateRoute } from './trajectory-gen.js?v=1';
 import { attachPress } from './press.js';
 import { attachFarmGesture, attachRightHome, resolveGesture } from './gesture.js';
 
@@ -1441,7 +1442,13 @@ async function openLocPanel() {
       <button id="locApply" class="primary">应用定位</button>
       <button id="locStop">停止定位</button>
       <button id="locClose">取消</button>
-    </div>`;
+    </div>
+    <div class="cfg-sec-title">轨迹模拟（A→B 匀速）</div>
+    <div class="cfg-row"><span class="cfg-row-label">起点</span><select id="locTrkFrom">${presetsOpts}</select></div>
+    <div class="cfg-row"><span class="cfg-row-label">终点</span><select id="locTrkTo">${presetsOpts}</select></div>
+    <div class="cfg-row"><span class="cfg-row-label">速度</span><select id="locTrkSpeed"><option value="walk">步行</option><option value="cycle">骑行</option><option value="drive">驾车</option></select></div>
+    <div class="cfg-row"><span class="cfg-row-label">时长(分)</span><input id="locTrkMin" type="number" min="1" max="120" value="10"></div>
+    <div class="modal-btns"><button id="locTrkStart">生成并上传轨迹</button></div>`;
   const preset = card.querySelector('#locPreset');
   const latInp = card.querySelector('#locLat');
   const lonInp = card.querySelector('#locLon');
@@ -1466,6 +1473,22 @@ async function openLocPanel() {
       await setConfigs('', devId, { SimLocationMode: 'off' });
       toast('✓ 已恢复真实定位', 'success');
     } catch (e) { toast('✗ 停止失败 ' + e.message, 'error'); }
+  };
+  // 轨迹：A→B 插值生成点序列 → invoke sim.location.track（注册表 Native 上传落盘 + 切 track）
+  const trkFrom = card.querySelector('#locTrkFrom');
+  const trkTo = card.querySelector('#locTrkTo');
+  const trkSpeed = card.querySelector('#locTrkSpeed');
+  const trkMin = card.querySelector('#locTrkMin');
+  card.querySelector('#locTrkStart').onclick = async () => {
+    const from = LOC_PRESETS.find((x) => x.name === trkFrom.value);
+    const to = LOC_PRESETS.find((x) => x.name === trkTo.value);
+    if (!from || !to || from.name === to.name) { toast('✗ 请选择不同的起点/终点', 'error'); return; }
+    const mins = Math.min(120, Math.max(1, parseInt(trkMin.value, 10) || 10));
+    const points = interpolateRoute(from, to, { speed: trkSpeed.value, maxPoints: mins * 60 });
+    try {
+      await invokeCap('', devId, 'sim.location.track', { points });
+      toast(`✓ 轨迹已上传 ${points.length} 点（${mins} 分钟，${trkSpeed.value}）`, 'success');
+    } catch (e) { toast('✗ 轨迹上传失败 ' + e.message, 'error'); }
   };
   card.querySelector('#locClose').onclick = () => modal.remove();
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });

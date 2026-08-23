@@ -1,7 +1,8 @@
-// 改定位 API 链路验证（verify-locsim）：setConfigs(static) → 读回校验 → off 收尾
+// 改定位 API 链路验证（verify-locsim）：setConfigs(static) → 读回校验 → invoke track → off 收尾
 // 用法：node verify-locsim.mjs <deviceId> [base]   （base 默认 https://127.0.0.1:8080，可 FARM_BASE 覆盖）
-// 通过标准：两次 setConfigs 均 ok=true 且读回参数一致；人工再开系统地图看蓝点=目标坐标
+// 通过标准：setConfigs/invoke 均 ok 且读回参数一致；人工再开系统地图看蓝点=目标坐标/轨迹移动
 import { env } from 'node:process';
+import { interpolateRoute } from '../web/trajectory-gen.js';
 const devId = process.argv[2];
 const BASE = env.FARM_BASE || process.argv[3] || 'https://127.0.0.1:8080';
 if (!devId) { console.error('usage: node verify-locsim.mjs <deviceId> [base]'); process.exit(1); }
@@ -50,6 +51,17 @@ const c = getR.j.configs || {};
 check('读回 SimLocationMode=static', c.SimLocationMode === 'static', `got=${c.SimLocationMode}`);
 check('读回 SimLocationLat≈目标', Math.abs(Number(c.SimLocationLat) - TARGET.lat) < 0.001, `got=${c.SimLocationLat}`);
 check('读回 SimLocationLon≈目标', Math.abs(Number(c.SimLocationLon) - TARGET.lon) < 0.001, `got=${c.SimLocationLon}`);
+
+// 3.5 track：invoke sim.location.track 上传 1 分钟 walk 轨迹（北京→上海 截取 60 点）
+const pts = interpolateRoute(TARGET, { lat: 31.2304, lon: 121.4737 }, { speed: 'walk', maxPoints: 60 });
+const trkR = await api(`/api/devices/${encodeURIComponent(devId)}/invoke`, {
+  method: 'POST', body: JSON.stringify({ cap: 'sim.location.track', params: { points: pts } }),
+});
+check('invoke sim.location.track ok（60 点）', trkR.status === 200 && trkR.j.ok, JSON.stringify(trkR.j));
+await new Promise((r) => setTimeout(r, 1500));
+const getT = await api(`/api/devices/${encodeURIComponent(devId)}/configs`);
+const ct = getT.j.configs || {};
+check('读回 SimLocationMode=track', ct.SimLocationMode === 'track', `got=${ct.SimLocationMode}`);
 
 // 4. off 收尾
 const off1 = await api(`/api/devices/${encodeURIComponent(devId)}/configs`, {

@@ -33,6 +33,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// prefs-changed 通知后调用：重读参数并应用（加速生效，巡检仍是兜底）
 - (void)reloadFromPrefs;
 
+/// 上传轨迹点序列（供 `sim.location.track` executor 调用）：
+/// 校验坐标范围 → 原子写轨迹文件（临时文件 rename）→ 写 SimLocationMode=track
+/// @return YES 成功；NO 失败并置 error
++ (BOOL)uploadTrackPoints:(NSArray<NSDictionary *> *)points error:(NSError **)error;
+
 @end
 
 NS_ASSUME_NONNULL_END
