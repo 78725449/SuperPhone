@@ -68,8 +68,7 @@ static const NSTimeInterval kSimTrackTickInterval = 1.0;
         [self _stopTrack];
         [self _injectStatic];
     } else if ([mode isEqualToString:@"track"]) {
-        [self _injectStatic]; // 立即落到轨迹起点，避免等待首 tick
-        [self _startTrack];
+        [self _startTrack]; // _startTrack 内部立即注入轨迹首点（不读 static 旧坐标）
     } else {
         TVLog(@"[locsim] unknown mode=%@ -> off", mode);
         [self _stopTrack];
@@ -101,7 +100,9 @@ static const NSTimeInterval kSimTrackTickInterval = 1.0;
         return;
     }
     _trackPoints = points;
-    _trackIndex = 0;
+    // 立即注入轨迹首点（不读 SimLocationLat/Lon 旧值——算路只写 mode=track，旧坐标会导致启动漂移）
+    [self _injectPointDict:points[0]];
+    _trackIndex = 1;
     _trackFinished = NO;
     if (_trackSource) {
         dispatch_source_cancel(_trackSource);
@@ -124,7 +125,10 @@ static const NSTimeInterval kSimTrackTickInterval = 1.0;
         TVLog(@"[locsim] track finished, keep final point");
         return;
     }
-    NSDictionary *p = _trackPoints[_trackIndex++];
+    [self _injectPointDict:_trackPoints[_trackIndex++]];
+}
+
+- (void)_injectPointDict:(NSDictionary *)p {
     double lat = [p[@"lat"] doubleValue];
     double lon = [p[@"lon"] doubleValue];
     double acc = [p[@"acc"] doubleValue];
