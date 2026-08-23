@@ -4125,19 +4125,23 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
         // 2026-08-24 data.read 实证：message.date=纳秒（Cocoa 纪元纳秒，实测 8e17 量级）；真实记录带 account='P:+号码'/date_read/date_delivered
         // service 用 SMS（真实短信；iMessage 需 Apple ID 账号，设备无则信息 App 不显示）
         NSString *phone = @"17737148888";
-        NSString *chatGuid = [[NSUUID UUID] UUIDString];
         NSString *msgGuid = [[NSUUID UUID] UUIDString];
         sqlite3_int64 dateNs = (sqlite3_int64)(now * 1000000000.0);
-        // handle 表 UNIQUE(id,service)：已存在则复用，避免冲突
+        // handle 表 UNIQUE(id,service)：已存在则复用，避免冲突；补 country/uncanonicalized_id（对齐真实）
         sqlite3_int64 hid = tvDbScalar(db, [NSString stringWithFormat:@"SELECT ROWID FROM handle WHERE id='%@' AND service='SMS'", phone]);
         BOOL ok = YES;
         if (!hid) {
-            ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO handle (id, service) VALUES ('%@','SMS')", phone], &dbErr);
+            ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO handle (id, country, service, uncanonicalized_id) VALUES ('%@','cn','SMS','%@')", phone, phone], &dbErr);
             if (ok) hid = tvDbScalar(db, @"SELECT last_insert_rowid()");
         }
         out[@"handleId"] = @(hid);
         if (ok) {
-            ok = tvDbExec(db, [NSString stringWithFormat:@"INSERT INTO chat (guid, chat_identifier, service_name) VALUES ('%@','%@','SMS')", chatGuid, phone], &dbErr);
+            // 2026-08-24 data.read 排查：真实 SMS chat 有 style=45/state=3/account_login(P:+SIM)/last_addressed_handle——缺失则信息 App 会话列表不显示
+            NSString *chatGuid = [NSString stringWithFormat:@"SMS;-;%@", phone];  // 对齐真实 guid 格式（service;-;identifier）
+            ok = tvDbExec(db, [NSString stringWithFormat:
+                @"INSERT INTO chat (guid, chat_identifier, service_name, account_login, style, state, last_addressed_handle, is_archived, is_blackholed, is_filtered) "
+                @"VALUES ('%@','%@','SMS',(SELECT account_login FROM chat WHERE account_login IS NOT NULL AND service_name='SMS' LIMIT 1),45,3,'%@',0,0,0)",
+                chatGuid, phone, phone], &dbErr);
             if (ok) {
                 sqlite3_int64 cid = tvDbScalar(db, @"SELECT last_insert_rowid()");
                 out[@"chatId"] = @(cid);
