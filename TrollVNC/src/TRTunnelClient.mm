@@ -97,6 +97,7 @@ static void TRTunnelLog(const char *fmt, ...) {
     int _tunnelFd;              // 当前隧道 socket fd（握手成功后赋值，供被控状态上报复用）
     pthread_mutex_t _writeMutex;  // _writeFrame 串行化（worker/主线程并发写同一隧道 fd）
     BOOL _kickSessionsRequested;  // 5801 直连接管请求（跨线程标志，@synchronized 保护）
+    BOOL _directControlActive;    // 5801 直连控制中（跨线程标志，@synchronized 保护；供会话归零时抑制错误上报 NO）
     BOOL _controlled;           // 最近一次上报的被控状态（去重）
     NSString *_controlledSource; // 最近一次上报的被控来源（@"5801" 直连 / @"tunnel" 隧道，去重）
 }
@@ -720,8 +721,15 @@ static void TRTunnelLog(const char *fmt, ...) {
             if (cid.unsignedShortValue != kChanIdThumb) { anySession = YES; break; }
         }
         if (!anySession) {
-            notify_post("com.82flex.trollvnc.capture-idle");
-            [self _reportControlState:NO source:nil];
+            // 2026-08-23 竞态修复：5801 直连接管踢会话时，control-active 通知是异步的，
+            // 此处若无条件上报 NO 会覆盖 5801 的 controlled=YES（时序不定）→ 网关卡片
+            // 不显示「被 5801 控制中」。仅当 5801 也未在控制时才上报被控结束。
+            BOOL directActive = NO;
+            @synchronized(self) { directActive = _directControlActive; }
+            if (!directActive) {
+                notify_post("com.82flex.trollvnc.capture-idle");
+                [self _reportControlState:NO source:nil];
+            }
         }
     }
     if (reason == 1 || reason == 3) {
@@ -791,9 +799,18 @@ static void TRTunnelLog(const char *fmt, ...) {
     installed = YES;
     static int activeTok = 0, idleTok = 0, kickTok = 0;
     notify_register_dispatch("com.82flex.trollvnc.control-active", &activeTok,
-        dispatch_get_main_queue(), ^(int t) { (void)t; [self _reportControlState:YES source:@"5801"]; });
+        dispatch_get_main_queue(), ^(int t) {
+        (void)t;
+        // 5801 直连控制开始：置标志（供隧道会话归零时抑制错误上报 NO）+ 上报被控
+        @synchronized(self) { _directControlActive = YES; }
+        [self _reportControlState:YES source:@"5801"];
+    });
     notify_register_dispatch("com.82flex.trollvnc.control-idle", &idleTok,
-        dispatch_get_main_queue(), ^(int t) { (void)t; [self _reportControlState:NO source:nil]; });
+        dispatch_get_main_queue(), ^(int t) {
+        (void)t;
+        @synchronized(self) { _directControlActive = NO; }
+        [self _reportControlState:NO source:nil];
+    });
     // 5801 直连接管（2026-08-23）：trollvncserver（不同编译目标）经 notify 请求踢会话通道，
     // 主线程转发到线程安全的 requestKickSessions（仅置标志，隧道 worker 线程统一关闭）
     notify_register_dispatch("com.82flex.trollvnc.tunnel-kick-sessions", &kickTok,
