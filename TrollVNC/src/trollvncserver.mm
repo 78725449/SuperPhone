@@ -61,7 +61,6 @@
 #import "ScreenCapturer.h"
 #import "TRScreenHasher.h"
 #import "TRSelfSignedCert.h"
-#import "TRTunnelClient.h"
 #import <openssl/ssl.h>
 #import <openssl/err.h>
 #import <fcntl.h>
@@ -4915,11 +4914,13 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
     }
 
     // 5801 直连控制开始（非 loopback）：通知 TRTunnelClient 上报被控状态
-    // 2026-08-23 互斥补全：默认断开网关隧道控制直接接管——请求隧道关闭全部会话通道
+    // 2026-08-23 互斥补全：默认断开网关隧道控制直接接管——notify 请求隧道关闭全部会话通道
     //（网关前端断开、设备上报被控结束），5801 成为唯一控制者；网关随即经 control-active
     // 上报显示「被 5801 控制中」。无隧道会话时为 no-op（仅缩略图通道保留）。
+    // 用 notify 而非直接引用 TRTunnelClient 类：trollvncserver 与 TRTunnelClient 分属不同
+    // 编译目标，直接消息调用会链接缺符号（_OBJC_CLASS_$_TRTunnelClient undefined）。
     if (!isLoopback) {
-        [TRTunnelClient.sharedClient requestKickSessions];
+        notify_post("com.82flex.trollvnc.tunnel-kick-sessions");
         notify_post("com.82flex.trollvnc.control-active");
     }
 

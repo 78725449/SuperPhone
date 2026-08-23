@@ -785,11 +785,15 @@ static void TRTunnelLog(const char *fmt, ...) {
     static BOOL installed = NO;
     if (installed) return;
     installed = YES;
-    static int activeTok = 0, idleTok = 0;
+    static int activeTok = 0, idleTok = 0, kickTok = 0;
     notify_register_dispatch("com.82flex.trollvnc.control-active", &activeTok,
         dispatch_get_main_queue(), ^(int t) { (void)t; [self _reportControlState:YES source:@"5801"]; });
     notify_register_dispatch("com.82flex.trollvnc.control-idle", &idleTok,
         dispatch_get_main_queue(), ^(int t) { (void)t; [self _reportControlState:NO source:nil]; });
+    // 5801 直连接管（2026-08-23）：trollvncserver（不同编译目标）经 notify 请求踢会话通道，
+    // 主线程转发到线程安全的 requestKickSessions（仅置标志，隧道 worker 线程统一关闭）
+    notify_register_dispatch("com.82flex.trollvnc.tunnel-kick-sessions", &kickTok,
+        dispatch_get_main_queue(), ^(int t) { (void)t; [self requestKickSessions]; });
 }
 
 @end
