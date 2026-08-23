@@ -523,6 +523,7 @@ function releaseChPendingUp(tun, ch) {
   if (up.length >= 12 && up.subarray(0, 12).toString('latin1').startsWith('RFB 003.')) {
     up = up.subarray(12);
   }
+  console.log(`[vnc] release chan=${ch.id} bytes=${up.length} (skipped ${ch.pendingUp.length - up.length}B) at=${Date.now()}`);
   if (up.length) {
     try { writeTunnelFrame(tun.sock, FT_CHAN_DATA, chanDataPayload(ch.id, up)); } catch { /* noop */ }
   }
@@ -565,7 +566,7 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
   // 原生多客户端 per-client 编码，无连接轮换）；viewOnly 与任何会话并存（原单连接
   // 约束下"新会话顶旧 viewOnly"的互斥随通道化一起消失）
   const chanId = tun.nextChan++;
-  const ch = { id: chanId, kind: CHAN_KIND_SESSION, ws, ready: false, pendingUp: Buffer.alloc(0), timer: null };
+  const ch = { id: chanId, kind: CHAN_KIND_SESSION, ws, ready: false, pendingUp: Buffer.alloc(0), timer: null, openAt: Date.now(), tx: 0, rx: 0 };
   tun.channels.set(chanId, ch);
   if (grp) sessionGroup.set(ws, { group: grp, deviceId, chanId });
   ws.isController = !!isCtrl;
@@ -575,6 +576,7 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
 
   // CHAN_OPEN 下发：设备端同步 connect 5901 + 主动写协议版本后回 CHAN_ACK；
   // ACK 前缓冲 noVNC 上行握手字节（防写入未就绪连接，取代 proto:1 的 pendingUpUntil 窗口）
+  console.log(`[vnc] CHAN_OPEN sent ${dev.name} chan=${chanId} at=${Date.now()}`);
   writeTunnelFrame(tun.sock, FT_CHAN_OPEN, chanPayload(chanId, CHAN_KIND_SESSION));
   // 3s 兜底：设备僵死不回 ACK 时强制放行，防握手字节永久卡缓冲
   ch.timer = setTimeout(() => {
@@ -588,6 +590,7 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
   ws.on('message', (data, isBinary) => {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
     if (!tun.channels.has(chanId)) return; // 通道已清理（设备 EOF 等）
+    ch.tx += buf.length;
     // ACK 前缓冲（等设备 5901 connect 完成）；RFB 握手必需字节（版本响应/ClientInit/
     // PixelFormat）viewOnly 会话同样要走——noVNC viewOnly 本身不发输入事件，放行是安全的
     if (!ch.ready) {
@@ -619,7 +622,7 @@ function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
     if (!hasSessionChannels(tun)) resumeThumb(tun);
   };
   ws.on('close', (code, reason) => {
-    console.log(`[vnc] ws closed device=${deviceId} chan=${chanId} code=${code} reason=${reason ? reason.toString() : ''}`);
+    console.log(`[vnc] ws closed device=${deviceId} chan=${chanId} code=${code} reason=${reason ? reason.toString() : ''} tx=${ch.tx} rx=${ch.rx}${ch.tx > 0 && ch.rx === 0 ? ' NO-UPSTREAM' : ''}`);
     cleanup();
   });
   ws.on('error', (err) => {
@@ -1343,6 +1346,17 @@ const httpRedirectHandler = (req, res) => {
 const server = tlsOptions ? https.createServer(tlsOptions, requestHandler) : http.createServer(requestHandler);
 const httpRedirect = tlsOptions ? http.createServer(httpRedirectHandler) : null;
 
+// 2026-08-23 诊断：WS upgrade 到达时间戳——定位「浏览器 WS 已发起但网关迟迟 connection」的阻塞窗口
+// （缩略图编码/大帧解码阻塞事件循环时，upgrade 到 connection 之间会拉长）
+server.on('upgrade', (req, socket) => {
+  socket.upgradeAt = Date.now();
+  socket.once('close', () => {
+    if (socket.upgradeAt && socket.connectionAt) {
+      const dt = socket.connectionAt - socket.upgradeAt;
+      if (dt > 50) console.log(`[vnc] upgrade->connection ${dt}ms url=${req.url} (SLOW)`);
+    }
+  });
+});
 const wss = new WebSocketServer({ server, path: undefined });
 
 // 设备列表变更推送（2026-08-18）：前端经 /ws/events 长连接订阅，后端在设备
@@ -1375,6 +1389,7 @@ setInterval(() => {
 }, 25000);
 
 wss.on('connection', (ws, req) => {
+  if (ws._socket) ws._socket.connectionAt = Date.now();
   const url = new URL(req.url, 'http://' + (req.headers.host || 'localhost'));
   if (TOKEN && url.searchParams.get('token') !== TOKEN) {
     ws.close(4001, 'unauthorized');
@@ -1568,6 +1583,7 @@ const tunnelServer = net.createServer((sock) => {
       } else {
         const ch = rec.channels.get(chanId);
         if (ch && ch.ws && ch.ws.readyState === ch.ws.OPEN) {
+          ch.rx += data.length;
           try { ch.ws.send(data); } catch { /* ignore */ }
         }
       }
@@ -1597,6 +1613,7 @@ const tunnelServer = net.createServer((sock) => {
       const ch = rec.channels.get(chanId);
       if (!ch || ch.ready) return;
       if (ch.timer) { clearTimeout(ch.timer); ch.timer = null; }
+      console.log(`[tunnel] CHAN_ACK chan=${chanId} ok=${ok} at=${Date.now()} (open was ${ch.openAt ?? '?'})`);
       if (ok) {
         ch.ready = true;
         releaseChPendingUp(rec, ch);
@@ -1782,7 +1799,11 @@ if (tlsOptions && httpRedirect) {
   // 交接顺序必须 pause→unshift→emit→nextTick(resume)：emit 后延迟 resume 让 TLS 监听器先就绪，
   // 否则握手数据流动错位导致 TLS 握手失败（实测 verified）。
   const bootstrap = net.createServer((socket) => {
+    // 2026-08-23 加固：TCP 建连后若首字节迟迟未达（浏览器预连接/挂起），5s 超时销毁，
+    // 防止协议分发层挂起连接堆积（此前无限等待）。
+    socket.setTimeout(5000, () => { socket.destroy(); });
     socket.once('data', (buf) => {
+      socket.setTimeout(0);
       socket.pause();
       socket.unshift(buf);
       const isTLS = buf.length >= 3 && buf[0] === 0x16 && buf[1] === 0x03;

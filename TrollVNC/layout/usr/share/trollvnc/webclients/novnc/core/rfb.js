@@ -1406,6 +1406,7 @@ export default class RFB extends EventTargetMixin {
         Log.Debug('Sent ProtocolVersion: ' + cversion);
 
         this._rfbInitState = 'Security';
+        return true;
     }
 
     _isSupportedSecurityType(type) {

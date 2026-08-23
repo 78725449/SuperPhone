@@ -1,6 +1,6 @@
 // SuperPhone 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
 // rfb.js?v=2：noVNC 核心为 server 内存 patch，URL 带版本号强制浏览器重新拉取 patch 后的内容避免旧缓存
-import RFB from '/novnc/core/rfb.js?v=2';
+import RFB from '/novnc/core/rfb.js?v=3';
 import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=11';
 import { attachPress } from './press.js';
 import { attachFarmGesture, attachRightHome, resolveGesture } from './gesture.js';
@@ -1536,6 +1536,20 @@ async function disconnectControlled(dev) {
   }
 }
 
+// 2026-08-23 规避：上次退出的控制 RFB 引用——进入前等待其完全关闭（disconnected），
+// 防止 Chrome 每域名 6 连接限制下旧 WS 未关导致新 WS 排队（连接超时根因）。
+let lastClosedRfb = null;
+function waitPrevRfbClosed() {
+  const prev = lastClosedRfb;
+  if (!prev) return Promise.resolve();
+  const st = prev._rfbConnectionState;
+  if (st === 'disconnected' || st === 'disconnecting') return Promise.resolve();
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, 500);
+    prev.addEventListener('disconnect', () => { clearTimeout(t); resolve(); });
+  });
+}
+
 async function enterFocus(d) {
   if (focus && focus.device.id === d.id) return;
   if (focus) exitFocus();
@@ -1603,28 +1617,65 @@ async function enterFocus(d) {
     setFocusOverlay(false, '设备离线，请唤醒手机后重试');
     return;
   }
-  const fRfb = createRfb(stage, d, { grp, broadcast, ctrl: true }, $('focusStatusDot'));
-  focus.rfb = fRfb;
-  fRfb.addEventListener('connect', () => {
-    focusReconnectAttempts = 0; // 重连成功：复位重试计数
-    // 2026-08-22：连接极快时动画一闪而过——最小显示 300ms 再隐藏，保证「连接中…」可见
-    setTimeout(() => setFocusOverlay(false, null), 300);
-    setTimeout(fitFocusPanel, 300);
+  // 2026-08-23 重构（根因修复）：focus 已在上面**同步**锁定——快速重复进入会被
+  // enterFocus 顶部的 if(focus) 拦截，无并发窗口。等上次 WS 完全关闭（disconnected，
+  // 释放 Chrome 每域名 6 连接配额，防新 WS 排队）后**异步**建新连接；等待期间若退出/
+  // 替换，then 内的 focus 校验会放弃建连，WS 绝不泄漏。
+  waitPrevRfbClosed().then(() => {
+    // 三重校验：已被退出/替换、或 stage 已被后续 enterFocus 的 innerHTML='' 清空/替换
+    // （isConnected=false）→ 放弃建连，WS 绝不泄漏（2026-08-23 真实浏览器复现根因）
+    if (!focus || focus.device.id !== d.id || focus.rfb !== null) return;
+    if (!stage.isConnected) return;
+    const fRfb = createRfb(stage, d, { grp, broadcast, ctrl: true }, $('focusStatusDot'));
+    focus.rfb = fRfb;
+    // 2026-08-23 确定性优先：连接任何情况失败立即明确报错，不做静默自动重连（黑盒）。
+    // 连接超时兜底：10s 未 connect → 断开 + 报错（正常 connect 时清除；exitFocus 清理 focus.connTimer）。
+    const connTimer = setTimeout(() => {
+      if (focus && focus.rfb === fRfb && fRfb._rfbConnectionState !== 'connected') {
+        // 2026-08-23 诊断：超时时刻 noVNC/WS 状态（定位「连接中卡死」根因——WS 排队 or 握手停滞）
+        try {
+          const sock = fRfb._sock;
+          const unread = sock ? (sock._rQlen - sock._rQi) : -1;
+          console.error('[focus] CONN TIMEOUT st=', fRfb._rfbConnectionState,
+            'init=', fRfb._rfbInitState,
+            'wsReady=', sock && sock.readyState, // 0=CONNECTING(排队) 1=OPEN 2=CLOSING 3=CLOSED
+            'rQunread=', unread,
+            'rQhex=', (unread > 0 && sock) ? Array.from(sock._rQ.subarray(sock._rQi, Math.min(sock._rQlen, sock._rQi + 32))).map((b) => b.toString(16).padStart(2, '0')).join('') : '',
+            'wsUrl=', fRfb._url);
+        } catch (e) { /* ignore */ }
+        fRfb._farmConnTimeout = true; // 标记：超时已报错，disconnect 不覆盖文案
+        closeRfb(fRfb);
+        setFocusOverlay(false, '连接超时，请退出后重试');
+      }
+    }, 10000);
+    focus.connTimer = connTimer;
+    fRfb.addEventListener('connect', () => {
+      clearTimeout(connTimer);
+      if (focus) focus.connTimer = null;
+      // 2026-08-22：连接极快时动画一闪而过——最小显示 300ms 再隐藏，保证「连接中…」可见
+      setTimeout(() => setFocusOverlay(false, null), 300);
+      setTimeout(fitFocusPanel, 300);
+    });
+    // 聚焦画面断开：立即明确报错（映射具体原因），不自动重连——由用户手动退出/重进。
+    fRfb.addEventListener('disconnect', (e) => {
+      clearTimeout(connTimer);
+      if (!focus || focus.rfb !== fRfb) return;
+      const code = e && e.detail ? e.detail.code : null;
+      if (code === 1000 || code === 1001) return; // 主动断开（exitFocus closeRfb）：正常退出不报错
+      if (fRfb._farmConnTimeout) return; // 已报「连接超时」，closeRfb 触发的断开不覆盖文案
+      const msg = code === 4001 ? '设备已被其它端接管，已中断控制'
+        : code === 4003 ? '设备隧道未建立（设备可能离线），请退出后重试'
+        : code === 4005 ? '设备画面服务不可用（设备端 VNC 未运行）'
+        : code === 4006 ? '设备端连接已断开，请退出后重试'
+        : `连接已断开${code ? ' (' + code + ')' : ''}`;
+      setFocusOverlay(false, msg);
+    });
+    setTimeout(fitFocusPanel, 400);
+    startFabSignalPoll(); // 移动端悬浮按钮延迟信号轮询（仅在 focus 建立后）
+    // 2026-08-15 用户拍板：进入控制不再强制系统全屏（自动 requestFullscreen 在 iOS 上会与
+    // 画面/菜单交互冲突，且非用户直接意图）。移动端聚焦画面由 CSS 撑满视口（区域全屏），
+    // 需要隐藏浏览器 UI 时用户通过悬浮菜单「全屏」按钮手动切换（doOp 'full'）。
   });
-  // 聚焦主控画面断线自动重连（2026-08-14）：iOS 后台挂起/切应用导致 WS 断开（1006）后画面黑屏，
-  // 断开即调度重建（网关按新连接重建 ctrl 会话、设备端 rfb.start 无条件重连）；见 scheduleFocusReconnect。
-  fRfb.addEventListener('disconnect', (e) => {
-    if (!focus || focus.rfb !== fRfb) return;
-    const code = e && e.detail ? e.detail.code : null;
-    if (code === 1000 || code === 1001 || code === 4001) return; // 主动断开/被接管不重连
-    setFocusOverlay(false, '画面已断开，正在重连…');
-    scheduleFocusReconnect(); // 首次立即重连
-  });
-  setTimeout(fitFocusPanel, 400);
-  startFabSignalPoll(); // 移动端悬浮按钮延迟信号轮询（仅在 focus 建立后）
-  // 2026-08-15 用户拍板：进入控制不再强制系统全屏（自动 requestFullscreen 在 iOS 上会与
-  // 画面/菜单交互冲突，且非用户直接意图）。移动端聚焦画面由 CSS 撑满视口（区域全屏），
-  // 需要隐藏浏览器 UI 时用户通过悬浮菜单「全屏」按钮手动切换（doOp 'full'）。
 }
 
 // ---------- 聚焦画面中央状态浮层（与 5801 直连页一致） ----------
@@ -1659,78 +1710,12 @@ function setFocusOverlay(loading, text) {
 }
 
 // ---------- 聚焦画面自动重连（2026-08-14） ----------
-// iOS 后台挂起/切应用或网络抖动导致控制端 WebSocket 断开（1006 等）后画面黑屏：
-// 断开时或页面回到前台时自动重建 RFB —— 网关按新连接重建 ctrl 会话，
-// 设备端 rfb.start 无条件重连（见设备端协议），画面无需退出重进即可恢复。
-// 主动断开（1000/1001）与被其他端接管（4001）不自动重连。
-let focusReconnectTimer = null;
-let focusReconnectAttempts = 0;
-const FOCUS_RECONNECT_MAX = 8;
-const FOCUS_RECONNECT_DELAY = 2000; // 重连失败后的防抖间隔（2026-08-14 用户要求：首次断开立即重连）
-
-/**
- * 调度聚焦画面重连：断开立即重连（不做退避等待）；仅当立即重连失败（设备未恢复）时
- * 以固定 2s 间隔重试，达到上限后停止，避免设备真离线时无限快速重试刷屏。
- * @returns {void}
- */
-function scheduleFocusReconnect() {
-  if (!focus) return;
-  if (focusReconnectAttempts >= FOCUS_RECONNECT_MAX) return;
-  focusReconnectAttempts++;
-  if (focusReconnectAttempts === 1) {
-    reconnectFocusRfb(); // 首次：立即重连
-  } else {
-    clearTimeout(focusReconnectTimer);
-    focusReconnectTimer = setTimeout(reconnectFocusRfb, FOCUS_RECONNECT_DELAY);
-  }
-}
-
-/**
- * 重建聚焦 RFB（网关按新连接重建 ctrl 会话，设备端重连 5901）
- * @returns {void}
- */
-function reconnectFocusRfb() {
-  focusReconnectTimer = null;
-  if (!focus || !focus.rfb) return;
-  if (focus.rfb._rfbConnectionState === 'connected') return; // 已自行恢复
-  setFocusOverlay(true, '连接中…'); // 重连过程显示加载动画（与 5801 一致）
-  const d = focus.device;
-  const stage = $('focusStage');
-  closeRfb(focus.rfb);
-  stage.innerHTML = '';
-  const rfb = createRfb(stage, d, { grp: wallSession, broadcast: '1', ctrl: true }, $('focusStatusDot'));
-  rfb.addEventListener('connect', () => {
-    focusReconnectAttempts = 0;
-    setFocusOverlay(false, null);
-    setTimeout(fitFocusPanel, 300);
-  });
-  rfb.addEventListener('disconnect', (e) => {
-    if (!focus || focus.rfb !== rfb) return;
-    const code = e && e.detail ? e.detail.code : null;
-    if (code === 1000 || code === 1001 || code === 4001) return;
-    setFocusOverlay(false, '画面已断开，正在重连…');
-    scheduleFocusReconnect();
-  });
-  focus.rfb = rfb;
-  setTimeout(fitFocusPanel, 400);
-}
-
-// 回到前台：若聚焦连接已断开立即触发重连（后台挂起期间 WS 被系统断开，回前台直接恢复）
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && focus && focus.rfb) {
-    if (focus.rfb._rfbConnectionState !== 'connected') {
-      focusReconnectAttempts = 0;
-      scheduleFocusReconnect();
-    }
-  }
-});
+// 2026-08-23：移除自动重连（黑盒回退）——连接/断开失败一律立即明确报错，由用户手动重进。
+// 确定性优先：不静默重试、不无限「连接中」。
 
 function exitFocus() {
   if (!focus) return;
   const devId = focus.device.id;
-  clearTimeout(focusReconnectTimer);
-  focusReconnectTimer = null;
-  focusReconnectAttempts = 0;
   setFocusOverlay(false, null); // 退出隐藏连接浮层
   // 2026-08-22 时序原则：断开时「先清理被控中状态，再断开」——本地置 controlled=false +
   // 移除遮罩，然后才 closeRfb。断开后本地 controlled=false 保持（不 refreshDevices 覆盖），
@@ -1761,7 +1746,18 @@ function exitFocus() {
       history.replaceState(null, '', u.toString());
     }
   } catch (e) { /* 忽略 */ }
-  closeRfb(focus.rfb);
+  const rfbToClose = focus.rfb;
+  if (focus.connTimer) { clearTimeout(focus.connTimer); focus.connTimer = null; }
+  closeRfb(rfbToClose);
+  lastClosedRfb = rfbToClose; // 记录供下次进入等待其完全关闭（规避 Chrome 连接配额排队）
+  // 2026-08-23 确定性优先：断开未完成立即报错——closeRfb 后 2s 内未进入
+  // disconnecting/disconnected（WS 关闭卡住）即视为异常，明确提示而非静默。
+  setTimeout(() => {
+    const st = rfbToClose && rfbToClose._rfbConnectionState;
+    if (st && st !== 'disconnected' && st !== 'disconnecting') {
+      toast('✗ 断开未完成（连接未关闭），请重试', 'error');
+    }
+  }, 2000);
   stopFabSignalPoll();
   focus = null;
   // 2026-08-15：退出控制恢复 IPA 底部 TabBar（与 enterFocus 隐藏配对；无桥环境自动跳过）
@@ -2432,6 +2428,10 @@ function createRfb(container, device, opts = {}, statusEl = null) {
   rfb.addEventListener('disconnect', (e) => {
     rfb._farmConnected = false;  // 通道断开：按键区回退能力链路
     setStatus('已断开');
+    // 2026-08-23：聚焦控制会话的断开已由 enterFocus 的 disconnect 监听在浮层明确报错，
+    // 此处仅对非聚焦场景（墙缩略图/直控）弹提示，避免重复弹窗。
+    const isFocusRfb = !!(focus && focus.rfb === rfb);
+    if (isFocusRfb) return;
     const d = e && e.detail ? e.detail : {};
     const code = d.code;
     if (code === 4001) alert('设备已被其它端接管，已中断控制');
@@ -2608,6 +2608,13 @@ function closeRfb(rfb) {
     const st = rfb._rfbConnectionState;
     if (st && st !== 'disconnected' && st !== 'disconnecting') {
       rfb.disconnect();
+    }
+    // 2026-08-23 根因修复：noVNC disconnect() 只 detach 监听、不主动关闭 WS socket
+    // （关闭依赖服务器主动 close 触发 _socketClose）。网关不会主动关控制 WS → 每次退出
+    // 控制 WS 挂着、网关 controller 会话残留 → 连续进出累积（WS 并发 + 会话残留）→ 卡住。
+    // 主动关闭底层 socket，确保退出即断、网关立即 cleanup。
+    if (rfb._sock && typeof rfb._sock.close === 'function') {
+      try { rfb._sock.close(); } catch (e) { /* ignore */ }
     }
   } catch (e) { /* ignore */ }
 }
