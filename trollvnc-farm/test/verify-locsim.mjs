@@ -52,7 +52,7 @@ check('读回 SimLocationMode=static', c.SimLocationMode === 'static', `got=${c.
 check('读回 SimLocationLat≈目标', Math.abs(Number(c.SimLocationLat) - TARGET.lat) < 0.001, `got=${c.SimLocationLat}`);
 check('读回 SimLocationLon≈目标', Math.abs(Number(c.SimLocationLon) - TARGET.lon) < 0.001, `got=${c.SimLocationLon}`);
 
-// 3.5 track：invoke sim.location.track 上传 1 分钟 walk 轨迹（北京→上海 截取 60 点）
+// 3.5 track：invoke sim.location.track 上传 60 点短轨迹（链路验证用；真实轨迹由面板按完整路线生成，时长=距离÷速度）
 const pts = interpolateRoute(TARGET, { lat: 31.2304, lon: 121.4737 }, { speed: 'walk', maxPoints: 60 });
 const trkR = await api(`/api/devices/${encodeURIComponent(devId)}/invoke`, {
   method: 'POST', body: JSON.stringify({ cap: 'sim.location.track', params: { points: pts } }),
