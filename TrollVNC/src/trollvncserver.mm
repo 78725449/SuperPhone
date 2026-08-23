@@ -3899,6 +3899,36 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
     } else if ([op isEqualToString:@"config.get"]) {
         return tvExtHandleConfigGet(NULL, params);
     }
+    // ===== touch.* 独立触控（2026-08-23，AI 工具/脚本经 5802 HTTP 直接注入，不依赖 5901 RFB 会话）=====
+    // 与 TRCapabilityRegistry touch.tap/swipe 契约一致：坐标 0-1 归一化（屏幕比例）。
+    // 复用 STHIDEventGenerator（与 type.paste 同进程同模式），换算用其 physicalScreenSize。
+    // 性能语义：触控为「命令注入」（即时完成），无需屏幕流——与「画面走 RFB/thumb、管理走 HTTP」架构一致。
+    else if ([op isEqualToString:@"touch.tap"]) {
+        NSNumber *xn = params[@"x"], *yn = params[@"y"];
+        if (![xn isKindOfClass:[NSNumber class]] || ![yn isKindOfClass:[NSNumber class]])
+            return tvExtErr(@"touch.tap 缺少参数 x/y（0-1 归一化）");
+        CGFloat x = xn.doubleValue, y = yn.doubleValue;
+        if (x < 0 || x > 1 || y < 0 || y > 1) return tvExtErr(@"touch.tap 参数须在 0-1 范围");
+        CGSize sz = [[STHIDEventGenerator sharedGenerator] physicalScreenSize];
+        CGPoint pt = CGPointMake(x * sz.width, y * sz.height);
+        STHIDEventGenerator *gen = [STHIDEventGenerator sharedGenerator];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{ [gen tap:pt]; });
+        return tvExtOk(@{});
+    } else if ([op isEqualToString:@"touch.swipe"]) {
+        NSNumber *x1n = params[@"x1"], *y1n = params[@"y1"], *x2n = params[@"x2"], *y2n = params[@"y2"];
+        if (![x1n isKindOfClass:[NSNumber class]] || ![y1n isKindOfClass:[NSNumber class]] ||
+            ![x2n isKindOfClass:[NSNumber class]] || ![y2n isKindOfClass:[NSNumber class]])
+            return tvExtErr(@"touch.swipe 缺少参数 x1/y1/x2/y2（0-1 归一化）");
+        NSNumber *durN = params[@"duration"];
+        NSTimeInterval dur = [durN isKindOfClass:[NSNumber class]] && durN.doubleValue > 0 ? durN.doubleValue : 0.5;
+        CGSize sz = [[STHIDEventGenerator sharedGenerator] physicalScreenSize];
+        CGPoint a = CGPointMake(x1n.doubleValue * sz.width, y1n.doubleValue * sz.height);
+        CGPoint b = CGPointMake(x2n.doubleValue * sz.width, y2n.doubleValue * sz.height);
+        STHIDEventGenerator *gen = [STHIDEventGenerator sharedGenerator];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0),
+                       ^{ [gen dragLinearWithStartPoint:a endPoint:b duration:dur]; });
+        return tvExtOk(@{});
+    }
     return tvExtErr([NSString stringWithFormat:@"未知操作: %@", op ?: @""]);
 }
 
