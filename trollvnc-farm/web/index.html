@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>控制台</title>
 <link rel="icon" href="data:," />
-<link rel="stylesheet" href="style.css?v=39" />
+<link rel="stylesheet" href="style.css?v=40" />
 </head>
 <body>
 <header>
@@ -67,9 +67,10 @@
 
     <!-- 中：操作列，紧贴设备屏幕右侧 -->
     <aside id="focusOps" class="focus-ops hidden">
+      <!-- 同步控制按钮（控制台独有，置顶 2026-08-23）：点击进入/退出同步选择模式 -->
+      <button id="btnSync" class="op sync-btn" title="同步控制：点击选择设备与主控同步"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3.5" width="9.5" height="17" rx="2"/><rect x="14" y="7" width="8" height="13" rx="1.8"/><path d="M12.1 10.3l1.8 1.4-1.8 1.4" fill="currentColor" stroke="none"/><path d="M13.9 10.3l-1.8 1.4 1.8 1.4" fill="currentColor" stroke="none"/></svg></button>
       <div id="focusOpsCap" class="focus-ops-cap"></div>
       <hr />
-      <button id="btnSync" class="op sync-btn" title="同步控制：点击选择设备与主控同步"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3.5" width="9.5" height="17" rx="2"/><rect x="14" y="7" width="8" height="13" rx="1.8"/><path d="M12.1 10.3l1.8 1.4-1.8 1.4" fill="currentColor" stroke="none"/><path d="M13.9 10.3l-1.8 1.4 1.8 1.4" fill="currentColor" stroke="none"/></svg></button>
       <button data-op="full" class="op" title="全屏"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg></button>
       <button data-op="disc" class="op danger" title="断开"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/><path d="M9.5 14.5l5-5"/></svg></button>
     </aside>
@@ -121,6 +122,6 @@
 <!-- 设备卡片小菜单 -->
   <div id="tileMenu" class="tile-menu hidden"></div>
 
-  <script type="module" src="app.js?v=209"></script>
+  <script type="module" src="app.js?v=212"></script>
 </body>
 </html>

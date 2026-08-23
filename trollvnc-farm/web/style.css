@@ -588,7 +588,6 @@ main {
 .focus-ops-cap { display: flex; flex-direction: column; gap: 6px; }
 .focus-ops-cap .cap-name { display: none; }
 .focus-ops-cap .cap-icon { font-size: 18px; }
-.focus-ops-cap .cap-group-title { display: none; } /* 操作列去除分组标题（移动端菜单标题保留） */
 
 /* 设备详情（能力清单只读） */
 .detail-body {
@@ -706,3 +705,35 @@ main {
 }
 
 /* 键盘按钮（2026-08-16 回退）：单向固定执行，无两态/黄色底样式 */
+
+/* ========== 全局提示浮层 #farmToast（2026-08-23 主题化） ========== */
+/* 原 app.js 内联样式收敛至此：毛玻璃 + 主题变量 + 类型色。
+   info=--accent / success=--ok / error=--bad，左侧条与描边同色，浅色模式随 --panel 自适应。 */
+#farmToast {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 999;
+  max-width: min(80vw, 420px);
+  padding: 10px 14px 10px 12px;
+  border-radius: 10px;
+  font: 13px/1.45 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  text-align: center;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--toast-accent, var(--accent)) 40%, transparent);
+  border-left: 3px solid var(--toast-accent, var(--accent));
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
+  -webkit-backdrop-filter: blur(10px) saturate(1.3);
+  backdrop-filter: blur(10px) saturate(1.3);
+  animation: farmToastIn .22s ease-out;
+  transition: opacity .25s;
+}
+#farmToast[data-type='success'] { --toast-accent: var(--ok); }
+#farmToast[data-type='error']   { --toast-accent: var(--bad); }
+@keyframes farmToastIn {
+  from { opacity: 0; transform: translate(-50%, -6px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}

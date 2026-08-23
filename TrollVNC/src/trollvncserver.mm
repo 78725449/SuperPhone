@@ -4022,7 +4022,8 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         if (![data writeToFile:tmpPath options:NSDataWritingAtomic error:&werr])
             return tvExtErr([NSString stringWithFormat:@"写临时文件失败: %@", werr.localizedDescription ?: @""]);
         NSError *perr = nil;
-        BOOL pOk = [PHPhotoLibrary performChangesAndWait:^{
+        // performChangesAndWait 是实例方法（PHPhotoLibrary 单例）；类方法签名只在 SDL 私有头可见，编译需实例调用
+        BOOL pOk = [[PHPhotoLibrary sharedPhotoLibrary] performChangesAndWait:^{
             NSURL *url = [NSURL fileURLWithPath:tmpPath];
             if (isVideo) [PHAssetChangeRequest creationRequestForAssetFromVideoAtFileURL:url];
             else [PHAssetChangeRequest creationRequestForAssetFromImageAtFileURL:url];

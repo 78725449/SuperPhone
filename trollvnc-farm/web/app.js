@@ -651,8 +651,9 @@ function showBatchMenu() {
   menu.id = 'batchMenu';
   menu.className = 'batch-menu';
 
-  // 按键按钮：与控制台右侧按键同一实现通道（attachPress 按压识别），剔除截图键（snapshot：批量
-  // 下发无收集画面意义）与电源键（power：批量误触电源有锁屏/关机风险，2026-08-19）。
+  // 按键按钮：与控制台右侧按键同一实现通道（attachPress 按压识别）。
+  // 2026-08-23 顺序对齐操作列：Home → 粘贴 → 上传 → 截屏 → 键盘 → 音量/静音/亮度 → 搜索 → 重启；
+  // 电源键仍不入批量菜单（批量误触电源有锁屏/关机风险，2026-08-19）。
   // 长按连发状态（2026-08-19）：按压式按键（音量/亮度/静音）长按 = 按住持续下发基础能力，
   // 对齐控制台右侧 HID down 按住 OS 自动重复的语义；抬起（up）即停止。
   // 手感优化（2026-08-19）：长按判定 800→500ms（attachPress longMs）、连发间隔 400→200ms，
@@ -667,8 +668,23 @@ function showBatchMenu() {
     stopHold(); // 菜单销毁时兜底停止长按连发（防定时器泄漏）
     for (const f of cleanups) { try { f(); } catch { /* noop */ } }
   };
-  for (const k of KEY_DEFS) {
-    if (k.key === 'snapshot' || k.key === 'power') continue;
+  // 批量动作按钮（粘贴/上传/截屏：无按压识别，单击直执行；图标与单端操作列 SVG 一致）
+  const PASTE_SVG = '<path d="M15 2H9a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1Z"/><path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2"/><rect x="9" y="11" width="6" height="4" rx="1"/>';
+  const UPLOAD_SVG = '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>';
+  const SNAPSHOT_SVG = '<path d="M1 5H5V1"/><path d="M23 19H19V23"/><path d="M5 19h14V5H5z" fill="currentColor" fill-opacity=".15" stroke="currentColor"/>';
+  const makeBatchActionBtn = (name, title, svg, onClick) => {
+    const b = document.createElement('button');
+    b.className = 'batch-cap-btn';
+    b.title = title;
+    b.innerHTML = '<span class="cap-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + svg + '</svg></span><span class="cap-name">' + name + '</span>';
+    b.addEventListener('click', onClick);
+    return b;
+  };
+  // 显式顺序（2026-08-23）：Home 打头、键盘在截屏后；Home 渲染后插入 粘贴/上传/截屏
+  const batchKeyOrder = ['home', 'keyboard', 'volup', 'mute', 'voldn', 'briup', 'bridn', 'spotlight'];
+  for (const key of batchKeyOrder) {
+    const k = KEY_DEFS.find((x) => x.key === key);
+    if (!k) continue;
     const b = document.createElement('button');
     b.className = 'batch-cap-btn';
     b.innerHTML = '<span class="cap-icon">' + (k.svg || escapeHtml(k.icon || '?')) + '</span><span class="cap-name">' + escapeHtml(k.title) + '</span>';
@@ -693,6 +709,12 @@ function showBatchMenu() {
       if (meta) doBatchInvoke(ids, meta);
     }, longMs: 500 })); // 长按判定 500ms（默认 800ms 太钝，批量连发需更快响应）
     menu.appendChild(b);
+    // Home 之后插入 粘贴/上传/截屏（批量动作走 invoke 通道；复制不入批量——多台同时拉剪贴板互相覆盖）
+    if (key === 'home') {
+      menu.appendChild(makeBatchActionBtn('粘贴', '粘贴：控制端剪贴板 → 各台设备', PASTE_SVG, () => batchPasteToDevices(ids)));
+      menu.appendChild(makeBatchActionBtn('上传', '上传：选择照片/视频导入各台设备相册（可多选）', UPLOAD_SVG, () => batchUploadToDevices(ids)));
+      menu.appendChild(makeBatchActionBtn('截屏', '截屏：采集各台设备当前屏幕画面', SNAPSHOT_SVG, () => batchScreenshotToDevices(ids)));
+    }
   }
   // 重启服务（2026-08-19：释放所有按键/硬件键盘锁/解锁已去除——type.paste 内部自带按键清理、
   // 键盘锁为单台硬件键盘维护操作，不适合批量下发）
@@ -756,6 +778,87 @@ async function doBatchInvoke(ids, meta) {
   } catch (e) {
     toast(`✗ 批量调用「${meta.title || meta.id}」失败：${e.message}`, 'error');
   }
+}
+
+/**
+ * 批量粘贴：读控制端剪贴板文本 → 对每台设备 type.paste 原子注入（2026-08-23，批量菜单「粘贴」）。
+ * 语义与单端粘贴一致：控制端剪贴板 → 各台设备聚焦输入框；http 下控制端剪贴板不可读 → 弹输入浮层。
+ * @param {string[]} ids 设备 ID 数组
+ * @returns {Promise<void>}
+ */
+async function batchPasteToDevices(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  let txt = null;
+  if (window.isSecureContext && navigator.clipboard && navigator.clipboard.readText) {
+    try { txt = await navigator.clipboard.readText(); } catch (e) { /* 读失败落下一层 */ }
+  }
+  if (!txt) { showPasteFallbackModal(ids); return; } // http / 剪贴板为空：弹输入浮层（与单端一致）
+  const fails = [];
+  for (const id of ids) {
+    try {
+      const r = await invokeCap('', id, 'type.paste', { text: txt });
+      if (!(r && r.ok)) fails.push(id);
+    } catch (e) { fails.push(id); }
+  }
+  if (fails.length === 0) toast(`✓ 已粘贴 ${txt.length} 字符到 ${ids.length} 台设备`, 'success');
+  else toast(`✗ ${fails.length} 台粘贴失败（${fails.join('，')}）`, 'error');
+}
+
+/**
+ * 批量上传：选择照片/视频 → 逐台经网关 POST /api/devices/:id/album 中转设备 5802 album.import（2026-08-23，批量菜单「上传」）。
+ * 每文件逐台上传，结果按文件汇总 toast（与单端同大小限制 ≤180MB/个）。
+ * @param {string[]} ids 设备 ID 数组
+ * @returns {Promise<void>}
+ */
+async function batchUploadToDevices(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*,video/*';
+  input.multiple = true;
+  input.addEventListener('change', async () => {
+    const files = [...input.files];
+    if (!files.length) return;
+    for (const f of files) {
+      if (f.size > 180 * 1024 * 1024) { toast(`跳过（>180MB）：${f.name}`, 'error'); continue; }
+      const buf = await f.arrayBuffer();
+      const b64 = bufToBase64(buf);
+      const fails = [];
+      for (const id of ids) {
+        try {
+          const res = await fetch(`/api/devices/${encodeURIComponent(id)}/album`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: f.name, data: b64 }),
+          });
+          const j = await res.json().catch(() => ({}));
+          if (!(res.ok && j.ok)) fails.push(id);
+        } catch (e) { fails.push(id); }
+      }
+      if (fails.length === 0) toast(`✓ 已导入相册（${ids.length} 台）：${f.name}`, 'success');
+      else toast(`✗ ${f.name} 上传失败 ${fails.length} 台（${fails.join('，')}）`, 'error');
+    }
+  });
+  input.click();
+}
+
+/**
+ * 批量截屏：逐台 invoke screenshot（屏幕快照）采集各台设备当前画面（2026-08-23，批量菜单「截屏」）。
+ * 结果不落盘，仅统计成功台数 toast（截图数据大、批量场景无收集画面意义，仅作状态确认）。
+ * @param {string[]} ids 设备 ID 数组
+ * @returns {Promise<void>}
+ */
+async function batchScreenshotToDevices(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  const fails = [];
+  for (const id of ids) {
+    try {
+      const r = await invokeCap('', id, 'screenshot', {});
+      if (!(r && r.ok)) fails.push(id);
+    } catch (e) { fails.push(id); }
+  }
+  if (fails.length === 0) toast(`✓ 已截取 ${ids.length} 台设备画面`, 'success');
+  else toast(`✗ ${fails.length} 台截图失败（${fails.join('，')}）`, 'error');
 }
 
 /**
@@ -1187,10 +1290,6 @@ function renderCapOps(container, device) {
   const frag = document.createDocumentFragment();
   // 悬浮菜单（opsMenuCap）：不显示分组标题，按钮保留图标+文字（窄菜单参考 5801 面板宽度）
   const isOpsMenu = container.id === 'opsMenuCap';
-  // 按键区：分组标题 + 按键对象按钮（按压识别，07 §3.2；KEY_DEFS 自包含契约，直发 RFB）
-  const keyTitle = document.createElement('div');
-  keyTitle.className = 'cap-group-title';
-  keyTitle.textContent = '按键';
   // 按键按钮构建（按压识别；键盘键 = 收起被控端软键盘 + 触控端调起控制端软键盘）
   const buildKeyBtn = (k) => {
     const b = document.createElement('button');
@@ -1212,8 +1311,8 @@ function renderCapOps(container, device) {
     } }));
     return b;
   };
-  // FAB 悬浮菜单专属顺序（2026-08-17 用户拍板）：Home → 复制 → 粘贴 → 键盘 → 截屏 →
-  // 其余按键（音量/亮度/搜索）→ 全屏 → 电源（长按保留）→ 断开。
+  // FAB 悬浮菜单专属顺序（2026-08-17 用户拍板 + 2026-08-23 补上传 + 键盘移截屏后）：Home → 复制 → 粘贴 → 上传 →
+  // 截屏 → 键盘 → 其余按键（音量/亮度/搜索）→ 全屏 → 电源（长按保留）→ 断开。
   // 全屏/断开原为 index.html 静态按钮，改动态渲染以便电源插入其间（静态写死会丢电源按压识别）。
   if (isOpsMenu) {
     const byKey = new Map(KEY_DEFS.map((k) => [k.key, k]));
@@ -1221,8 +1320,9 @@ function renderCapOps(container, device) {
     frag.appendChild(buildKeyBtn(byKey.get('home')));
     frag.appendChild(buildClipboardBtn('copy'));
     frag.appendChild(buildClipboardBtn('paste'));
-    frag.appendChild(buildKeyBtn(byKey.get('keyboard')));
+    frag.appendChild(buildUploadBtn());
     frag.appendChild(buildKeyBtn(byKey.get('snapshot')));
+    frag.appendChild(buildKeyBtn(byKey.get('keyboard')));
     order.slice(1).forEach((key) => { const k = byKey.get(key); if (k) frag.appendChild(buildKeyBtn(k)); });
     frag.appendChild(buildActionBtn('full', '全屏', '全屏切换',
       '<path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/>'));
@@ -1232,15 +1332,18 @@ function renderCapOps(container, device) {
     container.appendChild(frag);
     return;
   }
-  // 桌面操作列（focusOpsCap）：KEY_DEFS 顺序 + 复制（电脑端已有 Ctrl+V，不挂粘贴）
-  const keyBtns = [];
-  for (const k of KEY_DEFS) keyBtns.push(buildKeyBtn(k));
-  if (keyBtns.length > 0) {
-    frag.appendChild(keyTitle);
-    keyBtns.forEach((b) => frag.appendChild(b));
-  }
+  // 桌面操作列（focusOpsCap，2026-08-23 三端统一）：与 FAB 同源的拍板顺序（Home 打头、电源收尾）
+  // + 复制/粘贴/上传；键盘在截屏之后；单列无分组标题；全屏/断开为 index.html 静态按钮（留在容器底部，不重复渲染）。
+  const byKey = new Map(KEY_DEFS.map((k) => [k.key, k]));
+  const order = ['home', 'volup', 'mute', 'voldn', 'briup', 'bridn', 'spotlight'];
+  frag.appendChild(buildKeyBtn(byKey.get('home')));
   frag.appendChild(buildClipboardBtn('copy'));
+  frag.appendChild(buildClipboardBtn('paste'));
   frag.appendChild(buildUploadBtn());
+  frag.appendChild(buildKeyBtn(byKey.get('snapshot')));
+  frag.appendChild(buildKeyBtn(byKey.get('keyboard')));
+  order.slice(1).forEach((key) => { const k = byKey.get(key); if (k) frag.appendChild(buildKeyBtn(k)); });
+  frag.appendChild(buildKeyBtn(byKey.get('power')));
   container.appendChild(frag);
 }
 
@@ -2659,14 +2762,20 @@ async function copyFromFocusedDevice() {
 // 粘贴降级浮层（2026-08-17）：控制端（https 不可用）与设备剪贴板均为空时弹输入框；
 // 无确定按钮——粘贴进文本（paste 事件，不要求安全上下文）或回车即自动注入被控设备。
 let _pasteFallbackModal = null;
-function showPasteFallbackModal() {
+/**
+ * 粘贴输入浮层（http / 剪贴板不可读时降级）：输入文本 → 注入目标设备。
+ * @param {string|string[]|null} targets 目标设备 ID（单台传字符串 / 批量传数组 / 缺省用 focus.device.id）
+ * @returns {void}
+ */
+function showPasteFallbackModal(targets) {
   if (_pasteFallbackModal) { _pasteFallbackModal.focus(); return; }
   const overlay = document.createElement('div');
   overlay.className = 'modal';
   const card = document.createElement('div');
   card.className = 'modal-card';
+  const isBatch = Array.isArray(targets) && targets.length > 0;
   const title = document.createElement('h3');
-  title.textContent = '粘贴输入（粘贴或回车自动注入）';
+  title.textContent = isBatch ? `粘贴输入（${targets.length} 台设备，粘贴或回车自动注入）` : '粘贴输入（粘贴或回车自动注入）';
   const inp = document.createElement('input');
   inp.type = 'text';
   inp.placeholder = '长按粘贴或输入文本';
@@ -2680,7 +2789,9 @@ function showPasteFallbackModal() {
   const doPaste = () => {
     const txt = inp.value;
     close();
-    if (txt && focus && focus.device) submitPasteText(focus.device.id, txt);
+    if (!txt) return;
+    if (isBatch) { for (const id of targets) submitPasteText(id, txt); return; }
+    if (focus && focus.device) submitPasteText(focus.device.id, txt);
   };
   inp.addEventListener('paste', (e) => {
     const txt = (e.clipboardData && e.clipboardData.getData('text')) || '';
