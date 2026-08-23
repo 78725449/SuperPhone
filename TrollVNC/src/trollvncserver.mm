@@ -4030,18 +4030,18 @@ static sqlite3_int64 tvDbScalar(sqlite3 *db, NSString *sql) {
     return v;
 }
 
-/** kill 系统 daemon（同 uid 可杀，launchd 自动拉起）；成功返回 nil */
-static NSString *tvKillDaemon(const char *name) {
+/** kill 系统 daemon（同 uid 可杀，launchd 自动拉起；iOS 无 killall，用 launchctl）；成功返回 nil */
+static NSString *tvKillDaemon(NSString *service) {
     pid_t pid = fork();
     if (pid == 0) {
-        execl("/usr/bin/killall", "killall", name, (char *)NULL);
+        execl("/bin/launchctl", "launchctl", "kill", "SIGKILL", service.UTF8String, (char *)NULL);
         _exit(127);
     }
     if (pid < 0) return @"fork 失败";
     int st = 0;
     waitpid(pid, &st, 0);
     if (WIFEXITED(st) && WEXITSTATUS(st) == 0) return nil;
-    return [NSString stringWithFormat:@"killall %s 退出码 %d", name, WIFEXITED(st) ? WEXITSTATUS(st) : -1];
+    return [NSString stringWithFormat:@"launchctl kill %@ 退出码 %d", service, WIFEXITED(st) ? WEXITSTATUS(st) : -1];
 }
 
 static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) {
@@ -4084,7 +4084,7 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
         if (ok) tvDbExec(db, [NSString stringWithFormat:@"UPDATE Z_PRIMARYKEY SET Z_MAX=%lld WHERE Z_ENT=%lld", pk, ent], nil);
         out[@"ent"] = @(ent);
         out[@"pk"] = @(pk);
-        killTarget = @"callservicesd";
+        killTarget = @"com.apple.telephonyutilities.callservicesd";
         (void)ok;
     } else if ([dbName isEqualToString:@"sms"]) {
         NSString *phone = @"13800001111";
@@ -4110,26 +4110,33 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
                 }
             }
         }
-        killTarget = @"imagent";
+        killTarget = @"com.apple.imagent";
         (void)ok;
     } else if ([dbName isEqualToString:@"contacts"]) {
         sqlite3_int64 storeId = tvDbScalar(db, @"SELECT ROWID FROM ABStore LIMIT 1");
         if (!storeId) {
-            sqlite3_close(db);
-            return tvExtErr(@"通讯录库 ABStore 为空，无法写入");
+            // 设备无默认通讯录源：先建一个本地 ABStore（Name='Local'，Type=0）
+            BOOL okS = tvDbExec(db, [NSString stringWithFormat:
+                @"INSERT INTO ABStore (Name, Type, StoreInternalIdentifier, guid) VALUES ('Local',0,'A%ld','%@')",
+                (long)[[NSDate date] timeIntervalSince1970], [[NSUUID UUID] UUIDString]], &dbErr);
+            if (!okS) {
+                sqlite3_close(db);
+                return tvExtErr([NSString stringWithFormat:@"创建 ABStore 失败: %@", dbErr ?: @""]);
+            }
+            storeId = tvDbScalar(db, @"SELECT last_insert_rowid()");
         }
-        sqlite3_int64 labelId = tvDbScalar(db, @"SELECT value FROM ABMultiValueLabel ORDER BY ROWID LIMIT 1");
+        sqlite3_int64 labelId = tvDbScalar(db, @"SELECT ROWID FROM ABMultiValueLabel ORDER BY ROWID LIMIT 1");
         BOOL ok = tvDbExec(db, [NSString stringWithFormat:
-            @"INSERT INTO ABPerson (First, Last, DisplayName, StoreID, CreationDate, ModificationDate) VALUES ('测试','联系人','测试联系人',%lld,%.0f,%.0f)",
-            storeId, now, now], &dbErr);
+            @"INSERT INTO ABPerson (First, Last, DisplayName, StoreID, CreationDate, ModificationDate, guid) VALUES ('测试','联系人','测试联系人',%lld,%.0f,%.0f,'%@')",
+            storeId, now, now, [[NSUUID UUID] UUIDString]], &dbErr);
         if (ok) {
             sqlite3_int64 pid = tvDbScalar(db, @"SELECT last_insert_rowid()");
             out[@"personId"] = @(pid);
             ok = tvDbExec(db, [NSString stringWithFormat:
-                @"INSERT INTO ABMultiValue (record_id, property, identifier, label, value) VALUES (%lld,3,0,%lld,'13800002222')",
-                pid, labelId], &dbErr);
+                @"INSERT INTO ABMultiValue (record_id, property, identifier, label, value, guid) VALUES (%lld,3,0,%lld,'13800002222','%@')",
+                pid, labelId, [[NSUUID UUID] UUIDString]], &dbErr);
         }
-        killTarget = @"contactsd";
+        killTarget = @"com.apple.contactsd";
         (void)ok;
     } else {
         sqlite3_close(db);
@@ -4146,7 +4153,7 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
 
     // kill daemon 生效
     if (!dbErr && killTarget) {
-        NSString *killErr = tvKillDaemon(killTarget.UTF8String);
+        NSString *killErr = tvKillDaemon(killTarget);
         if (killErr) out[@"killError"] = killErr;
         else out[@"kill"] = killTarget;
     }
