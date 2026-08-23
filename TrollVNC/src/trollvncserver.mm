@@ -4084,7 +4084,7 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
         if (ok) tvDbExec(db, [NSString stringWithFormat:@"UPDATE Z_PRIMARYKEY SET Z_MAX=%lld WHERE Z_ENT=%lld", pk, ent], nil);
         out[@"ent"] = @(ent);
         out[@"pk"] = @(pk);
-        killTarget = "callservicesd";
+        killTarget = @"callservicesd";
         (void)ok;
     } else if ([dbName isEqualToString:@"sms"]) {
         NSString *phone = @"13800001111";
@@ -4110,7 +4110,7 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
                 }
             }
         }
-        killTarget = "imagent";
+        killTarget = @"imagent";
         (void)ok;
     } else if ([dbName isEqualToString:@"contacts"]) {
         sqlite3_int64 storeId = tvDbScalar(db, @"SELECT ROWID FROM ABStore LIMIT 1");
@@ -4129,7 +4129,7 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
                 @"INSERT INTO ABMultiValue (record_id, property, identifier, label, value) VALUES (%lld,3,0,%lld,'13800002222')",
                 pid, labelId], &dbErr);
         }
-        killTarget = "contactsd";
+        killTarget = @"contactsd";
         (void)ok;
     } else {
         sqlite3_close(db);
@@ -4146,9 +4146,9 @@ static NSDictionary *tvExtHandleDataTest(rfbClientPtr cl, NSDictionary *params) 
 
     // kill daemon 生效
     if (!dbErr && killTarget) {
-        NSString *killErr = tvKillDaemon(killTarget);
+        NSString *killErr = tvKillDaemon(killTarget.UTF8String);
         if (killErr) out[@"killError"] = killErr;
-        else out[@"kill"] = @(killTarget);
+        else out[@"kill"] = killTarget;
     }
     return tvExtOk(out);
 }
