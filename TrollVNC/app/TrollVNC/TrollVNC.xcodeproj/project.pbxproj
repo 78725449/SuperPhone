@@ -69,6 +69,7 @@
 		A10000000000000000000018 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* libsqlite3.tbd */; };
 		A1000000000000000000001B /* RegionSimulator.mm in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001A /* RegionSimulator.mm */; };
 		A1000000000000000000001E /* SimRouteCalculator.mm in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001D /* SimRouteCalculator.mm */; };
+		A10000000000000000000020 /* CoreLocation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001F /* CoreLocation.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -148,6 +149,7 @@
 		A1000000000000000000001A /* RegionSimulator.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../src/RegionSimulator.mm; sourceTree = "<group>"; };
 		A1000000000000000000001C /* SimRouteCalculator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../src/SimRouteCalculator.h; sourceTree = "<group>"; };
 		A1000000000000000000001D /* SimRouteCalculator.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../src/SimRouteCalculator.mm; sourceTree = "<group>"; };
+		A1000000000000000000001F /* CoreLocation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreLocation.framework; path = System/Library/Frameworks/CoreLocation.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -162,6 +164,7 @@
 			A10000000000000000000014 /* MapKit.framework in Frameworks */,
 			A10000000000000000000016 /* Contacts.framework in Frameworks */,
 			A10000000000000000000018 /* libsqlite3.tbd in Frameworks */,
+			A10000000000000000000020 /* CoreLocation.framework in Frameworks */,
 		);
 		runOnlyForDeploymentPostprocessing = 0;
 	};
