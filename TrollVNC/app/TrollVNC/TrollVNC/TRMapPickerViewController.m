@@ -69,6 +69,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @property (nonatomic, assign) BOOL hasFocusedMapOnce;            // 首帧启动聚焦是否已执行（避免 tab 往返重复聚焦）
 @property (nonatomic, strong) CLLocationManager *locationManager; // App 活跃位置订阅（授权 + startUpdatingLocation，didUpdateLocations 主驱动）
 @property (nonatomic, assign) BOOL hasFocusedRealOnce;           // 真实定位首次到达是否已聚焦（避免反复跳）
+@property (nonatomic, assign) NSTimeInterval startTimestamp;     // 开启定位时刻：模拟分支只认晚于此的 fix（过滤注入落地前的真实残留）
+@property (nonatomic, assign) NSTimeInterval stopTimestamp;      // 停止定位时刻：停止分支只认晚于此的 fix（过滤模拟残留/旧缓存）
 @property (nonatomic, assign) BOOL isGenerating;            // 轨迹生成中（并发保护：正在生长时忽略新的 commit）
 @property (nonatomic, copy) void (^pendingEditAction)(void);     // 生成中挂起的最新编辑（完成后执行，最后一次生效）
 @property (nonatomic, strong) UITapGestureRecognizer *mapTap;      // 地图单击手势（handleTap；shouldReceiveTouch 拦截锚点水滴点击，防删除竞态）
@@ -101,6 +103,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     // locationd 对活跃请求持续广播（系统地图同理），didUpdateLocations 驱动状态栏/锚点；水滴走 MKMapView 显示（同一 locationd 源）
     self.locationManager = [[CLLocationManager alloc] init];
     self.locationManager.delegate = self;
+    // 精度放宽到 100m（2026-08-24）：系统本就产各种精度的位置（GPS 收敛从粗到精），
+    // 默认 Best≈10m 会扣住 acc>10m 的位置不推——模拟注入 acc=3~15m 随机（>10m 被扣→跟随断续）、
+    // 停止后真实 GPS 收敛初期误差大（>10m 被扣→干等 2 分钟）。放宽后模拟/真实 fix 都尽早推送
+    self.locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters;
     if ([CLLocationManager authorizationStatus] == kCLAuthorizationStatusNotDetermined) {
         [self.locationManager requestWhenInUseAuthorization];
     } else if ([CLLocationManager authorizationStatus] == kCLAuthorizationStatusAuthorizedWhenInUse ||
@@ -354,6 +360,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         self.hasStart = YES;
         self.cur = gcj;
         self.locating = YES;
+        self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻（同 toggleLocate）
         [self commitAnchor];
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES]; // 立即聚焦锚点
         self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（水滴跟随 locationd）
@@ -647,6 +654,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         // 停止定位：位置停编排最后坐标（App 内保留显示），设备恢复真实定位
         self.locating = NO;
         self.pendingEditAction = nil;    // 放弃生成中挂起的编辑（停止后不再生长/复活设备）
+        self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 记停止时刻：停止分支只认晚于此的真实 fix（过滤模拟残留）
         [self commitStop];
         self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随（水滴随 locationd 恢复真实）
         [self refreshUserLocationView];                          // 当前位置水滴去图标（未定位=纯绿点）
@@ -658,6 +666,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             return;
         }
         self.locating = YES;
+        self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻：模拟分支只认晚于此的 fix（过滤注入落地前的真实残留）
         [self commitAnchor];
         [self refreshUserLocationView];       // 当前位置水滴恢复出行图标
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(self.cur, 3000, 3000) animated:YES]; // 立即聚焦锚点
@@ -719,6 +728,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         self.hasStart = YES;
         self.cur = gcj;
         self.locating = YES;
+        self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻（同 toggleLocate）
         [self commitAnchor];
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
         self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（水滴跟随 locationd）
@@ -830,6 +840,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         self.hasStart = NO;
         self.locating = NO;
         self.pendingEditAction = nil;    // 清挂起编辑（空链无需再生成）
+        self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 记停止时刻（同 toggleLocate）
         [self commitStop];
         for (id o in self.mapView.overlays) {
             if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
@@ -929,17 +940,21 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 }
 
 /// 当前位置统一处理（主驱动，2026-08-24）：App 自己的活跃订阅（startUpdatingLocation）推送 → 状态栏/锚点/聚焦/self.cur。
-/// locationd 对活跃请求持续广播，与水滴（MKMapView 内部位置源）同源——同一数据源幂等
+/// locationd 对活跃请求持续广播，与水滴（MKMapView 内部位置源）同源。
+/// 时间戳分辨新旧（2026-08-24）：开启/停止瞬间有"旧状态残留"抢跑（停止前模拟残留/开启前真实残留），
+/// 每个 fix 自带出生时间（CLLocation.timestamp，系统盖章），只认晚于对应切换时刻的 fix——旧货当没看见
 - (void)handleLocationUpdate:(CLLocation *)loc {
     if (!loc) return;
     if (self.locating) {
-        // 模拟态：locationd 当前值 = 模拟位置（注入落地）。更新状态栏 + 锚点经过态 + 同步 self.cur
+        // 模拟态：只认晚于开启时刻的 fix（注入落地后的模拟位置）——过滤开启瞬间注入落地前的真实残留
+        if ([loc.timestamp timeIntervalSince1970] < self.startTimestamp) return;
         self.cur = [CoordTransform wgs84ToGcj02:loc.coordinate];
         [self updateStatus];
         [self updateAnchorPassStateWithLiveWGS:loc.coordinate];
         return;
     }
-    // 停止态（真实态）：真实位置 → 状态栏 + 首次聚焦
+    // 停止态：只认晚于停止时刻的 fix（真实位置）——过滤停止瞬间的模拟残留/旧缓存
+    if ([loc.timestamp timeIntervalSince1970] <= self.stopTimestamp) return;
     [self updateStatus];
     if (self.hasFocusedRealOnce) return;
     self.hasFocusedRealOnce = YES;
