@@ -27,15 +27,24 @@
 static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.simloc.json";
 static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
-@interface TRMapPickerViewController () <MKMapViewDelegate, UISearchBarDelegate, UIGestureRecognizerDelegate>
+/// 锚点标注（关联编排段索引，点击删除该段）
+@interface TRAnchorAnnotation : MKPointAnnotation
+@property (nonatomic, assign) NSInteger segmentIndex;
+@property (nonatomic, assign) BOOL isStart; // 起点锚点（样式区分）
+@end
+@implementation TRAnchorAnnotation
+@end
+
+@interface TRMapPickerViewController () <MKMapViewDelegate, UISearchBarDelegate, UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) MKMapView *mapView;
 @property (nonatomic, strong) UISearchBar *searchBar;
 @property (nonatomic, strong) UISegmentedControl *modeSeg;   // 步行/驾车（左下胶囊）
 @property (nonatomic, strong) UIButton *locateFab;           // 右下角圆形定位开关
 @property (nonatomic, strong) UILabel *statusLabel;          // 状态（顶部，可展开步骤）
-@property (nonatomic, strong) UIStackView *stepStack;        // 步骤摘要列表（状态条展开）
+@property (nonatomic, strong) UITableView *stepTable;        // 步骤列表（状态条展开；删除 + 拖拽排序）
 
 @property (nonatomic, strong) NSMutableArray *segments;      // 编排段 @[@{type,point/to/radius/durationMin/mode}]
+@property (nonatomic, strong) NSMutableArray *anchors;       // 每段对应的锚点标注（TRAnchorAnnotation）
 @property (nonatomic, assign) CLLocationCoordinate2D cur;    // 当前模拟位置（地图坐标 GCJ-02）
 @property (nonatomic, assign) BOOL hasStart;
 @property (nonatomic, assign) BOOL locating;                // 定位开关状态
@@ -54,6 +63,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.segments = [NSMutableArray array];
+    self.anchors = [NSMutableArray array];
     self.cur = CLLocationCoordinate2DMake(39.9042, 116.4074); // 北京，初始
     [self setupMap];
     [self setupUI];
@@ -104,13 +114,18 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.view addSubview:statusBtn];
     self.statusLabel = statusBtn.titleLabel;
 
-    // 步骤列表（默认收起）
-    UIStackView *stack = [[UIStackView alloc] initWithFrame:CGRectMake(12, 96, self.view.bounds.size.width - 24, 0)];
-    stack.axis = UILayoutConstraintAxisVertical;
-    stack.spacing = 2;
-    stack.hidden = YES;
-    [self.view addSubview:stack];
-    self.stepStack = stack;
+    // 步骤列表（默认收起；删除 + 拖拽排序，对齐原型）
+    UITableView *table = [[UITableView alloc] initWithFrame:CGRectMake(12, 96, self.view.bounds.size.width - 24, 180)
+                                                      style:UITableViewStylePlain];
+    table.dataSource = self;
+    table.delegate = self;
+    table.hidden = YES;
+    table.layer.cornerRadius = 8;
+    table.backgroundColor = [UIColor systemBackgroundColor];
+    table.editing = YES; // 编辑模式（左侧删除 + 拖拽把手）
+    table.separatorInset = UIEdgeInsetsMake(0, 44, 0, 0);
+    [self.view addSubview:table];
+    self.stepTable = table;
 
     // 步行/驾车胶囊（左下）
     UISegmentedControl *mode = [[UISegmentedControl alloc] initWithItems:@[@"🚶 步行", @"🚗 驾车"]];
@@ -142,13 +157,12 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     double lon = [d doubleForKey:@"SimLocationLon"];
     if ([mode isEqualToString:@"anchor"] || [mode isEqualToString:@"itinerary"]) {
         self.locating = YES;
-        [self.locateFab setBackgroundColor:[UIColor systemBlueColor]];
-        [self.locateFab setImage:[UIImage systemImageNamed:@"location.fill"] forState:UIControlStateNormal];
         if (lat != 0 || lon != 0) {
             self.cur = CLLocationCoordinate2DMake(lat, lon); // 已是 WGS-84，画回地图转 GCJ
             [self placeCurAt:[CoordTransform wgs84ToGcj02:self.cur]];
         }
     }
+    [self updateStatus];
 }
 
 #pragma mark - 手势：单击递增编排
@@ -165,8 +179,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude)}];
         [self commitAnchor];
         [self updateStatus];
-        [self refreshSteps];
-        [self rebuildPreview];
+        [self syncSegmentsUI];
     } else {
         // 再击 = 加路线段（上一位置为起点）
         NSString *mode = self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk";
@@ -174,8 +187,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         self.cur = gcj;
         [self placeCurAt:gcj];
         [self updateStatus];
-        [self refreshSteps];
-        [self rebuildPreview];
+        [self syncSegmentsUI];
         [self commitItinerary];
     }
 }
@@ -247,8 +259,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         self.cur = self.regionCenter;
         [self placeCurAt:self.regionCenter];
         [self updateStatus];
-        [self refreshSteps];
-        [self rebuildPreview];
+        [self syncSegmentsUI];
         [self commitItinerary];
     }]];
     [self presentViewController:ac animated:YES completion:nil];
@@ -258,9 +269,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 - (void)toggleLocate:(UIButton *)sender {
     if (self.locating) {
-        // 停止定位：位置停最后坐标，恢复真实定位
+        // 停止定位：位置停编排最后坐标（App 内保留显示），设备恢复真实定位
         self.locating = NO;
-        [self.locateFab setBackgroundColor:[UIColor systemGrayColor]];
         [self commitStop];
     } else {
         // 开启：有起点则 anchor，否则提示先设起点
@@ -269,7 +279,6 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             return;
         }
         self.locating = YES;
-        [self.locateFab setBackgroundColor:[UIColor systemBlueColor]];
         [self commitAnchor];
     }
     [self updateStatus];
@@ -302,13 +311,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             self.hasStart = YES;
             self.cur = gcj;
             self.locating = YES;
-            [self.locateFab setBackgroundColor:[UIColor systemBlueColor]];
             [self placeCurAt:gcj];
             [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude)}];
             [self commitAnchor];
             [self updateStatus];
-            [self refreshSteps];
-            [self rebuildPreview];
+            [self syncSegmentsUI];
         }
         [self setHint:item.name ?: @"已定位"];
     }];
@@ -324,35 +331,140 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 - (void)updateStatus {
     CLLocationCoordinate2D wgs = [CoordTransform gcj02ToWgs84:self.cur];
+    NSString *speedTxt = @"0.0 m/s";
     NSString *modeTxt = self.locating ? @"模拟中 · 定位" : @"已停止 · 定位";
-    self.statusLabel.text = [NSString stringWithFormat:@"%@ · %.5f, %.5f（WGS-84）", modeTxt, wgs.latitude, wgs.longitude];
+    if (self.locating) {
+        // 速度按模式档位显示（真实注入速度为 manager 每秒推进，App 侧展示档位）
+        double mps = self.modeSeg.selectedSegmentIndex == 1 ? 13.9 : 1.4;
+        speedTxt = [NSString stringWithFormat:@"%.1f m/s", mps];
+    }
+    self.statusLabel.text = [NSString stringWithFormat:@"%@ · %@ · %.5f, %.5f（WGS-84）", modeTxt, speedTxt, wgs.latitude, wgs.longitude];
     self.statusLabel.textColor = self.locating ? [UIColor systemBlueColor] : [UIColor labelColor];
+    // FAB 图标/颜色随定位状态切换（对齐原型：定位中=停止方块，否则=定位图标）
+    [self.locateFab setImage:[UIImage systemImageNamed:self.locating ? @"stop.fill" : @"location.fill"] forState:UIControlStateNormal];
+    [self.locateFab setBackgroundColor:self.locating ? [UIColor systemBlueColor] : [UIColor systemGrayColor]];
 }
 
 - (void)toggleSteps:(UIButton *)sender {
     self.expanded = !self.expanded;
-    self.stepStack.hidden = !self.expanded;
+    self.stepTable.hidden = !self.expanded;
 }
 
-- (void)refreshSteps {
-    for (UIView *v in self.stepStack.arrangedSubviews) [self.stepStack removeArrangedSubview:v];
-    for (NSDictionary *seg in self.segments) {
-        NSString *txt = nil;
+/// 编排段变化后统一刷新：步骤列表 + 锚点 + 预览（对齐原型 addSegment → renderRail+renderOverlaysFromSegments）
+- (void)syncSegmentsUI {
+    [self.stepTable reloadData];
+    [self rebuildAnchors];
+    [self rebuildPreview];
+}
+
+- (void)reloadSteps {
+    [self.stepTable reloadData];
+}
+
+#pragma mark - 锚点系统（每段终点/中心地图锚点，点击删除该段，路线自适应）
+
+- (void)rebuildAnchors {
+    for (TRAnchorAnnotation *a in self.anchors) [self.mapView removeAnnotation:a];
+    [self.anchors removeAllObjects];
+    for (NSUInteger i = 0; i < self.segments.count; i++) {
+        NSDictionary *seg = self.segments[i];
         NSString *type = seg[@"type"];
+        CLLocationCoordinate2D c = self.cur;
+        BOOL isStart = NO;
         if ([type isEqualToString:@"anchor"]) {
-            txt = @"起点（锚点基底）";
+            c = CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue]);
+            isStart = YES;
         } else if ([type isEqualToString:@"route"]) {
-            CLLocationCoordinate2D w = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"to"][@"lat"] doubleValue], [seg[@"to"][@"lon"] doubleValue])];
-            txt = [NSString stringWithFormat:@"路线 → (%.4f, %.4f)", w.latitude, w.longitude];
+            c = CLLocationCoordinate2DMake([seg[@"to"][@"lat"] doubleValue], [seg[@"to"][@"lon"] doubleValue]);
         } else if ([type isEqualToString:@"region"]) {
-            txt = [NSString stringWithFormat:@"区域漫游 %.0f m · %@ 分钟", [seg[@"radius"] doubleValue], seg[@"durationMin"]];
+            c = CLLocationCoordinate2DMake([seg[@"center"][@"lat"] doubleValue], [seg[@"center"][@"lon"] doubleValue]);
         }
-        if (!txt) continue;
-        UILabel *l = [[UILabel alloc] init];
-        l.font = [UIFont systemFontOfSize:12];
-        l.text = txt;
-        [self.stepStack addArrangedSubview:l];
+        TRAnchorAnnotation *a = [[TRAnchorAnnotation alloc] init];
+        a.coordinate = c;
+        a.segmentIndex = (NSInteger)i;
+        a.isStart = isStart;
+        [self.anchors addObject:a];
+        [self.mapView addAnnotation:a];
     }
+}
+
+/// 删除第 idx 段（起点被删则重置编排）；路线自适应（预览按剩余段顺序重连，提交时按序拼接）
+- (void)deleteSegmentAt:(NSInteger)idx {
+    if (idx < 0 || idx >= (NSInteger)self.segments.count) return;
+    NSDictionary *seg = self.segments[idx];
+    if ([seg[@"type"] isEqualToString:@"anchor"]) {
+        // 起点被删：若还有后续段，首段 route/region 的原点缺失 → 编排整体重置
+        [self.segments removeAllObjects];
+        self.hasStart = NO;
+        self.locating = NO;
+        [self updateStatus];
+        [self setHint:@"起点已删除 · 重新点击地图设定起点"];
+    } else {
+        [self.segments removeObjectAtIndex:idx];
+        [self setHint:@"已删除该段 · 路线自适应连接"];
+    }
+    [self syncSegmentsUI];
+    if (self.hasStart && self.segments.count > 1) [self commitItinerary];
+}
+
+/// 拖拽排序后：段顺序更新 → 预览/生成按新顺序拼接（起点固定为首段 anchor）
+- (void)moveSegmentFrom:(NSInteger)from to:(NSInteger)to {
+    if (from < 0 || to < 0 || from >= (NSInteger)self.segments.count || to >= (NSInteger)self.segments.count || from == to) return;
+    NSDictionary *item = self.segments[from];
+    [self.segments removeObjectAtIndex:from];
+    [self.segments insertObject:item atIndex:to];
+    [self setHint:@"行程已重排 · 路线自适应"];
+    [self syncSegmentsUI];
+    if (self.hasStart && self.segments.count > 1) [self commitItinerary];
+}
+
+#pragma mark - UITableViewDataSource / Delegate（步骤列表：删除 + 拖拽排序）
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.segments.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *rid = @"SegCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:rid];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:rid];
+        cell.textLabel.font = [UIFont systemFontOfSize:13];
+        cell.detailTextLabel.font = [UIFont systemFontOfSize:11];
+    }
+    NSDictionary *seg = self.segments[indexPath.row];
+    NSString *type = seg[@"type"];
+    if ([type isEqualToString:@"anchor"]) {
+        cell.textLabel.text = @"起点（锚点基底）";
+        cell.detailTextLabel.text = @"";
+    } else if ([type isEqualToString:@"route"]) {
+        CLLocationCoordinate2D w = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"to"][@"lat"] doubleValue], [seg[@"to"][@"lon"] doubleValue])];
+        cell.textLabel.text = [NSString stringWithFormat:@"路线 → (%.4f, %.4f)", w.latitude, w.longitude];
+        cell.detailTextLabel.text = [seg[@"mode"] isEqualToString:@"drive"] ? @"驾车" : @"步行";
+    } else {
+        cell.textLabel.text = [NSString stringWithFormat:@"区域漫游 %.0f m · %@ 分钟", [seg[@"radius"] doubleValue], seg[@"durationMin"]];
+        cell.detailTextLabel.text = [seg[@"mode"] isEqualToString:@"drive"] ? @"驾车" : @"步行";
+    }
+    cell.showsReorderControl = YES;
+    return cell;
+}
+
+- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
+    return UITableViewCellEditingStyleDelete;
+}
+
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (editingStyle == UITableViewCellEditingStyleDelete) {
+        [self deleteSegmentAt:indexPath.row];
+    }
+}
+
+- (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
+    return YES;
+}
+
+- (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)from toIndexPath:(NSIndexPath *)to {
+    [self moveSegmentFrom:from.row to:to.row];
 }
 
 #pragma mark - 地图预览（路线直线连线 / 区域圆）
@@ -589,6 +701,32 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 }
 
 - (MKAnnotationView *)mapView:(MKMapView *)mapView viewForAnnotation:(id<MKAnnotation>)annotation {
+    if ([annotation isKindOfClass:[TRAnchorAnnotation class]]) {
+        TRAnchorAnnotation *a = (TRAnchorAnnotation *)annotation;
+        static NSString *rid = @"AnchorPin";
+        MKAnnotationView *v = [mapView dequeueReusableAnnotationViewWithIdentifier:rid];
+        if (!v) {
+            v = [[MKAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:rid];
+            v.canShowCallout = YES;
+            UIButton *del = [UIButton buttonWithType:UIButtonTypeSystem];
+            [del setImage:[UIImage systemImageNamed:@"trash"] forState:UIControlStateNormal];
+            del.frame = CGRectMake(0, 0, 30, 30);
+            v.rightCalloutAccessoryView = del;
+        }
+        v.annotation = annotation;
+        // 锚点样式：起点=绿圆（带白芯），其余=紫圆（带白芯），与蓝点（当前位置）区分
+        for (UIView *sv in v.subviews) { if (sv.tag == 99) [sv removeFromSuperview]; }
+        UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(0, 0, a.isStart ? 18 : 14, a.isStart ? 18 : 14)];
+        dot.tag = 99;
+        dot.layer.cornerRadius = dot.bounds.size.width / 2;
+        dot.backgroundColor = a.isStart ? [UIColor systemGreenColor] : [UIColor systemPurpleColor];
+        dot.layer.borderColor = [UIColor whiteColor].CGColor;
+        dot.layer.borderWidth = 2;
+        dot.center = CGPointMake(v.bounds.size.width / 2, v.bounds.size.height / 2);
+        [v addSubview:dot];
+        v.calloutOffset = CGPointMake(0, -4);
+        return v;
+    }
     if (annotation == self.curPin) {
         static NSString *rid = @"CurPin";
         MKAnnotationView *v = [mapView dequeueReusableAnnotationViewWithIdentifier:rid];
@@ -606,6 +744,14 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         return v;
     }
     return nil;
+}
+
+/// 锚点 callout 删除按钮：删除该段（对齐原型「点击锚点删除该点，路线自适应连接」）
+- (void)mapView:(MKMapView *)mapView annotationView:(MKAnnotationView *)view calloutAccessoryControlTapped:(UIControl *)control {
+    if ([view.annotation isKindOfClass:[TRAnchorAnnotation class]]) {
+        TRAnchorAnnotation *a = (TRAnchorAnnotation *)view.annotation;
+        [self deleteSegmentAt:a.segmentIndex];
+    }
 }
 
 #pragma mark - UIGestureRecognizerDelegate

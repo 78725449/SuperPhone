@@ -86,7 +86,7 @@
     [disguiseNav setNavigationBarHidden:YES animated:NO];
     [self styleNav:disguiseNav tint:tint];
 
-    self.viewControllers = @[ connectNav, controllerNav, settingsNav, disguiseNav ];
+    self.viewControllers = @[ connectNav, controllerNav, disguiseNav, settingsNav ];
 }
 
 /// 统一设置导航控制器外观（紫色 tint + 大标题偏好）。

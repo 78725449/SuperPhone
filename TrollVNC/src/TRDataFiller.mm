@@ -58,6 +58,31 @@ static NSArray *kSmsTexts(void) {
              @"早点休息，晚安", @"打车了吗？", @"会议室定了，三点见", @"孩子放学我去接",
              @"这个方案明天前要确认", @"快递放门卫了", @"周末去爬山吗？"];
 }
+// 短信类型语料（对齐原型类型构成：验证码/快递/银行/运营商/营销/家人朋友）
+static NSArray *kSmsCodeTexts(void) {
+    return @[@"【XX服务】您的验证码是%04ld，10分钟内有效。如非本人操作请忽略。",
+             @"验证码：%04ld，您正在登录账号，请勿泄露给他人。"];
+}
+static NSArray *kSmsExpressTexts(void) {
+    return @[@"【驿站】您的包裹已到驿站，取件码%04ld，请及时取件。",
+             @"【快递】您的包裹正在派送中，请保持电话畅通。",
+             @"【快递】包裹已签收，感谢使用，祝您生活愉快。"];
+}
+static NSArray *kSmsBankTexts(void) {
+    return @[@"【XX银行】您尾号%04ld的账户收入人民币%.2f元，余额%.2f元。",
+             @"【XX银行】您尾号%04ld的账户支出人民币%.2f元，余额%.2f元。",
+             @"【XX银行】您的信用卡账单已出，本期应还%.2f元，请按时还款。"];
+}
+static NSArray *kSmsCarrierTexts(void) {
+    return @[@"【运营商】您的本月流量已使用%.1fGB，剩余%.1fGB。",
+             @"【运营商】温馨提示：您当前套餐即将到期，续约可享优惠。",
+             @"【运营商】您的积分已到账，可兑换话费或流量。"];
+}
+static NSArray *kSmsMarketingTexts(void) {
+    return @[@"【优惠】限时秒杀，全场低至5折，点击查看详情。",
+             @"【推广】您有1张优惠券即将到期，速来使用。",
+             @"【会员】本月会员日，双倍积分+专属折扣等你来。"];
+}
 static NSArray *kPhonePrefixes(void) {
     return @[@"13", @"15", @"17", @"18", @"19"];
 }
@@ -124,11 +149,18 @@ static NSString *trKillDaemon(NSString *procName) {
 
 #pragma mark - 各库批量写入
 
-/// 通话：ZCALLRECORD 批量（ZDATE 秒 / ZDURATION / ZADDRESS 号码 BLOB / 拨入拨出比）
+/// 通话：ZCALLRECORD 批量（ZDATE 秒 / ZDURATION / ZADDRESS 号码 BLOB / 状态构成：呼入/呼出/未接）
 static NSDictionary *trFillCalls(NSInteger count, NSDictionary *ratios) {
-    double outRatio = 0.5;
-    NSNumber *r = ratios[@"outgoing"];
-    if ([r isKindOfClass:[NSNumber class]]) outRatio = MIN(1.0, MAX(0.0, r.doubleValue));
+    // 时间范围（近 N 天，默认 30）
+    NSInteger days = 30;
+    if ([ratios[@"days"] isKindOfClass:[NSNumber class]]) days = MAX(1, MIN(90, [ratios[@"days"] integerValue]));
+    // 状态权重（呼入/呼出/未接）
+    double w[3] = {0.40, 0.40, 0.20};
+    NSArray *keys = @[@"statusIn", @"statusOut", @"statusMissed"];
+    for (NSUInteger i = 0; i < keys.count; i++) {
+        NSNumber *v = ratios[keys[i]];
+        if ([v isKindOfClass:[NSNumber class]]) w[i] = MAX(0.0, MIN(1.0, v.doubleValue));
+    }
 
     NSString *path = @"/var/mobile/Library/CallHistoryDB/CallHistory.storedata";
     sqlite3 *db = NULL;
@@ -144,14 +176,19 @@ static NSDictionary *trFillCalls(NSInteger count, NSDictionary *ratios) {
     NSInteger written = 0;
     NSString *dbErr = nil;
     for (NSInteger i = 0; i < count; i++) {
-        // 时间：近 30 天随机；时长：10s~30min 分布（短多长少）
-        double ts = now - trRand01() * 30.0 * 86400.0;
+        double ts = now - trRand01() * days * 86400.0;
         double dur = 10.0 + pow(trRand01(), 1.6) * 1790.0;
-        BOOL outgoing = trRand01() < outRatio;
+        // 按权重选状态：呼出 ZORIGINATED=1/ZANSWERED=1；呼入 0/1；未接 ZANSWERED=0
+        double r = trRand01();
+        double acc = 0;
+        NSInteger st = 0;
+        for (NSInteger t = 0; t < 3; t++) { acc += w[t]; if (r < acc) { st = t; break; } }
+        int originated = (st == 1) ? 1 : 0;
+        int answered = (st == 2) ? 0 : 1;
         NSString *sql = [NSString stringWithFormat:
             @"INSERT INTO ZCALLRECORD (Z_PK,Z_ENT,Z_OPT,ZANSWERED,ZCALLTYPE,ZDISCONNECTED_CAUSE,ZORIGINATED,ZREAD,ZVERIFICATIONSTATUS,ZHANDLE_TYPE,ZCALL_CATEGORY,ZDATE,ZDURATION,ZISO_COUNTRY_CODE,ZADDRESS,ZUNIQUE_ID,ZSERVICE_PROVIDER) "
-            @"VALUES (%lld,%lld,1,1,1,0,%d,1,4,2,1,%.0f,%.1f,'CN',CAST('%@' AS BLOB),'%@','com.apple.Telephony')",
-            pk, ent, outgoing ? 1 : 0, ts, dur, trRandomPhone(), [[NSUUID UUID] UUIDString]];
+            @"VALUES (%lld,%lld,1,%d,1,0,%d,1,4,2,1,%.0f,%.1f,'CN',CAST('%@' AS BLOB),'%@','com.apple.Telephony')",
+            pk, ent, answered, originated, ts, dur, trRandomPhone(), [[NSUUID UUID] UUIDString]];
         if (trDbExec(db, sql, &dbErr)) {
             trDbExec(db, [NSString stringWithFormat:@"UPDATE Z_PRIMARYKEY SET Z_MAX=%lld WHERE Z_ENT=%lld", pk, ent], nil);
             written++;
@@ -168,11 +205,18 @@ static NSDictionary *trFillCalls(NSInteger count, NSDictionary *ratios) {
     return out;
 }
 
-/// 短信：handle/chat/message/join 链批量（date 纳秒；收发比 is_from_me）
+/// 短信：handle/chat/message/join 链批量（date 纳秒；类型构成：验证码/快递/银行/运营商/营销/家人朋友）
 static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
-    double fromMeRatio = 0.5;
-    NSNumber *r = ratios[@"incoming"];
-    if ([r isKindOfClass:[NSNumber class]]) fromMeRatio = MIN(1.0, MAX(0.0, r.doubleValue)); // incoming = 收到的比例
+    // 时间范围（近 N 天，默认 30）
+    NSInteger days = 30;
+    if ([ratios[@"days"] isKindOfClass:[NSNumber class]]) days = MAX(1, MIN(90, [ratios[@"days"] integerValue]));
+    // 类型权重（验证码/快递/银行/运营商/营销/家人朋友，缺省等权）
+    double w[6] = {0.35, 0.20, 0.15, 0.10, 0.10, 0.10};
+    NSArray *keys = @[@"typeSms", @"typeExpress", @"typeBank", @"typeCarrier", @"typeMarketing", @"typePersonal"];
+    for (NSUInteger i = 0; i < keys.count; i++) {
+        NSNumber *v = ratios[keys[i]];
+        if ([v isKindOfClass:[NSNumber class]]) w[i] = MAX(0.0, MIN(1.0, v.doubleValue));
+    }
 
     NSString *path = @"/var/mobile/Library/SMS/sms.db";
     sqlite3 *db = NULL;
@@ -187,7 +231,23 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
     for (NSInteger i = 0; i < count; i++) {
         NSString *phone = trRandomPhone();
         NSString *msgGuid = [[NSUUID UUID] UUIDString];
-        sqlite3_int64 dateNs = (sqlite3_int64)((now - trRand01() * 30.0 * 86400.0) * 1000000000.0);
+        sqlite3_int64 dateNs = (sqlite3_int64)((now - trRand01() * days * 86400.0) * 1000000000.0);
+        // 按权重选类型 → 文本模板（家人朋友=日常语料）
+        double r = trRand01();
+        double acc = 0;
+        NSInteger type = 5;
+        for (NSInteger t = 0; t < 6; t++) { acc += w[t]; if (r < acc) { type = t; break; } }
+        NSString *text = nil;
+        switch (type) {
+            case 0: { NSString *tmpl = kSmsCodeTexts()[trRandInt(0, (NSInteger)kSmsCodeTexts().count - 1)]; text = [NSString stringWithFormat:tmpl, (long)trRandInt(1000, 9999)]; break; }
+            case 1: { NSString *tmpl = kSmsExpressTexts()[trRandInt(0, (NSInteger)kSmsExpressTexts().count - 1)]; text = [NSString stringWithFormat:tmpl, (long)trRandInt(1000, 9999)]; break; }
+            case 2: { NSString *tmpl = kSmsBankTexts()[trRandInt(0, (NSInteger)kSmsBankTexts().count - 1)]; text = [NSString stringWithFormat:tmpl, (long)trRandInt(1000, 9999), trRand01() * 5000, trRand01() * 50000]; break; }
+            case 3: { NSString *tmpl = kSmsCarrierTexts()[trRandInt(0, (NSInteger)kSmsCarrierTexts().count - 1)]; text = [NSString stringWithFormat:tmpl, trRand01() * 20, trRand01() * 30]; break; }
+            case 4: text = kSmsMarketingTexts()[trRandInt(0, (NSInteger)kSmsMarketingTexts().count - 1)]; break;
+            default: text = kSmsTexts()[trRandInt(0, (NSInteger)kSmsTexts().count - 1)]; break;
+        }
+        // 类型 0-4（验证码/快递/银行/运营商/营销）= 收到的（is_from_me=0）；家人朋友混合
+        BOOL fromMe = (type == 5) && (trRand01() < 0.5);
         sqlite3_int64 hid = trDbScalar(db, [NSString stringWithFormat:@"SELECT ROWID FROM handle WHERE id='%@' AND service='SMS'", phone]);
         BOOL ok = YES;
         if (!hid) {
@@ -205,8 +265,6 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
             if (ok) cid = trDbScalar(db, @"SELECT last_insert_rowid()");
         }
         if (!ok) continue;
-        BOOL fromMe = trRand01() >= fromMeRatio; // fromMeRatio=incoming 收到的比例
-        NSString *text = kSmsTexts()[trRandInt(0, (NSInteger)kSmsTexts().count - 1)];
         sqlite3_int64 mid = 0;
         ok = trDbExec(db, [NSString stringWithFormat:
             @"INSERT INTO message (guid, text, handle_id, date, date_read, date_delivered, service, account, account_guid, version, is_from_me, is_read, is_sent, is_finished, is_delivered) "
@@ -228,8 +286,24 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
 }
 
 /// 联系人：CNContactStore（系统维护排序/FTS；kTCCServiceAddressBook entitlement 放行）
+/// 拟人参数：关系构成（朋友/工作/生活/家人/机构 → 号码 label 分布）、本地占比/常住地区（号段）
 static NSDictionary *trFillContacts(NSInteger count, NSDictionary *ratios) {
-    (void)ratios;
+    double localRatio = 0.65;
+    NSNumber *lr = ratios[@"localRatio"];
+    if ([lr isKindOfClass:[NSNumber class]]) localRatio = MAX(0.0, MIN(1.0, lr.doubleValue));
+    // 关系权重（缺省对齐原型）
+    double w[5] = {0.55, 0.20, 0.12, 0.08, 0.05};
+    NSArray *keys = @[@"relFriends", @"relWork", @"relLife", @"relFamily", @"relBiz"];
+    for (NSUInteger i = 0; i < keys.count; i++) {
+        NSNumber *v = ratios[keys[i]];
+        if ([v isKindOfClass:[NSNumber class]]) w[i] = MAX(0.0, MIN(1.0, v.doubleValue));
+    }
+    NSArray *labels = @[CNLabelPhoneNumberMobile, CNLabelPhoneNumberWork, CNLabelPhoneNumberHome,
+                        CNLabelPhoneNumberiPhone, CNLabelPhoneNumberMain];
+    NSString *city = [ratios[@"city"] isKindOfClass:[NSString class]] ? ratios[@"city"] : @"beijing";
+    NSDictionary *cityArea = @{@"beijing": @"10", @"shanghai": @"21", @"guangzhou": @"20",
+                               @"shenzhen": @"755", @"chengdu": @"28"};
+
     NSInteger written = 0;
     NSString *dbErr = nil;
     CNContactStore *store = [[CNContactStore alloc] init];
@@ -240,8 +314,23 @@ static NSDictionary *trFillContacts(NSInteger count, NSDictionary *ratios) {
         for (NSInteger j = i; j < end; j++) {
             CNMutableContact *c = [[CNMutableContact alloc] init];
             c.familyName = trRandomName(); // 全名放单字段（与真实联系人同构，避免"姓 名"顺序反）
-            CNPhoneNumber *pn = [CNPhoneNumber phoneNumberWithStringValue:trRandomPhone()];
-            c.phoneNumbers = @[[CNLabeledValue labeledValueWithLabel:CNLabelPhoneNumberMobile value:pn]];
+            // 关系构成 → 号码 label；本地占比 → 手机号 vs 外地固话（区号按常住地区）
+            double r = trRand01();
+            double acc = 0;
+            NSInteger rel = 0;
+            for (NSInteger t = 0; t < 5; t++) { acc += w[t]; if (r < acc) { rel = t; break; } }
+            NSString *phone;
+            if (trRand01() < localRatio) {
+                phone = trRandomPhone();
+            } else {
+                NSString *area = cityArea[city] ?: @"10";
+                phone = [NSString stringWithFormat:@"0%@%ld%ld%ld%ld%ld%ld%ld%ld", area,
+                         (long)trRandInt(2, 9), (long)trRandInt(0, 9), (long)trRandInt(0, 9),
+                         (long)trRandInt(0, 9), (long)trRandInt(0, 9), (long)trRandInt(0, 9),
+                         (long)trRandInt(0, 9), (long)trRandInt(0, 9)];
+            }
+            CNPhoneNumber *pn = [CNPhoneNumber phoneNumberWithStringValue:phone];
+            c.phoneNumbers = @[[CNLabeledValue labeledValueWithLabel:labels[rel] value:pn]];
             [req addContact:c toContainerWithIdentifier:nil];
         }
         NSError *cerr = nil;
