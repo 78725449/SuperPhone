@@ -967,10 +967,11 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 }
 
 /// 自动聚焦（距离阈值）：fix 距上次自动聚焦点 ≥ 阈值才聚焦一次并更新基线。
-/// 残留 fix（≈基线）不触发、大幅位移（停止回真实/模拟出视野）必触发、GPS 抖动（<50m）不打扰。
+/// 基线未初始化（启动时 lastAutoFocusWGS=(0,0)）→ 首个 fix 建立基线并聚焦（打开 APP 聚焦当前位置）；
+/// 已初始化 → 残留 fix（≈基线）不触发、大幅位移（停止回真实/模拟出视野）必触发、GPS 抖动（<50m）不打扰
 - (void)maybeAutoFocus:(CLLocationCoordinate2D)wgs {
-    if (self.lastAutoFocusWGS.latitude == 0 && self.lastAutoFocusWGS.longitude == 0) return; // 基线未初始化
-    if ([SimRouteCalculator haversineMeters:wgs to:self.lastAutoFocusWGS] < kAutoFocusThresholdM) return;
+    BOOL uninitialized = (self.lastAutoFocusWGS.latitude == 0 && self.lastAutoFocusWGS.longitude == 0);
+    if (!uninitialized && [SimRouteCalculator haversineMeters:wgs to:self.lastAutoFocusWGS] < kAutoFocusThresholdM) return;
     self.lastAutoFocusWGS = wgs;
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance([CoordTransform wgs84ToGcj02:wgs], 3000, 3000) animated:YES];
 }
@@ -1642,9 +1643,21 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         return r;
     }
     if ([overlay isKindOfClass:[TRGrowPolyline class]]) {
-        // 生长轨迹（对齐原型 growPath：深紫 3px 实线）
+        // 生长轨迹：按 segmentIndex 分配颜色（重叠/同路段不同段也能分辨"路线确实创建了"；段 0 保留深紫主色）
         MKPolylineRenderer *r = [[MKPolylineRenderer alloc] initWithPolyline:overlay];
-        r.strokeColor = [UIColor colorWithRed:0.24 green:0.18 blue:0.79 alpha:1.0];
+        static NSArray *sSegColors;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            sSegColors = @[
+                [UIColor colorWithRed:0.24 green:0.18 blue:0.79 alpha:1.0], // 深紫（段 0）
+                [UIColor colorWithRed:0.95 green:0.55 blue:0.13 alpha:1.0], // 橙
+                [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0], // 蓝
+                [UIColor colorWithRed:0.91 green:0.24 blue:0.52 alpha:1.0], // 玫红
+                [UIColor colorWithRed:0.10 green:0.72 blue:0.48 alpha:1.0], // 绿
+            ];
+        });
+        NSInteger idx = ((TRGrowPolyline *)overlay).segmentIndex;
+        r.strokeColor = sSegColors[idx < 0 ? 0 : (idx % (NSInteger)sSegColors.count)];
         r.lineWidth = 3.0;
         r.lineCap = kCGLineCapRound;
         return r;
