@@ -29,10 +29,11 @@ static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82fl
 static NSString *const kLivePrefsPath = @"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist";
 static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
-/// 锚点标注（关联编排段索引，点击删除该段；水滴图钉：start=紫/route=蓝/region=绿，对齐原型 segMark）
+/// 锚点标注（关联编排段索引，点击删除该段；水滴图钉状态分类：未经过=蓝/已经过=红，当前位置=绿）
 @interface TRAnchorAnnotation : MKPointAnnotation
 @property (nonatomic, assign) NSInteger segmentIndex;
 @property (nonatomic, copy) NSString *type; // anchor | route | region
+@property (nonatomic, assign) BOOL passed;  // 是否已被当前位置经过（经过=红，未经过=蓝）
 @end
 @implementation TRAnchorAnnotation
 @end
@@ -614,6 +615,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     // 供模式切换重绘/重锚/重算作当前位置基准）
     self.cur = [CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake(lat, lon)];
     [self placeCurAt:self.cur];
+    [self updateAnchorPassStateWithLiveWGS:CLLocationCoordinate2DMake(lat, lon)]; // 经过锚点变红
     double spd = [mobile[@"SimLocationLiveSpeed"] doubleValue];
     NSString *speedTxt = spd > 0 ? [NSString stringWithFormat:@"%.1f m/s", spd] : @"0.0 m/s";
     NSString *modeTxt = @"模拟中 · 定位";
@@ -642,6 +644,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 - (void)syncSegmentsUI {
     [self.stepTable reloadData];
     [self rebuildAnchors];
+    [self updateAnchorPassStateWithLiveWGS:[self currentSimPosition]]; // 新增/删除/排序后立即对齐状态色
 }
 
 - (void)reloadSteps {
@@ -711,6 +714,22 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     double lon = [mobile[@"SimLocationLon"] doubleValue];
     if (lat != 0 || lon != 0) return CLLocationCoordinate2DMake(lat, lon);
     return [CoordTransform gcj02ToWgs84:self.cur];
+}
+
+/// 锚点状态刷新：按当前位置在已提交轨迹中的最近索引，标记"已经过"的锚点为红（未经过保持蓝）。
+/// liveW 为当前位置（WGS）；仅定位中生效（停止态颜色定格）
+- (void)updateAnchorPassStateWithLiveWGS:(CLLocationCoordinate2D)liveW {
+    if (!self.locating || self.submittedPoints.count < 2) return;
+    NSUInteger liveIdx = [self nearestPointIndexTo:liveW];
+    for (TRAnchorAnnotation *a in self.anchors) {
+        CLLocationCoordinate2D aW = [CoordTransform gcj02ToWgs84:a.coordinate];
+        BOOL passed = [self nearestPointIndexTo:aW] < liveIdx; // 严格越过才视为经过
+        if (passed != a.passed) {
+            a.passed = passed;
+            MKAnnotationView *v = [self.mapView viewForAnnotation:a];
+            if (v) v.image = [self waterdropImageWithColor:(passed ? [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0] : [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]) size:22];
+        }
+    }
 }
 
 /// 已提交轨迹中距目标最近的点索引（截断基准）
@@ -1130,6 +1149,25 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 #pragma mark - MKMapViewDelegate
 
+/// 水滴图钉绘制（实心水滴：半圆顶+尖底+白边；颜色=状态分类）
+- (UIImage *)waterdropImageWithColor:(UIColor *)color size:(CGFloat)sz {
+    UIGraphicsImageRenderer *ir = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(sz, sz + 6)];
+    return [ir imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        UIBezierPath *p = [UIBezierPath bezierPath];
+        [p moveToPoint:CGPointMake(sz / 2, sz + 6)]; // 底部尖
+        [p addQuadCurveToPoint:CGPointMake(0, sz / 2) controlPoint:CGPointMake(1, sz - 3)]; // 左下弧
+        // 顶部半圆：从 π(左) 经 π/2(顶部) 到 0(右)——clockwise:YES（UIKit y 向下，NO 会画成下半圆导致上半透明）
+        [p addArcWithCenter:CGPointMake(sz / 2, sz / 2) radius:sz / 2 startAngle:M_PI endAngle:0 clockwise:YES];
+        [p addQuadCurveToPoint:CGPointMake(sz / 2, sz + 6) controlPoint:CGPointMake(sz - 1, sz - 3)]; // 右下弧到尖
+        [p closePath];
+        [color setFill];
+        [p fill];
+        p.lineWidth = 1.5;
+        [[UIColor whiteColor] setStroke];
+        [p stroke];
+    }];
+}
+
 - (MKOverlayRenderer *)mapView:(MKMapView *)mapView rendererForOverlay:(id<MKOverlay>)overlay {
     if ([overlay isKindOfClass:[MKCircle class]]) {
         // 原生区域遮罩（实线描边 + 半透明填充，MKCircleRenderer 原生呈现；非虚线）
@@ -1164,28 +1202,13 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             v.rightCalloutAccessoryView = del;
         }
         v.annotation = annotation;
-        // 实心水滴图钉（UIGraphicsImageRenderer 自绘：半圆顶+尖底+白边；锚点=蓝/区域=绿）
-        UIColor *color = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0];
-        if ([a.type isEqualToString:@"region"]) color = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0];
-        CGFloat sz = 22;
-        UIGraphicsImageRenderer *ir = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(sz, sz + 6)];
-        UIImage *img = [ir imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
-            UIBezierPath *p = [UIBezierPath bezierPath];
-            [p moveToPoint:CGPointMake(sz / 2, sz + 6)]; // 底部尖
-            [p addQuadCurveToPoint:CGPointMake(0, sz / 2) controlPoint:CGPointMake(1, sz - 3)]; // 左下弧
-            // 顶部半圆：从 π(左) 经 π/2(顶部) 到 0(右)——clockwise:YES（UIKit y 向下，NO 会画成下半圆导致上半透明）
-            [p addArcWithCenter:CGPointMake(sz / 2, sz / 2) radius:sz / 2 startAngle:M_PI endAngle:0 clockwise:YES];
-            [p addQuadCurveToPoint:CGPointMake(sz / 2, sz + 6) controlPoint:CGPointMake(sz - 1, sz - 3)]; // 右下弧到尖
-            [p closePath];
-            [color setFill];
-            [p fill];
-            p.lineWidth = 1.5;
-            [[UIColor whiteColor] setStroke];
-            [p stroke];
-        }];
-        v.image = img;
-        v.centerOffset = CGPointMake(0, -(sz + 6) / 2); // 尖对齐坐标点
-        v.frame = CGRectMake(0, 0, sz, sz + 6);
+        // 实心水滴图钉（状态分类：未经过=蓝/已经过=红；尖对准坐标点）
+        UIColor *color = a.passed
+            ? [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]
+            : [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0];
+        v.image = [self waterdropImageWithColor:color size:22];
+        v.centerOffset = CGPointMake(0, -14); // 尖对准坐标点
+        v.frame = CGRectMake(0, 0, 22, 28);
         v.calloutOffset = CGPointMake(0, -6);
         return v;
     }
@@ -1197,10 +1220,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             v.canShowCallout = NO;
         }
         v.annotation = annotation;
-        // 当前位置水滴图钉：水滴内嵌当前出行状态图标（🚶/🚗，与模式胶囊按钮同款；尖对准坐标点）
+        // 当前位置水滴图钉（绿色，状态分类=当前位置）：水滴内嵌当前出行状态图标（🚶/🚗，与模式胶囊按钮同款；尖对准坐标点）
         NSString *modeEmoji = (self.modeSeg.selectedSegmentIndex == 1) ? @"🚗" : @"🚶";
         CGFloat sz = 24;
-        UIColor *blue = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0];
+        UIColor *green = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0];
         UIGraphicsImageRenderer *ir = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(sz, sz + 6)];
         UIImage *img = [ir imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
             UIBezierPath *p = [UIBezierPath bezierPath];
@@ -1210,7 +1233,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             [p addArcWithCenter:CGPointMake(sz / 2, sz / 2) radius:sz / 2 startAngle:M_PI endAngle:0 clockwise:YES];
             [p addQuadCurveToPoint:CGPointMake(sz / 2, sz + 6) controlPoint:CGPointMake(sz - 1, sz - 3)]; // 右下弧到尖
             [p closePath];
-            [blue setFill];
+            [green setFill];
             [p fill];
             p.lineWidth = 1.5;
             [[UIColor whiteColor] setStroke];
@@ -1223,7 +1246,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         v.centerOffset = CGPointMake(0, -(sz + 6) / 2); // 尖对准坐标点
         v.frame = CGRectMake(0, 0, sz, sz + 6);
         // 光晕（对齐原型 .dot box-shadow 0 0 0 5px rgba(34,165,247,.28)）
-        v.layer.shadowColor = blue.CGColor;
+        v.layer.shadowColor = green.CGColor;
         v.layer.shadowOpacity = 0.6;
         v.layer.shadowRadius = 6;
         v.layer.shadowOffset = CGSizeMake(0, 0);
