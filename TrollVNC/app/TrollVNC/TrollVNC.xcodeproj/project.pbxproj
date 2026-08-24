@@ -130,10 +130,10 @@
 		AA01000000000000000000A6 /* TVNCAppStore.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCAppStore.m; sourceTree = "<group>"; };
 		AA01000000000000000000A7 /* TVNCGatewayClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCGatewayClient.h; sourceTree = "<group>"; };
 		AA01000000000000000000A8 /* TVNCGatewayClient.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCGatewayClient.m; sourceTree = "<group>"; };
-		A10000000000000000000001 /* CoordTransform.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../src/CoordTransform.h; sourceTree = "<group>"; };
-		A10000000000000000000002 /* CoordTransform.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../src/CoordTransform.mm; sourceTree = "<group>"; };
-		A10000000000000000000004 /* TRDataFiller.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../src/TRDataFiller.h; sourceTree = "<group>"; };
-		A10000000000000000000005 /* TRDataFiller.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../src/TRDataFiller.mm; sourceTree = "<group>"; };
+		A10000000000000000000001 /* CoordTransform.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/CoordTransform.h; sourceTree = "<group>"; };
+		A10000000000000000000002 /* CoordTransform.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/CoordTransform.mm; sourceTree = "<group>"; };
+		A10000000000000000000004 /* TRDataFiller.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/TRDataFiller.h; sourceTree = "<group>"; };
+		A10000000000000000000005 /* TRDataFiller.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/TRDataFiller.mm; sourceTree = "<group>"; };
 		A10000000000000000000007 /* TRDisguiseViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TRDisguiseViewController.h; sourceTree = "<group>"; };
 		A10000000000000000000008 /* TRDisguiseViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TRDisguiseViewController.m; sourceTree = "<group>"; };
 		A1000000000000000000000A /* TRMapPickerViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TRMapPickerViewController.h; sourceTree = "<group>"; };
@@ -145,10 +145,10 @@
 		A10000000000000000000013 /* MapKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MapKit.framework; path = System/Library/Frameworks/MapKit.framework; sourceTree = SDKROOT; };
 		A10000000000000000000015 /* Contacts.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Contacts.framework; path = System/Library/Frameworks/Contacts.framework; sourceTree = SDKROOT; };
 		A10000000000000000000017 /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
-		A10000000000000000000019 /* RegionSimulator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../src/RegionSimulator.h; sourceTree = "<group>"; };
-		A1000000000000000000001A /* RegionSimulator.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../src/RegionSimulator.mm; sourceTree = "<group>"; };
-		A1000000000000000000001C /* SimRouteCalculator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../src/SimRouteCalculator.h; sourceTree = "<group>"; };
-		A1000000000000000000001D /* SimRouteCalculator.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../src/SimRouteCalculator.mm; sourceTree = "<group>"; };
+		A10000000000000000000019 /* RegionSimulator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/RegionSimulator.h; sourceTree = "<group>"; };
+		A1000000000000000000001A /* RegionSimulator.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/RegionSimulator.mm; sourceTree = "<group>"; };
+		A1000000000000000000001C /* SimRouteCalculator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/SimRouteCalculator.h; sourceTree = "<group>"; };
+		A1000000000000000000001D /* SimRouteCalculator.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/SimRouteCalculator.mm; sourceTree = "<group>"; };
 		A1000000000000000000001F /* CoreLocation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreLocation.framework; path = System/Library/Frameworks/CoreLocation.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -587,6 +587,7 @@
 					$THEOS/include,
 					$THEOS/vendor/include,
 					"$(SRCROOT)/../../include",
+					"$(SRCROOT)/../src",
 				);
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -658,6 +659,7 @@
 					$THEOS/include,
 					$THEOS/vendor/include,
 					"$(SRCROOT)/../../include",
+					"$(SRCROOT)/../src",
 				);
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
