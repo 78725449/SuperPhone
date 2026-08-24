@@ -46,7 +46,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @property (nonatomic, strong) UISearchBar *searchBar;
 @property (nonatomic, strong) UISegmentedControl *modeSeg;   // 步行/驾车（左下胶囊）
 @property (nonatomic, strong) UIButton *locateFab;           // 右下角圆形定位开关
-@property (nonatomic, strong) UILabel *statusLabel;          // 状态（顶部，可展开步骤）
+@property (nonatomic, strong) UIButton *statusBtn;                   // 状态条（用 setTitle 渲染，titleLabel.text 直接赋值无效）
 @property (nonatomic, strong) UIView *statusDot;                     // 状态圆点（定位中绿/停止灰）
 @property (nonatomic, strong) UITableView *stepTable;        // 步骤列表（状态条展开；删除 + 拖拽排序）
 
@@ -56,12 +56,14 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @property (nonatomic, assign) BOOL hasStart;
 @property (nonatomic, assign) BOOL locating;                // 定位开关状态
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
+@property (nonatomic, assign) BOOL isGenerating;            // 轨迹生成中（并发保护：正在生长时忽略新的 commit）
 
 // 区域（长按）临时状态
 @property (nonatomic, assign) BOOL regionPicking;
 @property (nonatomic, assign) CLLocationCoordinate2D regionCenter;
 @property (nonatomic, assign) double regionRadiusM;
 @property (nonatomic, assign) CGPoint regionTouchOffset; // 手势起点-中心（像素偏移，拖移用）
+@property (nonatomic, strong) UIView *regionPanel;               // 区域配置菜单（底部卡片，对齐原型 param）
 @property (nonatomic, strong) MKCircle *regionOverlay;
 @property (nonatomic, strong) MKPointAnnotation *curPin;    // 蓝点（自绘）
 @end
@@ -123,7 +125,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [statusBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
     [statusBtn addTarget:self action:@selector(toggleSteps:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:statusBtn];
-    self.statusLabel = statusBtn.titleLabel;
+    self.statusBtn = statusBtn;
     // 左侧状态圆点（定位中=绿色 glow，停止=灰）
     UIView *sdot = [[UIView alloc] initWithFrame:CGRectMake(14, 12, 8, 8)];
     sdot.tag = 501;
@@ -295,7 +297,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         case UIGestureRecognizerStateCancelled:
             if (self.regionPicking) {
                 self.regionPicking = NO;
-                [self promptRegionDuration]; // 配置菜单（对齐原型 param：时长/途经点）
+                [self showRegionConfigPanel]; // 配置菜单（对齐原型 param：时长/途经点/模式）
             }
             break;
         default:
@@ -318,46 +320,117 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.mapView addOverlay:self.regionOverlay];
 }
 
-/// 区域参数（时长/途经点）输入 → 加入 region 段 → 提交编排（对齐原型 param 参数条）
-- (void)promptRegionDuration {
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"区域漫游"
-                                                                message:[NSString stringWithFormat:@"半径 %.0f m", self.regionRadiusM]
-                                                         preferredStyle:UIAlertControllerStyleAlert];
-    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-        tf.keyboardType = UIKeyboardTypeNumberPad;
-        tf.placeholder = @"时长（分钟）";
-        tf.text = @"10";
+/// 区域配置菜单：地图底部卡片（时长/途经点/模式 + 取消/确定），对齐原型 param 参数条（非系统弹窗）
+- (void)showRegionConfigPanel {
+    [self.view endEditing:YES];
+    if (self.regionPanel) { [self.regionPanel removeFromSuperview]; self.regionPanel = nil; }
+    CGFloat margin = 12;
+    CGFloat w = self.view.bounds.size.width - margin * 2;
+    CGFloat ph = 250;
+    UIView *panel = [[UIView alloc] initWithFrame:CGRectMake(margin, self.view.bounds.size.height - ph - 12, w, ph)];
+    panel.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleWidth;
+    panel.backgroundColor = [UIColor systemBackgroundColor];
+    panel.layer.cornerRadius = 14;
+    panel.layer.shadowColor = [UIColor blackColor].CGColor;
+    panel.layer.shadowOpacity = 0.2;
+    panel.layer.shadowRadius = 10;
+    panel.layer.shadowOffset = CGSizeMake(0, 2);
+    [self.view addSubview:panel];
+    self.regionPanel = panel;
+
+    CGFloat y = 14;
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(14, y, w - 28, 20)];
+    title.text = [NSString stringWithFormat:@"区域漫游 · 半径 %.0f m（拖动遮罩可调）", self.regionRadiusM];
+    title.font = [UIFont boldSystemFontOfSize:14];
+    [panel addSubview:title];
+    y += 30;
+
+    y = [self addConfigFieldOn:panel y:y label:@"时长（分钟）" isDur:YES];
+    y = [self addConfigFieldOn:panel y:y label:@"途经点（0=随机）" isDur:NO];
+    y += 2;
+
+    UILabel *ml = [[UILabel alloc] initWithFrame:CGRectMake(14, y, 110, 30)];
+    ml.text = @"模式";
+    ml.font = [UIFont systemFontOfSize:13];
+    [panel addSubview:ml];
+    UISegmentedControl *ms = [[UISegmentedControl alloc] initWithItems:@[@"步行", @"驾车"]];
+    ms.selectedSegmentIndex = self.modeSeg.selectedSegmentIndex;
+    ms.frame = CGRectMake(128, y, w - 142, 30);
+    ms.tag = 603;
+    [panel addSubview:ms];
+    y += 40;
+
+    UIButton *cancel = [UIButton buttonWithType:UIButtonTypeSystem];
+    cancel.frame = CGRectMake(14, y, (w - 34) / 2, 40);
+    [cancel setTitle:@"取消" forState:UIControlStateNormal];
+    cancel.layer.cornerRadius = 10;
+    cancel.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    [cancel setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+    [cancel addTarget:self action:@selector(cancelRegionConfig) forControlEvents:UIControlEventTouchUpInside];
+    [panel addSubview:cancel];
+    UIButton *ok = [UIButton buttonWithType:UIButtonTypeSystem];
+    ok.frame = CGRectMake(20 + (w - 34) / 2, y, (w - 34) / 2, 40);
+    [ok setTitle:@"确定" forState:UIControlStateNormal];
+    ok.titleLabel.font = [UIFont boldSystemFontOfSize:15];
+    ok.layer.cornerRadius = 10;
+    ok.backgroundColor = [UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0];
+    [ok setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    [ok addTarget:self action:@selector(confirmRegionConfig) forControlEvents:UIControlEventTouchUpInside];
+    [panel addSubview:ok];
+}
+
+/// 配置面板字段行（tag 601=时长 / 602=途经点）
+- (CGFloat)addConfigFieldOn:(UIView *)panel y:(CGFloat)y label:(NSString *)label isDur:(BOOL)isDur {
+    CGFloat w = panel.bounds.size.width;
+    UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(14, y, 110, 30)];
+    l.text = label;
+    l.font = [UIFont systemFontOfSize:13];
+    [panel addSubview:l];
+    UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(128, y, w - 142, 30)];
+    tf.borderStyle = UITextBorderStyleRoundedRect;
+    tf.keyboardType = UIKeyboardTypeNumberPad;
+    tf.font = [UIFont systemFontOfSize:13];
+    tf.tag = isDur ? 601 : 602;
+    tf.text = isDur ? @"10" : @"0";
+    [panel addSubview:tf];
+    return y + 36;
+}
+
+- (void)cancelRegionConfig {
+    [self.view endEditing:YES];
+    [self.regionPanel removeFromSuperview];
+    self.regionPanel = nil;
+    if (self.regionOverlay) { [self.mapView removeOverlay:self.regionOverlay]; self.regionOverlay = nil; }
+    [self setHint:@"长按地图添加区域漫游"];
+}
+
+/// 确定：读配置 → 加入 region 段 → 自生长提交（时长 clamp 1~120，途经点 clamp 0~15）
+- (void)confirmRegionConfig {
+    [self.view endEditing:YES];
+    UITextField *durTf = (UITextField *)[self.regionPanel viewWithTag:601];
+    UITextField *wpTf = (UITextField *)[self.regionPanel viewWithTag:602];
+    UISegmentedControl *ms = (UISegmentedControl *)[self.regionPanel viewWithTag:603];
+    double dur = MAX(1, MIN(120, [durTf.text doubleValue] ?: 10));
+    int customK = (int)[wpTf.text integerValue];
+    customK = MAX(0, MIN(15, customK));
+    NSString *mode = (ms.selectedSegmentIndex == 1) ? @"drive" : @"walk";
+    [self.segments addObject:@{
+        @"type": @"region",
+        @"radius": @(self.regionRadiusM),
+        @"durationMin": @(dur),
+        @"mode": mode,
+        @"waypointCount": @(customK),
+        @"center": @{@"lat": @(self.regionCenter.latitude), @"lon": @(self.regionCenter.longitude)},
     }];
-    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-        tf.keyboardType = UIKeyboardTypeNumberPad;
-        tf.placeholder = @"途经点（0=随机）";
-        tf.text = @"0";
-    }];
-    [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:^(UIAlertAction *a) {
-        if (self.regionOverlay) { [self.mapView removeOverlay:self.regionOverlay]; self.regionOverlay = nil; }
-    }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-        double dur = MAX(1, [ac.textFields[0].text doubleValue] ?: 10);
-        int customK = (int)[ac.textFields[1].text integerValue];
-        if (customK < 0) customK = 0;
-        NSString *mode = self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk";
-        [self.segments addObject:@{
-            @"type": @"region",
-            @"radius": @(self.regionRadiusM),
-            @"durationMin": @(dur),
-            @"mode": mode,
-            @"waypointCount": @(customK),
-            @"center": @{@"lat": @(self.regionCenter.latitude), @"lon": @(self.regionCenter.longitude)},
-        }];
-        if (self.regionOverlay) { [self.mapView removeOverlay:self.regionOverlay]; self.regionOverlay = nil; }
-        // 模拟位置推进到区域中心（进入区域起点）
-        self.cur = self.regionCenter;
-        [self placeCurAt:self.regionCenter];
-        [self updateStatus];
-        [self syncSegmentsUI];
-        [self commitItinerary];
-    }]];
-    [self presentViewController:ac animated:YES completion:nil];
+    [self.regionPanel removeFromSuperview];
+    self.regionPanel = nil;
+    if (self.regionOverlay) { [self.mapView removeOverlay:self.regionOverlay]; self.regionOverlay = nil; }
+    // 模拟位置推进到区域中心（进入区域起点）
+    self.cur = self.regionCenter;
+    [self placeCurAt:self.regionCenter];
+    [self updateStatus];
+    [self syncSegmentsUI];
+    [self commitItinerary];
 }
 
 #pragma mark - 定位开关 / 停止
@@ -437,9 +510,9 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 #pragma mark - 状态 / 步骤 / 提示
 
 - (void)setHint:(NSString *)hint {
-    // 状态条短暂显示提示
-    self.statusLabel.text = hint;
-    self.statusLabel.textColor = [UIColor labelColor];
+    // 状态条短暂显示提示（UIButton 用 setTitle 渲染，titleLabel.text 直接赋值无效）
+    [self.statusBtn setTitle:hint forState:UIControlStateNormal];
+    [self.statusBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
 }
 
 - (void)updateStatus {
@@ -451,8 +524,21 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         double mps = self.modeSeg.selectedSegmentIndex == 1 ? 13.9 : 1.4;
         speedTxt = [NSString stringWithFormat:@"%.1f m/s", mps];
     }
-    self.statusLabel.text = [NSString stringWithFormat:@"%@ · %@ · %.5f, %.5f（WGS-84）", modeTxt, speedTxt, wgs.latitude, wgs.longitude];
-    self.statusLabel.textColor = self.locating ? [UIColor systemBlueColor] : [UIColor labelColor];
+    // 富文本：模式加粗 + 速度等宽灰 + 坐标等宽灰（对齐原型 stat .m/.spd/.c）
+    NSMutableAttributedString *as = [[NSMutableAttributedString alloc] init];
+    [as appendAttributedString:[[NSAttributedString alloc] initWithString:modeTxt attributes:@{
+        NSFontAttributeName: [UIFont boldSystemFontOfSize:13],
+        NSForegroundColorAttributeName: self.locating ? [UIColor systemBlueColor] : [UIColor labelColor],
+    }]];
+    [as appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"   %@", speedTxt] attributes:@{
+        NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightRegular],
+        NSForegroundColorAttributeName: [UIColor secondaryLabelColor],
+    }]];
+    [as appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"   %.5f, %.5f", wgs.latitude, wgs.longitude] attributes:@{
+        NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightRegular],
+        NSForegroundColorAttributeName: [UIColor secondaryLabelColor],
+    }]];
+    [self.statusBtn setAttributedTitle:as forState:UIControlStateNormal];
     // 状态圆点：定位中=绿（glow），停止=灰（对齐原型 stat .p.on）
     self.statusDot.backgroundColor = self.locating ? [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0] : [UIColor systemGrayColor];
     self.statusDot.layer.shadowColor = self.locating ? self.statusDot.backgroundColor.CGColor : [UIColor clearColor].CGColor;
@@ -655,6 +741,9 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 /// 递增编排提交：异步逐段生成点序列（生长式：逐段画线+蓝点推进）→ 原子写轨迹文件 + 切 itinerary + notify
 - (void)commitItinerary {
+    // 并发保护：正在生长时忽略新的提交（避免多流程竞争 overlay/文件）
+    if (self.isGenerating) return;
+    self.isGenerating = YES;
     // 重新生长：清掉旧生长轨迹（对齐原型 clearRoute/growPath 重置）
     for (id o in self.mapView.overlays) {
         if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
@@ -669,13 +758,17 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         }
     }
     [self setHint:@"正在生长轨迹…"];
+    __weak typeof(self) weakSelf = self;
     [self buildPointsFromIndex:0 cur:start joined:joined completion:^(NSArray *points) {
+        __strong typeof(self) sself = weakSelf;
+        if (!sself) return;
+        sself.isGenerating = NO;
         if (points.count < 2) {
-            [self setHint:@"轨迹生长失败（点不足）"];
+            [sself setHint:@"轨迹生长失败（点不足）"];
             return;
         }
-        [self writeTrackFile:points];
-        [self setHint:[NSString stringWithFormat:@"轨迹已提交 · %lu 点", (unsigned long)points.count]];
+        [sself writeTrackFile:points];
+        [sself setHint:[NSString stringWithFormat:@"轨迹已提交 · %lu 点", (unsigned long)points.count]];
     }];
 }
 
@@ -707,17 +800,22 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         toW = [CoordTransform gcj02ToWgs84:toW];
         NSString *mode = seg[@"mode"] ?: @"walk";
         [SimRouteCalculator calculateRoutePointsFrom:cur to:toW mode:mode completion:^(NSArray<NSDictionary *> *points, NSError *error) {
-            if (error || points.count < 2) {
-                [self setHint:@"路线算路失败（请检查网络）"];
-                if (completion) completion(@[]);
-                return;
-            }
-            [joined addObjectsFromArray:points];
-            // 生长：逐段画线 + 蓝点推进（对齐原型 moveTo 逐段生长）
-            [self appendGrowLine:points];
-            CLLocationCoordinate2D end = CLLocationCoordinate2DMake([points.lastObject[@"lat"] doubleValue], [points.lastObject[@"lon"] doubleValue]);
-            [self placeCurAt:[CoordTransform wgs84ToGcj02:end]];
-            [self buildPointsFromIndex:idx + 1 cur:end joined:joined completion:completion];
+            // MKDirections completion 队列不保证主线程，UI 操作统一回主线程
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(self) sself = self;
+                if (!sself) return;
+                if (error || points.count < 2) {
+                    [sself setHint:@"路线算路失败（请检查网络）"];
+                    if (completion) completion(@[]);
+                    return;
+                }
+                [joined addObjectsFromArray:points];
+                // 生长：逐段画线 + 蓝点推进（对齐原型 moveTo 逐段生长）
+                [sself appendGrowLine:points];
+                CLLocationCoordinate2D end = CLLocationCoordinate2DMake([points.lastObject[@"lat"] doubleValue], [points.lastObject[@"lon"] doubleValue]);
+                [sself placeCurAt:[CoordTransform wgs84ToGcj02:end]];
+                [sself buildPointsFromIndex:idx + 1 cur:end joined:joined completion:completion];
+            });
         }];
     } else if ([type isEqualToString:@"region"]) {
         CLLocationCoordinate2D centerW = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"center"][@"lat"] doubleValue], [seg[@"center"][@"lon"] doubleValue])];
@@ -777,22 +875,28 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             return;
         }
         [SimRouteCalculator calculateRoutePointsFrom:legCur to:wp mode:mode completion:^(NSArray<NSDictionary *> *pts, NSError *error) {
-            if (error || pts.count < 2) {
-                NSArray *degraded = [RegionSimulator degradedLinePointsFrom:legCur to:wp seconds:segTime speed:speed];
-                [legJoined addObjectsFromArray:degraded];
-                [self appendGrowLine:degraded];
-                [self placeCurAt:[CoordTransform wgs84ToGcj02:wp]];
-                goStay(wp);
-                return;
-            }
-            NSUInteger target = MAX(1, (NSUInteger)ceil(segDist / (speed * factor)));
-            NSArray *resampled = [self resamplePoints:pts toCount:target];
-            [legJoined addObjectsFromArray:resampled];
-            // 生长：真实道路段画线 + 蓝点推进（对齐原型 moveTo+stayAt 途经点间生长）
-            [self appendGrowLine:resampled];
-            CLLocationCoordinate2D legEnd = CLLocationCoordinate2DMake([resampled.lastObject[@"lat"] doubleValue], [resampled.lastObject[@"lon"] doubleValue]);
-            [self placeCurAt:[CoordTransform wgs84ToGcj02:legEnd]];
-            goStay(legEnd);
+            // MKDirections completion 队列不保证主线程，UI 操作统一回主线程
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(self) sself = self;
+                if (!sself) return;
+                if (error || pts.count < 2) {
+                    NSArray *degraded = [RegionSimulator degradedLinePointsFrom:legCur to:wp seconds:segTime speed:speed];
+                    [legJoined addObjectsFromArray:degraded];
+                    [sself appendGrowLine:degraded];
+                    [sself placeCurAt:[CoordTransform wgs84ToGcj02:wp]];
+                    goStay(wp);
+                    return;
+                }
+                NSUInteger target = MAX(1, (NSUInteger)ceil(segDist / (speed * factor)));
+                target = MIN(target, 5000); // 点量上限，防内存爆
+                NSArray *resampled = [sself resamplePoints:pts toCount:target];
+                [legJoined addObjectsFromArray:resampled];
+                // 生长：真实道路段画线 + 蓝点推进（对齐原型 moveTo+stayAt 途经点间生长）
+                [sself appendGrowLine:resampled];
+                CLLocationCoordinate2D legEnd = CLLocationCoordinate2DMake([resampled.lastObject[@"lat"] doubleValue], [resampled.lastObject[@"lon"] doubleValue]);
+                [sself placeCurAt:[CoordTransform wgs84ToGcj02:legEnd]];
+                goStay(legEnd);
+            });
         }];
     };
     processLeg();
@@ -849,12 +953,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 - (MKOverlayRenderer *)mapView:(MKMapView *)mapView rendererForOverlay:(id<MKOverlay>)overlay {
     if ([overlay isKindOfClass:[MKCircle class]]) {
-        // 区域圆（对齐原型 ring/ringFix：紫虚线 + 紫填充）
+        // 原生区域遮罩（实线描边 + 半透明填充，MKCircleRenderer 原生呈现；非虚线）
         MKCircleRenderer *r = [[MKCircleRenderer alloc] initWithCircle:overlay];
-        r.fillColor = [[UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0] colorWithAlphaComponent:0.12];
+        r.fillColor = [[UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0] colorWithAlphaComponent:0.18];
         r.strokeColor = [UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0];
-        r.lineWidth = 1.5;
-        r.lineDashPattern = @[@6, @4];
+        r.lineWidth = 2.0;
         return r;
     }
     if ([overlay isKindOfClass:[TRGrowPolyline class]]) {
@@ -888,17 +991,30 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             [del setImage:[UIImage systemImageNamed:@"trash"] forState:UIControlStateNormal];
             del.frame = CGRectMake(0, 0, 30, 30);
             v.rightCalloutAccessoryView = del;
-            // 水滴 pin（SF Symbol mappin，尖指向坐标；start=紫/route=蓝/region=绿）
-            v.image = [UIImage systemImageNamed:@"mappin"];
-            v.centerOffset = CGPointMake(0, -v.image.size.height / 2); // 尖对齐坐标点
         }
         v.annotation = annotation;
-        // 分色（对齐原型 segMark：start=紫/route=蓝/region=绿）
+        // 实心水滴图钉（UIGraphicsImageRenderer 自绘：半圆顶+尖底+白边；start=紫/route=蓝/region=绿，对齐原型 segMark）
         UIColor *color = [UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0];
         if ([a.type isEqualToString:@"route"]) color = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0];
         else if ([a.type isEqualToString:@"region"]) color = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0];
-        v.tintColor = color;
-        v.frame = CGRectMake(0, 0, v.image.size.width, v.image.size.height);
+        CGFloat sz = 22;
+        UIGraphicsImageRenderer *ir = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(sz, sz + 6)];
+        UIImage *img = [ir imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+            UIBezierPath *p = [UIBezierPath bezierPath];
+            [p moveToPoint:CGPointMake(sz / 2, sz + 6)]; // 底部尖
+            [p addQuadCurveToPoint:CGPointMake(0, sz / 2) controlPoint:CGPointMake(1, sz - 3)]; // 左下弧
+            [p addArcWithCenter:CGPointMake(sz / 2, sz / 2) radius:sz / 2 startAngle:M_PI endAngle:0 clockwise:NO]; // 顶部半圆
+            [p addQuadCurveToPoint:CGPointMake(sz / 2, sz + 6) controlPoint:CGPointMake(sz - 1, sz - 3)]; // 右下弧到尖
+            [p closePath];
+            [color setFill];
+            [p fill];
+            p.lineWidth = 1.5;
+            [[UIColor whiteColor] setStroke];
+            [p stroke];
+        }];
+        v.image = img;
+        v.centerOffset = CGPointMake(0, -(sz + 6) / 2); // 尖对齐坐标点
+        v.frame = CGRectMake(0, 0, sz, sz + 6);
         v.calloutOffset = CGPointMake(0, -6);
         return v;
     }
