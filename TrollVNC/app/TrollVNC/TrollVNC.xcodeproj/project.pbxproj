@@ -58,6 +58,17 @@
 		AA01000000000000000000A2 /* TVNCAppStore.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A6 /* TVNCAppStore.m */; };
 		AA01000000000000000000A3 /* TVNCGatewayClient.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A8 /* TVNCGatewayClient.m */; };
 		AA01000000000000000000A4 /* TVNCGatewayClient.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A8 /* TVNCGatewayClient.m */; };
+		A10000000000000000000003 /* CoordTransform.mm in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* CoordTransform.mm */; };
+		A10000000000000000000006 /* TRDataFiller.mm in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* TRDataFiller.mm */; };
+		A10000000000000000000009 /* TRDisguiseViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000008 /* TRDisguiseViewController.m */; };
+		A1000000000000000000000C /* TRMapPickerViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000B /* TRMapPickerViewController.m */; };
+		A1000000000000000000000F /* TRFillDataViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000E /* TRFillDataViewController.m */; };
+		A10000000000000000000012 /* TRFillDataGenerator.m in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000011 /* TRFillDataGenerator.m */; };
+		A10000000000000000000014 /* MapKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000013 /* MapKit.framework */; };
+		A10000000000000000000016 /* Contacts.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* Contacts.framework */; };
+		A10000000000000000000018 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* libsqlite3.tbd */; };
+		A1000000000000000000001B /* RegionSimulator.mm in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001A /* RegionSimulator.mm */; };
+		A1000000000000000000001E /* SimRouteCalculator.mm in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001D /* SimRouteCalculator.mm */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -118,20 +129,42 @@
 		AA01000000000000000000A6 /* TVNCAppStore.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCAppStore.m; sourceTree = "<group>"; };
 		AA01000000000000000000A7 /* TVNCGatewayClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCGatewayClient.h; sourceTree = "<group>"; };
 		AA01000000000000000000A8 /* TVNCGatewayClient.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCGatewayClient.m; sourceTree = "<group>"; };
+		A10000000000000000000001 /* CoordTransform.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../src/CoordTransform.h; sourceTree = "<group>"; };
+		A10000000000000000000002 /* CoordTransform.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../src/CoordTransform.mm; sourceTree = "<group>"; };
+		A10000000000000000000004 /* TRDataFiller.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../src/TRDataFiller.h; sourceTree = "<group>"; };
+		A10000000000000000000005 /* TRDataFiller.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../src/TRDataFiller.mm; sourceTree = "<group>"; };
+		A10000000000000000000007 /* TRDisguiseViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TRDisguiseViewController.h; sourceTree = "<group>"; };
+		A10000000000000000000008 /* TRDisguiseViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TRDisguiseViewController.m; sourceTree = "<group>"; };
+		A1000000000000000000000A /* TRMapPickerViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TRMapPickerViewController.h; sourceTree = "<group>"; };
+		A1000000000000000000000B /* TRMapPickerViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TRMapPickerViewController.m; sourceTree = "<group>"; };
+		A1000000000000000000000D /* TRFillDataViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TRFillDataViewController.h; sourceTree = "<group>"; };
+		A1000000000000000000000E /* TRFillDataViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TRFillDataViewController.m; sourceTree = "<group>"; };
+		A10000000000000000000010 /* TRFillDataGenerator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TRFillDataGenerator.h; sourceTree = "<group>"; };
+		A10000000000000000000011 /* TRFillDataGenerator.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TRFillDataGenerator.m; sourceTree = "<group>"; };
+		A10000000000000000000013 /* MapKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MapKit.framework; path = System/Library/Frameworks/MapKit.framework; sourceTree = SDKROOT; };
+		A10000000000000000000015 /* Contacts.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Contacts.framework; path = System/Library/Frameworks/Contacts.framework; sourceTree = SDKROOT; };
+		A10000000000000000000017 /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
+		A10000000000000000000019 /* RegionSimulator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../src/RegionSimulator.h; sourceTree = "<group>"; };
+		A1000000000000000000001A /* RegionSimulator.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../src/RegionSimulator.mm; sourceTree = "<group>"; };
+		A1000000000000000000001C /* SimRouteCalculator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../src/SimRouteCalculator.h; sourceTree = "<group>"; };
+		A1000000000000000000001D /* SimRouteCalculator.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../src/SimRouteCalculator.mm; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		61535F542E6590A100643E64 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				61C756672E65B72E00B2B371 /* NetworkExtension.framework in Frameworks */,
-				CC1BF93E2F101B2F00111D96 /* SpringBoardServices.tbd in Frameworks */,
-				61C756BE2E65BDAC00B2B371 /* Preferences.tbd in Frameworks */,
-				615EFE9F2F1602D700187EAF /* CoreServices.framework in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
+		isa = PBXFrameworksBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+			61C756672E65B72E00B2B371 /* NetworkExtension.framework in Frameworks */,
+			CC1BF93E2F101B2F00111D96 /* SpringBoardServices.tbd in Frameworks */,
+			61C756BE2E65BDAC00B2B371 /* Preferences.tbd in Frameworks */,
+			615EFE9F2F1602D700187EAF /* CoreServices.framework in Frameworks */,
+			A10000000000000000000014 /* MapKit.framework in Frameworks */,
+			A10000000000000000000016 /* Contacts.framework in Frameworks */,
+			A10000000000000000000018 /* libsqlite3.tbd in Frameworks */,
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
 		615401BE2EB1180C009FDD6F /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -238,11 +271,27 @@
 				AA01000000000000000000A5 /* TVNCAppStore.h */,
 				AA01000000000000000000A6 /* TVNCAppStore.m */,
 				AA01000000000000000000A7 /* TVNCGatewayClient.h */,
-				AA01000000000000000000A8 /* TVNCGatewayClient.m */,
-			);
-			path = TrollVNC;
-			sourceTree = "<group>";
-		};
+			AA01000000000000000000A8 /* TVNCGatewayClient.m */,
+			A10000000000000000000001 /* CoordTransform.h */,
+			A10000000000000000000002 /* CoordTransform.mm */,
+			A10000000000000000000004 /* TRDataFiller.h */,
+			A10000000000000000000005 /* TRDataFiller.mm */,
+			A10000000000000000000007 /* TRDisguiseViewController.h */,
+			A10000000000000000000008 /* TRDisguiseViewController.m */,
+			A1000000000000000000000A /* TRMapPickerViewController.h */,
+			A1000000000000000000000B /* TRMapPickerViewController.m */,
+			A1000000000000000000000D /* TRFillDataViewController.h */,
+			A1000000000000000000000E /* TRFillDataViewController.m */,
+			A10000000000000000000010 /* TRFillDataGenerator.h */,
+			A10000000000000000000011 /* TRFillDataGenerator.m */,
+			A10000000000000000000019 /* RegionSimulator.h */,
+			A1000000000000000000001A /* RegionSimulator.mm */,
+			A1000000000000000000001C /* SimRouteCalculator.h */,
+			A1000000000000000000001D /* SimRouteCalculator.mm */,
+		);
+		path = TrollVNC;
+		sourceTree = "<group>";
+	};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -410,11 +459,19 @@
 				D0B1B2C3D4E5F60718293A02 /* TVNCSegmentCell.m in Sources */,
 				D0B1B2C3D4E5F60718293A05 /* TVNCButtonCell.m in Sources */,
 				CC91EF972E6EF165002F5B2A /* TVNCListItemsController.m in Sources */,
-				61C756C62E65BDAC00B2B371 /* TVNCServiceCoordinator.m in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		615401AF2EB1180C009FDD6F /* Sources */ = {
+			61C756C62E65BDAC00B2B371 /* TVNCServiceCoordinator.m in Sources */,
+			A10000000000000000000003 /* CoordTransform.mm in Sources */,
+			A10000000000000000000006 /* TRDataFiller.mm in Sources */,
+			A10000000000000000000009 /* TRDisguiseViewController.m in Sources */,
+			A1000000000000000000000C /* TRMapPickerViewController.m in Sources */,
+			A1000000000000000000000F /* TRFillDataViewController.m in Sources */,
+			A10000000000000000000012 /* TRFillDataGenerator.m in Sources */,
+			A1000000000000000000001B /* RegionSimulator.mm in Sources */,
+			A1000000000000000000001E /* SimRouteCalculator.mm in Sources */,
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
+	615401AF2EB1180C009FDD6F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (

@@ -9,11 +9,12 @@ function check(name, cond, extra = '') {
   if (!cond) failures++;
 }
 
-// ---- BATCH_CAPS：批量能力自包含（精简后 20 项：17 硬件键 + 重启 + 生成证书 + 搜索网关） ----
+// ---- BATCH_CAPS：批量能力自包含（精简后 21 项：17 硬件键 + 重启 + 生成证书 + 搜索网关 + data.fill） ----
 check('BATCH_CAPS 非空且自包含（含 category）',
-  BATCH_CAPS.length === 20 && BATCH_CAPS.every((d) => d.id && d.title && d.icon && d.category && Array.isArray(d.params)));
-check('BATCH_CAPS 含重启、不含客户端/系统/网关批量项',
+  BATCH_CAPS.length === 21 && BATCH_CAPS.every((d) => d.id && d.title && d.icon && d.category && Array.isArray(d.params)));
+check('BATCH_CAPS 含重启、data.fill、不含客户端/系统/网关批量项',
   BATCH_CAPS.some((d) => d.id === 'service.restart')
+  && BATCH_CAPS.some((d) => d.id === 'data.fill')
   && !BATCH_CAPS.some((d) => /clients\.|sys\.|gateway\.|touch|stylus|screenshot|clipboard|type\./i.test(d.id)));
 
 // ---- CONFIG_DEFS：配置表单定义契约（2026-08-21 按能力板块 group 分组：连接/直连/画面/交互/保活/关于/定位） ----

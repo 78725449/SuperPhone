@@ -1459,7 +1459,12 @@ async function openLocPanel() {
     <div class="cfg-row"><span class="cfg-row-label">区域半径（米）</span><input id="locItinRadius" type="number" min="50" step="50" value="500"></div>
     <div class="cfg-row"><span class="cfg-row-label">区域时长（分钟）</span><input id="locItinDur" type="number" min="1" step="1" value="10"></div>
     <div class="cfg-row"><span class="cfg-row-label">模式</span><select id="locItinMode"><option value="walk">步行</option><option value="drive">驾车</option></select></div>
-    <div class="modal-btns"><button id="locItinStart" class="primary">执行编排</button></div>`;
+    <div class="modal-btns"><button id="locItinStart" class="primary">执行编排</button></div>
+    <div class="cfg-sec-title">数据填充（联系人/通话/短信批量生成，设备端统一能力 data.fill）</div>
+    <div class="cfg-row"><span class="cfg-row-label">类型</span><select id="dfKind"><option value="contacts">联系人</option><option value="calls">通话记录</option><option value="sms">短信</option></select></div>
+    <div class="cfg-row"><span class="cfg-row-label">数量</span><input id="dfCount" type="number" min="1" max="1000" value="50"></div>
+    <div class="cfg-row"><span class="cfg-row-label">种子</span><input id="dfSeed" type="number" value="0" title="0=随机，同 seed 可复现"></div>
+    <div class="modal-btns"><button id="dfStart" class="primary">生成</button></div>`;
   const preset = card.querySelector('#locPreset');
   const latInp = card.querySelector('#locLat');
   const lonInp = card.querySelector('#locLon');
@@ -1543,6 +1548,18 @@ async function openLocPanel() {
       });
       toast('✓ 编排中——先沿真实道路到终点，再区域漫游', 'success');
     } catch (e) { toast('✗ 编排请求失败 ' + e.message, 'error'); }
+  };
+  // 数据填充：invoke data.fill（设备端统一能力，App/注册表/0x50+5802 三入口同一实现）
+  card.querySelector('#dfStart').onclick = async () => {
+    const kind = card.querySelector('#dfKind').value;
+    const count = parseInt(card.querySelector('#dfCount').value, 10);
+    const seed = parseInt(card.querySelector('#dfSeed').value, 10) || 0;
+    if (!count || count < 1 || count > 1000) { toast('✗ 数量非法（1~1000）', 'error'); return; }
+    const names = { contacts: '联系人', calls: '通话记录', sms: '短信' };
+    try {
+      await invokeCap('', devId, 'data.fill', { db: kind, count, seed });
+      toast(`✓ 已生成 ${count} 条${names[kind]}（设备端写库 + 刷新 daemon 生效）`, 'success');
+    } catch (e) { toast('✗ 生成失败 ' + e.message, 'error'); }
   };
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
   modal.appendChild(card);

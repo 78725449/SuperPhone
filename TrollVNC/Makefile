@@ -30,6 +30,9 @@ trollvncserver_FILES += src/STHIDEventGenerator.mm
 trollvncserver_FILES += src/OhMyJetsam.mm
 trollvncserver_FILES += src/TRScreenHasher.mm
 trollvncserver_FILES += src/TRSelfSignedCert.mm
+# 共享模块（App 伪装页 / server / manager 三 target 各自编译同一份源码，写库单一实现）
+trollvncserver_FILES += src/CoordTransform.mm
+trollvncserver_FILES += src/TRDataFiller.mm
 
 trollvncserver_CFLAGS += -fobjc-arc
 trollvncserver_CFLAGS += -Wno-unknown-warning-option
@@ -133,6 +136,9 @@ trollvncmanager_FILES += src/SimLocationController.mm
 trollvncmanager_FILES += src/SimRouteCalculator.mm
 trollvncmanager_FILES += src/RegionSimulator.mm
 trollvncmanager_FILES += src/SimItineraryPlanner.mm
+# 共享模块（App 伪装页 / server / manager 三 target 各自编译同一份源码，写库单一实现）
+trollvncmanager_FILES += src/CoordTransform.mm
+trollvncmanager_FILES += src/TRDataFiller.mm
 trollvncmanager_FRAMEWORKS += UIKit
 
 trollvncmanager_CFLAGS += -fobjc-arc
@@ -149,6 +155,8 @@ trollvncmanager_FRAMEWORKS += QuartzCore
 trollvncmanager_FRAMEWORKS += UserNotifications
 trollvncmanager_FRAMEWORKS += CoreLocation
 trollvncmanager_FRAMEWORKS += MapKit
+trollvncmanager_FRAMEWORKS += Contacts
+trollvncmanager_LIBRARIES += sqlite3
 ifeq ($(THEOS_DEVICE_SIMULATOR),1)
 trollvncmanager_CODESIGN_FLAGS += -f -s - --entitlements src/trollvncmanager.entitlements
 else

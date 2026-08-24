@@ -206,6 +206,39 @@
     background: #f5f6f8; color: #1c1c1e;
     font: 500 14px system-ui, sans-serif;
   }
+
+  /* ===== 定位模拟浮层（2026-08-24）：config.set 写 SimLocation*（预设城市/手动坐标/停止） ===== */
+  #locOverlay {
+    position: fixed; inset: 0; z-index: 30;
+    background: rgba(0, 0, 0, .5);
+    display: none; align-items: center; justify-content: center;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }
+  #locOverlay.show { display: flex; }
+  #locModal {
+    width: 100%; max-width: 340px;
+    background: #fff; border-radius: 14px;
+    padding: 16px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, .4);
+  }
+  #locModal h3 { margin: 0 0 12px; font: 600 16px/24px system-ui, sans-serif; color: #1c1c1e; }
+  #locModal .row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  #locModal .lbl { width: 56px; flex: none; font: 13px/20px system-ui, sans-serif; color: #3a3a3c; }
+  #locModal input, #locModal select {
+    flex: 1; min-width: 0;
+    border: 1px solid rgba(0, 0, 0, .15); border-radius: 10px;
+    font: 14px/20px system-ui, sans-serif; color: #1c1c1e;
+    padding: 8px 10px; box-sizing: border-box; background: #f5f6f8;
+  }
+  #locModal .btns { display: flex; gap: 8px; margin-top: 14px; }
+  #locModal .btns button {
+    flex: 1; min-height: 40px;
+    border: 1px solid rgba(0, 0, 0, .15); border-radius: 10px;
+    font: 500 14px system-ui, sans-serif;
+  }
+  #locModal .btns .ok { background: #2563eb; color: #fff; border-color: #2563eb; }
+  #locModal .btns .no { background: #f5f6f8; color: #1c1c1e; }
+
 </style>
 </head>
 <body>
@@ -257,6 +290,30 @@
     <textarea id="copyModalText" readonly></textarea>
     <p>长按上方文本复制到本机</p>
     <div class="copy-close"><button id="copyClose">关闭</button></div>
+  </div>
+</div>
+
+<!-- 定位模拟浮层（2026-08-24：config.set 写 SimLocation*，预设城市/手动坐标/停止） -->
+<div id="locOverlay">
+  <div id="locModal">
+    <h3>📍 定位模拟</h3>
+    <div class="row"><span class="lbl">城市</span>
+      <select id="locCity">
+        <option value="">自定义…</option>
+        <option value="39.9042,116.4074">北京</option>
+        <option value="31.2304,121.4737">上海</option>
+        <option value="23.1291,113.2644">广州</option>
+        <option value="22.5431,114.0579">深圳</option>
+        <option value="30.5728,104.0668">成都</option>
+      </select>
+    </div>
+    <div class="row"><span class="lbl">纬度</span><input id="locLat" type="number" step="0.0001" placeholder="39.9042"></div>
+    <div class="row"><span class="lbl">经度</span><input id="locLon" type="number" step="0.0001" placeholder="116.4074"></div>
+    <div class="btns">
+      <button class="no" id="locStop">停止</button>
+      <button class="ok" id="locApply">应用定位</button>
+      <button class="no" id="locClose">关闭</button>
+    </div>
   </div>
 </div>
 
@@ -478,6 +535,8 @@ import RFB from './novnc/core/rfb.js';
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.5-4.5"/></svg>' },
     { op: 'full',     label: '全屏',   icon: '⤢',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg>' },
+    { op: 'loc',      label: '定位',   icon: '📍',
+      svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.2-5.4-6.2-10.2a6.2 6.2 0 1 1 12.4 0C18.2 15.6 12 21 12 21z"/><circle cx="12" cy="10.8" r="2.4"/></svg>' },
     { op: 'power',    label: '电源',   icon: '⏻',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v8"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>' },
     { op: 'disc',     label: '断开',   icon: '✕',
@@ -665,6 +724,10 @@ import RFB from './novnc/core/rfb.js';
       case 'upload':
         // 2026-08-23：选择照片/视频导入设备相册（直连设备 5802 album.import）
         uploadToDeviceAlbum();
+        break;
+      case 'loc':
+        // 2026-08-24：定位模拟（config.set 写 SimLocation*，锚点模式/停止）
+        openLocModal();
         break;
       case 'paste':
         // 2026-08-18：https 直读控制端剪贴板直贴；http 读不到 → 弹输入浮层（浮层内 Ctrl+V/回车自动注入）
@@ -977,6 +1040,37 @@ import RFB from './novnc/core/rfb.js';
       copyTextToControl(text);
     });
   }
+
+  // ===== 定位模拟（2026-08-24）：config.set 写 SimLocation*（锚点模式/停止；5801 单设备控制页） =====
+  var locOverlay = document.getElementById('locOverlay');
+
+  function openLocModal() {
+    document.getElementById('locCity').value = '';
+    document.getElementById('locLat').value = '';
+    document.getElementById('locLon').value = '';
+    locOverlay.classList.add('show');
+  }
+  function closeLocModal() { locOverlay.classList.remove('show'); }
+  function applyLoc() {
+    var lat = parseFloat(document.getElementById('locLat').value);
+    var lon = parseFloat(document.getElementById('locLon').value);
+    var city = document.getElementById('locCity').value;
+    if (city) { var p = city.split(','); lat = parseFloat(p[0]); lon = parseFloat(p[1]); }
+    if (isNaN(lat) || isNaN(lon)) { flashStatus('✗ 请输入有效坐标', 'error'); return; }
+    mgmtRequest('config.set', { configs: { SimLocationMode: 'anchor', SimLocationLat: lat, SimLocationLon: lon } }, function (resp) {
+      if (resp && resp.ok) { flashStatus('✓ 定位已设为 (' + lat.toFixed(5) + ', ' + lon.toFixed(5) + ')', 'success'); closeLocModal(); }
+      else flashStatus('✗ 设置失败', 'error');
+    });
+  }
+  function stopLoc() {
+    mgmtRequest('config.set', { configs: { SimLocationMode: 'off' } }, function (resp) {
+      if (resp && resp.ok) { flashStatus('✓ 已停止定位模拟', 'success'); closeLocModal(); }
+      else flashStatus('✗ 停止失败', 'error');
+    });
+  }
+  document.getElementById('locApply').addEventListener('click', applyLoc);
+  document.getElementById('locStop').addEventListener('click', stopLoc);
+  document.getElementById('locClose').addEventListener('click', closeLocModal);
 
   function copyTextToControl(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {

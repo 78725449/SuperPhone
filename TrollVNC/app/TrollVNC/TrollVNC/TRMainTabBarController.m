@@ -19,6 +19,7 @@
 #import "TVNCConnectViewController.h"
 #import "TVNCConsoleWebViewController.h"
 #import "TVNCRootListController.h"
+#import "TRDisguiseViewController.h"
 
 #import <UIKit/UIKit.h>
 
@@ -74,7 +75,18 @@
     [settingsNav setNavigationBarHidden:YES animated:NO];
     settingsNav.delegate = settings;
 
-    self.viewControllers = @[ connectNav, controllerNav, settingsNav ];
+    // Tab 4 伪装：TRDisguiseViewController（M5 伪装页：位置模拟/联系人/通话/短信 四子页容器）
+    // 2026-08-24：伪装页生产主路径（App 原生能力：定位编排/算路 + 数据填充生成），离线自治。
+    TRDisguiseViewController *disguise = [[TRDisguiseViewController alloc] init];
+    UINavigationController *disguiseNav = [[UINavigationController alloc] initWithRootViewController:disguise];
+    disguiseNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"伪装"
+                                                           image:[UIImage systemImageNamed:@"theatermasks"]
+                                                   selectedImage:[UIImage systemImageNamed:@"theatermasks.fill"]
+                                                             ];
+    [disguiseNav setNavigationBarHidden:YES animated:NO];
+    [self styleNav:disguiseNav tint:tint];
+
+    self.viewControllers = @[ connectNav, controllerNav, settingsNav, disguiseNav ];
 }
 
 /// 统一设置导航控制器外观（紫色 tint + 大标题偏好）。

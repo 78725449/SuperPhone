@@ -18,6 +18,7 @@
 #import "SimLocationController.h"
 #import "SimRouteCalculator.h"
 #import "SimItineraryPlanner.h"
+#import "TRDataFiller.h"
 #import "Logging.h"
 #import <UIKit/UIKit.h>
 #import <Security/Security.h>
@@ -764,7 +765,20 @@ static NSDictionary *TRSearchGatewaySync(void) {
                 return nil;
             }
             NSString *mode = [p[@"mode"] isKindOfClass:[NSString class]] ? p[@"mode"] : @"walk";
-            [SimRouteCalculator calculateRouteFrom:fromC to:toC mode:mode];
+            // 2026-08-24：calculateRouteFrom 已并入（SimRouteCalculator 改为纯算路，落盘由调用方负责）
+            [SimRouteCalculator calculateRoutePointsFrom:fromC to:toC mode:mode completion:^(NSArray<NSDictionary *> *points, NSError *error) {
+                if (error || points.count < 2) {
+                    TVLog(@"[simroute] calculate failed: %@", error.localizedDescription ?: @"too few points");
+                    return;
+                }
+                NSError *uerr = nil;
+                if (![SimLocationController uploadTrackPoints:points error:&uerr]) {
+                    TVLog(@"[simroute] upload failed: %@", uerr.localizedDescription ?: @"unknown");
+                    return;
+                }
+                [[SimLocationController sharedController] reloadFromPrefs];
+                TVLog(@"[simroute] ok: %lu points, mode=%@", (unsigned long)points.count, mode);
+            }];
             return @{@"ok":@YES, @"status":@"calculating"};
         }];
     // sim.itinerary：定位编排（route/region/anchor 段按序拼接，段起点静态绑定）
@@ -787,6 +801,29 @@ static NSDictionary *TRSearchGatewaySync(void) {
                 }
             }];
             return @{@"ok":@YES, @"status":@"calculating"};
+        }];
+    // data.fill：数据填充（联系人/通话/短信批量生成，M5 阶段 2）——写库单一实现于 TRDataFiller
+    // 共享模块（App 伪装页进程内直调 / 本注册表 invoke / server 0x50+5802 分派 三入口同一实现）
+    [self _registerControl:@"data.fill" title:@"数据填充" icon:@"📥" route:TRCapRouteNative
+        params:@[
+            @{@"name":@"db",@"type":@"string",@"required":@YES},
+            @{@"name":@"count",@"type":@"number",@"required":@YES},
+            @{@"name":@"seed",@"type":@"number",@"required":@NO},
+            @{@"name":@"ratios",@"type":@"object",@"required":@NO},
+        ]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            NSString *db = p[@"db"];
+            NSInteger count = [p[@"count"] integerValue];
+            if (![db isKindOfClass:[NSString class]] || count < 1) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"db/count 缺失"}];
+                return nil;
+            }
+            uint64_t seed = [p[@"seed"] unsignedLongLongValue];
+            NSDictionary *ratios = [p[@"ratios"] isKindOfClass:[NSDictionary class]] ? p[@"ratios"] : nil;
+            NSDictionary *res = [TRDataFiller fillDatabase:db count:count seed:seed ratios:ratios];
+            if ([res[@"ok"] boolValue]) return res;
+            if (e) *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey: res[@"error"] ?: @"填充失败"}];
+            return nil;
         }];
 }
 

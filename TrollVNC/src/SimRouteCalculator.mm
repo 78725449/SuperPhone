@@ -11,28 +11,9 @@
 
 #import <MapKit/MapKit.h>
 
-#import "SimLocationController.h"
 #import "Logging.h"
 
 @implementation SimRouteCalculator
-
-+ (void)calculateRouteFrom:(CLLocationCoordinate2D)from
-                        to:(CLLocationCoordinate2D)to
-                      mode:(NSString *)mode {
-    [SimRouteCalculator calculateRoutePointsFrom:from to:to mode:mode completion:^(NSArray<NSDictionary *> *points, NSError *error) {
-        if (error || points.count < 2) {
-            TVLog(@"[simroute] calculate failed: %@", error.localizedDescription ?: @"too few points");
-            return;
-        }
-        NSError *uerr = nil;
-        if (![SimLocationController uploadTrackPoints:points error:&uerr]) {
-            TVLog(@"[simroute] upload failed: %@", uerr.localizedDescription ?: @"unknown");
-            return;
-        }
-        [[SimLocationController sharedController] reloadFromPrefs];
-        TVLog(@"[simroute] ok: %lu points, mode=%@", (unsigned long)points.count, mode);
-    }];
-}
 
 + (void)calculateRoutePointsFrom:(CLLocationCoordinate2D)from
                               to:(CLLocationCoordinate2D)to

@@ -16,26 +16,17 @@ NS_ASSUME_NONNULL_BEGIN
  * SimRouteCalculator - Apple 地图原生算路（MKDirections）
  *
  * 两点沿真实道路的轨迹生成：MKDirections 算路 → MKRoute.polyline 坐标 →
- * 按速度重采样（步长=speed×1s）→ 拟人参数 → 写轨迹文件 + 切 track（SimLocationController 自治推进）。
+ * 按速度重采样（步长=speed×1s）→ 拟人参数。
+ * 本类只返回/生成点序列（纯算路，不落盘、不切 mode）——供 App 伪装页与注册表
+ * sim.itinerary 编排逐段拼接使用；落盘由调用方负责（App 本地写文件 / SimLocationController.uploadTrackPoints）。
  *
  * 模式（Apple transportType 公开档，仅两个稳定真实档）：
  * - walk → MKDirectionsTransportTypeWalking（1.4m/s）
  * - drive → MKDirectionsTransportTypeAutomobile（13.9m/s）
- *
- * 异步姿势：invoke 5s 超时内无法等待联网算路，故本类异步执行，算路完成自动落盘 + 触发 Controller，
- * 不阻塞调用方（网关立即收到 ok/calculating）。
  */
 @interface SimRouteCalculator : NSObject
 
-/// 异步算路并落盘：MKDirections 完成后 → 重采样插值 → SimLocationController.uploadTrackPoints → reloadFromPrefs
-/// @param from 起点（WGS-84）
-/// @param to   终点（WGS-84）
-/// @param mode walk / drive（其他值按 walk 兜底）
-+ (void)calculateRouteFrom:(CLLocationCoordinate2D)from
-                        to:(CLLocationCoordinate2D)to
-                      mode:(NSString *)mode;
-
-/// 异步算路仅返回点序列（不落盘、不切 mode）——供 sim.itinerary 编排逐段拼接使用
+/// 异步算路仅返回点序列（不落盘、不切 mode）——供编排逐段拼接使用
 /// @param from 起点（WGS-84）
 /// @param to   终点（WGS-84）
 /// @param mode walk / drive（其他值按 walk 兜底）
@@ -45,7 +36,7 @@ NS_ASSUME_NONNULL_BEGIN
                             mode:(NSString *)mode
                       completion:(void (^)(NSArray<NSDictionary *> *points, NSError *error))completion;
 
-/// 两点球面距离（haversine，米）——供 SimItineraryPlanner 区域段逐段算路使用
+/// 两点球面距离（haversine，米）——供区域段逐段算路使用
 + (double)haversineMeters:(CLLocationCoordinate2D)a to:(CLLocationCoordinate2D)b;
 
 @end

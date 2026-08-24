@@ -64,6 +64,13 @@ export const BATCH_CAPS = [
     svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>' },
   { id: 'settings.generateKeys', title: '生成证书', icon: '🔐', category: 'native', params: [] },
   { id: 'settings.searchGateway', title: '搜索网关', icon: '🔍', category: 'native', params: [] },
+  { id: 'data.fill', title: '数据填充', icon: '📥', category: 'native',
+    params: [
+      { name: 'db', title: '库（contacts/calls/sms）', type: 'string', required: true },
+      { name: 'count', title: '数量（1~1000）', type: 'number', required: true },
+      { name: 'seed', title: '种子', type: 'number', required: false },
+      { name: 'ratios', title: '比例', type: 'object', required: false },
+    ] },
 ];
 
 /** 聚焦画布多点手势定义（2026-08-16：画布多指识别 → touch.* invoke）。
