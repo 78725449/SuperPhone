@@ -69,6 +69,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @property (nonatomic, assign) BOOL hasFocusedMapOnce;            // 首帧启动聚焦是否已执行（避免 tab 往返重复聚焦）
 @property (nonatomic, strong) CLLocationManager *locationManager; // 真实定位授权/位置源（模拟开启时=模拟位置）
 @property (nonatomic, assign) BOOL hasFocusedRealOnce;           // 真实定位首次到达是否已聚焦（避免反复跳）
+@property (nonatomic, assign) BOOL requesting;                          // requestLocation 单飞标志（未完成不重复发起）
 @property (nonatomic, assign) BOOL isGenerating;            // 轨迹生成中（并发保护：正在生长时忽略新的 commit）
 @property (nonatomic, copy) void (^pendingEditAction)(void);     // 生成中挂起的最新编辑（完成后执行，最后一次生效）
 @property (nonatomic, assign) uint32_t locsimNotifyToken;          // daemon 注入事件订阅 token（状态栏/锚点状态即时刷新）
@@ -110,11 +111,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
                [CLLocationManager authorizationStatus] != kCLAuthorizationStatusRestricted) {
         [self.locationManager startUpdatingLocation];
     }
-    // 定位中 → 原生跟随模式（自动居中并随模拟位置移动，手动拖动自动退出）；未定位 → 不跟随
-    self.mapView.userTrackingMode = self.locating ? MKUserTrackingModeFollow : MKUserTrackingModeNone;
-    // 启动：地图聚焦到当前所在位置（定位中=模拟位置（跟随）；未定位=真实位置，取不到则回退默认视野）
+    // 启动：地图聚焦到当前所在位置（启动一律停止态=真实位置，取不到则回退默认视野）
     [self focusMapOnCurrentLocation];
-    // daemon 注入事件订阅：模拟态刷新唯一驱动源（注入即刷新状态栏/锚点状态；停止态由真实 fix 经 didUpdateLocations 驱动）
+    // daemon 注入事件订阅：注入/停止落地通知 → 触发 requestLocation 主动获取当前位置（模拟中=模拟位置、
+    // 停止后=真实 fix 校正），结果统一经 didUpdateLocations 处理（事件驱动主动获取，无轮询无盲等）
     __weak typeof(self) weakSelf = self;
     notify_register_dispatch("com.82flex.trollvnc.locsim-update", &_locsimNotifyToken, dispatch_get_main_queue(), ^(int token) {
         __strong typeof(weakSelf) sself = weakSelf;
@@ -149,7 +149,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     MKMapView *mv = [[MKMapView alloc] initWithFrame:self.view.bounds];
     mv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     mv.delegate = self;
-    mv.showsUserLocation = YES; // 原生当前位置：模拟开启=模拟位置/关闭=真实位置（自定义水滴外观，viewForAnnotation 绘制）
+    mv.showsUserLocation = YES; // 原生当前位置：数据源头=locationd（模拟开启=模拟位置/关闭=真实位置），精准反馈系统真实位置
     mv.showsCompass = YES;
     [self.view addSubview:mv];
     self.mapView = mv;
@@ -362,13 +362,14 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
     [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude), @"mode": mode}];
     if (self.segments.count == 1) {
-        // 第一个锚点：无前驱 → 点击点成为当前定位；立即聚焦该点并切原生跟随
+        // 第一个锚点：无前驱 → 点击点成为当前定位；立即聚焦该点并原生跟随
         self.hasStart = YES;
         self.cur = gcj;
         self.locating = YES;
         [self commitAnchor];
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES]; // 立即聚焦锚点
-        self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 立即跟随（MKMapView 持续获取，见 toggleLocate 注释）
+        self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（水滴跟随 locationd）
+        [self requestCurrentLocationOnce]; // 主动获取：注入落地后 locationd 返回模拟位置
         [self setHint:@"已设定位点 · 继续点击添加锚点生长路线"];
     } else {
         // 后续锚点：点击点只是目标锚点——当前位置图标保持当前实际位置，不随点击瞬移
@@ -594,14 +595,9 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 #pragma mark - 定位开关 / 停止
 
-/// 靶心按钮：聚焦到"当前位置目标"（两态随定位开关：定位中=模拟注入位置，停止=locationd 真实位置，非死绑定系统位置）
-/// 定位中 → 切原生跟随（跟随 MKUserLocation=locationd 注入位置，之后手动拖动仍自动退出）；未定位 → 聚焦真实位置
+/// 靶心按钮：聚焦到"当前位置目标"（两态随定位开关：定位中=模拟注入位置，停止=真实位置）
 - (void)focusCurrentPosition:(UIButton *)sender {
-    if (self.locating) {
-        self.mapView.userTrackingMode = MKUserTrackingModeFollow;
-    } else {
-        [self focusMapOnCurrentLocation];
-    }
+    [self focusMapOnCurrentLocation];
 }
 
 - (void)toggleLocate:(UIButton *)sender {
@@ -610,13 +606,13 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         self.locating = NO;
         self.pendingEditAction = nil;    // 放弃生成中挂起的编辑（停止后不再生长/复活设备）
         [self commitStop];
-        // 两态=订阅切换（统一模型）：重新订阅触发 locationd 立即按当前状态推——
-        // 模拟已清除（daemon stop）→ locationd 恢复真实 → 立即推真实 fix（GPS 定位完成前推可用 fix，精 fix 后校正）
+        // 两态=订阅切换：重新订阅触发 locationd 立即按当前状态推真实 fix（GPS 定位完成前推可用 fix）
         [self.locationManager stopUpdatingLocation];
         [self.locationManager startUpdatingLocation];
-        self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随
+        [self requestCurrentLocationOnce]; // 主动获取：daemon 停止落地后 locationd 恢复真实，返回真实 fix（配合 daemon off 落地通知双保险）
+        self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随（水滴随 locationd 恢复真实）
         [self refreshUserLocationView];                          // 当前位置水滴去图标（未定位=纯绿点）
-        [self focusRealLocationNow];                             // 立即聚焦真实位置（daemon 已清除模拟，locationd 恢复真实）
+        [self focusRealLocationNow];                             // 聚焦当前位置（读 locationd）
     } else {
         // 开启：有起点则 anchor，否则提示先设起点
         if (!self.hasStart) {
@@ -624,14 +620,12 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             return;
         }
         self.locating = YES;
-        [self.locationManager startUpdatingLocation]; // 确保订阅（幂等）；daemon 注入后 locationd 即推模拟 fix
+        [self.locationManager startUpdatingLocation]; // 确保订阅（幂等）
         [self commitAnchor];
         [self refreshUserLocationView];       // 当前位置水滴恢复出行图标
-        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(self.cur, 3000, 3000) animated:YES]; // 立即聚焦当前位置
-        // 立即切原生跟随（根因修复 2026-08-24）：MKMapView 仅在 Follow 模式内部位置源持续活跃获取——
-        // pendingFollow 延迟落地检测会让 MKMapView 停在 None 不获取，locationd 模拟位置永远收不到
-        //（实测：开启定位后位置不变，系统地图 Follow 实时显示，回 App 触发 Follow 才更新）
-        self.mapView.userTrackingMode = MKUserTrackingModeFollow;
+        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(self.cur, 3000, 3000) animated:YES]; // 立即聚焦锚点
+        self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随：MKMapView 内部位置源持续获取 locationd → 水滴跟随模拟位置（不自绘、数据源=locationd）
+        [self requestCurrentLocationOnce]; // 主动获取：daemon 注入落地后 locationd 返回模拟位置（闭环"注入→通知→获取"，驱动状态栏）
     }
     [self updateStatus];
 }
@@ -685,13 +679,14 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
     [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude), @"mode": mode}];
     if (self.segments.count == 1) {
-        // 第一个锚点（也是当前定位）：立即聚焦该点并切原生跟随
+        // 第一个锚点（也是当前定位）：立即聚焦该点并原生跟随
         self.hasStart = YES;
         self.cur = gcj;
         self.locating = YES;
         [self commitAnchor];
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
-        self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 立即跟随（MKMapView 持续获取，见 toggleLocate 注释）
+        self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（水滴跟随 locationd）
+        [self requestCurrentLocationOnce]; // 主动获取：注入落地后 locationd 返回模拟位置
     } else {
         // 后续锚点：不移动视野（保持当前位置聚焦），从上一位置生长（生成中挂起，编辑不丢）
         [self runEdit:^{ [self commitItinerary]; }];
@@ -748,41 +743,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.locateFab setBackgroundColor:self.locating ? brand : [UIColor systemGrayColor]];
 }
 
-/// 实时刷新（daemon 注入事件 notify locsim-update 驱动；已删 1s 定时器冗余双触发）：
-/// 定位中读当前位置（locationd 权威）→ 状态栏坐标/速度 + 锚点经过状态/当前位置出行图标切换；
-/// 停止态 → 状态栏坐标绑定 locationd 真实位置（真实 fix 由 didUpdateLocations 驱动）
-///（当前位置视觉走原生 MKUserLocation，随 daemon 注入自动移动，不在此轮询）
+/// 实时刷新（daemon locsim-update 事件驱动：注入落地/停止落地通知）：
+/// 事件到达 → requestLocation 主动获取当前位置（模拟中=模拟位置、停止后=真实 fix 校正），
+/// 结果统一经 didUpdateLocations 处理（更新自绘标注 + 状态栏 + 锚点经过态）——事件驱动主动获取，无轮询无盲等
 - (void)refreshLiveStatus {
-    CLLocationCoordinate2D liveW = [self currentSimPosition]; // locationd 权威
-    if (liveW.latitude == 0 && liveW.longitude == 0) return;
-    if (!self.locating) {
-        // 停止态（真实态）：状态栏坐标强制绑定 locationd 真实位置——定位开关关闭=取消注入，无"保留最后模拟坐标"回退；
-        // 锚点红蓝/出行图标定格（updateStatus 轻量，真实 fix 由 didUpdateLocations 高频驱动）
-        [self updateStatus];
-        return;
-    }
-    // self.cur 同步为当前位置（GCJ 约定，供重锚/重算作当前位置基准）
-    self.cur = [CoordTransform wgs84ToGcj02:liveW];
-    // 锚点经过红蓝 + 当前位置出行图标切换（与原生点同源 locationd，避免双源偏差）
-    [self updateAnchorPassStateWithLiveWGS:liveW];
-    // 速度：locationd 权威（CLLocation.speed，daemon 注入时已写入 locationd）
-    double spd = self.locationManager.location.speed;
-    NSString *speedTxt = spd > 0 ? [NSString stringWithFormat:@"%.1f m/s", spd] : @"0.0 m/s";
-    NSString *modeTxt = @"模拟中 · 定位";
-    NSMutableAttributedString *as = [[NSMutableAttributedString alloc] init];
-    [as appendAttributedString:[[NSAttributedString alloc] initWithString:modeTxt attributes:@{
-        NSFontAttributeName: [UIFont boldSystemFontOfSize:13],
-        NSForegroundColorAttributeName: [UIColor systemBlueColor],
-    }]];
-    [as appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"   %@", speedTxt] attributes:@{
-        NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightRegular],
-        NSForegroundColorAttributeName: [UIColor secondaryLabelColor],
-    }]];
-    [as appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"   %.5f, %.5f", liveW.latitude, liveW.longitude] attributes:@{
-        NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightRegular],
-        NSForegroundColorAttributeName: [UIColor secondaryLabelColor],
-    }]];
-    [self.statusBtn setAttributedTitle:as forState:UIControlStateNormal];
+    [self requestCurrentLocationOnce];
 }
 
 - (void)toggleSteps:(UIButton *)sender {
@@ -840,12 +805,13 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         [self commitStop];
         [self.locationManager stopUpdatingLocation]; // 两态=订阅切换：重新订阅触发 locationd 立即推真实 fix
         [self.locationManager startUpdatingLocation];
+        [self requestCurrentLocationOnce]; // 主动获取真实位置（daemon 停止落地通知也会触发）
         for (id o in self.mapView.overlays) {
             if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
         }
         self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随
         [self refreshUserLocationView];                          // 当前位置水滴去出行图标（=真实位置纯绿点）
-        [self focusRealLocationNow];                             // 立即聚焦真实位置（daemon 已清除模拟，locationd 恢复真实）
+        [self focusRealLocationNow];                             // 聚焦当前位置（读 locationd）
         [self setHint:@"已清空行程 · 停止模拟定位"];
         [self updateStatus];
         [self syncSegmentsUI];
@@ -879,28 +845,30 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     return [CoordTransform gcj02ToWgs84:self.cur];
 }
 
-/// 停止后立即聚焦真实位置：daemon off 分支已调用 SimLocationManager stop（clearSimulatedLocations），
-/// locationd 立即回归真实；此刻 App 侧 locationManager 缓存可能仍是最后模拟位置，故重置 hasFocusedRealOnce
-/// 让下一个真实 fix 到达时（didUpdateLocations）校正聚焦——无兜底记录机制
+/// 主动获取一次当前位置（requestLocation 单飞：未完成不重复发起）
+- (void)requestCurrentLocationOnce {
+    if (self.requesting) return;
+    self.requesting = YES;
+    [self.locationManager requestLocation];
+}
+
+/// 停止后聚焦当前位置：读 locationd（停止落地后 locationManager.location 逐步恢复真实，真实 fix 到达校正）
 - (void)focusRealLocationNow {
     self.hasFocusedRealOnce = NO;
     [self focusMapOnCurrentLocation];
 }
 
 /// 地图立即聚焦到当前位置（首锚点/启动定位/停止/回前台时调用）
-/// 定位中=切原生跟随模式（自动居中并随模拟位置移动）；未定位=聚焦当前位置（locationd=真实位置，无定位回退 self.cur）
+/// 定位中=聚焦 self.cur（模拟位置，App 已知锚点）；未定位=聚焦 locationd 真实位置
 - (void)focusMapOnCurrentLocation {
-    if (self.locating) {
-        self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随：手动拖动自动退出，聚焦时恢复
-        return;
-    }
-    CLLocationCoordinate2D center = [CoordTransform wgs84ToGcj02:[self currentSimPosition]];
+    CLLocationCoordinate2D center = self.locating ? self.cur
+                                                   : [CoordTransform wgs84ToGcj02:[self currentSimPosition]];
     // 守卫：位置无效（从未设过且 locationd 未就绪）→ 不聚焦，保持当前视野
     if (center.latitude == 0 && center.longitude == 0) return;
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(center, 3000, 3000) animated:YES];
 }
 
-/// 刷新当前位置（MKUserLocation）水滴外观：绿色 + 出行方式图标（定位中显示图标，未定位纯绿点）
+/// 刷新当前位置（原生 MKUserLocation）水滴外观：绿色 + 出行方式图标（定位中显示图标，未定位纯绿点）
 - (void)refreshUserLocationView {
     MKAnnotationView *uv = [self.mapView viewForAnnotation:self.mapView.userLocation];
     if (!uv) return;
@@ -935,17 +903,26 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 /// 定位失败回调（原生能力利用）：定位错误（权限拒绝/无定位源/模拟注入异常）不再静默——
 /// 记录日志便于排查（权限拒绝的 UI 提示由 locationManagerDidChangeAuthorization 负责，此处不重复）
 - (void)locationManager:(CLLocationManager *)manager didFailWithError:(NSError *)error {
+    self.requesting = NO; // 主动获取失败也清标志（避免 requestLocation 单飞卡死）
     NSLog(@"[locsim] locationManager failed: code=%ld %@", (long)error.code, error.localizedDescription);
 }
 
 - (void)locationManager:(CLLocationManager *)manager didUpdateLocations:(NSArray<CLLocation *> *)locations {
+    self.requesting = NO; // requestLocation 完成（持续流/主动获取均清标志）
     CLLocation *loc = locations.lastObject;
     if (!loc) return;
-    // 定位中（模拟态）：位置由 daemon 注入驱动（locsim-update 事件→refreshLiveStatus），此处直接过滤，不干预模拟刷新
-    if (self.locating) return;
-    // 停止态（真实态）：真实 fix 到达 → 状态栏坐标立即绑定真实位置（两态随定位开关切换，不依赖事件/定时器）
+
+    if (self.locating) {
+        // 模拟态：locationd 当前值 = 模拟位置（注入已落地）。更新状态栏 + 锚点经过态 + 同步 self.cur。
+        //（主动获取结果经此回调返回；持续流推送的模拟 fix 也同源幂等；水滴视觉由原生 MKUserLocation 随 locationd 更新）
+        self.cur = [CoordTransform wgs84ToGcj02:loc.coordinate];
+        [self updateStatus];
+        [self updateAnchorPassStateWithLiveWGS:loc.coordinate];
+        return;
+    }
+
+    // 停止态（真实态）：真实 fix 到达 → 状态栏 + 首次聚焦（水滴视觉由原生 MKUserLocation 随 locationd 恢复真实）
     [self updateStatus];
-    // 首次真实 fix 到达 → 聚焦真实位置一次（hasFocusedRealOnce 防反复跳；停止时已被 focusRealLocationNow 重置）
     if (self.hasFocusedRealOnce) return;
     self.hasFocusedRealOnce = YES;
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance([CoordTransform wgs84ToGcj02:loc.coordinate], 3000, 3000) animated:YES];
@@ -1513,7 +1490,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         return v;
     }
     if ([annotation isKindOfClass:[MKUserLocation class]]) {
-        // 当前位置（原生管线）：模拟开启=模拟位置/关闭=真实位置；绿色水滴+出行方式图标外观
+        // 当前位置（原生管线）：数据源头=locationd（模拟开启=模拟位置/关闭=真实位置）；绿色水滴+出行方式图标外观
         static NSString *rid = @"CurPin";
         MKAnnotationView *v = [mapView dequeueReusableAnnotationViewWithIdentifier:rid];
         if (!v) {

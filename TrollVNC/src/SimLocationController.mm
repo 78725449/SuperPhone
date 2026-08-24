@@ -83,6 +83,9 @@ static const double kSimAnchorRangeM = 20.0;
         [self _stopTrack];
         _currentMode = @"off";
         [[SimLocationManager sharedManager] stop];
+        // 停止落地通知（闭环）：App 收到后 requestLocation 主动获取（locationd 恢复真实后返回真实 fix）。
+        // 与注入落地通知同通道（locsim-update），App 统一"事件→主动获取"闭环，无轮询
+        notify_post("com.82flex.trollvnc.locsim-update");
     } else if ([mode isEqualToString:@"anchor"]) {
         // 位置基底：中心点 + 微动游走（拟人必需，完全静止坐标像假 GPS）
         [self _stopTrack];
