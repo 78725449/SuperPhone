@@ -806,10 +806,11 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     self.statusDot.layer.shadowColor = self.locating ? self.statusDot.backgroundColor.CGColor : [UIColor clearColor].CGColor;
     self.statusDot.layer.shadowOpacity = self.locating ? 0.6 : 0;
     self.statusDot.layer.shadowRadius = 3;
-    // FAB 图标/颜色随定位状态切换（对齐原型：定位中=停止方块，否则=定位图标；品牌紫底）
+    // FAB 图标/颜色随定位状态切换（未开启=品牌紫+定位图标；定位中=深金黄 D4A017+停止方块——金色=进行中状态，与"待开启"紫区分）
     UIColor *brand = [UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0];
+    UIColor *gold = [UIColor colorWithRed:0.83 green:0.63 blue:0.09 alpha:1.0]; // 深金黄 #D4A017
     [self.locateFab setImage:[UIImage systemImageNamed:self.locating ? @"stop.fill" : @"location.fill"] forState:UIControlStateNormal];
-    [self.locateFab setBackgroundColor:self.locating ? brand : [UIColor systemGrayColor]];
+    [self.locateFab setBackgroundColor:self.locating ? gold : brand];
 }
 
 - (void)toggleSteps:(UIButton *)sender {
