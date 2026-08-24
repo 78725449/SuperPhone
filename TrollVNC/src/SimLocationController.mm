@@ -12,7 +12,6 @@
 #import "SimLocationManager.h"
 #import "SimRouteCalculator.h" // haversineMeters（与 App 截断同度量，选最近续播点）
 #import "Logging.h"
-#import <notify.h>
 #import <math.h>
 
 // 轨迹点序列文件（大 payload 走文件，对齐 manager pid 平铺命名）
@@ -83,9 +82,6 @@ static const double kSimAnchorRangeM = 20.0;
         [self _stopTrack];
         _currentMode = @"off";
         [[SimLocationManager sharedManager] stop];
-        // 停止落地通知（闭环）：App 收到后 requestLocation 主动获取（locationd 恢复真实后返回真实 fix）。
-        // 与注入落地通知同通道（locsim-update），App 统一"事件→主动获取"闭环，无轮询
-        notify_post("com.82flex.trollvnc.locsim-update");
     } else if ([mode isEqualToString:@"anchor"]) {
         // 位置基底：中心点 + 微动游走（拟人必需，完全静止坐标像假 GPS）
         [self _stopTrack];
@@ -164,7 +160,6 @@ static const double kSimAnchorRangeM = 20.0;
     _currentCourse = course;
     _currentMode = @"anchor";
     [self _injectAnchorPointWithSpeed:step course:course];
-    notify_post("com.82flex.trollvnc.locsim-update"); // 注入即推事件：App 免轮询即时刷新状态栏/锚点状态
 }
 
 - (void)_injectAnchorPointWithSpeed:(double)speed course:(double)course {
@@ -255,7 +250,6 @@ static const double kSimAnchorRangeM = 20.0;
     _currentLon = lon;
     _currentSpeed = speed;
     _currentCourse = course;
-    notify_post("com.82flex.trollvnc.locsim-update"); // 注入即推事件：App 免轮询即时刷新状态栏/锚点状态
 }
 
 - (void)_stopTrack {
@@ -402,7 +396,7 @@ static const double kSimAnchorRangeM = 20.0;
 }
 
 - (NSString *)_paramsSignature {
-    // 轨迹文件 mtime 纳入指纹：App 新增/删除/重排锚点重写轨迹文件后，签名必变 → 巡检/notify 触发重载
+    // 轨迹文件 mtime 纳入指纹：App 新增/删除/重排锚点重写轨迹文件后，签名必变 → 巡检触发重载
     NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:kSimTrackFilePath error:NULL];
     NSDate *mtime = attrs[NSFileModificationDate];
     long long trackStamp = (long long)(mtime.timeIntervalSince1970 * 1000);
