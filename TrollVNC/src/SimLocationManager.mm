@@ -81,6 +81,14 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
         // 首次：完整启动（stop→clear→append→flush→start）
         [_sim stopLocationSimulation];
         [_sim clearSimulatedLocations];
+        // 投递参数必须显式设置：默认 0（unset）→ locationd 不把模拟 fix 投递给任何 client，
+        // App/MKMapView 收不到 → 当前位置（MKUserLocation）停在真实位置、聚焦按钮跟随真实位置
+        //（注入状态机正常但"发不出"，2026-08-24 根因；对齐 TrollBox/Andromeda 公开实现取值）
+        _sim.locationDeliveryBehavior = 1; // 持续投递（unset=0 不投递）
+        _sim.locationDistance = 0;         // 无距离过滤：每次注入都投递
+        _sim.locationInterval = 1.0;       // 投递间隔 1s（对齐 daemon 每秒注入节奏）
+        _sim.locationSpeed = 0;            // 速度由注入 CLLocation 自带（不插值）
+        _sim.locationRepeatBehavior = 1;   // 重复投递
         [_sim appendSimulatedLocation:location];
         [_sim flush];
         [_sim startLocationSimulation];
