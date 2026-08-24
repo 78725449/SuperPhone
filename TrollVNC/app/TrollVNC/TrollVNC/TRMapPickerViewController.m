@@ -80,6 +80,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, assign) BOOL startupLockedToAnchor;          // 开启定位瞬间到注入落地前：锁定锚点位置显示（忽略真实 fix，防开启横跳）
 @property (nonatomic, strong) NSMutableArray *fabCoinLabels;              // 定位 FAB 铜钱四字（招财进宝，上/右/下/左顺时针）
 @property (nonatomic, strong) UIView *fabCoinHole;                        // 定位 FAB 铜钱方孔（定位中显示）
+@property (nonatomic, strong) CAGradientLayer *fabGoldGradient;           // 定位 FAB 铜钱渐变金底（定位中显示）
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
 @property (nonatomic, assign) BOOL hasFocusedMapOnce;            // 首帧启动聚焦是否已执行（避免 tab 往返重复聚焦）
 @property (nonatomic, strong) CLLocationManager *locationManager; // App 活跃位置订阅（授权 + startUpdatingLocation，didUpdateLocations 主驱动）
@@ -289,27 +290,40 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [fab addTarget:self action:@selector(toggleLocate:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:fab];
     self.locateFab = fab;
-    // 铜钱四字 + 方孔（定位中显示"招财进宝"，上/右/下/左顺时针；未开启隐藏）
+    // 铜钱四字 + 方孔 + 渐变金底（定位中显示"招财进宝"，上/右/下/左顺时针；未开启隐藏）
     self.fabCoinLabels = [NSMutableArray arrayWithCapacity:4];
     NSArray *coins = @[@"招", @"财", @"进", @"宝"];
     NSArray *dx = @[@0, @14, @0, @-14];
     NSArray *dy = @[@-14, @0, @14, @0];
+    UIFont *coinFont = [UIFont fontWithName:@"STKaiti" size:10] ?: [UIFont boldSystemFontOfSize:10]; // 楷体古风铸字感（缺字库回退粗黑）
+    UIColor *coinInk = [UIColor colorWithRed:0.36 green:0.23 blue:0.0 alpha:1.0]; // 深棕（凹刻铸字色 #5C3A00）
     for (NSInteger i = 0; i < 4; i++) {
         UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(28 - 9 + [dx[i] intValue], 28 - 9 + [dy[i] intValue], 18, 18)];
         lb.text = coins[i];
-        lb.font = [UIFont systemFontOfSize:9 weight:UIFontWeightSemibold];
-        lb.textColor = [UIColor whiteColor];
+        lb.font = coinFont;
+        lb.textColor = coinInk;
         lb.textAlignment = NSTextAlignmentCenter;
         lb.hidden = YES;
         [fab addSubview:lb];
         [self.fabCoinLabels addObject:lb];
     }
     UIView *hole = [[UIView alloc] initWithFrame:CGRectMake(28 - 7, 28 - 7, 14, 14)];
-    hole.backgroundColor = [UIColor colorWithRed:0.45 green:0.33 blue:0.05 alpha:1.0]; // 深铜色方孔
+    hole.backgroundColor = [UIColor colorWithRed:0.23 green:0.16 blue:0.02 alpha:1.0]; // 深棕黑方孔（模拟镂空）
     hole.layer.cornerRadius = 2;
     hole.hidden = YES;
     [fab addSubview:hole];
     self.fabCoinHole = hole;
+    // 渐变金底（对角：左上亮金 → 右下深金，铜钱立体感；FAB 固定 56×56）
+    CAGradientLayer *grad = [CAGradientLayer layer];
+    grad.frame = fab.bounds;
+    grad.colors = @[(id)[UIColor colorWithRed:0.95 green:0.78 blue:0.30 alpha:1.0].CGColor, // 亮金
+                    (id)[UIColor colorWithRed:0.83 green:0.63 blue:0.09 alpha:1.0].CGColor]; // 深金
+    grad.startPoint = CGPointMake(0, 0);
+    grad.endPoint = CGPointMake(1, 1);
+    grad.cornerRadius = 28;
+    grad.hidden = YES;
+    [fab.layer insertSublayer:grad atIndex:0];
+    self.fabGoldGradient = grad;
 
     // 靶心聚焦按钮：定位 FAB 上方（透明，类靶心），点击聚焦到当前位置——
     // 应对手动编辑（增删锚点/拖动）偏离当前位置后的手动调整
@@ -829,17 +843,21 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     self.statusDot.layer.shadowColor = self.locating ? self.statusDot.backgroundColor.CGColor : [UIColor clearColor].CGColor;
     self.statusDot.layer.shadowOpacity = self.locating ? 0.6 : 0;
     self.statusDot.layer.shadowRadius = 3;
-    // FAB 状态切换：未开启=品牌紫+定位图标；定位中=深金黄铜钱（招财进宝四字+方孔，上/右/下/左顺时针——金色=进行中，与"待开启"紫区分）
+    // FAB 状态切换：未开启=品牌紫+定位图标；定位中=铜钱（渐变金底+暗金描边+招财进宝四字+方孔——金色=进行中，与"待开启"紫区分）
     UIColor *brand = [UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0];
-    UIColor *gold = [UIColor colorWithRed:0.83 green:0.63 blue:0.09 alpha:1.0]; // 深金黄 #D4A017
     if (self.locating) {
-        [self.locateFab setBackgroundColor:gold];
+        [self.locateFab setBackgroundColor:[UIColor clearColor]];
         [self.locateFab setImage:nil forState:UIControlStateNormal];
+        self.fabGoldGradient.hidden = NO;
+        self.locateFab.layer.borderWidth = 1.5;
+        self.locateFab.layer.borderColor = [UIColor colorWithRed:0.66 green:0.49 blue:0.03 alpha:1.0].CGColor; // 暗金描边（铜钱外缘）
         for (UILabel *lb in self.fabCoinLabels) lb.hidden = NO;
         self.fabCoinHole.hidden = NO;
     } else {
         [self.locateFab setBackgroundColor:brand];
         [self.locateFab setImage:[UIImage systemImageNamed:@"location.fill"] forState:UIControlStateNormal];
+        self.fabGoldGradient.hidden = YES;
+        self.locateFab.layer.borderWidth = 0;
         for (UILabel *lb in self.fabCoinLabels) lb.hidden = YES;
         self.fabCoinHole.hidden = YES;
     }
