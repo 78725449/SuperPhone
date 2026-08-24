@@ -612,7 +612,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         [self commitStop];
         self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随
         [self refreshUserLocationView];                          // 当前位置水滴去图标（未定位=纯绿点）
-        [self focusMapOnCurrentLocation];                        // 聚焦真实位置
+        [self focusRealLocationNow];                             // 立即聚焦真实位置（daemon 已清除模拟，locationd 恢复真实）
     } else {
         // 开启：有起点则 anchor，否则提示先设起点
         if (!self.hasStart) {
@@ -838,7 +838,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         }
         self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随
         [self refreshUserLocationView];                          // 当前位置水滴去出行图标（=真实位置纯绿点）
-        [self focusMapOnCurrentLocation];                        // 聚焦真实位置
+        [self focusRealLocationNow];                             // 立即聚焦真实位置（daemon 已清除模拟，locationd 恢复真实）
         [self setHint:@"已清空行程 · 停止模拟定位"];
         [self updateStatus];
         [self syncSegmentsUI];
@@ -870,6 +870,14 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     CLLocation *loc = self.locationManager.location;
     if (loc) return loc.coordinate;
     return [CoordTransform gcj02ToWgs84:self.cur];
+}
+
+/// 停止后立即聚焦真实位置：daemon off 分支已调用 SimLocationManager stop（clearSimulatedLocations），
+/// locationd 立即回归真实；此刻 App 侧 locationManager 缓存可能仍是最后模拟位置，故重置 hasFocusedRealOnce
+/// 让下一个真实 fix 到达时（didUpdateLocations）校正聚焦——无兜底记录机制
+- (void)focusRealLocationNow {
+    self.hasFocusedRealOnce = NO;
+    [self focusMapOnCurrentLocation];
 }
 
 /// 地图立即聚焦到当前位置（首锚点/启动定位/停止/回前台时调用）
@@ -918,10 +926,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 }
 
 - (void)locationManager:(CLLocationManager *)manager didUpdateLocations:(NSArray<CLLocation *> *)locations {
+    CLLocation *loc = locations.lastObject;
+    if (!loc) return;
     // 定位中不跳（以模拟位置为准，跟随模式已居中）；未定位且尚未聚焦过真实位置 → 首次到达聚焦一次
     if (self.locating || self.hasFocusedRealOnce) return;
     self.hasFocusedRealOnce = YES;
-    CLLocation *loc = locations.lastObject;
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance([CoordTransform wgs84ToGcj02:loc.coordinate], 3000, 3000) animated:YES];
 }
 
