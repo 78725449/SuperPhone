@@ -66,6 +66,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @property (nonatomic, assign) BOOL locating;                // 定位开关状态
 @property (nonatomic, copy) NSString *currentLegMode;       // 当前位置水滴的出行方式（当前段目标锚点的，walk/drive）
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
+@property (nonatomic, assign) BOOL hasFocusedMapOnce;            // 首帧启动聚焦是否已执行（避免 tab 往返重复聚焦）
 @property (nonatomic, assign) BOOL isGenerating;            // 轨迹生成中（并发保护：正在生长时忽略新的 commit）
 @property (nonatomic, assign) NSInteger committedSegCount;          // 已提交到轨迹的段数（增量生长：只生长新段）
 @property (nonatomic, strong) NSArray *submittedPoints;             // 已提交的完整轨迹点序列（上一段结束点=新段起点）
@@ -90,8 +91,19 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self setupMap];
     [self setupUI];
     [self readCurrentStatus];
+    // 启动：地图聚焦到当前所在位置（已有模拟位置则聚焦该点，从未设过则保持默认视野）
+    [self focusMapOnCurrentLocation];
     // App 回前台：地图聚焦到当前所在位置（更直观成熟）
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appWillEnterForeground) name:UIApplicationWillEnterForegroundNotification object:nil];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    // 首帧兜底：viewDidLoad 时地图布局未定可能使 setRegion 不生效，首现时再聚焦一次（不随 tab 切换重复）
+    if (!self.hasFocusedMapOnce) {
+        self.hasFocusedMapOnce = YES;
+        [self focusMapOnCurrentLocation];
+    }
 }
 
 - (void)dealloc {
@@ -283,14 +295,6 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         // defaults 存 WGS → 转 GCJ 维持 self.cur=GCJ 约定（否则后续 commitAnchor 会双重转换偏差）
         self.cur = [CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake(lat, lon)];
         [self placeCurAt:self.cur];
-        // 视野移到当前定位点（默认视野在北京，不移则定位点不可见）；
-        // 以 daemon 实时写回坐标为准（若存在），否则退回 defaults 位置
-        NSDictionary *mobile = [NSDictionary dictionaryWithContentsOfFile:kLivePrefsPath];
-        double llat = [mobile[@"SimLocationLat"] doubleValue];
-        double llon = [mobile[@"SimLocationLon"] doubleValue];
-        CLLocationCoordinate2D view = self.cur;
-        if (llat != 0 || llon != 0) view = [CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake(llat, llon)];
-        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(view, 5000, 5000) animated:NO];
     }
     [self updateStatus];
 }
