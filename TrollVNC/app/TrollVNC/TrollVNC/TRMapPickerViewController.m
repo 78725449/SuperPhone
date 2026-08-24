@@ -29,17 +29,21 @@ static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82fl
 static NSString *const kLivePrefsPath = @"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist";
 static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
-/// 锚点标注（关联编排段索引，点击删除该段；水滴图钉状态分类：未经过=蓝/已经过=红，当前位置=绿）
+/// 锚点标注（关联编排段索引，点击删除该段；水滴图钉状态分类：未经过=蓝/已经过=红，当前位置=绿；
+/// 水滴内嵌该锚点生成时所使用的出行方式图标 🚶/🚗）
 @interface TRAnchorAnnotation : MKPointAnnotation
 @property (nonatomic, assign) NSInteger segmentIndex;
 @property (nonatomic, copy) NSString *type; // anchor | route | region
 @property (nonatomic, assign) BOOL passed;  // 是否已被当前位置经过（经过=红，未经过=蓝）
+@property (nonatomic, copy) NSString *mode; // 该锚点生成时所使用的出行方式（walk/drive）
 @end
 @implementation TRAnchorAnnotation
 @end
 
 /// 生长轨迹线（对齐原型 growPath/addedPath：区域自生长逐段可视化 + 完成后常显；与预览虚线区分）
+/// 分段式渲染：每个覆盖层挂所属编排段索引，增删/重算只动受影响段
 @interface TRGrowPolyline : MKPolyline
+@property (nonatomic, assign) NSInteger segmentIndex; // 所属编排段（用于按段移除）
 @end
 @implementation TRGrowPolyline
 @end
@@ -60,6 +64,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @property (nonatomic, assign) CLLocationCoordinate2D cur;    // 当前模拟位置（地图坐标 GCJ-02）
 @property (nonatomic, assign) BOOL hasStart;
 @property (nonatomic, assign) BOOL locating;                // 定位开关状态
+@property (nonatomic, copy) NSString *currentLegMode;       // 当前位置水滴的出行方式（当前段目标锚点的，walk/drive）
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
 @property (nonatomic, assign) BOOL isGenerating;            // 轨迹生成中（并发保护：正在生长时忽略新的 commit）
 @property (nonatomic, assign) NSInteger committedSegCount;          // 已提交到轨迹的段数（增量生长：只生长新段）
@@ -85,6 +90,17 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self setupMap];
     [self setupUI];
     [self readCurrentStatus];
+    // App 回前台：地图聚焦到当前所在位置（更直观成熟）
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appWillEnterForeground) name:UIApplicationWillEnterForegroundNotification object:nil];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+/// App 回前台：地图立即聚焦到当前所在位置
+- (void)appWillEnterForeground {
+    [self focusMapOnCurrentLocation];
 }
 
 #pragma mark - UI 构建
@@ -287,14 +303,16 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 - (void)handleTap:(UITapGestureRecognizer *)g {
     CGPoint pt = [g locationInView:self.mapView];
     CLLocationCoordinate2D gcj = [self.mapView convertPoint:pt toCoordinateFromView:self.mapView];
-    [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude)}];
+    NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
+    [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude), @"mode": mode}];
     if (self.segments.count == 1) {
-        // 第一个锚点：无前驱 → 点击点成为当前定位
+        // 第一个锚点：无前驱 → 点击点成为当前定位；地图立即聚焦到该定位点
         self.hasStart = YES;
         self.cur = gcj;
         [self placeCurAt:gcj];
         self.locating = YES;
         [self commitAnchor];
+        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
         [self setHint:@"已设定位点 · 继续点击添加锚点生长路线"];
     } else {
         // 后续锚点：点击点只是目标锚点——当前位置图标保持当前实际位置，不随点击瞬移
@@ -495,6 +513,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         }
         self.locating = YES;
         [self commitAnchor];
+        [self focusMapOnCurrentLocation]; // 启动定位：地图立即聚焦到当前所在位置
     }
     [self updateStatus];
 }
@@ -545,7 +564,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     CLLocationCoordinate2D wgs = item.placemark.coordinate;
     CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:wgs];
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
-    [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude)}];
+    NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
+    [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude), @"mode": mode}];
     if (self.segments.count == 1) {
         self.hasStart = YES;
         self.cur = gcj;
@@ -671,6 +691,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         a.coordinate = c;
         a.segmentIndex = (NSInteger)i;
         a.type = type;
+        a.mode = seg[@"mode"] ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk"); // 该锚点生成时的出行方式
         [self.anchors addObject:a];
         [self.mapView addAnnotation:a];
     }
@@ -709,26 +730,44 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 /// 读当前位置（WGS；manager 注入写回 mobile plist；无写回回退最近锚点）
 - (CLLocationCoordinate2D)currentSimPosition {
-    NSDictionary *mobile = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist"];
+    NSDictionary *mobile = [NSDictionary dictionaryWithContentsOfFile:kLivePrefsPath];
     double lat = [mobile[@"SimLocationLat"] doubleValue];
     double lon = [mobile[@"SimLocationLon"] doubleValue];
     if (lat != 0 || lon != 0) return CLLocationCoordinate2DMake(lat, lon);
     return [CoordTransform gcj02ToWgs84:self.cur];
 }
 
-/// 锚点状态刷新：按当前位置在已提交轨迹中的最近索引，标记"已经过"的锚点为红（未经过保持蓝）。
+/// 地图立即聚焦到当前所在位置（首锚点/启动定位/回前台时调用；更直观）
+- (void)focusMapOnCurrentLocation {
+    CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:[self currentSimPosition]];
+    [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
+}
+
+/// 锚点状态刷新：按当前位置在已提交轨迹中的最近索引，标记"已经过"的锚点为红（未经过保持蓝）；
+/// 当前位置水滴的出行方式 = 当前段目标锚点的出行方式（经过后切换到下一锚点的）
 /// liveW 为当前位置（WGS）；仅定位中生效（停止态颜色定格）
 - (void)updateAnchorPassStateWithLiveWGS:(CLLocationCoordinate2D)liveW {
     if (!self.locating || self.submittedPoints.count < 2) return;
     NSUInteger liveIdx = [self nearestPointIndexTo:liveW];
+    TRAnchorAnnotation *nextAnchor = nil; // 当前位置处/之后的第一个锚点 = 当前段目标
     for (TRAnchorAnnotation *a in self.anchors) {
         CLLocationCoordinate2D aW = [CoordTransform gcj02ToWgs84:a.coordinate];
-        BOOL passed = [self nearestPointIndexTo:aW] < liveIdx; // 严格越过才视为经过
+        NSUInteger aIdx = [self nearestPointIndexTo:aW];
+        BOOL passed = aIdx < liveIdx; // 严格越过才视为经过
         if (passed != a.passed) {
             a.passed = passed;
             MKAnnotationView *v = [self.mapView viewForAnnotation:a];
-            if (v) v.image = [self waterdropImageWithColor:(passed ? [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0] : [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]) size:22];
+            if (v) v.image = [self waterdropImageWithColor:(passed ? [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0] : [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]) size:22 emoji:[self emojiForMode:a.mode]];
         }
+        if (!nextAnchor && aIdx >= liveIdx) nextAnchor = a;
+    }
+    // 当前位置出行方式：取当前段目标锚点的出行方式；链尾则保持最后一段的
+    NSString *mode = nextAnchor ? nextAnchor.mode
+                                : (self.anchors.count ? ((TRAnchorAnnotation *)self.anchors.lastObject).mode : nil);
+    mode = mode ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
+    if (![self.currentLegMode isEqualToString:mode]) {
+        self.currentLegMode = mode;
+        if (self.curPin) [self placeCurAt:self.cur]; // 重绘当前位置水滴以切换出行图标
     }
 }
 
@@ -750,9 +789,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 - (void)regenerateFromIndex:(NSInteger)affectedIdx {
     if (self.isGenerating) return;
     self.isGenerating = YES;
-    // 清掉生长线（重画受影响之后的轨迹）
+    // 分段式渲染：只移除受影响段（affectedIdx 起）的生长线，之前的段保持不重渲染（不闪/不丢状态）
     for (id o in self.mapView.overlays) {
-        if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
+        if ([o isKindOfClass:[TRGrowPolyline class]] && [(TRGrowPolyline *)o segmentIndex] >= affectedIdx) {
+            [self.mapView removeOverlay:o];
+        }
     }
     // 当前位置（WGS）
     CLLocationCoordinate2D curW = [self currentSimPosition];
@@ -963,7 +1004,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 }
 
 /// 生长可视化：每段算路点序列追加为生长轨迹线（算路点 WGS-84 → 画图转 GCJ-02，否则路线与点击点偏移数百米）
-- (void)appendGrowLine:(NSArray *)pts {
+/// 分段式渲染：生长线挂所属编排段索引，增删/重算只动受影响段，不重画整条链
+- (void)appendGrowLine:(NSArray *)pts forSegment:(NSInteger)segIdx {
     if (![pts isKindOfClass:[NSArray class]] || pts.count < 2) return;
     CLLocationCoordinate2D *cs = malloc(pts.count * sizeof(CLLocationCoordinate2D));
     for (NSUInteger i = 0; i < pts.count; i++) {
@@ -971,6 +1013,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         cs[i] = [CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake([p[@"lat"] doubleValue], [p[@"lon"] doubleValue])];
     }
     TRGrowPolyline *line = [TRGrowPolyline polylineWithCoordinates:cs count:pts.count];
+    line.segmentIndex = segIdx;
     free(cs);
     [self.mapView addOverlay:line];
 }
@@ -1024,7 +1067,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             }
             [joined addObjectsFromArray:points];
             // 生长：逐段画线（当前位置图标不随生长瞬移——当前位置由注入实时位置驱动）
-            [sself appendGrowLine:points];
+            [sself appendGrowLine:points forSegment:(NSInteger)idx];
             CLLocationCoordinate2D end = CLLocationCoordinate2DMake([points.lastObject[@"lat"] doubleValue], [points.lastObject[@"lon"] doubleValue]);
             [sself buildPointsFromIndex:idx + 1 cur:end joined:joined completion:completion];
         });
@@ -1088,7 +1131,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
                 NSArray *resampled = [sself resamplePoints:pts toCount:target];
                 [legJoined addObjectsFromArray:resampled];
                 // 生长：真实道路段画线（当前位置图标不随生长瞬移——由注入实时位置驱动）
-                [sself appendGrowLine:resampled];
+                [sself appendGrowLine:resampled forSegment:(NSInteger)(nextIdx - 1)];
                 CLLocationCoordinate2D legEnd = CLLocationCoordinate2DMake([resampled.lastObject[@"lat"] doubleValue], [resampled.lastObject[@"lon"] doubleValue]);
                 goStay(legEnd);
             });
@@ -1149,8 +1192,13 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 #pragma mark - MKMapViewDelegate
 
-/// 水滴图钉绘制（实心水滴：半圆顶+尖底+白边；颜色=状态分类）
-- (UIImage *)waterdropImageWithColor:(UIColor *)color size:(CGFloat)sz {
+/// 出行方式 → 图标（与模式胶囊按钮同款）
+- (NSString *)emojiForMode:(NSString *)mode {
+    return [mode isEqualToString:@"drive"] ? @"🚗" : @"🚶";
+}
+
+/// 水滴图钉绘制（实心水滴：半圆顶+尖底+白边；颜色=状态分类；可内嵌出行方式图标）
+- (UIImage *)waterdropImageWithColor:(UIColor *)color size:(CGFloat)sz emoji:(NSString *)emoji {
     UIGraphicsImageRenderer *ir = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(sz, sz + 6)];
     return [ir imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         UIBezierPath *p = [UIBezierPath bezierPath];
@@ -1165,6 +1213,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         p.lineWidth = 1.5;
         [[UIColor whiteColor] setStroke];
         [p stroke];
+        if (emoji.length) {
+            CGFloat f = sz * 0.58; // 图标随水滴缩放（锚点小号/当前位置大号）
+            [emoji drawInRect:CGRectMake(sz / 2 - f * 0.6, sz / 2 - f * 0.6, f * 1.2, f * 1.2)
+               withAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:f]}];
+        }
     }];
 }
 
@@ -1202,11 +1255,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             v.rightCalloutAccessoryView = del;
         }
         v.annotation = annotation;
-        // 实心水滴图钉（状态分类：未经过=蓝/已经过=红；尖对准坐标点）
+        // 实心水滴图钉（状态分类：未经过=蓝/已经过=红；内嵌该锚点生成时的出行方式图标；尖对准坐标点）
         UIColor *color = a.passed
             ? [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]
             : [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0];
-        v.image = [self waterdropImageWithColor:color size:22];
+        v.image = [self waterdropImageWithColor:color size:22 emoji:[self emojiForMode:a.mode]];
         v.centerOffset = CGPointMake(0, -14); // 尖对准坐标点
         v.frame = CGRectMake(0, 0, 22, 28);
         v.calloutOffset = CGPointMake(0, -6);
@@ -1220,31 +1273,12 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             v.canShowCallout = NO;
         }
         v.annotation = annotation;
-        // 当前位置水滴图钉（绿色，状态分类=当前位置）：水滴内嵌当前出行状态图标（🚶/🚗，与模式胶囊按钮同款；尖对准坐标点）
-        NSString *modeEmoji = (self.modeSeg.selectedSegmentIndex == 1) ? @"🚗" : @"🚶";
-        CGFloat sz = 24;
+        // 当前位置水滴图钉（绿色=当前位置；内嵌当前段的出行方式图标，经过锚点时切换到下一锚点的；尖对准坐标点）
+        NSString *mode = self.currentLegMode ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
         UIColor *green = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0];
-        UIGraphicsImageRenderer *ir = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(sz, sz + 6)];
-        UIImage *img = [ir imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
-            UIBezierPath *p = [UIBezierPath bezierPath];
-            [p moveToPoint:CGPointMake(sz / 2, sz + 6)]; // 底部尖
-            [p addQuadCurveToPoint:CGPointMake(0, sz / 2) controlPoint:CGPointMake(1, sz - 3)]; // 左下弧
-            // 顶部半圆：从 π(左) 经 π/2(顶部) 到 0(右)——clockwise:YES（UIKit y 向下）
-            [p addArcWithCenter:CGPointMake(sz / 2, sz / 2) radius:sz / 2 startAngle:M_PI endAngle:0 clockwise:YES];
-            [p addQuadCurveToPoint:CGPointMake(sz / 2, sz + 6) controlPoint:CGPointMake(sz - 1, sz - 3)]; // 右下弧到尖
-            [p closePath];
-            [green setFill];
-            [p fill];
-            p.lineWidth = 1.5;
-            [[UIColor whiteColor] setStroke];
-            [p stroke];
-            [modeEmoji drawInRect:CGRectMake(sz / 2 - 9, sz / 2 - 9, 18, 18) withAttributes:@{
-                NSFontAttributeName: [UIFont systemFontOfSize:14],
-            }];
-        }];
-        v.image = img;
-        v.centerOffset = CGPointMake(0, -(sz + 6) / 2); // 尖对准坐标点
-        v.frame = CGRectMake(0, 0, sz, sz + 6);
+        v.image = [self waterdropImageWithColor:green size:24 emoji:[self emojiForMode:mode]];
+        v.centerOffset = CGPointMake(0, -15); // 尖对准坐标点
+        v.frame = CGRectMake(0, 0, 24, 30);
         // 光晕（对齐原型 .dot box-shadow 0 0 0 5px rgba(34,165,247,.28)）
         v.layer.shadowColor = green.CGColor;
         v.layer.shadowOpacity = 0.6;
