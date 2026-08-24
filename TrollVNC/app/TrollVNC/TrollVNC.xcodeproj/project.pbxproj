@@ -70,6 +70,7 @@
 		A1000000000000000000001B /* RegionSimulator.mm in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001A /* RegionSimulator.mm */; };
 		A1000000000000000000001E /* SimRouteCalculator.mm in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001D /* SimRouteCalculator.mm */; };
 		A10000000000000000000020 /* CoreLocation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001F /* CoreLocation.framework */; };
+		A10000000000000000000022 /* TRAppLogging.m in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* TRAppLogging.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -150,6 +151,7 @@
 		A1000000000000000000001C /* SimRouteCalculator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/SimRouteCalculator.h; sourceTree = "<group>"; };
 		A1000000000000000000001D /* SimRouteCalculator.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/SimRouteCalculator.mm; sourceTree = "<group>"; };
 		A1000000000000000000001F /* CoreLocation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreLocation.framework; path = System/Library/Frameworks/CoreLocation.framework; sourceTree = SDKROOT; };
+		A10000000000000000000021 /* TRAppLogging.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TRAppLogging.m; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -291,6 +293,7 @@
 			A1000000000000000000001A /* RegionSimulator.mm */,
 			A1000000000000000000001C /* SimRouteCalculator.h */,
 			A1000000000000000000001D /* SimRouteCalculator.mm */,
+			A10000000000000000000021 /* TRAppLogging.m */,
 		);
 		path = TrollVNC;
 		sourceTree = "<group>";
@@ -471,6 +474,7 @@
 			A10000000000000000000012 /* TRFillDataGenerator.m in Sources */,
 			A1000000000000000000001B /* RegionSimulator.mm in Sources */,
 			A1000000000000000000001E /* SimRouteCalculator.mm in Sources */,
+			A10000000000000000000022 /* TRAppLogging.m in Sources */,
 		);
 		runOnlyForDeploymentPostprocessing = 0;
 	};
