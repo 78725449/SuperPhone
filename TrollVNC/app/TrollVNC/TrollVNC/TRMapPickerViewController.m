@@ -229,10 +229,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         [srv.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
         [srv.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
         [srv.heightAnchor constraintEqualToConstant:240],
-        // 步骤列表：状态条下 4、左 12、宽 210、高 200
+        // 步骤列表：状态栏下 4、与状态栏同宽（从状态栏向下展开）
         [table.topAnchor constraintEqualToAnchor:statusBtn.bottomAnchor constant:4],
-        [table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
-        [table.widthAnchor constraintEqualToConstant:210],
+        [table.leadingAnchor constraintEqualToAnchor:statusBtn.leadingAnchor],
+        [table.trailingAnchor constraintEqualToAnchor:statusBtn.trailingAnchor],
         [table.heightAnchor constraintEqualToConstant:200],
         // 步行/驾车胶囊：左下
         [mode.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
@@ -1036,7 +1036,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     return out;
 }
 
-/// 原子写轨迹文件（tmp + rename，防半截 JSON）+ 切 itinerary + notify
+/// 原子写轨迹文件（tmp + rename，防半截 JSON）；定位状态由 FAB 开关控制——
+/// 仅在定位中才切 SimLocationMode=itinerary + notify（添加/删除锚点不改变定位状态，对齐原型"不随后续增删路线改变状态"）
 - (void)writeTrackFile:(NSArray *)points {
     NSDictionary *payload = @{ @"version": @1, @"points": points };
     NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
@@ -1047,10 +1048,12 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         [[NSFileManager defaultManager] removeItemAtPath:kSimTrackFilePath error:nil];
     }
     if (![[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kSimTrackFilePath error:nil]) return;
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite];
-    [d setObject:@"itinerary" forKey:@"SimLocationMode"];
-    [d synchronize];
-    notify_post("com.82flex.trollvnc.prefs-changed");
+    if (self.locating) {
+        NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite];
+        [d setObject:@"itinerary" forKey:@"SimLocationMode"];
+        [d synchronize];
+        notify_post("com.82flex.trollvnc.prefs-changed");
+    }
 }
 
 #pragma mark - MKMapViewDelegate
