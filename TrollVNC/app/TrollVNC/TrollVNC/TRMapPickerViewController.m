@@ -609,6 +609,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         self.pendingFollow = NO;         // 清待启用跟随
         self.pendingEditAction = nil;    // 放弃生成中挂起的编辑（停止后不再生长/复活设备）
         [self commitStop];
+        // 两态=订阅切换（统一模型）：重新订阅触发 locationd 立即按当前状态推——
+        // 模拟已清除（daemon stop）→ locationd 恢复真实 → 立即推真实 fix（GPS 定位完成前推可用 fix，精 fix 后校正）
+        [self.locationManager stopUpdatingLocation];
+        [self.locationManager startUpdatingLocation];
         self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随
         [self refreshUserLocationView];                          // 当前位置水滴去图标（未定位=纯绿点）
         [self focusRealLocationNow];                             // 立即聚焦真实位置（daemon 已清除模拟，locationd 恢复真实）
@@ -619,6 +623,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             return;
         }
         self.locating = YES;
+        [self.locationManager startUpdatingLocation]; // 确保订阅（幂等）；daemon 注入后 locationd 即推模拟 fix
         [self commitAnchor];
         [self refreshUserLocationView];       // 当前位置水滴恢复出行图标
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(self.cur, 3000, 3000) animated:YES]; // 立即聚焦当前位置
@@ -838,6 +843,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         self.pendingEditAction = nil;    // 清挂起编辑（空链无需再生成）
         self.pendingFollow = NO;         // 清待启用跟随
         [self commitStop];
+        [self.locationManager stopUpdatingLocation]; // 两态=订阅切换：重新订阅触发 locationd 立即推真实 fix
+        [self.locationManager startUpdatingLocation];
         for (id o in self.mapView.overlays) {
             if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
         }
