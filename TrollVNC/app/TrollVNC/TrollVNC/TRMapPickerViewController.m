@@ -493,6 +493,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 - (void)modeChanged:(UISegmentedControl *)sender {
     // 模式影响后续 route/region 段的算路档；已在段提交时读取
+    // 当前位置水滴内嵌的模式图标随切换即时刷新（重新加标注触发 viewForAnnotation 重绘）
+    if (self.curPin) [self placeCurAt:self.cur];
 }
 
 - (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
@@ -1192,19 +1194,38 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         if (!v) {
             v = [[MKAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:rid];
             v.canShowCallout = NO;
-            UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 14, 14)];
-            dot.layer.cornerRadius = 7;
-            dot.backgroundColor = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0];
-            dot.layer.borderColor = [UIColor whiteColor].CGColor;
-            dot.layer.borderWidth = 2;
-            // 外圈 glow（对齐原型 .dot box-shadow 0 0 0 5px rgba(34,165,247,.28)）
-            dot.layer.shadowColor = dot.backgroundColor.CGColor;
-            dot.layer.shadowOpacity = 0.6;
-            dot.layer.shadowRadius = 6;
-            dot.layer.shadowOffset = CGSizeMake(0, 0);
-            [v addSubview:dot];
         }
         v.annotation = annotation;
+        // 当前位置水滴图钉：水滴内嵌当前出行状态图标（🚶/🚗，与模式胶囊按钮同款；尖对准坐标点）
+        NSString *modeEmoji = (self.modeSeg.selectedSegmentIndex == 1) ? @"🚗" : @"🚶";
+        CGFloat sz = 24;
+        UIColor *blue = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0];
+        UIGraphicsImageRenderer *ir = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(sz, sz + 6)];
+        UIImage *img = [ir imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+            UIBezierPath *p = [UIBezierPath bezierPath];
+            [p moveToPoint:CGPointMake(sz / 2, sz + 6)]; // 底部尖
+            [p addQuadCurveToPoint:CGPointMake(0, sz / 2) controlPoint:CGPointMake(1, sz - 3)]; // 左下弧
+            // 顶部半圆：从 π(左) 经 π/2(顶部) 到 0(右)——clockwise:YES（UIKit y 向下）
+            [p addArcWithCenter:CGPointMake(sz / 2, sz / 2) radius:sz / 2 startAngle:M_PI endAngle:0 clockwise:YES];
+            [p addQuadCurveToPoint:CGPointMake(sz / 2, sz + 6) controlPoint:CGPointMake(sz - 1, sz - 3)]; // 右下弧到尖
+            [p closePath];
+            [blue setFill];
+            [p fill];
+            p.lineWidth = 1.5;
+            [[UIColor whiteColor] setStroke];
+            [p stroke];
+            [modeEmoji drawInRect:CGRectMake(sz / 2 - 9, sz / 2 - 9, 18, 18) withAttributes:@{
+                NSFontAttributeName: [UIFont systemFontOfSize:14],
+            }];
+        }];
+        v.image = img;
+        v.centerOffset = CGPointMake(0, -(sz + 6) / 2); // 尖对准坐标点
+        v.frame = CGRectMake(0, 0, sz, sz + 6);
+        // 光晕（对齐原型 .dot box-shadow 0 0 0 5px rgba(34,165,247,.28)）
+        v.layer.shadowColor = blue.CGColor;
+        v.layer.shadowOpacity = 0.6;
+        v.layer.shadowRadius = 6;
+        v.layer.shadowOffset = CGSizeMake(0, 0);
         return v;
     }
     return nil;
