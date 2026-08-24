@@ -35,6 +35,12 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @implementation TRAnchorAnnotation
 @end
 
+/// 生长轨迹线（对齐原型 growPath/addedPath：区域自生长逐段可视化 + 完成后常显；与预览虚线区分）
+@interface TRGrowPolyline : MKPolyline
+@end
+@implementation TRGrowPolyline
+@end
+
 @interface TRMapPickerViewController () <MKMapViewDelegate, UISearchBarDelegate, UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) MKMapView *mapView;
 @property (nonatomic, strong) UISearchBar *searchBar;
@@ -537,9 +543,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 #pragma mark - 地图预览（路线直线连线 / 区域圆）
 
 - (void)rebuildPreview {
-    // 移除旧 polyline（保留区域圆由 region 状态管理）
+    // 移除旧预览 polyline（跳过生长轨迹 TRGrowPolyline——生长线常显，对齐原型 addedPath）
     for (id overlay in self.mapView.overlays) {
-        if ([overlay isKindOfClass:[MKPolyline class]]) [self.mapView removeOverlay:overlay];
+        if ([overlay isKindOfClass:[MKPolyline class]] && ![overlay isKindOfClass:[TRGrowPolyline class]]) {
+            [self.mapView removeOverlay:overlay];
+        }
     }
     // 预览连线：依次连接各段锚点（起点 + route to + region center）
     NSMutableArray *coords = [NSMutableArray array];
@@ -588,8 +596,12 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     notify_post("com.82flex.trollvnc.prefs-changed");
 }
 
-/// 递增编排提交：异步逐段生成点序列 → 原子写轨迹文件 + 切 itinerary + notify
+/// 递增编排提交：异步逐段生成点序列（生长式：逐段画线+蓝点推进）→ 原子写轨迹文件 + 切 itinerary + notify
 - (void)commitItinerary {
+    // 重新生长：清掉旧生长轨迹（对齐原型 clearRoute/growPath 重置）
+    for (id o in self.mapView.overlays) {
+        if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
+    }
     NSMutableArray *joined = [NSMutableArray array];
     CLLocationCoordinate2D start = [CoordTransform gcj02ToWgs84:self.cur];
     // 从编排起点取（首个 anchor 段）
@@ -599,15 +611,28 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             break;
         }
     }
-    [self setHint:@"正在生成轨迹…"];
+    [self setHint:@"正在生长轨迹…"];
     [self buildPointsFromIndex:0 cur:start joined:joined completion:^(NSArray *points) {
         if (points.count < 2) {
-            [self setHint:@"轨迹生成失败（点不足）"];
+            [self setHint:@"轨迹生长失败（点不足）"];
             return;
         }
         [self writeTrackFile:points];
         [self setHint:[NSString stringWithFormat:@"轨迹已提交 · %lu 点", (unsigned long)points.count]];
     }];
+}
+
+/// 生长可视化：每段算路点序列追加为生长轨迹线（对齐原型 growRegionRoute 逐段 moveTo 生长）
+- (void)appendGrowLine:(NSArray *)pts {
+    if (![pts isKindOfClass:[NSArray class]] || pts.count < 2) return;
+    CLLocationCoordinate2D *cs = malloc(pts.count * sizeof(CLLocationCoordinate2D));
+    for (NSUInteger i = 0; i < pts.count; i++) {
+        NSDictionary *p = pts[i];
+        cs[i] = CLLocationCoordinate2DMake([p[@"lat"] doubleValue], [p[@"lon"] doubleValue]);
+    }
+    TRGrowPolyline *line = [TRGrowPolyline polylineWithCoordinates:cs count:pts.count];
+    free(cs);
+    [self.mapView addOverlay:line];
 }
 
 /// 逐段生成（递归；route 段算路、region 段计划+逐对算路、anchor 段作起点基底）
@@ -631,7 +656,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
                 return;
             }
             [joined addObjectsFromArray:points];
+            // 生长：逐段画线 + 蓝点推进（对齐原型 moveTo 逐段生长）
+            [self appendGrowLine:points];
             CLLocationCoordinate2D end = CLLocationCoordinate2DMake([points.lastObject[@"lat"] doubleValue], [points.lastObject[@"lon"] doubleValue]);
+            [self placeCurAt:[CoordTransform wgs84ToGcj02:end]];
             [self buildPointsFromIndex:idx + 1 cur:end joined:joined completion:completion];
         }];
     } else if ([type isEqualToString:@"region"]) {
@@ -683,20 +711,31 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             processLeg();
         };
         if (segDist < 30.0) {
-            [legJoined addObjectsFromArray:[RegionSimulator degradedLinePointsFrom:legCur to:wp seconds:segTime speed:speed]];
+            NSArray *degraded = [RegionSimulator degradedLinePointsFrom:legCur to:wp seconds:segTime speed:speed];
+            [legJoined addObjectsFromArray:degraded];
+            // 生长：降级直线段也画线 + 蓝点推进
+            [self appendGrowLine:degraded];
+            [self placeCurAt:[CoordTransform wgs84ToGcj02:wp]];
             goStay(wp);
             return;
         }
         [SimRouteCalculator calculateRoutePointsFrom:legCur to:wp mode:mode completion:^(NSArray<NSDictionary *> *pts, NSError *error) {
             if (error || pts.count < 2) {
-                [legJoined addObjectsFromArray:[RegionSimulator degradedLinePointsFrom:legCur to:wp seconds:segTime speed:speed]];
+                NSArray *degraded = [RegionSimulator degradedLinePointsFrom:legCur to:wp seconds:segTime speed:speed];
+                [legJoined addObjectsFromArray:degraded];
+                [self appendGrowLine:degraded];
+                [self placeCurAt:[CoordTransform wgs84ToGcj02:wp]];
                 goStay(wp);
                 return;
             }
             NSUInteger target = MAX(1, (NSUInteger)ceil(segDist / (speed * factor)));
             NSArray *resampled = [self resamplePoints:pts toCount:target];
             [legJoined addObjectsFromArray:resampled];
-            goStay(CLLocationCoordinate2DMake([resampled.lastObject[@"lat"] doubleValue], [resampled.lastObject[@"lon"] doubleValue]));
+            // 生长：真实道路段画线 + 蓝点推进（对齐原型 moveTo+stayAt 途经点间生长）
+            [self appendGrowLine:resampled];
+            CLLocationCoordinate2D legEnd = CLLocationCoordinate2DMake([resampled.lastObject[@"lat"] doubleValue], [resampled.lastObject[@"lon"] doubleValue]);
+            [self placeCurAt:[CoordTransform wgs84ToGcj02:legEnd]];
+            goStay(legEnd);
         }];
     };
     processLeg();
@@ -753,16 +792,28 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 - (MKOverlayRenderer *)mapView:(MKMapView *)mapView rendererForOverlay:(id<MKOverlay>)overlay {
     if ([overlay isKindOfClass:[MKCircle class]]) {
+        // 区域圆（对齐原型 ring/ringFix：紫虚线 + 紫填充）
         MKCircleRenderer *r = [[MKCircleRenderer alloc] initWithCircle:overlay];
-        r.fillColor = [[UIColor systemBlueColor] colorWithAlphaComponent:0.15];
-        r.strokeColor = [UIColor systemBlueColor];
+        r.fillColor = [[UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0] colorWithAlphaComponent:0.12];
+        r.strokeColor = [UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0];
         r.lineWidth = 1.5;
+        r.lineDashPattern = @[@6, @4];
+        return r;
+    }
+    if ([overlay isKindOfClass:[TRGrowPolyline class]]) {
+        // 生长轨迹（对齐原型 growPath：深紫 3px 实线）
+        MKPolylineRenderer *r = [[MKPolylineRenderer alloc] initWithPolyline:overlay];
+        r.strokeColor = [UIColor colorWithRed:0.24 green:0.18 blue:0.79 alpha:1.0];
+        r.lineWidth = 3.0;
+        r.lineCap = kCGLineCapRound;
         return r;
     }
     if ([overlay isKindOfClass:[MKPolyline class]]) {
+        // 预览连线（对齐原型 routePath：蓝虚线 1.5px）
         MKPolylineRenderer *r = [[MKPolylineRenderer alloc] initWithPolyline:overlay];
-        r.strokeColor = [UIColor systemBlueColor];
-        r.lineWidth = 3.0;
+        r.strokeColor = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0];
+        r.lineWidth = 1.5;
+        r.lineDashPattern = @[@5, @4];
         return r;
     }
     return nil;
