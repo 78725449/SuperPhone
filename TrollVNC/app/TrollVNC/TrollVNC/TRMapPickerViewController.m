@@ -683,6 +683,15 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.startupLockedToAnchor = YES; // 开启瞬间到注入落地前：锁定锚点位置显示，忽略真实 fix（防"真实→锚点"横跳）
         [self commitAnchor];
         [self refreshUserLocationView];       // 当前位置水滴恢复出行图标
+        // 停止后再开启：之前模拟位置（cur）距当前实际位置（lastFix=真实或残留）>500m → 瞬间跳回停止前位置（复用首锚点视野行为）；
+        // 距离近（位置本就在附近/残留）不跳——维持"开启不主动聚焦"的常规语义
+        if (self.lastFix) {
+            CLLocationCoordinate2D curW = [CoordTransform gcj02ToWgs84:self.cur];
+            if ((curW.latitude != 0 || curW.longitude != 0)
+                && [SimRouteCalculator haversineMeters:curW to:self.lastFix.coordinate] > kAutoFocusThresholdM) {
+                [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(self.cur, 3000, 3000) animated:YES];
+            }
+        }
         self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:self.cur]; // 自动聚焦基线=模拟位置（拖动退出 Follow 后模拟位置超阈值才拉回）
         self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随：MapKit 内部位置源持续订阅 locationd → 水滴跟随模拟位置（单一数据源）
     }
