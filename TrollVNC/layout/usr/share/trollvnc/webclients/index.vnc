@@ -297,18 +297,8 @@
 <div id="locOverlay">
   <div id="locModal">
     <h3>📍 定位模拟</h3>
-    <div class="row"><span class="lbl">城市</span>
-      <select id="locCity">
-        <option value="">自定义…</option>
-        <option value="39.9042,116.4074">北京</option>
-        <option value="31.2304,121.4737">上海</option>
-        <option value="23.1291,113.2644">广州</option>
-        <option value="22.5431,114.0579">深圳</option>
-        <option value="30.5728,104.0668">成都</option>
-      </select>
-    </div>
-    <div class="row"><span class="lbl">纬度</span><input id="locLat" type="number" step="0.0001" placeholder="39.9042"></div>
-    <div class="row"><span class="lbl">经度</span><input id="locLon" type="number" step="0.0001" placeholder="116.4074"></div>
+    <div class="row"><span class="lbl">纬度</span><input id="locLat" type="number" step="0.0001" placeholder="WGS-84 纬度（-90~90）"></div>
+    <div class="row"><span class="lbl">经度</span><input id="locLon" type="number" step="0.0001" placeholder="WGS-84 经度（-180~180）"></div>
     <div class="btns">
       <button class="no" id="locStop">停止</button>
       <button class="ok" id="locApply">应用定位</button>
@@ -1045,7 +1035,6 @@ import RFB from './novnc/core/rfb.js';
   var locOverlay = document.getElementById('locOverlay');
 
   function openLocModal() {
-    document.getElementById('locCity').value = '';
     document.getElementById('locLat').value = '';
     document.getElementById('locLon').value = '';
     locOverlay.classList.add('show');
@@ -1054,8 +1043,6 @@ import RFB from './novnc/core/rfb.js';
   function applyLoc() {
     var lat = parseFloat(document.getElementById('locLat').value);
     var lon = parseFloat(document.getElementById('locLon').value);
-    var city = document.getElementById('locCity').value;
-    if (city) { var p = city.split(','); lat = parseFloat(p[0]); lon = parseFloat(p[1]); }
     if (isNaN(lat) || isNaN(lon)) { flashStatus('✗ 请输入有效坐标', 'error'); return; }
     mgmtRequest('config.set', { configs: { SimLocationMode: 'anchor', SimLocationLat: lat, SimLocationLon: lon } }, function (resp) {
       if (resp && resp.ok) { flashStatus('✓ 定位已设为 (' + lat.toFixed(5) + ', ' + lon.toFixed(5) + ')', 'success'); closeLocModal(); }

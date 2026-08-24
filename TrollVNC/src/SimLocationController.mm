@@ -10,7 +10,9 @@
 #import "SimLocationController.h"
 
 #import "SimLocationManager.h"
+#import "SimRouteCalculator.h" // haversineMeters（与 App 截断同度量，选最近续播点）
 #import "Logging.h"
+#import <notify.h>
 #import <math.h>
 
 // 轨迹点序列文件（大 payload 走文件，对齐 manager pid 平铺命名）
@@ -84,9 +86,9 @@ static const double kSimAnchorRangeM = 20.0;
         [self _stopTrack];
         [self _startAnchor];
     } else if ([mode isEqualToString:@"itinerary"]) {
-        // 动作序列：轨迹文件逐秒推进（段起点静态绑定已在生成时确定）
+        // 动作序列：轨迹文件逐秒推进（重载后从当前注入位置最近点续播，不从头重放）
         [self _stopAnchor];
-        [self _startTrack]; // _startTrack 内部立即注入轨迹首点（不读 anchor 旧坐标）
+        [self _startTrack];
     } else {
         TVLog(@"[locsim] unknown mode=%@ -> off", mode);
         [self _stopAnchor];
@@ -156,9 +158,8 @@ static const double kSimAnchorRangeM = 20.0;
     _currentSpeed = step;
     _currentCourse = course;
     _currentMode = @"anchor";
-    // 写回 mobile 域 plist（anchor 微动也更新当前位置+速度真相）
-    [self _writebackPosition:lat lon:lon speed:step];
     [self _injectAnchorPointWithSpeed:step course:course];
+    notify_post("com.82flex.trollvnc.locsim-update"); // 注入即推事件：App 免轮询即时刷新状态栏/锚点状态
 }
 
 - (void)_injectAnchorPointWithSpeed:(double)speed course:(double)course {
@@ -187,9 +188,24 @@ static const double kSimAnchorRangeM = 20.0;
     }
     _trackPoints = points;
     _currentMode = @"itinerary";
-    // 立即注入轨迹首点（不读 anchor 旧坐标——旧坐标会导致启动漂移）
-    [self _injectPointDict:points[0]];
-    _trackIndex = 1;
+    // 从当前注入位置最近的轨迹点续播（轨迹文件更新后追加/删除/重排不从头重放旧段）；
+    // 无当前位置（进程刚起）则从首点开始
+    NSUInteger startIdx = 0;
+    if (_currentLat != 0 || _currentLon != 0) {
+        // 最近点用 haversine（与 App 截断同度量）：平面平方近似在经度方向未按 cos 缩放，
+        // 两端可能选到不同续播点 → 重载时位置跳变；统一物理度量保证续播点一致
+        CLLocationCoordinate2D cur = CLLocationCoordinate2DMake(_currentLat, _currentLon);
+        NSUInteger best = 0;
+        double bestD = DBL_MAX;
+        for (NSUInteger i = 0; i < points.count; i++) {
+            NSDictionary *p = points[i];
+            double d = [SimRouteCalculator haversineMeters:cur to:CLLocationCoordinate2DMake([p[@"lat"] doubleValue], [p[@"lon"] doubleValue])];
+            if (d < bestD) { bestD = d; best = i; }
+        }
+        startIdx = best;
+    }
+    [self _injectPointDict:points[startIdx]];
+    _trackIndex = startIdx + 1;
     _trackFinished = NO;
     if (_trackSource) {
         dispatch_source_cancel(_trackSource);
@@ -203,7 +219,7 @@ static const double kSimAnchorRangeM = 20.0;
         [weakSelf _trackTick];
     });
     dispatch_resume(_trackSource);
-    TVLog(@"[locsim] itinerary start, %lu points", (unsigned long)points.count);
+    TVLog(@"[locsim] itinerary start, %lu points (from idx %lu)", (unsigned long)points.count, (unsigned long)startIdx);
 }
 
 - (void)_trackTick {
@@ -234,18 +250,7 @@ static const double kSimAnchorRangeM = 20.0;
     _currentLon = lon;
     _currentSpeed = speed;
     _currentCourse = course;
-    // 写回 mobile 域 plist（当前位置+速度真相；App 状态栏实时刷新 / 删除排序锚点局部重算读取基准）
-    [self _writebackPosition:lat lon:lon speed:speed];
-}
-
-/// 注入后写回 mobile 域 plist（保留其他键；root 可写 mobile 文件）
-- (void)_writebackPosition:(double)lat lon:(double)lon speed:(double)speed {
-    NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist"];
-    if (!d) d = [NSMutableDictionary dictionary];
-    d[@"SimLocationLat"] = @(lat);
-    d[@"SimLocationLon"] = @(lon);
-    d[@"SimLocationLiveSpeed"] = @(speed);
-    [d writeToFile:@"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist" atomically:YES];
+    notify_post("com.82flex.trollvnc.locsim-update"); // 注入即推事件：App 免轮询即时刷新状态栏/锚点状态
 }
 
 - (void)_stopTrack {
@@ -389,12 +394,17 @@ static const double kSimAnchorRangeM = 20.0;
 }
 
 - (NSString *)_paramsSignature {
-    return [NSString stringWithFormat:@"%@|%.6f|%.6f|%.2f|%@",
+    // 轨迹文件 mtime 纳入指纹：App 新增/删除/重排锚点重写轨迹文件后，签名必变 → 巡检/notify 触发重载
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:kSimTrackFilePath error:NULL];
+    NSDate *mtime = attrs[NSFileModificationDate];
+    long long trackStamp = (long long)(mtime.timeIntervalSince1970 * 1000);
+    return [NSString stringWithFormat:@"%@|%.6f|%.6f|%.2f|%@|%lld",
             [self _readPref:@"SimLocationMode"] ?: @"off",
             [self _readDouble:@"SimLocationLat" def:0.0],
             [self _readDouble:@"SimLocationLon" def:0.0],
             [self _readDouble:@"SimLocationAccuracy" def:5.0],
-            [self _readPref:@"SimLocationSpeed"] ?: @""];
+            [self _readPref:@"SimLocationSpeed"] ?: @"",
+            trackStamp];
 }
 
 @end

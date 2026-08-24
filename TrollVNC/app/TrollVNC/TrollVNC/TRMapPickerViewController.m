@@ -18,6 +18,7 @@
 #import "TRMapPickerViewController.h"
 #import <MapKit/MapKit.h>
 #import <MapKit/MKGeometry.h> // NSValue valueWithMKCoordinate/MKCoordinateValue（bootstrap SDK 需显式导入）
+#import <CoreLocation/CoreLocation.h> // 真实定位（未模拟定位时显示系统蓝点并聚焦）
 #import <notify.h>
 #import "CoordTransform.h"
 #import "RegionSimulator.h"
@@ -25,8 +26,6 @@
 
 /// 轨迹文件路径（与 SimLocationController kSimTrackFilePath 一致，App 只当配置源、manager 注入执行）
 static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.simloc.json";
-/// manager 实时写回文件（daemon 每秒写当前注入位置+速度，App 轮询读取作位置真相）
-static NSString *const kLivePrefsPath = @"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist";
 static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 /// 锚点标注（关联编排段索引，点击删除该段；水滴图钉状态分类：未经过=蓝/已经过=红，当前位置=绿；
@@ -48,13 +47,14 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @implementation TRGrowPolyline
 @end
 
-@interface TRMapPickerViewController () <MKMapViewDelegate, UISearchBarDelegate, UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate>
+@interface TRMapPickerViewController () <MKMapViewDelegate, UISearchBarDelegate, UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate, CLLocationManagerDelegate>
 @property (nonatomic, strong) MKMapView *mapView;
 @property (nonatomic, strong) UISearchBar *searchBar;
 @property (nonatomic, strong) UITableView *searchResultsView;       // 搜索下拉结果列表（搜索框内向下展开）
 @property (nonatomic, strong) NSArray *searchResults;               // MKMapItem 数组
 @property (nonatomic, strong) UISegmentedControl *modeSeg;   // 步行/驾车（左下胶囊）
 @property (nonatomic, strong) UIButton *locateFab;           // 右下角圆形定位开关
+@property (nonatomic, strong) UIButton *focusBtn;                   // 定位 FAB 上方的靶心按钮（点击聚焦当前位置）
 @property (nonatomic, strong) UIButton *statusBtn;                   // 状态条（用 setTitle 渲染，titleLabel.text 直接赋值无效）
 @property (nonatomic, strong) UIView *statusDot;                     // 状态圆点（定位中绿/停止灰）
 @property (nonatomic, strong) UITableView *stepTable;        // 步骤列表（状态条展开；删除 + 拖拽排序）
@@ -67,7 +67,14 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @property (nonatomic, copy) NSString *currentLegMode;       // 当前位置水滴的出行方式（当前段目标锚点的，walk/drive）
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
 @property (nonatomic, assign) BOOL hasFocusedMapOnce;            // 首帧启动聚焦是否已执行（避免 tab 往返重复聚焦）
+@property (nonatomic, strong) CLLocationManager *locationManager; // 真实定位授权/位置源（模拟开启时=模拟位置）
+@property (nonatomic, assign) BOOL hasFocusedRealOnce;           // 真实定位首次到达是否已聚焦（避免反复跳）
 @property (nonatomic, assign) BOOL isGenerating;            // 轨迹生成中（并发保护：正在生长时忽略新的 commit）
+@property (nonatomic, copy) void (^pendingEditAction)(void);     // 生成中挂起的最新编辑（完成后执行，最后一次生效）
+@property (nonatomic, assign) uint32_t locsimNotifyToken;          // daemon 注入事件订阅 token（状态栏/锚点状态即时刷新）
+@property (nonatomic, assign) BOOL pendingFollow;              // 待启用跟随：注入落地（locationd≈目标）后再开，避免先居中真实位置再跳锚点
+@property (nonatomic, strong) UITapGestureRecognizer *mapTap;      // 地图单击手势（handleTap；shouldReceiveTouch 拦截锚点水滴点击，防删除竞态）
+@property (nonatomic, assign) BOOL hasPromptedLocationAuth;        // 定位授权拒绝提示已弹出（一次性）
 @property (nonatomic, assign) NSInteger committedSegCount;          // 已提交到轨迹的段数（增量生长：只生长新段）
 @property (nonatomic, strong) NSArray *submittedPoints;             // 已提交的完整轨迹点序列（上一段结束点=新段起点）
 
@@ -78,7 +85,6 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @property (nonatomic, assign) CGPoint regionTouchOffset; // 手势起点-中心（像素偏移，拖移用）
 @property (nonatomic, strong) UIView *regionPanel;               // 区域配置菜单（底部卡片，对齐原型 param）
 @property (nonatomic, strong) MKCircle *regionOverlay;
-@property (nonatomic, strong) MKPointAnnotation *curPin;    // 蓝点（自绘）
 @end
 
 @implementation TRMapPickerViewController
@@ -87,12 +93,30 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [super viewDidLoad];
     self.segments = [NSMutableArray array];
     self.anchors = [NSMutableArray array];
-    self.cur = CLLocationCoordinate2DMake(39.9042, 116.4074); // 北京，初始
+    // 初始无硬编码坐标（self.cur 默认 0,0）；初始视野/聚焦均以 locationd（真实）为准，
+    // 无定位时由 focusMapOnCurrentLocation 守卫跳过，避免跳到无效坐标
     [self setupMap];
     [self setupUI];
     [self readCurrentStatus];
-    // 启动：地图聚焦到当前所在位置（已有模拟位置则聚焦该点，从未设过则保持默认视野）
+    // 真实定位：requestWhenInUse 需 Info.plist usage description；当前位置显示走 showsUserLocation（模拟/真实自动切换）
+    self.locationManager = [[CLLocationManager alloc] init];
+    self.locationManager.delegate = self;
+    if ([CLLocationManager authorizationStatus] == kCLAuthorizationStatusNotDetermined) {
+        [self.locationManager requestWhenInUseAuthorization];
+    } else if ([CLLocationManager authorizationStatus] != kCLAuthorizationStatusDenied &&
+               [CLLocationManager authorizationStatus] != kCLAuthorizationStatusRestricted) {
+        [self.locationManager startUpdatingLocation];
+    }
+    // 定位中 → 原生跟随模式（自动居中并随模拟位置移动，手动拖动自动退出）；未定位 → 不跟随
+    self.mapView.userTrackingMode = self.locating ? MKUserTrackingModeFollow : MKUserTrackingModeNone;
+    // 启动：地图聚焦到当前所在位置（定位中=模拟位置（跟随）；未定位=真实位置，取不到则回退默认视野）
     [self focusMapOnCurrentLocation];
+    // daemon 注入事件订阅：注入即刷新状态栏/锚点状态（1s 轮询定时器保留作兜底，双源同幂）
+    __weak typeof(self) weakSelf = self;
+    notify_register_dispatch("com.82flex.trollvnc.locsim-update", &_locsimNotifyToken, dispatch_get_main_queue(), ^(int token) {
+        __strong typeof(weakSelf) sself = weakSelf;
+        [sself refreshLiveStatus];
+    });
     // App 回前台：地图聚焦到当前所在位置（更直观成熟）
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appWillEnterForeground) name:UIApplicationWillEnterForegroundNotification object:nil];
 }
@@ -108,6 +132,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    if (self.locsimNotifyToken) notify_cancel(self.locsimNotifyToken);
 }
 
 /// App 回前台：地图立即聚焦到当前所在位置
@@ -121,16 +146,20 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     MKMapView *mv = [[MKMapView alloc] initWithFrame:self.view.bounds];
     mv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     mv.delegate = self;
-    mv.showsUserLocation = NO; // 自绘蓝点
+    mv.showsUserLocation = YES; // 原生当前位置：模拟开启=模拟位置/关闭=真实位置（自定义水滴外观，viewForAnnotation 绘制）
     mv.showsCompass = YES;
     [self.view addSubview:mv];
     self.mapView = mv;
-    [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(self.cur, 5000, 5000) animated:NO];
+    // 初始视野：仅当已有有效定位（恢复/已设）时设置，否则保持系统默认视野（首现由 viewDidAppear 聚焦真实位置）
+    if (self.cur.latitude != 0 || self.cur.longitude != 0) {
+        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(self.cur, 5000, 5000) animated:NO];
+    }
 
     // 手势：单击 = 递增编排；长按 500ms = 区域中心
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleTap:)];
     tap.delegate = self;
     [self.mapView addGestureRecognizer:tap];
+    self.mapTap = tap;
     UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLongPress:)];
     lp.minimumPressDuration = 0.5;
     lp.delegate = self;
@@ -246,6 +275,22 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.view addSubview:fab];
     self.locateFab = fab;
 
+    // 靶心聚焦按钮：定位 FAB 上方（透明，类靶心），点击聚焦到当前位置——
+    // 应对手动编辑（增删锚点/拖动）偏离当前位置后的手动调整
+    UIButton *focus = [UIButton buttonWithType:UIButtonTypeCustom];
+    focus.translatesAutoresizingMaskIntoConstraints = NO;
+    focus.layer.cornerRadius = 22;
+    focus.backgroundColor = [[UIColor systemBackgroundColor] colorWithAlphaComponent:0.55]; // 透明
+    focus.layer.shadowColor = [UIColor blackColor].CGColor;
+    focus.layer.shadowOpacity = 0.15;
+    focus.layer.shadowRadius = 6;
+    focus.layer.shadowOffset = CGSizeMake(0, 2);
+    [focus setImage:[UIImage systemImageNamed:@"scope"] forState:UIControlStateNormal]; // 靶心
+    [focus setTintColor:[UIColor systemBlueColor]];
+    [focus addTarget:self action:@selector(focusCurrentPosition:) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:focus];
+    self.focusBtn = focus;
+
     // 约束
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
@@ -279,6 +324,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         [fab.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-12],
         [fab.widthAnchor constraintEqualToConstant:56],
         [fab.heightAnchor constraintEqualToConstant:56],
+        // 靶心聚焦按钮：FAB 上方 12、右对齐、44×44
+        [focus.trailingAnchor constraintEqualToAnchor:fab.trailingAnchor],
+        [focus.bottomAnchor constraintEqualToAnchor:fab.topAnchor constant:-12],
+        [focus.widthAnchor constraintEqualToConstant:44],
+        [focus.heightAnchor constraintEqualToConstant:44],
     ]];
 }
 
@@ -294,7 +344,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         self.locating = YES;
         // defaults 存 WGS → 转 GCJ 维持 self.cur=GCJ 约定（否则后续 commitAnchor 会双重转换偏差）
         self.cur = [CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake(lat, lon)];
-        [self placeCurAt:self.cur];
+        // 当前位置视觉走原生 MKUserLocation（随 daemon 注入自动更新），此处无需自绘
     }
     [self updateStatus];
 }
@@ -304,24 +354,26 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 /// 单击地图 = 添加锚点（无起点差别：所有位置都是锚点）
 /// 第一个锚点无前驱（前方没有任何锚点）→ 仅当前定位（anchor 注入）；
 /// 后续锚点前方都有上一个锚点 → 从上一锚点生长路线到本锚点（增量生长）
-- (void)handleTap:(UITapGestureRecognizer *)g {
+- (void)handleTap:(UIGestureRecognizer *)g {
     CGPoint pt = [g locationInView:self.mapView];
+    // 点击锚点水滴的拦截由 shouldReceiveTouch 在 touch 阶段完成（早于 didSelect 删除时序，无竞态）。
+    // 此处不再做 ended 检测兜底——删除重建后 annotations 已变，兜底检测本身会产生竞态误判（单机制原则）
     CLLocationCoordinate2D gcj = [self.mapView convertPoint:pt toCoordinateFromView:self.mapView];
     NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
     [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude), @"mode": mode}];
     if (self.segments.count == 1) {
-        // 第一个锚点：无前驱 → 点击点成为当前定位；地图立即聚焦到该定位点
+        // 第一个锚点：无前驱 → 点击点成为当前定位；立即聚焦该点并切原生跟随
         self.hasStart = YES;
         self.cur = gcj;
-        [self placeCurAt:gcj];
         self.locating = YES;
         [self commitAnchor];
-        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
+        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES]; // 立即聚焦锚点
+        self.pendingFollow = YES; // 注入落地（locationd≈锚点）后再启用原生跟随，避免先居中真实位置再跳锚点
         [self setHint:@"已设定位点 · 继续点击添加锚点生长路线"];
     } else {
         // 后续锚点：点击点只是目标锚点——当前位置图标保持当前实际位置，不随点击瞬移
-        //（当前位置由 1s 定时器随注入实时刷新）
-        [self commitItinerary];
+        //（当前位置由注入事件/定时器随注入实时刷新）
+        [self runEdit:^{ [self commitItinerary]; }]; // 生成中挂起，完成后再生长，编辑不丢
         [self setHint:@"已添加锚点 · 路线从上一位置生长"];
     }
     [self updateStatus];
@@ -330,7 +382,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 #pragma mark - 手势：长按区域
 
-/// 长按区域：出现遮罩（紫虚线圆）→ 圆内拖动移动中心 / 圆边拖动调半径 → 松开弹配置菜单（对齐原型 ring+ringHandle+param）
+/// 长按区域：出现遮罩（原生半透明圆）→ 圆内拖动移动中心 / 圆边拖动调覆盖范围 → 松开弹配置菜单（对齐原型 ring+ringHandle+param）
 - (void)handleLongPress:(UILongPressGestureRecognizer *)g {
     CGPoint pt = [g locationInView:self.mapView];
     CLLocationCoordinate2D gcj = [self.mapView convertPoint:pt toCoordinateFromView:self.mapView];
@@ -342,7 +394,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             CGPoint centerPt = [self.mapView convertCoordinate:self.regionCenter toPointToView:self.mapView];
             self.regionTouchOffset = CGPointMake(pt.x - centerPt.x, pt.y - centerPt.y);
             [self addRegionOverlay];
-            [self setHint:@"拖动圆内移动区域 · 拖动圆边调节半径"];
+            [self setHint:@"拖动圆内移动区域 · 拖动圆边调节覆盖范围"];
             break;
         }
         case UIGestureRecognizerStateChanged: {
@@ -356,7 +408,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
                                                           toCoordinateFromView:self.mapView];
                 self.regionCenter = newCenter;
             } else {
-                // 圆边/外拖动 → 调节半径（手势点到中心距离）
+                // 圆边/外拖动 → 调节覆盖范围（手势点到中心距离）
                 CLLocationCoordinate2D gcjW = [CoordTransform gcj02ToWgs84:gcj];
                 CLLocationCoordinate2D centerW = [CoordTransform gcj02ToWgs84:self.regionCenter];
                 self.regionRadiusM = MAX(50, MIN(5000, [SimRouteCalculator haversineMeters:centerW to:gcjW]));
@@ -391,13 +443,23 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.mapView addOverlay:self.regionOverlay];
 }
 
+/// 区域覆盖范围调节阀：实时更新半径、遮罩预览与菜单标题/数值（确定后按当前值入段）
+- (void)regionRadiusSliderChanged:(UISlider *)sender {
+    self.regionRadiusM = MAX(50, MIN(5000, (double)sender.value));
+    [self addRegionOverlay];
+    UILabel *rLabel = (UILabel *)[self.regionPanel viewWithTag:604];
+    rLabel.text = [NSString stringWithFormat:@"覆盖范围 %.0f m", self.regionRadiusM];
+    UILabel *title = (UILabel *)[self.regionPanel viewWithTag:606];
+    title.text = [NSString stringWithFormat:@"区域漫游 · 覆盖范围 %.0f m", self.regionRadiusM];
+}
+
 /// 区域配置菜单：地图底部卡片（时长/途经点/模式 + 取消/确定），对齐原型 param 参数条（非系统弹窗）
 - (void)showRegionConfigPanel {
     [self.view endEditing:YES];
     if (self.regionPanel) { [self.regionPanel removeFromSuperview]; self.regionPanel = nil; }
     CGFloat margin = 12;
     CGFloat w = self.view.bounds.size.width - margin * 2;
-    CGFloat ph = 250;
+    CGFloat ph = 280;
     UIView *panel = [[UIView alloc] initWithFrame:CGRectMake(margin, self.view.bounds.size.height - ph - 12, w, ph)];
     panel.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleWidth;
     panel.backgroundColor = [UIColor systemBackgroundColor];
@@ -411,10 +473,26 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
     CGFloat y = 14;
     UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(14, y, w - 28, 20)];
-    title.text = [NSString stringWithFormat:@"区域漫游 · 半径 %.0f m（拖动遮罩可调）", self.regionRadiusM];
+    title.text = [NSString stringWithFormat:@"区域漫游 · 覆盖范围 %.0f m", self.regionRadiusM];
     title.font = [UIFont boldSystemFontOfSize:14];
+    title.tag = 606;
     [panel addSubview:title];
     y += 30;
+
+    // 覆盖范围调节阀（精确控制区域覆盖范围，实时预览遮罩；长按拖动遮罩边缘快速调仍可用）
+    UILabel *rLabel = [[UILabel alloc] initWithFrame:CGRectMake(14, y, 110, 30)];
+    rLabel.text = [NSString stringWithFormat:@"覆盖范围 %.0f m", self.regionRadiusM];
+    rLabel.font = [UIFont systemFontOfSize:13];
+    rLabel.tag = 604;
+    [panel addSubview:rLabel];
+    UISlider *radiusSlider = [[UISlider alloc] initWithFrame:CGRectMake(128, y, w - 142, 30)];
+    radiusSlider.minimumValue = 50;
+    radiusSlider.maximumValue = 5000;
+    radiusSlider.value = self.regionRadiusM;
+    radiusSlider.tag = 605;
+    [radiusSlider addTarget:self action:@selector(regionRadiusSliderChanged:) forControlEvents:UIControlEventValueChanged];
+    [panel addSubview:radiusSlider];
+    y += 40;
 
     y = [self addConfigFieldOn:panel y:y label:@"时长（分钟）" isDur:YES];
     y = [self addConfigFieldOn:panel y:y label:@"途经点（0=随机）" isDur:NO];
@@ -499,16 +577,32 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     // 区域中心只是目标，不是当前位置——当前位置图标保持当前实际位置（不瞬移）
     [self updateStatus];
     [self syncSegmentsUI];
-    [self commitItinerary];
+    [self runEdit:^{ [self commitItinerary]; }]; // 生成中挂起，完成后再生长，编辑不丢
 }
 
 #pragma mark - 定位开关 / 停止
+
+/// 靶心按钮：聚焦到当前位置（应对手动编辑拖动偏离当前位置后的手动调整）
+/// 定位中 → 切原生跟随（居中并锁定当前位置，之后手动拖动仍自动退出）；未定位 → 聚焦系统当前位置（locationd=真实/最后模拟）
+- (void)focusCurrentPosition:(UIButton *)sender {
+    if (self.locating) {
+        self.pendingFollow = NO; // 已显式聚焦，清待启用跟随
+        self.mapView.userTrackingMode = MKUserTrackingModeFollow;
+    } else {
+        [self focusMapOnCurrentLocation];
+    }
+}
 
 - (void)toggleLocate:(UIButton *)sender {
     if (self.locating) {
         // 停止定位：位置停编排最后坐标（App 内保留显示），设备恢复真实定位
         self.locating = NO;
+        self.pendingFollow = NO;         // 清待启用跟随
+        self.pendingEditAction = nil;    // 放弃生成中挂起的编辑（停止后不再生长/复活设备）
         [self commitStop];
+        self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随
+        [self refreshUserLocationView];                          // 当前位置水滴去图标（未定位=纯绿点）
+        [self focusMapOnCurrentLocation];                        // 聚焦真实位置
     } else {
         // 开启：有起点则 anchor，否则提示先设起点
         if (!self.hasStart) {
@@ -517,7 +611,9 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         }
         self.locating = YES;
         [self commitAnchor];
-        [self focusMapOnCurrentLocation]; // 启动定位：地图立即聚焦到当前所在位置
+        [self refreshUserLocationView];       // 当前位置水滴恢复出行图标
+        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(self.cur, 3000, 3000) animated:YES]; // 立即聚焦当前位置
+        self.pendingFollow = YES;             // 注入落地（locationd≈目标）后再启用原生跟随，避免先居中真实位置再跳
     }
     [self updateStatus];
 }
@@ -526,8 +622,9 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 - (void)modeChanged:(UISegmentedControl *)sender {
     // 模式影响后续 route/region 段的算路档；已在段提交时读取
-    // 当前位置水滴内嵌的模式图标随切换即时刷新（重新加标注触发 viewForAnnotation 重绘）
-    if (self.curPin) [self placeCurAt:self.cur];
+    // 当前位置水滴内嵌的出行图标：跟随 currentLegMode（链上段模式），切胶囊本身不改当前位置图标；
+    // 无链（currentLegMode 为空）时预览所选模式
+    if (!self.currentLegMode) [self refreshUserLocationView];
 }
 
 - (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
@@ -567,17 +664,19 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 - (void)applySearchResult:(MKMapItem *)item {
     CLLocationCoordinate2D wgs = item.placemark.coordinate;
     CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:wgs];
-    [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
     NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
     [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude), @"mode": mode}];
     if (self.segments.count == 1) {
+        // 第一个锚点（也是当前定位）：立即聚焦该点并切原生跟随
         self.hasStart = YES;
         self.cur = gcj;
-        [self placeCurAt:gcj];
         self.locating = YES;
-        [self commitAnchor];          // 第一个锚点：直接当前定位
+        [self commitAnchor];
+        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
+        self.pendingFollow = YES; // 注入落地后再启用原生跟随
     } else {
-        [self commitItinerary];       // 后续锚点：从上一位置生长；当前位置图标保持当前实际位置
+        // 后续锚点：不移动视野（保持当前位置聚焦），从上一位置生长（生成中挂起，编辑不丢）
+        [self runEdit:^{ [self commitItinerary]; }];
     }
     [self updateStatus];
     [self syncSegmentsUI];            // 水滴锚点显示
@@ -593,13 +692,17 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 }
 
 - (void)updateStatus {
-    CLLocationCoordinate2D wgs = [CoordTransform gcj02ToWgs84:self.cur];
+    // 坐标：强制绑定当前位置（locationd 单一真相，2026-08-24 定）——模拟中=注入位置 / 停止=真实位置，无"保留最后模拟坐标"回退
+    CLLocationCoordinate2D showWgs = [self currentSimPosition];
+    NSString *coordTxt = (showWgs.latitude == 0 && showWgs.longitude == 0)
+        ? @"   --"
+        : [NSString stringWithFormat:@"   %.5f, %.5f", showWgs.latitude, showWgs.longitude];
     NSString *speedTxt = @"0.0 m/s";
     NSString *modeTxt = self.locating ? @"模拟中 · 定位" : @"已停止 · 定位";
     if (self.locating) {
-        // 速度按模式档位显示（真实注入速度为 manager 每秒推进，App 侧展示档位）
-        double mps = self.modeSeg.selectedSegmentIndex == 1 ? 13.9 : 1.4;
-        speedTxt = [NSString stringWithFormat:@"%.1f m/s", mps];
+        // 速度 = locationd 权威（daemon 注入时写入），与 refreshLiveStatus 同源，避免"模式档位假速度"被实时值覆盖闪变
+        double mps = self.locationManager.location.speed;
+        speedTxt = mps > 0 ? [NSString stringWithFormat:@"%.1f m/s", mps] : @"0.0 m/s";
     }
     // 富文本：模式加粗 + 速度等宽灰 + 坐标等宽灰（对齐原型 stat .m/.spd/.c）
     NSMutableAttributedString *as = [[NSMutableAttributedString alloc] init];
@@ -611,7 +714,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightRegular],
         NSForegroundColorAttributeName: [UIColor secondaryLabelColor],
     }]];
-    [as appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"   %.5f, %.5f", wgs.latitude, wgs.longitude] attributes:@{
+    [as appendAttributedString:[[NSAttributedString alloc] initWithString:coordTxt attributes:@{
         NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightRegular],
         NSForegroundColorAttributeName: [UIColor secondaryLabelColor],
     }]];
@@ -627,20 +730,19 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.locateFab setBackgroundColor:self.locating ? brand : [UIColor systemGrayColor]];
 }
 
-/// 实时刷新（1s 定时器）：定位中读 manager 写回 mobile plist 的当前位置+速度 →
-/// 状态栏坐标/速度随移动实时变化 + 蓝点跟随（对齐原型 stat 实时性）
+/// 实时刷新（1s 定时器 + daemon 注入事件 notify locsim-update 双触发）：
+/// 定位中读当前位置（locationd 权威）→ 状态栏坐标/速度 + 锚点经过状态/当前位置出行图标切换
+///（当前位置视觉走原生 MKUserLocation，随 daemon 注入自动移动，不在此轮询）
 - (void)refreshLiveStatus {
     if (!self.locating) return; // 停止态状态栏保持（坐标定格最后位置）
-    NSDictionary *mobile = [NSDictionary dictionaryWithContentsOfFile:kLivePrefsPath];
-    double lat = [mobile[@"SimLocationLat"] doubleValue];
-    double lon = [mobile[@"SimLocationLon"] doubleValue];
-    if (lat == 0 && lon == 0) return;
-    // 蓝点跟随（写回坐标为 WGS → 画图转 GCJ）；self.cur 同步为当前实际位置（GCJ 约定，
-    // 供模式切换重绘/重锚/重算作当前位置基准）
-    self.cur = [CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake(lat, lon)];
-    [self placeCurAt:self.cur];
-    [self updateAnchorPassStateWithLiveWGS:CLLocationCoordinate2DMake(lat, lon)]; // 经过锚点变红
-    double spd = [mobile[@"SimLocationLiveSpeed"] doubleValue];
+    CLLocationCoordinate2D liveW = [self currentSimPosition]; // locationd 权威 → plist 回退
+    if (liveW.latitude == 0 && liveW.longitude == 0) return;
+    // self.cur 同步为当前位置（GCJ 约定，供重锚/重算作当前位置基准）
+    self.cur = [CoordTransform wgs84ToGcj02:liveW];
+    // 锚点经过红蓝 + 当前位置出行图标切换（与原生点同源 locationd，避免双源偏差）
+    [self updateAnchorPassStateWithLiveWGS:liveW];
+    // 速度：locationd 权威（CLLocation.speed，daemon 注入时已写入 locationd）
+    double spd = self.locationManager.location.speed;
     NSString *speedTxt = spd > 0 ? [NSString stringWithFormat:@"%.1f m/s", spd] : @"0.0 m/s";
     NSString *modeTxt = @"模拟中 · 定位";
     NSMutableAttributedString *as = [[NSMutableAttributedString alloc] init];
@@ -652,11 +754,19 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightRegular],
         NSForegroundColorAttributeName: [UIColor secondaryLabelColor],
     }]];
-    [as appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"   %.5f, %.5f", lat, lon] attributes:@{
+    [as appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"   %.5f, %.5f", liveW.latitude, liveW.longitude] attributes:@{
         NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightRegular],
         NSForegroundColorAttributeName: [UIColor secondaryLabelColor],
     }]];
     [self.statusBtn setAttributedTitle:as forState:UIControlStateNormal];
+    // 待启用的跟随：locationd 已到达目标位置（注入落地）再启用，避免先居中真实位置再跳的抖动
+    if (self.pendingFollow) {
+        CLLocationCoordinate2D targetW = [CoordTransform gcj02ToWgs84:self.cur];
+        if ([SimRouteCalculator haversineMeters:targetW to:liveW] < 100.0) {
+            self.pendingFollow = NO;
+            self.mapView.userTrackingMode = MKUserTrackingModeFollow;
+        }
+    }
 }
 
 - (void)toggleSteps:(UIButton *)sender {
@@ -706,16 +816,29 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 - (void)deleteSegmentAt:(NSInteger)idx {
     if (idx < 0 || idx >= (NSInteger)self.segments.count) return;
     [self.segments removeObjectAtIndex:idx];
-    // 当前位置保持当前实际位置（不随锚点删除回退/瞬移；重算遵循"基于当前位置"原则）
     if (!self.segments.count) {
+        // 全部锚点删除 → 停止定位并同步停止 daemon（写 mode=off，设备恢复真实定位），避免 App 停止但设备仍被模拟
         self.hasStart = NO;
         self.locating = NO;
+        self.pendingEditAction = nil;    // 清挂起编辑（空链无需再生成）
+        self.pendingFollow = NO;         // 清待启用跟随
+        [self commitStop];
+        for (id o in self.mapView.overlays) {
+            if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
+        }
+        self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随
+        [self refreshUserLocationView];                          // 当前位置水滴去出行图标（=真实位置纯绿点）
+        [self focusMapOnCurrentLocation];                        // 聚焦真实位置
+        [self setHint:@"已清空行程 · 停止模拟定位"];
+        [self updateStatus];
+        [self syncSegmentsUI];
+        return;
     }
     [self updateStatus];
     [self syncSegmentsUI];
-    // 基于当前位置局部重算（删除的最后锚点→affected=count→保持当前位置）
+    // 基于当前位置局部重算（删除的最后锚点→affected=count→保持当前位置；生成中挂起，编辑不丢）
     NSInteger affected = MIN(idx, (NSInteger)self.segments.count);
-    [self regenerateFromIndex:affected];
+    [self runEdit:^{ [self regenerateFromIndex:affected]; }];
     [self setHint:@"已删除锚点 · 基于当前位置重算路线"];
 }
 
@@ -727,24 +850,69 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.segments insertObject:item atIndex:to];
     [self setHint:@"行程已重排 · 基于当前位置重算"];
     [self syncSegmentsUI];
-    [self regenerateFromIndex:0];
+    [self runEdit:^{ [self regenerateFromIndex:0]; }]; // 生成中挂起，完成后再重算
 }
 
 #pragma mark - 基于当前位置的局部重算（manager 注入写回 mobile plist 为当前位置真相）
 
-/// 读当前位置（WGS；manager 注入写回 mobile plist；无写回回退最近锚点）
+/// 读当前位置（WGS）——权威 = locationd（模拟开启=注入位置/关闭=真实位置，与原生点同源）；无定位时回退 self.cur
 - (CLLocationCoordinate2D)currentSimPosition {
-    NSDictionary *mobile = [NSDictionary dictionaryWithContentsOfFile:kLivePrefsPath];
-    double lat = [mobile[@"SimLocationLat"] doubleValue];
-    double lon = [mobile[@"SimLocationLon"] doubleValue];
-    if (lat != 0 || lon != 0) return CLLocationCoordinate2DMake(lat, lon);
+    CLLocation *loc = self.locationManager.location;
+    if (loc) return loc.coordinate;
     return [CoordTransform gcj02ToWgs84:self.cur];
 }
 
-/// 地图立即聚焦到当前所在位置（首锚点/启动定位/回前台时调用；更直观）
+/// 地图立即聚焦到当前位置（首锚点/启动定位/停止/回前台时调用）
+/// 定位中=切原生跟随模式（自动居中并随模拟位置移动）；未定位=聚焦当前位置（locationd=真实位置，无定位回退 self.cur）
 - (void)focusMapOnCurrentLocation {
-    CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:[self currentSimPosition]];
-    [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
+    if (self.locating) {
+        self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随：手动拖动自动退出，聚焦时恢复
+        return;
+    }
+    CLLocationCoordinate2D center = [CoordTransform wgs84ToGcj02:[self currentSimPosition]];
+    // 守卫：位置无效（从未设过且 locationd 未就绪）→ 不聚焦，保持当前视野
+    if (center.latitude == 0 && center.longitude == 0) return;
+    [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(center, 3000, 3000) animated:YES];
+}
+
+/// 刷新当前位置（MKUserLocation）水滴外观：绿色 + 出行方式图标（定位中显示图标，未定位纯绿点）
+- (void)refreshUserLocationView {
+    MKAnnotationView *uv = [self.mapView viewForAnnotation:self.mapView.userLocation];
+    if (!uv) return;
+    NSString *mode = self.currentLegMode ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
+    UIColor *green = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0];
+    uv.image = [self waterdropImageWithColor:green size:24 emoji:(self.locating ? [self emojiForMode:mode] : @"")];
+}
+
+#pragma mark - CLLocationManagerDelegate（真实定位）
+
+- (void)locationManagerDidChangeAuthorization:(CLLocationManager *)manager {
+    CLAuthorizationStatus st = manager.authorizationStatus;
+    if (st == kCLAuthorizationStatusAuthorizedWhenInUse || st == kCLAuthorizationStatusAuthorizedAlways) {
+        [manager startUpdatingLocation];
+    } else if ((st == kCLAuthorizationStatusDenied || st == kCLAuthorizationStatusRestricted) && !self.hasPromptedLocationAuth) {
+        // 当前位置显示依赖定位授权（模拟时=模拟位置）；拒绝则地图当前位置不可见 → 一次性引导
+        self.hasPromptedLocationAuth = YES;
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"需要定位权限"
+            message:@"地图上的当前位置显示依赖定位权限（模拟定位时显示模拟位置）。请在 设置 → 隐私与安全性 → 定位服务 中开启。"
+            preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"去设置" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            NSURL *url = [NSURL URLWithString:UIApplicationOpenSettingsURLString];
+            if (url && [[UIApplication sharedApplication] canOpenURL:url]) {
+                [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+            }
+        }]];
+        [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:ac animated:YES completion:nil];
+    }
+}
+
+- (void)locationManager:(CLLocationManager *)manager didUpdateLocations:(NSArray<CLLocation *> *)locations {
+    // 定位中不跳（以模拟位置为准，跟随模式已居中）；未定位且尚未聚焦过真实位置 → 首次到达聚焦一次
+    if (self.locating || self.hasFocusedRealOnce) return;
+    self.hasFocusedRealOnce = YES;
+    CLLocation *loc = locations.lastObject;
+    [self.mapView setRegion:MKCoordinateRegionMakeWithDistance([CoordTransform wgs84ToGcj02:loc.coordinate], 3000, 3000) animated:YES];
 }
 
 /// 锚点状态刷新：按当前位置在已提交轨迹中的最近索引，标记"已经过"的锚点为红（未经过保持蓝）；
@@ -771,7 +939,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     mode = mode ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
     if (![self.currentLegMode isEqualToString:mode]) {
         self.currentLegMode = mode;
-        if (self.curPin) [self placeCurAt:self.cur]; // 重绘当前位置水滴以切换出行图标
+        [self refreshUserLocationView]; // 当前位置水滴切换出行图标（原生 MKUserLocation 视图）
     }
 }
 
@@ -801,6 +969,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     }
     // 当前位置（WGS）
     CLLocationCoordinate2D curW = [self currentSimPosition];
+    // 重算期间 daemon 驻留当前位置（防沿旧轨迹乱走 + 重载回跳）
+    [self holdAtCurrentPosition:curW];
     NSMutableArray *joined = [NSMutableArray array];
     // 保留当前位置前的已提交轨迹点（截断到最近点）
     if (self.submittedPoints.count) {
@@ -814,23 +984,22 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self buildPointsFromIndex:(NSUInteger)affectedIdx cur:curW joined:joined completion:^(NSArray *points) {
         __strong typeof(self) sself = weakSelf;
         if (!sself) return;
-        sself.isGenerating = NO;
-        // 无下一个锚点（affected 已到链尾）→ 保持当前位置（截断轨迹）
         if (affectedIdx >= (NSInteger)sself.segments.count) {
+            // 无下一个锚点（affected 已到链尾）→ 保持当前位置（截断轨迹）
             sself.submittedPoints = points;
             sself.committedSegCount = sself.segments.count;
             if (points.count) [sself writeTrackFile:points];
             [sself setHint:@"已删除最后锚点 · 保持当前位置"];
-            return;
-        }
-        if (points.count < 2) {
+        } else if (points.count < 2) {
             [sself setHint:@"路线重算失败（点不足）"];
-            return;
+        } else {
+            sself.submittedPoints = points;
+            sself.committedSegCount = sself.segments.count;
+            [sself writeTrackFile:points];
+            [sself setHint:[NSString stringWithFormat:@"路线已重算 · %lu 点", (unsigned long)points.count]];
         }
-        sself.submittedPoints = points;
-        sself.committedSegCount = sself.segments.count;
-        [sself writeTrackFile:points];
-        [sself setHint:[NSString stringWithFormat:@"路线已重算 · %lu 点", (unsigned long)points.count]];
+        sself.isGenerating = NO;
+        [sself runPendingEdit]; // 生成期间挂起的编辑在此执行（最后一次生效）
     }];
 }
 
@@ -924,13 +1093,6 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     }
 }
 
-- (void)placeCurAt:(CLLocationCoordinate2D)gcj {
-    if (self.curPin) [self.mapView removeAnnotation:self.curPin];
-    self.curPin = [[MKPointAnnotation alloc] init];
-    self.curPin.coordinate = gcj;
-    [self.mapView addAnnotation:self.curPin];
-}
-
 #pragma mark - 落盘自治（App=配置源，manager=注入执行器）
 
 - (void)commitAnchor {
@@ -948,6 +1110,35 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [d setObject:@"off" forKey:@"SimLocationMode"];
     [d synchronize];
     notify_post("com.82flex.trollvnc.prefs-changed");
+}
+
+/// 重算期间让 daemon 驻留在当前位置（anchor 微动）：编辑（删除/重排）重算耗时期间，
+/// 避免 daemon 继续沿已删除/已重排的旧轨迹移动（走向被删锚点）+ 重载时旧轨迹被截断的回跳——
+/// "只要不是停止定位，编辑时底层保持当前位置不乱跳"（仅定位中生效；停止态编辑不动 daemon）
+- (void)holdAtCurrentPosition:(CLLocationCoordinate2D)curW {
+    if (!self.locating) return;
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite];
+    [d setObject:@"anchor" forKey:@"SimLocationMode"];
+    [d setDouble:curW.latitude forKey:@"SimLocationLat"];
+    [d setDouble:curW.longitude forKey:@"SimLocationLon"];
+    [d synchronize];
+    notify_post("com.82flex.trollvnc.prefs-changed");
+}
+
+/// 编辑动作统一入口（联动性：编辑不丢）——生成中挂起（最后一次生效），否则立即执行
+- (void)runEdit:(void (^)(void))action {
+    if (self.isGenerating) {
+        self.pendingEditAction = action; // 合并：连续编辑只保留最后一次
+        return;
+    }
+    action();
+}
+
+/// 生成完成后执行挂起的最新编辑（安全重入：此时 isGenerating=NO，内部会再触发生成）
+- (void)runPendingEdit {
+    void (^pending)(void) = self.pendingEditAction;
+    self.pendingEditAction = nil;
+    if (pending) pending();
 }
 
 /// 编排提交（增量生长原则）：从上一段结束点继续生长，不是每次都从起点重画。
@@ -994,16 +1185,17 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self buildPointsFromIndex:startIdx cur:start joined:joined completion:^(NSArray *points) {
         __strong typeof(self) sself = weakSelf;
         if (!sself) return;
-        sself.isGenerating = NO;
         if (points.count < 2) {
             [sself setHint:@"轨迹生长失败（点不足）"];
-            return;
+        } else {
+            // 更新提交状态：全部段已提交（含 anchor 段计数），完整轨迹 = 本次 points
+            sself.submittedPoints = points;
+            sself.committedSegCount = sself.segments.count;
+            [sself writeTrackFile:points];
+            [sself setHint:[NSString stringWithFormat:@"轨迹已提交 · %lu 点", (unsigned long)points.count]];
         }
-        // 更新提交状态：全部段已提交（含 anchor 段计数），完整轨迹 = 本次 points
-        sself.submittedPoints = points;
-        sself.committedSegCount = sself.segments.count;
-        [sself writeTrackFile:points];
-        [sself setHint:[NSString stringWithFormat:@"轨迹已提交 · %lu 点", (unsigned long)points.count]];
+        sself.isGenerating = NO;
+        [sself runPendingEdit]; // 生成期间挂起的编辑在此执行（最后一次生效）
     }];
 }
 
@@ -1213,6 +1405,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 #pragma mark - MKMapViewDelegate
 
+- (void)mapView:(MKMapView *)mapView regionWillChangeAnimated:(BOOL)animated {
+    // 用户手动拖动/缩放 → 取消待启用的跟随（程序化 setRegion 带 animated=YES，不误判）
+    if (!animated) self.pendingFollow = NO;
+}
+
 /// 出行方式 → 图标（与模式胶囊按钮同款）
 - (NSString *)emojiForMode:(NSString *)mode {
     return [mode isEqualToString:@"drive"] ? @"🚗" : @"🚶";
@@ -1269,11 +1466,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         MKAnnotationView *v = [mapView dequeueReusableAnnotationViewWithIdentifier:rid];
         if (!v) {
             v = [[MKAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:rid];
-            v.canShowCallout = YES;
-            UIButton *del = [UIButton buttonWithType:UIButtonTypeSystem];
-            [del setImage:[UIImage systemImageNamed:@"trash"] forState:UIControlStateNormal];
-            del.frame = CGRectMake(0, 0, 30, 30);
-            v.rightCalloutAccessoryView = del;
+            v.canShowCallout = NO; // 点击水滴即删除（didSelectAnnotationView），不弹气泡
+            v.userInteractionEnabled = YES; // 保证 tap shouldReceiveTouch 能命中标注视图（拦截误加锚点）
         }
         v.annotation = annotation;
         // 实心水滴图钉（状态分类：未经过=蓝/已经过=红；内嵌该锚点生成时的出行方式图标；尖对准坐标点）
@@ -1283,10 +1477,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         v.image = [self waterdropImageWithColor:color size:22 emoji:[self emojiForMode:a.mode]];
         v.centerOffset = CGPointMake(0, -14); // 尖对准坐标点
         v.frame = CGRectMake(0, 0, 22, 28);
-        v.calloutOffset = CGPointMake(0, -6);
         return v;
     }
-    if (annotation == self.curPin) {
+    if ([annotation isKindOfClass:[MKUserLocation class]]) {
+        // 当前位置（原生管线）：模拟开启=模拟位置/关闭=真实位置；绿色水滴+出行方式图标外观
         static NSString *rid = @"CurPin";
         MKAnnotationView *v = [mapView dequeueReusableAnnotationViewWithIdentifier:rid];
         if (!v) {
@@ -1294,10 +1488,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             v.canShowCallout = NO;
         }
         v.annotation = annotation;
-        // 当前位置水滴图钉（绿色=当前位置；内嵌当前段的出行方式图标，经过锚点时切换到下一锚点的；尖对准坐标点）
         NSString *mode = self.currentLegMode ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
         UIColor *green = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0];
-        v.image = [self waterdropImageWithColor:green size:24 emoji:[self emojiForMode:mode]];
+        // 定位中显示当前段出行图标；未定位纯绿点（位置=真实位置）
+        v.image = [self waterdropImageWithColor:green size:24 emoji:(self.locating ? [self emojiForMode:mode] : @"")];
         v.centerOffset = CGPointMake(0, -15); // 尖对准坐标点
         v.frame = CGRectMake(0, 0, 24, 30);
         // 光晕（对齐原型 .dot box-shadow 0 0 0 5px rgba(34,165,247,.28)）
@@ -1310,15 +1504,30 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     return nil;
 }
 
-/// 锚点 callout 删除按钮：删除该段（对齐原型「点击锚点删除该点，路线自适应连接」）
-- (void)mapView:(MKMapView *)mapView annotationView:(MKAnnotationView *)view calloutAccessoryControlTapped:(UIControl *)control {
+/// 点击锚点水滴 = 删除该锚点（对齐原型「点击锚点删除该点，路线自适应连接」）；
+/// 单次点击即删（不弹气泡）；handleTap 已对锚点区域拦截，不会误加新锚点
+- (void)mapView:(MKMapView *)mapView didSelectAnnotationView:(MKAnnotationView *)view {
     if ([view.annotation isKindOfClass:[TRAnchorAnnotation class]]) {
         TRAnchorAnnotation *a = (TRAnchorAnnotation *)view.annotation;
+        [mapView deselectAnnotation:view.annotation animated:NO];
         [self deleteSegmentAt:a.segmentIndex];
     }
 }
 
 #pragma mark - UIGestureRecognizerDelegate
+
+/// 点击落在锚点水滴上 → tap 手势直接不识别（删除走 didSelectAnnotationView）；
+/// 在 touch 阶段拦截（早于任何删除时序），避免"didSelect 删除重建后 handleTap 误加新锚点"的竞态
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
+    if (gestureRecognizer == self.mapTap) {
+        UIView *v = touch.view;
+        while (v) {
+            if ([v isKindOfClass:[MKAnnotationView class]] && [v.annotation isKindOfClass:[TRAnchorAnnotation class]]) return NO;
+            v = v.superview;
+        }
+    }
+    return YES;
+}
 
 // 地图滚动时不应触发 tap/longPress
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {

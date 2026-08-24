@@ -94,12 +94,12 @@
 | 模块 | 实现要点 | 真相源 |
 |---|---|---|
 | 地图交互（TRMapPickerViewController） | MKMapView 全屏；**交互链路+布局参考原型**：首击=设起点（锚点标志）、再击=加路线（以上一位置为起点）、长按=区域中心+拖半径+遮罩+从上一位置"生长"路线；右下角定位开关、左下步行/驾车胶囊、搜索（MKLocalSearch）、可展开步骤列表；锚点可点删、路线自适应 | 原型（仅交互链路+布局） |
-| GCJ-02 转换（CoordTransform） | 选点/区域圆心为 GCJ-02；**所有选点出口统一过 `gcj02ToWgs84`** 再写设备；坐标框/状态栏展示 WGS-84；蓝点画在选点处 | 公开算法 |
-| 算路（App 前台） | 路线段：MKDirections 逐段算路 → polyline 重采样到步长（walk 1.4 / drive 13.9 ± 拟人抖动）；区域段：RegionSimulator 计划 → 途经点间逐段算路；<30m 或失败降级直线并标注（§3.4.1）。**App 内执行，与注册表 sim.itinerary 同一实现**（RegionSimulator/SimItineraryPlanner 加入 App target，顶层原则 §0.5-2/4） | 设备端能力参数 |
-| 落盘自治 | 原子写轨迹文件 → 写 `SimLocationMode=itinerary`（mobile 域）→ `notify_post(prefs-changed)`；停止：`SimLocationMode=off` + notify | 事实 #2 现成链路 |
-| 蓝点 | showsUserLocation=NO 自绘；当前进度从 defaults 读回（`SimLocationMode`+坐标即状态真相） | — |
+| GCJ-02 转换（CoordTransform） | 选点/区域圆心为 GCJ-02；**所有选点出口统一过 `gcj02ToWgs84`** 再写设备；坐标框/状态栏展示 WGS-84；**当前位置 = 原生 MKUserLocation**（自定义绿色水滴+出行图标外观，模拟开启=模拟位置/关闭=真实位置） | 公开算法 |
+| 算路（App 前台） | 路线段：MKDirections 逐段算路 → polyline 重采样到步长（walk 1.4 / drive 13.9 ± 拟人抖动）；区域段：RegionSimulator 计划 → 途经点间逐段算路；**<30m 或算路失败 → 忽略该中间锚点/途经点**（不生成降级直线，从当前位置继续到下一目标）。**App 内执行，与注册表 sim.itinerary 同一实现**（RegionSimulator/SimItineraryPlanner 加入 App target，顶层原则 §0.5-2/4） | 设备端能力参数 |
+| 落盘自治 | 原子写**完整新轨迹**文件 → 写 `SimLocationMode=itinerary`（mobile 域）→ `notify_post(prefs-changed)`；停止：`SimLocationMode=off` + notify | 事实 #2 现成链路 |
+| 当前位置 | showsUserLocation=YES 原生（自定义水滴外观）；随 daemon 注入（locationd）自动移动；状态栏/锚点红蓝/出行图标由**注入事件（notify locsim-update）即时刷新**，1s 轮询仅兜底；定位中 = 原生 MKUserTrackingModeFollow（拖动自动退出） | — |
 
-**验收**：① 地图选点→系统地图蓝点到达（GCJ→WGS 无偏移）；② 递增编排连续；③ 停止恢复真实定位；④ App 杀重开 mode 自动恢复。
+**验收**：① 地图选点→当前位置（原生水滴）到达（GCJ→WGS 无偏移）；② 递增编排连续；③ 停止恢复真实定位；④ App 杀重开 mode 自动恢复。
 
 ---
 

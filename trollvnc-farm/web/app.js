@@ -1412,16 +1412,8 @@ function bufToBase64(buf) {
   return btoa(s);
 }
 
-/** 定位模拟面板（M2 阶段 1）：预设城市/坐标 → setConfigs 单发聚焦设备；设备端 SimLocationController 自治执行 */
-const LOC_PRESETS = [
-  { name: '北京', lat: 39.9042, lon: 116.4074 },
-  { name: '天安门', lat: 39.9087, lon: 116.3975 },
-  { name: '上海', lat: 31.2304, lon: 121.4737 },
-  { name: '广州', lat: 23.1291, lon: 113.2644 },
-  { name: '深圳', lat: 22.5431, lon: 114.0579 },
-  { name: '成都', lat: 30.5728, lon: 104.0668 },
-  { name: '杭州', lat: 30.2741, lon: 120.1551 },
-];
+/** 定位模拟面板：锚点定位（手动坐标）→ setConfigs 单发聚焦设备 + 停止；数据填充（data.fill）。
+ *  轨迹/区域/编排由 App 内原生编排完成（网关不保留生成逻辑，M5）；无硬编码预设坐标 */
 async function openLocPanel() {
   if (!focus) { toast('请先进入设备控制', 'error'); return; }
   const devId = focus.device.id; // focus 结构：{ device: { id, name }, ... }（同 uploadToDeviceAlbum）
@@ -1430,49 +1422,23 @@ async function openLocPanel() {
   modal.className = 'modal';
   const card = document.createElement('div');
   card.className = 'modal-card';
-  const presetsOpts = ['<option value="">手动输入…</option>']
-    .concat(LOC_PRESETS.map((p) => `<option value="${p.name}">${p.name}</option>`)).join('');
   card.innerHTML = `<h3>模拟定位 · ${escapeHtml(devName)}</h3>
-    <div class="cfg-row"><span class="cfg-row-label">预设城市（WGS-84）</span><select id="locPreset">${presetsOpts}</select></div>
-    <div class="cfg-row"><span class="cfg-row-label">纬度</span><input id="locLat" type="number" step="0.0001" placeholder="WGS-84，如 39.9042"></div>
-    <div class="cfg-row"><span class="cfg-row-label">经度</span><input id="locLon" type="number" step="0.0001" placeholder="WGS-84，如 116.4074"></div>
+    <div class="cfg-row"><span class="cfg-row-label">纬度</span><input id="locLat" type="number" step="0.0001" placeholder="WGS-84 纬度（-90~90）"></div>
+    <div class="cfg-row"><span class="cfg-row-label">经度</span><input id="locLon" type="number" step="0.0001" placeholder="WGS-84 经度（-180~180）"></div>
     <div class="cfg-row"><span class="cfg-row-label">精度（米）</span><input id="locAcc" type="number" min="3" max="15" value="5"></div>
     <div class="modal-btns">
       <button id="locApply" class="primary">应用定位</button>
       <button id="locStop">停止定位</button>
       <button id="locClose">取消</button>
     </div>
-    <div class="cfg-sec-title">轨迹模拟（Apple 地图原生算路，沿真实道路）</div>
-    <div class="cfg-row"><span class="cfg-row-label">起点</span><select id="locTrkFrom">${presetsOpts}</select></div>
-    <div class="cfg-row"><span class="cfg-row-label">终点</span><select id="locTrkTo">${presetsOpts}</select></div>
-    <div class="cfg-row"><span class="cfg-row-label">模式</span><select id="locTrkMode"><option value="walk">步行</option><option value="drive">驾车</option></select></div>
-    <div class="cfg-row"><span class="cfg-row-label">说明</span><span id="locTrkEst" style="color:var(--muted)">设备端 MKDirections 算路，时长由实际道路距离÷速度决定</span></div>
-    <div class="modal-btns"><button id="locTrkStart">算路并开始移动</button></div>
-    <div class="cfg-sec-title">区域漫游（区域内随机途经点 + 随机停留，总时长≈设定）</div>
-    <div class="cfg-row"><span class="cfg-row-label">中心</span><select id="locRegCenter"><option value="">当前位置</option>${presetsOpts}</select></div>
-    <div class="cfg-row"><span class="cfg-row-label">半径（米）</span><input id="locRegRadius" type="number" min="50" step="50" value="500"></div>
-    <div class="cfg-row"><span class="cfg-row-label">时长（分钟）</span><input id="locRegDur" type="number" min="1" step="1" value="10"></div>
-    <div class="cfg-row"><span class="cfg-row-label">模式</span><select id="locRegMode"><option value="walk">步行</option><option value="drive">驾车</option></select></div>
-    <div class="modal-btns"><button id="locRegStart">区域漫游开始</button></div>
-    <div class="cfg-sec-title">编排（当前位置 → 路线 → 区域，段间无缝衔接）</div>
-    <div class="cfg-row"><span class="cfg-row-label">路线终点</span><select id="locItinTo">${presetsOpts}</select></div>
-    <div class="cfg-row"><span class="cfg-row-label">区域半径（米）</span><input id="locItinRadius" type="number" min="50" step="50" value="500"></div>
-    <div class="cfg-row"><span class="cfg-row-label">区域时长（分钟）</span><input id="locItinDur" type="number" min="1" step="1" value="10"></div>
-    <div class="cfg-row"><span class="cfg-row-label">模式</span><select id="locItinMode"><option value="walk">步行</option><option value="drive">驾车</option></select></div>
-    <div class="modal-btns"><button id="locItinStart" class="primary">执行编排</button></div>
     <div class="cfg-sec-title">数据填充（联系人/通话/短信批量生成，设备端统一能力 data.fill）</div>
     <div class="cfg-row"><span class="cfg-row-label">类型</span><select id="dfKind"><option value="contacts">联系人</option><option value="calls">通话记录</option><option value="sms">短信</option></select></div>
     <div class="cfg-row"><span class="cfg-row-label">数量</span><input id="dfCount" type="number" min="1" max="1000" value="50"></div>
     <div class="cfg-row"><span class="cfg-row-label">种子</span><input id="dfSeed" type="number" value="0" title="0=随机，同 seed 可复现"></div>
     <div class="modal-btns"><button id="dfStart" class="primary">生成</button></div>`;
-  const preset = card.querySelector('#locPreset');
   const latInp = card.querySelector('#locLat');
   const lonInp = card.querySelector('#locLon');
   const accInp = card.querySelector('#locAcc');
-  preset.addEventListener('change', () => {
-    const p = LOC_PRESETS.find((x) => x.name === preset.value);
-    if (p) { latInp.value = p.lat; lonInp.value = p.lon; }
-  });
   card.querySelector('#locApply').onclick = async () => {
     const lat = parseFloat(latInp.value);
     const lon = parseFloat(lonInp.value);
@@ -1490,65 +1456,7 @@ async function openLocPanel() {
       toast('✓ 已恢复真实定位', 'success');
     } catch (e) { toast('✗ 停止失败 ' + e.message, 'error'); }
   };
-  // 轨迹：Apple 地图原生算路（MKDirections）——invoke sim.route.calculate，异步算路→设备端落盘→沿路推进
-  const trkFrom = card.querySelector('#locTrkFrom');
-  const trkTo = card.querySelector('#locTrkTo');
-  const trkMode = card.querySelector('#locTrkMode');
-  const trkEst = card.querySelector('#locTrkEst');
-  card.querySelector('#locTrkStart').onclick = async () => {
-    const from = LOC_PRESETS.find((x) => x.name === trkFrom.value);
-    const to = LOC_PRESETS.find((x) => x.name === trkTo.value);
-    if (!from || !to || from.name === to.name) { toast('✗ 请选择不同的起点/终点', 'error'); return; }
-    try {
-      await invokeCap('', devId, 'sim.route.calculate', {
-        from: { lat: from.lat, lon: from.lon },
-        to: { lat: to.lat, lon: to.lon },
-        mode: trkMode.value,
-      });
-      toast(`✓ 算路中（${trkMode.value === 'drive' ? '驾车' : '步行'}）——蓝点稍后沿真实道路移动`, 'success');
-    } catch (e) { toast('✗ 算路请求失败 ' + e.message, 'error'); }
-  };
   card.querySelector('#locClose').onclick = () => modal.remove();
-  // 区域漫游：invoke sim.itinerary（region 段，单段=区域漫游；中心为空=当前位置）
-  const regCenter = card.querySelector('#locRegCenter');
-  const regRadius = card.querySelector('#locRegRadius');
-  const regDur = card.querySelector('#locRegDur');
-  const regMode = card.querySelector('#locRegMode');
-  card.querySelector('#locRegStart').onclick = async () => {
-    const radius = parseFloat(regRadius.value);
-    const dur = parseFloat(regDur.value);
-    if (!isFinite(radius) || radius < 50) { toast('✗ 半径非法（≥50m）', 'error'); return; }
-    if (!isFinite(dur) || dur < 1) { toast('✗ 时长非法（≥1min）', 'error'); return; }
-    const center = LOC_PRESETS.find((x) => x.name === regCenter.value);
-    const seg = { type: 'region', radius, mode: regMode.value, durationMin: dur };
-    if (center) seg.center = { lat: center.lat, lon: center.lon };
-    try {
-      await invokeCap('', devId, 'sim.itinerary', { segments: [seg] });
-      toast('✓ 区域漫游编排中——蓝点稍后区域内随机走动+停留', 'success');
-    } catch (e) { toast('✗ 区域漫游请求失败 ' + e.message, 'error'); }
-  };
-  // 编排：当前位置 → 路线（算路）→ 区域（漫游），段起点静态绑定，前段终点=后段起点
-  const itinTo = card.querySelector('#locItinTo');
-  const itinRadius = card.querySelector('#locItinRadius');
-  const itinDur = card.querySelector('#locItinDur');
-  const itinMode = card.querySelector('#locItinMode');
-  card.querySelector('#locItinStart').onclick = async () => {
-    const to = LOC_PRESETS.find((x) => x.name === itinTo.value);
-    if (!to) { toast('✗ 请选择路线终点', 'error'); return; }
-    const radius = parseFloat(itinRadius.value);
-    const dur = parseFloat(itinDur.value);
-    if (!isFinite(radius) || radius < 50) { toast('✗ 区域半径非法（≥50m）', 'error'); return; }
-    if (!isFinite(dur) || dur < 1) { toast('✗ 区域时长非法（≥1min）', 'error'); return; }
-    try {
-      await invokeCap('', devId, 'sim.itinerary', {
-        segments: [
-          { type: 'route', to: { lat: to.lat, lon: to.lon }, mode: itinMode.value },
-          { type: 'region', radius, mode: itinMode.value, durationMin: dur },
-        ],
-      });
-      toast('✓ 编排中——先沿真实道路到终点，再区域漫游', 'success');
-    } catch (e) { toast('✗ 编排请求失败 ' + e.message, 'error'); }
-  };
   // 数据填充：invoke data.fill（设备端统一能力，App/注册表/0x50+5802 三入口同一实现）
   card.querySelector('#dfStart').onclick = async () => {
     const kind = card.querySelector('#dfKind').value;
@@ -2588,7 +2496,7 @@ function doOp(op) {
       else document.documentElement.requestFullscreen().catch(() => {});
       break;
     case 'disc': exitFocus(); break; // 2026-08-22：不再先 rfb.disconnect()——exitFocus 内先截图再 closeRfb，先 disconnect 会移除 canvas 导致截图失败（canvas= false）
-    case 'loc': openLocPanel(); break; // 模拟定位面板（M2：预设城市/坐标 → setConfigs 单发聚焦设备）
+    case 'loc': openLocPanel(); break; // 模拟定位面板（手动坐标锚点定位/停止 + 数据填充；轨迹/区域/编排由 App 内原生编排）
   }
 }
 

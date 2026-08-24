@@ -83,7 +83,7 @@ App 入口（生产主路径，离线自治）—— 不经网关/注册表
 | `SimLocationAccuracy` | number 3~15 | 注入精度 | instant |
 | `SimLocationSpeed` | enum `walk`/`cycle`/`drive` | 轨迹速度档（track 用） | instant |
 
-**语义（关键）**：全部 `reload=instant`——instant 的现有语义是"只写 defaults、下次读取自动用新值"（无副作用分发）。sim 控制器通过**低频巡检轮询 defaults 感知变更**（复用 §3.2 失效巡检定时器），任一参数变化即重读并重新注入，**不改 setConfig 分发机制**。
+**语义（关键）**：全部 `reload=instant`——instant 的现有语义是"只写 defaults、下次读取自动用新值"（无副作用分发）。sim 控制器通过 **notify 直达感知变更**（manager 订阅 `prefs-changed` → `reloadFromPrefs`，App/外部写入即时生效）+ **`_paramsSignature` 含轨迹文件 mtime 指纹**（新增/删除/重排锚点重写轨迹后必重载，从当前位置续播）；任一参数变化即重读并重新注入，**不改 setConfig 分发机制**；10s 巡检仅作失效恢复兜底。
 **参数校验**：`SimLocationLat` 钳制 [-90, 90]、`SimLocationLon` 钳制 [-180, 180]（WGS-84 范围），setConfig 校验失败返回错误。
 **入口与写入域（两类）**：**外部**经注册表 `setConfig:`（网关 configs API → manager 写 root 域；5801 `config.set` → 写当前用户域）；**App 伪装页**直接写 mobile 域 plist（`/var/mobile/Library/Preferences/com.82flex.trollvnc.plist`）；manager 统一**双域读取**（root 域 → mobile 域 plist 回退，复用 `tvManagerReadPref` 模式，见 §3.3）。
 **大 payload（轨迹点序列）**：不进 CONFIG_DEFS。**外部经注册表 `invoke:` 控制能力 `sim.location.track` 上传**（params.points → 设备端落盘文件 + 切 itinerary）；**App 本地直接写轨迹文件**。`SimLocationMode=itinerary` 时设备端从文件加载点序列自治推进（见 §3.3）。
@@ -140,7 +140,7 @@ App 入口（生产主路径，离线自治）—— 不经网关/注册表
 
 要点：
 - **持久化与自恢复**：参数全在 defaults；`start` 时读 `SimLocationMode` 恢复上次状态（离线自治核心，C3）——manager 重启/设备重启后定位自动恢复，不依赖网关/App
-- **失效巡检 + 参数变更感知（合一）**：`checkAndRestore` 每 10s，做两件事：① 判断"mode!=off 且注入异常"则节流重发（节流思路参考 TRWatchDog throttle）；② **双域读取** defaults（root 域 → mobile 域 plist 回退，复用 `tvManagerReadPref` 模式）比对 `SimLocation*` 是否有变化，变化则重读参数并重新注入——以此感知 App 本地/5801 写入的变更，**不改 setConfig 分发机制**
+- **失效巡检 + 参数变更感知**：参数变更主路径 = **notify 直达**（manager 订阅 `prefs-changed` → `reloadFromPrefs`，App/外部写入即时生效）→ `_paramsSignature`（含**轨迹文件 mtime 指纹**）比对 → `applyFromPrefs`（新轨迹**从当前位置最近点续播**，不从头重放）；10s 巡检 `checkAndRestore` 作为**兜底**：① 判断"mode!=off 且注入异常"则节流重发（节流思路参考 TRWatchDog throttle）；② 签名比对兜底感知遗漏的变更。**不改 setConfig 分发机制**
 - **保活**：Controller 跑在 manager 进程内，manager 已由 OhMyJetsam（constructor 自动执行）设为 critical + 不可冻结，**无需新增进程级保活**
 - **时序**：`injectPoint` 首帧 stop→clear→append→flush→start，**running 态仅 append+flush（方案 C append-only，不 restart）**——规避 locationd stop 系统 bug 引发的周期性漂移（2026-08-24 真机验证）
 
@@ -254,7 +254,7 @@ App 入口（生产主路径，离线自治）—— 不经网关/注册表
 ```
 
 - 输出统一为 §3.3.2 文件格式（WGS-84，已含拟人参数）；速度档 walk 1.4 / drive 13.9 m/s
-- **区域途经点间连接 = 自由走**（开放空间无道路概念：直线插值+抖动+转角受限），**不贴路**；仅路线段沿真实道路（§3.4.1）
+- **区域途经点间连接 = 真实道路**（2026-08-24 升级：途经点间 MKDirections 逐段真实道路算路拼接，§3.4.1）；途经点对 <30m 或算路失败 → **忽略该中间途经点**（不生成降级直线，从当前位置继续到下一途经点）
 - **当前位置贯穿三态**（§3.2）：route/region 生成时 `from/center` 缺省 = `_current`；anchor 微动实时更新 `_current`
 
 ### 3.4.1 区域漫游（RegionEngine 撒点 + RegionTimeAllocator 时间分配 + MKDirections 逐段算路，真实道路生长）
@@ -268,11 +268,11 @@ App 入口（生产主路径，离线自治）—— 不经网关/注册表
 1. **活动块计划**：T → K 个活动块（**K 与 T 正相关：每 ~4 分钟一个途经点，clamp 2~8，±1 随机抖动**——"逛了几个点"，待得久逛得多；**每次生成 K 与途经点位置均随机**）；每块 = 一次移动簇 + 一次停留簇
 2. **突发簇节奏**：停留占比 ρ 每次活动随机（0.15~0.5），停留簇在少数块长、多数块短——不是均匀"走-停"交替
 3. **偏态停留**：停留时长 log-normal 类分布（短多长少，20s~10min），均值不固定，由块内随机节奏决定
-4. **移动簇（真实道路，2026-08-24 替换原"自由走"）**：块内移动 = 对相邻途经点调 `MKDirections` 算路（from=上一位置/上一途经点，to=下一途经点）→ 取 `MKRoute.polyline` 真实道路坐标 → 按有效速度重采样（复用 `SimRouteCalculator.calculateRoutePointsFrom` 的 resample）；**途经点对 <30m 或算路失败 → 该段降级直线**（避免整段失败，其余段保持真实道路）
+4. **移动簇（真实道路，2026-08-24 替换原"自由走"）**：块内移动 = 对相邻途经点调 `MKDirections` 算路（from=上一位置/上一途经点，to=下一途经点）→ 取 `MKRoute.polyline` 真实道路坐标 → 按有效速度重采样（复用 `SimRouteCalculator.calculateRoutePointsFrom` 的 resample）；**途经点对 <30m 或算路失败 → 忽略该中间途经点**（直接进入下一途经点，不生成降级直线，2026-08-24 定稿）
 5. **入场/收尾结构**：开场先纯移动不立刻停（进场）；收尾"逛到某处到点了"停住（不是刚好走完）
 6. **校验收敛**：生成后实际总时长 ≈ T（±2%），不符微调停留时长/途经点距离迭代
 
-**生长式区域算路（设备端 SimItineraryPlanner + RegionSimulator，2026-08-24 已实现）**：区域段轨迹 = 进入段（上一位置 → 途经点①）+ 途经点间段（①→②→…→K），每段调 `SimRouteCalculator calculateRoutePointsFrom:to:mode:completion:` 真实道路算路；段耗时 = 段距离/(有效速度 × 速度因子)，在真实算路 polyline 上重采样到目标点数（`_resamplePoints` 抽/插值，保持贴路不穿越）；途经点对 <30m 或算路失败 → 降级直线（`RegionSimulator degradedLinePointsFrom:`，TVLog 标注 degraded）；到达途经点停留（`appendStayPointsAt:` 同点微动），最后途经点不收尾补满（收尾到点停）。App 端按"上一位置→途经点①→…"**逐段算路逐段渲染生长**（MKPolyline 逐段 addOverlay）。交互原型见 `outputs/locsim-app-prototype.html`（直线模拟占位，生产为真实算路）。
+**生长式区域算路（设备端 SimItineraryPlanner + RegionSimulator，2026-08-24 已实现）**：区域段轨迹 = 进入段（上一位置 → 途经点①）+ 途经点间段（①→②→…→K），每段调 `SimRouteCalculator calculateRoutePointsFrom:to:mode:completion:` 真实道路算路；段耗时 = 段距离/(有效速度 × 速度因子)，在真实算路 polyline 上重采样到目标点数（`_resamplePoints` 抽/插值，保持贴路不穿越）；**途经点对 <30m 或算路失败 → 忽略该中间途经点**（`RegionSimulator degradedLinePointsFrom:` 已删除，不生成降级直线）；到达途经点停留（`appendStayPointsAt:` 同点微动），最后途经点不收尾补满（收尾到点停）。App 端按"上一位置→途经点①→…"**逐段算路逐段渲染生长**（MKPolyline 逐段 addOverlay，分段式：增删锚点只重渲染受影响段）。交互原型见 `outputs/locsim-app-prototype.html`（直线模拟占位，生产为真实算路）。
 
 **拟人化生长参数（2026-08-24 定稿，原型已验证节奏）**——时间**不平均**是拟人核心，各环节均带随机，禁止均匀分布：
 

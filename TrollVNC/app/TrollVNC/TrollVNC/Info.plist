@@ -17,6 +17,8 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>SuperPhone uses the local network to advertise and accept VNC connections from clients on your LAN.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>SuperPhone 使用定位显示当前位置（未模拟定位时展示真实位置；模拟定位时展示模拟位置）。</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>SuperPhone saves uploaded photos/videos to the device photo library (album.import).</string>
 	<key>UIApplicationSceneManifest</key>

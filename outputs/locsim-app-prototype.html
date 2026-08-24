@@ -40,7 +40,7 @@
   .drop div{padding:9px 12px; font-size:13px; border-bottom:1px solid var(--border); cursor:pointer;}
   .drop div:last-child{border-bottom:0;}
   .drop div:hover{background:var(--brand-soft);}
-  /* 编排节点锚点标记：水滴图钉，尖指向坐标点；start=紫 / route=蓝 / region=绿；点击删除 */
+  /* 编排节点锚点标记：水滴图钉，尖指向坐标点；状态分类=未经过蓝/已经过红，当前位置=绿（含出行图标）；点击删除 */
   .segMark{position:absolute; z-index:4; transform:translate(-50%,-100%); cursor:pointer; transition:transform .1s;}
   .segMark::before{content:""; display:block; width:18px; height:18px; border-radius:50% 50% 50% 0; transform:rotate(-45deg); border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.35);}
   .segMark.start::before{background:var(--brand);}

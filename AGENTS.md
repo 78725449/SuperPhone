@@ -27,7 +27,7 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
 
 - 端口全固定：5901 RFB（画面+命令扩展消息 0x50/0x80）/ 5801 直连页 / 5802 直连页管理 API（HTTP，v3）/ 5902 远程日志端点（manager 常驻，GET /stderr|/stdout 返回崩溃日志尾部 64KB）/ 8080 控制台 / 18081 注册 / 18181 隧道；端口不可调。
 - **能力层唯一地基**：设备操作只走 RFB → IOHID 注入，禁止前端自造输入协议；无通用 `/command` 端点（已删，禁止回归）。
-- **前端契约两端对齐**：`trollvnc-farm/web/caps.js` 自包含定义（KEY_DEFS 10 / BATCH_CAPS 20 / CONFIG_DEFS 30），设备端 `TRCapabilityRegistry` 只存 executor；新增能力 = 两端各加一条，无上报、无元数据表、无运行时发现。
+- **前端契约两端对齐**：`trollvnc-farm/web/caps.js` 自包含定义（KEY_DEFS 10 / BATCH_CAPS 20 / CONFIG_DEFS 33），设备端 `TRCapabilityRegistry` 只存 executor；新增能力 = 两端各加一条，无上报、无元数据表、无运行时发现。
 - 单会话约束：设备仅 1 条隧道 + 1 个 5901 连接，同设备同时仅 1 个活跃 VNC 会话；纯隧道（无直连回退、无反向模式）。
 - 状态以网关为准：前端不持久化设备状态，刷新一律从网关拉取。
 - **剪贴板是显式双向搬运（2026-08-17 起，无自动同步）**：复制=拉（clipboard.get）、粘贴=推（type.paste）；**粘贴的 http 降级（2026-08-18 定稿）**：http 读不到控制端剪贴板 → 粘贴按钮与 Ctrl+V **一律弹输入浮层**（PC/触屏统一，浮层内 Ctrl+V 或回车自动注入），https 直读直贴——已废弃隐藏 textarea「第二次点击/Ctrl+V 提交」方案，禁止回归。
@@ -78,3 +78,6 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
   3. `TrollVNC/prefs/TrollVNCPrefs/Resources/{en,zh-Hans}.lproj/Root.strings`：删除 3 条 respring 本地化（`"Are you sure you want to respring your device?"`、`"Respring"`、`"Respring to Apply Changes"`）——均无 Root.plist 引用（孤儿条目，删除安全）。
   4. 文档未删除、补警示说明：`说明文档.md` §4.8、`outputs/数据填充-编码AI执行规格.md`、`outputs/Filza-数据填充-调研报告.md`、`docs/superpowers/specs/*-generator-design.md`（每篇首处加"⚠️ respring 已禁用"并标注全文描述作废）。
   **排查提示**：数据刷新不生效 → 确认 kill 了对应 daemon（callservicesd/imagent/contactsd）而非依赖 respring；设备改名不更新 → 见第 2 条；外部报"未知操作 data.respring" → 见第 1 条。
+- **定位编排联动事件（2026-08-24）**：参数变更感知 = manager 订阅 `prefs-changed` → `reloadFromPrefs` + `_paramsSignature` 含**轨迹文件 mtime 指纹**（新轨迹必重载、从当前位置最近点续播）；注入后 daemon（`_injectPointDict`/`_anchorTick`）发 `notify_post("com.82flex.trollvnc.locsim-update")` 供 App 即时刷新。**mobile plist 位置写回已删除**。**编辑重算（删除/重排）时 App 先写 `mode=anchor` 驻留当前位置（`holdAtCurrentPosition`），重算完成写新轨迹+itinerary 续播**——防重算期间沿已删除/重排的旧轨迹乱走 + 重载回跳；**续播最近点用 haversine**（与 App 截断同度量，平面平方近似在经度方向失真）。**停止态状态栏坐标强制绑定 locationd 真实位置**（无"保留最后模拟坐标"回退）。改这条链路时两端事件名/指纹须同步，勿回退"巡检感知 + 从头重放"旧机制。
+- **App 原生定位（2026-08-24）**：地图当前位置走 `showsUserLocation`（自定义 MKUserLocation 水滴）+ `MKUserTrackingModeFollow`（原生跟随，拖动自动退出）；真实定位用 `CLLocationManager`（`requestWhenInUseAuthorization`，Info.plist 需 `NSLocationWhenInUseUsageDescription`）。**必须显式 `#import <CoreLocation/CoreLocation.h>`**（MapKit 头不保证带 CLLocationManager 声明，bootstrap SDK 场景同 MKGeometry 教训）。当前位置数据源统一 locationd（模拟开启=注入位置/关闭=真实位置），无 plist 回退——改位置读取时勿加回"轮询 daemon 写回 plist"旧路径。
+- **定位坐标禁止硬编码（2026-08-24）**：全项目（App/网关 web/5801）已移除预设城市坐标与硬编码初始坐标（App 初始 `self.cur`=0,0 + 无效坐标守卫；网关 web 与 5801 定位面板仅**手动坐标输入**）。**新增定位 UI/逻辑禁止出现预设坐标或硬编码经纬度**（如 `39.9042,116.4074`），初始视野/聚焦一律以 locationd（真实）为准；测试脚本坐标除外。
