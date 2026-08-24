@@ -77,28 +77,21 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
                                                            course:course
                                                             speed:speed
                                                         timestamp:[NSDate date]];
-    if (!_simulating) {
-        // 首次：完整启动（stop→clear→append→flush→start）
-        [_sim stopLocationSimulation];
-        [_sim clearSimulatedLocations];
-        // 投递参数必须显式设置：默认 0（unset）→ locationd 不把模拟 fix 投递给任何 client，
-        // App/MKMapView 收不到 → 当前位置（MKUserLocation）停在真实位置、聚焦按钮跟随真实位置
-        //（注入状态机正常但"发不出"，2026-08-24 根因；对齐 TrollBox/Andromeda 公开实现取值）
-        _sim.locationDeliveryBehavior = 1; // 持续投递（unset=0 不投递）
-        _sim.locationDistance = 0;         // 无距离过滤：每次注入都投递
-        _sim.locationInterval = 1.0;       // 投递间隔 1s（对齐 daemon 每秒注入节奏）
-        _sim.locationSpeed = 0;            // 速度由注入 CLLocation 自带（不插值）
-        _sim.locationRepeatBehavior = 1;   // 重复投递
-        [_sim appendSimulatedLocation:location];
-        [_sim flush];
-        [_sim startLocationSimulation];
-        _simulating = YES;
-    } else {
-        // running 态：append-only，不 stop/clear/restart
-        // 依据：TrollBox 实证「stop 后位置异常」是系统 daemon bug，每秒 stop→start 高频触发 → 周期性漂移
-        [_sim appendSimulatedLocation:location];
-        [_sim flush];
-    }
+    // 每次注入完整重启（对齐 TrollBox/Geranium 等参考实现）：stop→clear→append→flush→start。
+    // append-only（不重启）时 locationd 不把模拟位置广播给持续订阅的 client——
+    // App/MKMapView 收不到（实测：只有外部 App 发起新定位请求才"顺带"返回）。
+    // 投递参数每次一并设置：默认 0（unset）→ locationd 不投递模拟 fix。
+    [_sim stopLocationSimulation];
+    [_sim clearSimulatedLocations];
+    _sim.locationDeliveryBehavior = 1; // 持续投递
+    _sim.locationDistance = 0;         // 无距离过滤：每次注入都投递
+    _sim.locationInterval = 1.0;       // 投递间隔 1s（对齐 daemon 每秒注入节奏）
+    _sim.locationSpeed = 0;            // 速度由注入 CLLocation 自带（不插值）
+    _sim.locationRepeatBehavior = 1;   // 重复投递
+    [_sim appendSimulatedLocation:location];
+    [_sim flush];
+    [_sim startLocationSimulation];
+    _simulating = YES;
     [SimLocationManager postTimezoneUpdate];
 }
 
