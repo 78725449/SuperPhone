@@ -298,8 +298,8 @@ static NSDictionary *trFillContacts(NSInteger count, NSDictionary *ratios) {
         NSNumber *v = ratios[keys[i]];
         if ([v isKindOfClass:[NSNumber class]]) w[i] = MAX(0.0, MIN(1.0, v.doubleValue));
     }
-    NSArray *labels = @[CNLabelPhoneNumberMobile, CNLabelPhoneNumberWork, CNLabelPhoneNumberHome,
-                        CNLabelPhoneNumberiPhone, CNLabelPhoneNumberMain];
+    // 号码 label（真实联系人本地化 label；系统常量无 Work/Home（仅 *Fax），用自定义中文更真实）
+    NSArray *labels = @[@"手机", @"工作", @"住宅", @"iPhone", @"主号"];
     NSString *city = [ratios[@"city"] isKindOfClass:[NSString class]] ? ratios[@"city"] : @"beijing";
     NSDictionary *cityArea = @{@"beijing": @"10", @"shanghai": @"21", @"guangzhou": @"20",
                                @"shenzhen": @"755", @"chengdu": @"28"};
