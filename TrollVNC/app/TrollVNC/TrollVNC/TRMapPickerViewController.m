@@ -27,10 +27,10 @@
 static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.simloc.json";
 static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
-/// 锚点标注（关联编排段索引，点击删除该段）
+/// 锚点标注（关联编排段索引，点击删除该段；水滴图钉：start=紫/route=蓝/region=绿，对齐原型 segMark）
 @interface TRAnchorAnnotation : MKPointAnnotation
 @property (nonatomic, assign) NSInteger segmentIndex;
-@property (nonatomic, assign) BOOL isStart; // 起点锚点（样式区分）
+@property (nonatomic, copy) NSString *type; // anchor | route | region
 @end
 @implementation TRAnchorAnnotation
 @end
@@ -41,6 +41,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @property (nonatomic, strong) UISegmentedControl *modeSeg;   // 步行/驾车（左下胶囊）
 @property (nonatomic, strong) UIButton *locateFab;           // 右下角圆形定位开关
 @property (nonatomic, strong) UILabel *statusLabel;          // 状态（顶部，可展开步骤）
+@property (nonatomic, strong) UIView *statusDot;                     // 状态圆点（定位中绿/停止灰）
 @property (nonatomic, strong) UITableView *stepTable;        // 步骤列表（状态条展开；删除 + 拖拽排序）
 
 @property (nonatomic, strong) NSMutableArray *segments;      // 编排段 @[@{type,point/to/radius/durationMin/mode}]
@@ -103,27 +104,49 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.view addSubview:sb];
     self.searchBar = sb;
 
-    // 状态条（可点击展开步骤）
+    // 状态条（可点击展开步骤；对齐原型 stat：左侧状态圆点 + 文字 + 右侧展开箭头）
     UIButton *statusBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     statusBtn.frame = CGRectMake(12, 60, self.view.bounds.size.width - 24, 32);
     statusBtn.backgroundColor = [UIColor systemBackgroundColor];
     statusBtn.layer.cornerRadius = 8;
     statusBtn.titleLabel.font = [UIFont systemFontOfSize:13];
+    statusBtn.titleEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 16);
     [statusBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
     [statusBtn addTarget:self action:@selector(toggleSteps:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:statusBtn];
     self.statusLabel = statusBtn.titleLabel;
+    // 左侧状态圆点（定位中=绿色 glow，停止=灰）
+    UIView *sdot = [[UIView alloc] initWithFrame:CGRectMake(14, 12, 8, 8)];
+    sdot.tag = 501;
+    sdot.layer.cornerRadius = 4;
+    sdot.backgroundColor = [UIColor systemGrayColor];
+    [statusBtn addSubview:sdot];
+    self.statusDot = sdot;
+    // 右侧展开箭头
+    UILabel *arr = [[UILabel alloc] initWithFrame:CGRectMake(statusBtn.bounds.size.width - 22, 6, 14, 20)];
+    arr.tag = 502;
+    arr.text = @"▾";
+    arr.font = [UIFont systemFontOfSize:11];
+    arr.textColor = [UIColor secondaryLabelColor];
+    arr.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [statusBtn addSubview:arr];
 
-    // 步骤列表（默认收起；删除 + 拖拽排序，对齐原型）
-    UITableView *table = [[UITableView alloc] initWithFrame:CGRectMake(12, 96, self.view.bounds.size.width - 24, 180)
+    // 步骤列表（默认收起；地图左上卡片，删除 + 拖拽排序，对齐原型 segPanel）
+    UITableView *table = [[UITableView alloc] initWithFrame:CGRectMake(12, 96, 210, 200)
                                                       style:UITableViewStylePlain];
     table.dataSource = self;
     table.delegate = self;
     table.hidden = YES;
-    table.layer.cornerRadius = 8;
+    table.layer.cornerRadius = 10;
+    table.layer.borderWidth = 0.5;
+    table.layer.borderColor = [UIColor separatorColor].CGColor;
     table.backgroundColor = [UIColor systemBackgroundColor];
     table.editing = YES; // 编辑模式（左侧删除 + 拖拽把手）
-    table.separatorInset = UIEdgeInsetsMake(0, 44, 0, 0);
+    table.separatorInset = UIEdgeInsetsMake(0, 40, 0, 0);
+    table.layer.shadowColor = [UIColor blackColor].CGColor;
+    table.layer.shadowOpacity = 0.12;
+    table.layer.shadowRadius = 6;
+    table.layer.shadowOffset = CGSizeMake(0, 2);
     [self.view addSubview:table];
     self.stepTable = table;
 
@@ -141,7 +164,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     fab.frame = CGRectMake(self.view.bounds.size.width - 68, self.view.bounds.size.height - 140, 56, 56);
     fab.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleLeftMargin;
     fab.layer.cornerRadius = 28;
-    fab.backgroundColor = [UIColor systemBlueColor];
+    fab.backgroundColor = [UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0]; // 品牌紫（对齐原型 fab）
     [fab setImage:[UIImage systemImageNamed:@"location.fill"] forState:UIControlStateNormal];
     [fab setTintColor:[UIColor whiteColor]];
     [fab addTarget:self action:@selector(toggleLocate:) forControlEvents:UIControlEventTouchUpInside];
@@ -232,26 +255,35 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.mapView addOverlay:self.regionOverlay];
 }
 
-/// 区域参数（时长）输入 → 加入 region 段 → 提交编排
+/// 区域参数（时长/途经点）输入 → 加入 region 段 → 提交编排（对齐原型 param 参数条）
 - (void)promptRegionDuration {
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"区域漫游"
-                                                                message:[NSString stringWithFormat:@"半径 %.0f m · 请输入活动时长（分钟）", self.regionRadiusM]
+                                                                message:[NSString stringWithFormat:@"半径 %.0f m", self.regionRadiusM]
                                                          preferredStyle:UIAlertControllerStyleAlert];
     [ac addTextFieldWithConfigurationHandler:^(UITextField *tf) {
         tf.keyboardType = UIKeyboardTypeNumberPad;
+        tf.placeholder = @"时长（分钟）";
         tf.text = @"10";
+    }];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.keyboardType = UIKeyboardTypeNumberPad;
+        tf.placeholder = @"途经点（0=随机）";
+        tf.text = @"0";
     }];
     [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:^(UIAlertAction *a) {
         if (self.regionOverlay) { [self.mapView removeOverlay:self.regionOverlay]; self.regionOverlay = nil; }
     }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-        double dur = MAX(1, [ac.textFields.firstObject.text doubleValue] ?: 10);
+        double dur = MAX(1, [ac.textFields[0].text doubleValue] ?: 10);
+        int customK = (int)[ac.textFields[1].text integerValue];
+        if (customK < 0) customK = 0;
         NSString *mode = self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk";
         [self.segments addObject:@{
             @"type": @"region",
             @"radius": @(self.regionRadiusM),
             @"durationMin": @(dur),
             @"mode": mode,
+            @"waypointCount": @(customK),
             @"center": @{@"lat": @(self.regionCenter.latitude), @"lon": @(self.regionCenter.longitude)},
         }];
         if (self.regionOverlay) { [self.mapView removeOverlay:self.regionOverlay]; self.regionOverlay = nil; }
@@ -302,23 +334,41 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             [self setHint:@"未找到地点"];
             return;
         }
-        MKMapItem *item = response.mapItems.firstObject;
-        CLLocationCoordinate2D wgs = item.placemark.coordinate;
-        CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:wgs];
-        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
-        if (!self.hasStart) {
-            // 搜索位置直接作为起点
-            self.hasStart = YES;
-            self.cur = gcj;
-            self.locating = YES;
-            [self placeCurAt:gcj];
-            [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude)}];
-            [self commitAnchor];
-            [self updateStatus];
-            [self syncSegmentsUI];
+        // 搜索结果下拉选择（对齐原型 .drop 结果列表；原生用 action sheet 替代）
+        if (response.mapItems.count == 1) {
+            [self applySearchResult:response.mapItems.firstObject];
+        } else {
+            UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"选择地点" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+            for (MKMapItem *item in [response.mapItems subarrayWithRange:NSMakeRange(0, MIN(8, response.mapItems.count))]) {
+                NSString *title = item.name ?: @"地点";
+                NSString *sub = item.placemark.title ?: @"";
+                if (sub.length) title = [NSString stringWithFormat:@"%@ — %@", title, sub];
+                [ac addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+                    [self applySearchResult:item];
+                }]];
+            }
+            [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+            [self presentViewController:ac animated:YES completion:nil];
         }
-        [self setHint:item.name ?: @"已定位"];
     }];
+}
+
+/// 搜索选中结果 → 设为起点（对齐原型：搜索位置直接作为起点）
+- (void)applySearchResult:(MKMapItem *)item {
+    CLLocationCoordinate2D wgs = item.placemark.coordinate;
+    CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:wgs];
+    [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
+    if (!self.hasStart) {
+        self.hasStart = YES;
+        self.cur = gcj;
+        self.locating = YES;
+        [self placeCurAt:gcj];
+        [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude)}];
+        [self commitAnchor];
+        [self updateStatus];
+        [self syncSegmentsUI];
+    }
+    [self setHint:item.name ?: @"已定位"];
 }
 
 #pragma mark - 状态 / 步骤 / 提示
@@ -340,9 +390,15 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     }
     self.statusLabel.text = [NSString stringWithFormat:@"%@ · %@ · %.5f, %.5f（WGS-84）", modeTxt, speedTxt, wgs.latitude, wgs.longitude];
     self.statusLabel.textColor = self.locating ? [UIColor systemBlueColor] : [UIColor labelColor];
-    // FAB 图标/颜色随定位状态切换（对齐原型：定位中=停止方块，否则=定位图标）
+    // 状态圆点：定位中=绿（glow），停止=灰（对齐原型 stat .p.on）
+    self.statusDot.backgroundColor = self.locating ? [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0] : [UIColor systemGrayColor];
+    self.statusDot.layer.shadowColor = self.locating ? self.statusDot.backgroundColor.CGColor : [UIColor clearColor].CGColor;
+    self.statusDot.layer.shadowOpacity = self.locating ? 0.6 : 0;
+    self.statusDot.layer.shadowRadius = 3;
+    // FAB 图标/颜色随定位状态切换（对齐原型：定位中=停止方块，否则=定位图标；品牌紫底）
+    UIColor *brand = [UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0];
     [self.locateFab setImage:[UIImage systemImageNamed:self.locating ? @"stop.fill" : @"location.fill"] forState:UIControlStateNormal];
-    [self.locateFab setBackgroundColor:self.locating ? [UIColor systemBlueColor] : [UIColor systemGrayColor]];
+    [self.locateFab setBackgroundColor:self.locating ? brand : [UIColor systemGrayColor]];
 }
 
 - (void)toggleSteps:(UIButton *)sender {
@@ -370,10 +426,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         NSDictionary *seg = self.segments[i];
         NSString *type = seg[@"type"];
         CLLocationCoordinate2D c = self.cur;
-        BOOL isStart = NO;
         if ([type isEqualToString:@"anchor"]) {
             c = CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue]);
-            isStart = YES;
         } else if ([type isEqualToString:@"route"]) {
             c = CLLocationCoordinate2DMake([seg[@"to"][@"lat"] doubleValue], [seg[@"to"][@"lon"] doubleValue]);
         } else if ([type isEqualToString:@"region"]) {
@@ -382,7 +436,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         TRAnchorAnnotation *a = [[TRAnchorAnnotation alloc] init];
         a.coordinate = c;
         a.segmentIndex = (NSInteger)i;
-        a.isStart = isStart;
+        a.type = type;
         [self.anchors addObject:a];
         [self.mapView addAnnotation:a];
     }
@@ -421,7 +475,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 #pragma mark - UITableViewDataSource / Delegate（步骤列表：删除 + 拖拽排序）
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.segments.count;
+    return MAX(1, (NSInteger)self.segments.count); // 空态占位（对齐原型 segPanel .empty）
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -429,22 +483,35 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:rid];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:rid];
-        cell.textLabel.font = [UIFont systemFontOfSize:13];
-        cell.detailTextLabel.font = [UIFont systemFontOfSize:11];
+        cell.textLabel.font = [UIFont systemFontOfSize:12];
+        cell.detailTextLabel.font = [UIFont systemFontOfSize:10];
     }
+    if (indexPath.row >= (NSInteger)self.segments.count) {
+        cell.textLabel.text = @"暂无行程";
+        cell.detailTextLabel.text = @"点击地图设定起点";
+        cell.showsReorderControl = NO;
+        cell.editingAccessoryType = UITableViewCellAccessoryNone;
+        cell.userInteractionEnabled = NO;
+        return cell;
+    }
+    cell.userInteractionEnabled = YES;
     NSDictionary *seg = self.segments[indexPath.row];
     NSString *type = seg[@"type"];
+    NSString *title = @"";
+    NSString *sub = @"";
     if ([type isEqualToString:@"anchor"]) {
-        cell.textLabel.text = @"起点（锚点基底）";
-        cell.detailTextLabel.text = @"";
+        title = @"起点";
+        CLLocationCoordinate2D w = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue])];
+        sub = [NSString stringWithFormat:@"%.4f, %.4f", w.latitude, w.longitude];
     } else if ([type isEqualToString:@"route"]) {
-        CLLocationCoordinate2D w = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"to"][@"lat"] doubleValue], [seg[@"to"][@"lon"] doubleValue])];
-        cell.textLabel.text = [NSString stringWithFormat:@"路线 → (%.4f, %.4f)", w.latitude, w.longitude];
-        cell.detailTextLabel.text = [seg[@"mode"] isEqualToString:@"drive"] ? @"驾车" : @"步行";
+        title = @"路线 → 终点";
+        sub = [seg[@"mode"] isEqualToString:@"drive"] ? @"驾车" : @"步行";
     } else {
-        cell.textLabel.text = [NSString stringWithFormat:@"区域漫游 %.0f m · %@ 分钟", [seg[@"radius"] doubleValue], seg[@"durationMin"]];
-        cell.detailTextLabel.text = [seg[@"mode"] isEqualToString:@"drive"] ? @"驾车" : @"步行";
+        title = @"区域漫游";
+        sub = [NSString stringWithFormat:@"%.0f m · %@ min", [seg[@"radius"] doubleValue], seg[@"durationMin"]];
     }
+    cell.textLabel.text = [NSString stringWithFormat:@"%ld  %@", (long)(indexPath.row + 1), title];
+    cell.detailTextLabel.text = sub;
     cell.showsReorderControl = YES;
     return cell;
 }
@@ -572,7 +639,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         double radius = [seg[@"radius"] doubleValue];
         double durationMin = [seg[@"durationMin"] doubleValue];
         NSString *mode = seg[@"mode"] ?: @"walk";
-        NSDictionary *plan = [RegionSimulator generateRegionPlanCenter:centerW radius:radius mode:mode durationMin:durationMin startFrom:cur customK:0];
+        int customK = (int)[seg[@"waypointCount"] integerValue]; // >0 生效，0=随机
+        NSDictionary *plan = [RegionSimulator generateRegionPlanCenter:centerW radius:radius mode:mode durationMin:durationMin startFrom:cur customK:customK];
         [self processRegionPlan:plan cur:cur mode:mode joined:joined
                     itineraryIdx:idx + 1 completion:completion];
     } else {
@@ -714,17 +782,42 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             v.rightCalloutAccessoryView = del;
         }
         v.annotation = annotation;
-        // 锚点样式：起点=绿圆（带白芯），其余=紫圆（带白芯），与蓝点（当前位置）区分
+        // 水滴图钉（对齐原型 segMark：尖指向坐标，start=紫/route=蓝/region=绿）
         for (UIView *sv in v.subviews) { if (sv.tag == 99) [sv removeFromSuperview]; }
-        UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(0, 0, a.isStart ? 18 : 14, a.isStart ? 18 : 14)];
-        dot.tag = 99;
-        dot.layer.cornerRadius = dot.bounds.size.width / 2;
-        dot.backgroundColor = a.isStart ? [UIColor systemGreenColor] : [UIColor systemPurpleColor];
-        dot.layer.borderColor = [UIColor whiteColor].CGColor;
-        dot.layer.borderWidth = 2;
-        dot.center = CGPointMake(v.bounds.size.width / 2, v.bounds.size.height / 2);
-        [v addSubview:dot];
-        v.calloutOffset = CGPointMake(0, -4);
+        UIColor *color = [UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0]; // 紫 --brand
+        if ([a.type isEqualToString:@"route"]) color = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]; // 蓝
+        else if ([a.type isEqualToString:@"region"]) color = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0]; // 绿
+        CGFloat sz = 18;
+        UIView *pin = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sz, sz)];
+        pin.tag = 99;
+        pin.layer.cornerRadius = sz / 2;
+        // 水滴：圆角 50% 50% 50% 0 + rotate(-45)（尖朝下指向坐标点）
+        pin.layer.cornerRadius = sz / 2;
+        pin.layer.masksToBounds = NO;
+        pin.backgroundColor = color;
+        // 用 45° 旋转的圆角方块模拟水滴（左下角变尖）
+        UIBezierPath *path = [UIBezierPath bezierPath];
+        [path moveToPoint:CGPointMake(0, sz * 0.85)];
+        [path addQuadCurveToPoint:CGPointMake(sz * 0.5, sz * 0.5) controlPoint:CGPointMake(0, sz * 0.5)];
+        [path addArcWithCenter:CGPointMake(sz * 0.5, sz * 0.5) radius:sz * 0.5 startAngle:M_PI endAngle:0 clockwise:YES];
+        [path addQuadCurveToPoint:CGPointMake(sz, sz * 0.85) controlPoint:CGPointMake(sz, sz * 0.5)];
+        [path addQuadCurveToPoint:CGPointMake(sz * 0.5, sz) controlPoint:CGPointMake(sz, sz * 1.0)];
+        [path addQuadCurveToPoint:CGPointMake(0, sz * 0.85) controlPoint:CGPointMake(0, sz * 1.0)];
+        [path closePath];
+        CAShapeLayer *shape = [CAShapeLayer layer];
+        shape.path = path.CGPath;
+        shape.fillColor = color.CGColor;
+        shape.strokeColor = [UIColor whiteColor].CGColor;
+        shape.lineWidth = 2;
+        shape.shadowColor = [UIColor blackColor].CGColor;
+        shape.shadowOpacity = 0.35;
+        shape.shadowRadius = 2;
+        shape.shadowOffset = CGSizeMake(0, 1);
+        [pin.layer addSublayer:shape];
+        v.frame = CGRectMake(0, 0, sz, sz + 4);
+        pin.center = CGPointMake(v.bounds.size.width / 2, v.bounds.size.height / 2 - 2);
+        [v addSubview:pin];
+        v.calloutOffset = CGPointMake(0, -6);
         return v;
     }
     if (annotation == self.curPin) {
@@ -733,11 +826,16 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         if (!v) {
             v = [[MKAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:rid];
             v.canShowCallout = NO;
-            UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 16, 16)];
-            dot.layer.cornerRadius = 8;
-            dot.backgroundColor = [UIColor systemBlueColor];
+            UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 14, 14)];
+            dot.layer.cornerRadius = 7;
+            dot.backgroundColor = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0];
             dot.layer.borderColor = [UIColor whiteColor].CGColor;
             dot.layer.borderWidth = 2;
+            // 外圈 glow（对齐原型 .dot box-shadow 0 0 0 5px rgba(34,165,247,.28)）
+            dot.layer.shadowColor = dot.backgroundColor.CGColor;
+            dot.layer.shadowOpacity = 0.6;
+            dot.layer.shadowRadius = 6;
+            dot.layer.shadowOffset = CGSizeMake(0, 0);
             [v addSubview:dot];
         }
         v.annotation = annotation;

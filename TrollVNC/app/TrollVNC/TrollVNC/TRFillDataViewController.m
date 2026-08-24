@@ -250,14 +250,39 @@
         }
         y += (CGFloat)items.count * 34;
     }
-    // 合计 + 重置
-    UILabel *sum = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, w, 20)];
+    // 合计 + 重置默认（对齐原型 .sum + .rst）
+    CGFloat sumW = w - 90;
+    UILabel *sum = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, sumW, 20)];
     sum.tag = 777;
     sum.font = [UIFont systemFontOfSize:12];
     [self.scrollView addSubview:sum];
+    UIButton *rst = [UIButton buttonWithType:UIButtonTypeSystem];
+    rst.frame = CGRectMake(margin + sumW + 4, y, 86, 20);
+    [rst setTitle:@"重置默认" forState:UIControlStateNormal];
+    rst.titleLabel.font = [UIFont systemFontOfSize:12];
+    [rst setTitleColor:[UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0] forState:UIControlStateNormal];
+    [rst addTarget:self action:@selector(resetRatioDefaults) forControlEvents:UIControlEventTouchUpInside];
+    [self.scrollView addSubview:rst];
     y += 26;
     [self refreshRatioLabels];
     return y;
+}
+
+/// 重置比例滑条为默认（对齐原型 .rst 重置默认）
+- (void)resetRatioDefaults {
+    NSArray *groups = [self ratioGroups];
+    NSInteger gi = 0;
+    for (NSDictionary *g in groups) {
+        NSArray *items = g[@"items"];
+        NSArray *gr = [self rowsInGroup:gi];
+        for (NSUInteger i = 0; i < items.count && i < gr.count; i++) {
+            [(TRRatioRow *)gr[i] slider].value = [items[i][@"value"] floatValue];
+        }
+        gi++;
+    }
+    if (self.localRatioSlider) self.localRatioSlider.value = 65;
+    [self refreshRatioLabels];
+    self.resultLabel.text = @"";
 }
 
 /// 各组比例定义（默认值对齐原型）
