@@ -463,7 +463,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     if (self.regionPanel) { [self.regionPanel removeFromSuperview]; self.regionPanel = nil; }
     CGFloat margin = 12;
     CGFloat w = self.view.bounds.size.width - margin * 2;
-    CGFloat ph = 280;
+    CGFloat ph = 260;
     // 面板底部补偿 safe area（容器底边已延伸到 tab bar 之后，不补偿则最下方按钮被导航栏压住）
     CGFloat safeBottom = self.view.safeAreaInsets.bottom;
     UIView *panel = [[UIView alloc] initWithFrame:CGRectMake(margin, self.view.bounds.size.height - ph - 12 - safeBottom, w, ph)];
@@ -533,7 +533,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     dL.tag = 611;
     [ratioRow addSubview:dL];
     [panel addSubview:ratioRow];
-    y += 32;
+    y += 40; // 与前面行距一致（30 高控件 + 10 间隙），按钮自然下移、不挤比例行
 
     UIButton *cancel = [UIButton buttonWithType:UIButtonTypeSystem];
     cancel.frame = CGRectMake(14, y, (w - 34) / 2, 40);
