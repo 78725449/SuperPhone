@@ -625,11 +625,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     self.stepTable.hidden = !self.expanded;
 }
 
-/// 编排段变化后统一刷新：步骤列表 + 锚点 + 预览（对齐原型 addSegment → renderRail+renderOverlaysFromSegments）
+/// 编排段变化后统一刷新：步骤列表 + 锚点（路线只由锚点间生长线呈现，无虚线预览）
 - (void)syncSegmentsUI {
     [self.stepTable reloadData];
     [self rebuildAnchors];
-    [self rebuildPreview];
 }
 
 - (void)reloadSteps {
@@ -853,36 +852,6 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 - (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)from toIndexPath:(NSIndexPath *)to {
     if (tableView == self.stepTable) {
         [self moveSegmentFrom:from.row to:to.row];
-    }
-}
-
-#pragma mark - 地图预览（路线直线连线 / 区域圆）
-
-- (void)rebuildPreview {
-    // 移除旧预览 polyline（跳过生长轨迹 TRGrowPolyline——生长线常显，对齐原型 addedPath）
-    for (id overlay in self.mapView.overlays) {
-        if ([overlay isKindOfClass:[MKPolyline class]] && ![overlay isKindOfClass:[TRGrowPolyline class]]) {
-            [self.mapView removeOverlay:overlay];
-        }
-    }
-    // 预览连线：依次连接各段锚点（起点 + route to + region center）
-    NSMutableArray *coords = [NSMutableArray array];
-    for (NSDictionary *seg in self.segments) {
-        NSString *type = seg[@"type"];
-        if ([type isEqualToString:@"anchor"]) {
-            [coords addObject:[NSValue valueWithMKCoordinate:CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue])]];
-        } else if ([type isEqualToString:@"route"]) {
-            [coords addObject:[NSValue valueWithMKCoordinate:CLLocationCoordinate2DMake([seg[@"to"][@"lat"] doubleValue], [seg[@"to"][@"lon"] doubleValue])]];
-        } else if ([type isEqualToString:@"region"]) {
-            [coords addObject:[NSValue valueWithMKCoordinate:CLLocationCoordinate2DMake([seg[@"center"][@"lat"] doubleValue], [seg[@"center"][@"lon"] doubleValue])]];
-        }
-    }
-    if (coords.count >= 2) {
-        CLLocationCoordinate2D *cs = malloc(coords.count * sizeof(CLLocationCoordinate2D));
-        for (NSUInteger i = 0; i < coords.count; i++) cs[i] = [coords[i] MKCoordinateValue];
-        MKPolyline *line = [MKPolyline polylineWithCoordinates:cs count:coords.count];
-        free(cs);
-        [self.mapView addOverlay:line];
     }
 }
 
@@ -1173,14 +1142,6 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         r.strokeColor = [UIColor colorWithRed:0.24 green:0.18 blue:0.79 alpha:1.0];
         r.lineWidth = 3.0;
         r.lineCap = kCGLineCapRound;
-        return r;
-    }
-    if ([overlay isKindOfClass:[MKPolyline class]]) {
-        // 预览连线（对齐原型 routePath：蓝虚线 1.5px）
-        MKPolylineRenderer *r = [[MKPolylineRenderer alloc] initWithPolyline:overlay];
-        r.strokeColor = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0];
-        r.lineWidth = 1.5;
-        r.lineDashPattern = @[@5, @4];
         return r;
     }
     return nil;
