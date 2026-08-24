@@ -44,6 +44,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @interface TRMapPickerViewController () <MKMapViewDelegate, UISearchBarDelegate, UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) MKMapView *mapView;
 @property (nonatomic, strong) UISearchBar *searchBar;
+@property (nonatomic, strong) UITableView *searchResultsView;       // 搜索下拉结果列表（搜索框内向下展开）
+@property (nonatomic, strong) NSArray *searchResults;               // MKMapItem 数组
 @property (nonatomic, strong) UISegmentedControl *modeSeg;   // 步行/驾车（左下胶囊）
 @property (nonatomic, strong) UIButton *locateFab;           // 右下角圆形定位开关
 @property (nonatomic, strong) UIButton *statusBtn;                   // 状态条（用 setTitle 渲染，titleLabel.text 直接赋值无效）
@@ -172,6 +174,23 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.view addSubview:mode];
     self.modeSeg = mode;
 
+    // 搜索下拉结果列表（默认收起；搜索框内向下展开、可滑动）
+    UITableView *srv = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    srv.translatesAutoresizingMaskIntoConstraints = NO;
+    srv.dataSource = self;
+    srv.delegate = self;
+    srv.hidden = YES;
+    srv.layer.cornerRadius = 10;
+    srv.layer.borderWidth = 0.5;
+    srv.layer.borderColor = [UIColor separatorColor].CGColor;
+    srv.backgroundColor = [UIColor systemBackgroundColor];
+    srv.layer.shadowColor = [UIColor blackColor].CGColor;
+    srv.layer.shadowOpacity = 0.12;
+    srv.layer.shadowRadius = 6;
+    srv.layer.shadowOffset = CGSizeMake(0, 2);
+    [self.view addSubview:srv];
+    self.searchResultsView = srv;
+
     // 定位开关 FAB（右下角圆形）
     UIButton *fab = [UIButton buttonWithType:UIButtonTypeCustom];
     fab.translatesAutoresizingMaskIntoConstraints = NO;
@@ -196,6 +215,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         [statusBtn.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
         [statusBtn.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
         [statusBtn.heightAnchor constraintEqualToConstant:32],
+        // 搜索下拉结果列表：搜索框下 4、左右 12、高 ≤240（可滚动）
+        [srv.topAnchor constraintEqualToAnchor:sb.bottomAnchor constant:4],
+        [srv.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
+        [srv.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
+        [srv.heightAnchor constraintEqualToConstant:240],
         // 步骤列表：状态条下 4、左 12、宽 210、高 200
         [table.topAnchor constraintEqualToAnchor:statusBtn.bottomAnchor constant:4],
         [table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
@@ -466,27 +490,28 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     req.naturalLanguageQuery = q;
     MKLocalSearch *ls = [[MKLocalSearch alloc] initWithRequest:req];
     [ls startWithCompletionHandler:^(MKLocalSearchResponse *response, NSError *error) {
-        if (error || !response.mapItems.count) {
-            [self setHint:@"未找到地点"];
-            return;
-        }
-        // 搜索结果下拉选择（对齐原型 .drop 结果列表；原生用 action sheet 替代）
-        if (response.mapItems.count == 1) {
-            [self applySearchResult:response.mapItems.firstObject];
-        } else {
-            UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"选择地点" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-            for (MKMapItem *item in [response.mapItems subarrayWithRange:NSMakeRange(0, MIN(8, response.mapItems.count))]) {
-                NSString *title = item.name ?: @"地点";
-                NSString *sub = item.placemark.title ?: @"";
-                if (sub.length) title = [NSString stringWithFormat:@"%@ — %@", title, sub];
-                [ac addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-                    [self applySearchResult:item];
-                }]];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error || !response.mapItems.count) {
+                self.searchResults = @[];
+                [self.searchResultsView reloadData];
+                self.searchResultsView.hidden = YES;
+                [self setHint:@"未找到地点"];
+                return;
             }
-            [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-            [self presentViewController:ac animated:YES completion:nil];
-        }
+            // 结果依次排开（下拉列表，可向下滑动查看；最多 10 条）
+            NSRange rng = NSMakeRange(0, MIN(10, (NSInteger)response.mapItems.count));
+            self.searchResults = [response.mapItems subarrayWithRange:rng];
+            [self.searchResultsView reloadData];
+            self.searchResultsView.hidden = NO;
+        });
     }];
+}
+
+/// 搜索框文本清空 → 收起结果列表
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    if (!searchText.length) {
+        self.searchResultsView.hidden = YES;
+    }
 }
 
 /// 搜索选中结果 → 直接作为当前定位（anchor 立即注入）+ 水滴锚点；重置旧编排避免路线错乱
@@ -624,10 +649,26 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 #pragma mark - UITableViewDataSource / Delegate（步骤列表：删除 + 拖拽排序）
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (tableView == self.searchResultsView) return (NSInteger)self.searchResults.count;
     return MAX(1, (NSInteger)self.segments.count); // 空态占位（对齐原型 segPanel .empty）
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    // 搜索下拉结果列表
+    if (tableView == self.searchResultsView) {
+        static NSString *rid = @"SearchCell";
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:rid];
+        if (!cell) {
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:rid];
+            cell.textLabel.font = [UIFont systemFontOfSize:14];
+            cell.detailTextLabel.font = [UIFont systemFontOfSize:11];
+        }
+        MKMapItem *item = self.searchResults[indexPath.row];
+        cell.textLabel.text = item.name ?: @"地点";
+        cell.detailTextLabel.text = item.placemark.title ?: @"";
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        return cell;
+    }
     static NSString *rid = @"SegCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:rid];
     if (!cell) {
@@ -665,22 +706,37 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     return cell;
 }
 
+/// 选中搜索结果 → 直接定位为当前位置 + 清空输入框 + 收起列表
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (tableView == self.searchResultsView) {
+        MKMapItem *item = self.searchResults[indexPath.row];
+        [self applySearchResult:item];
+        self.searchBar.text = @"";              // 清空搜索输入框
+        [self.searchBar resignFirstResponder];
+        self.searchResultsView.hidden = YES;
+    }
+}
+
 - (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (tableView == self.searchResultsView) return UITableViewCellEditingStyleNone;
     return UITableViewCellEditingStyleDelete;
 }
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (editingStyle == UITableViewCellEditingStyleDelete) {
+    if (tableView == self.stepTable && editingStyle == UITableViewCellEditingStyleDelete) {
         [self deleteSegmentAt:indexPath.row];
     }
 }
 
 - (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
-    return YES;
+    return tableView == self.stepTable;
 }
 
 - (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)from toIndexPath:(NSIndexPath *)to {
-    [self moveSegmentFrom:from.row to:to.row];
+    if (tableView == self.stepTable) {
+        [self moveSegmentFrom:from.row to:to.row];
+    }
 }
 
 #pragma mark - 地图预览（路线直线连线 / 区域圆）
