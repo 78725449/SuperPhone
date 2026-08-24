@@ -489,22 +489,22 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     }];
 }
 
-/// 搜索选中结果 → 设为起点（对齐原型：搜索位置直接作为起点）
+/// 搜索选中结果 → 直接作为当前定位（anchor 立即注入）+ 水滴锚点；重置旧编排避免路线错乱
 - (void)applySearchResult:(MKMapItem *)item {
     CLLocationCoordinate2D wgs = item.placemark.coordinate;
     CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:wgs];
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
-    if (!self.hasStart) {
-        self.hasStart = YES;
-        self.cur = gcj;
-        self.locating = YES;
-        [self placeCurAt:gcj];
-        [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude)}];
-        [self commitAnchor];
-        [self updateStatus];
-        [self syncSegmentsUI];
-    }
-    [self setHint:item.name ?: @"已定位"];
+    // 搜索位置 = 新的当前定位起点：清空旧编排（严谨避免旧段与新起点错连造成路线错乱）
+    [self.segments removeAllObjects];
+    self.hasStart = YES;
+    self.cur = gcj;
+    self.locating = YES;
+    [self placeCurAt:gcj];
+    [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude)}];
+    [self commitAnchor];          // anchor 立即注入（当前定位生效）
+    [self updateStatus];
+    [self syncSegmentsUI];        // 水滴锚点显示
+    [self setHint:item.name ?: @"已定位 · 继续点击添加路线"];
 }
 
 #pragma mark - 状态 / 步骤 / 提示
