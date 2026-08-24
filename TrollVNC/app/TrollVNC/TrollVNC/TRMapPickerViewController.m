@@ -104,6 +104,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     lp.minimumPressDuration = 0.5;
     lp.delegate = self;
     [self.mapView addGestureRecognizer:lp];
+
+    // 实时位置刷新（1s：状态栏坐标/速度 + 蓝点随 manager 注入移动）
+    NSTimer *t = [NSTimer timerWithTimeInterval:1.0 target:self selector:@selector(refreshLiveStatus) userInfo:nil repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
 }
 
 - (void)setupUI {
@@ -586,6 +590,35 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.locateFab setBackgroundColor:self.locating ? brand : [UIColor systemGrayColor]];
 }
 
+/// 实时刷新（1s 定时器）：定位中读 manager 写回 mobile plist 的当前位置+速度 →
+/// 状态栏坐标/速度随移动实时变化 + 蓝点跟随（对齐原型 stat 实时性）
+- (void)refreshLiveStatus {
+    if (!self.locating) return; // 停止态状态栏保持（坐标定格最后位置）
+    NSDictionary *mobile = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist"];
+    double lat = [mobile[@"SimLocationLat"] doubleValue];
+    double lon = [mobile[@"SimLocationLon"] doubleValue];
+    if (lat == 0 && lon == 0) return;
+    // 蓝点跟随（写回坐标为 WGS → 画图转 GCJ）
+    [self placeCurAt:[CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake(lat, lon)]];
+    double spd = [mobile[@"SimLocationLiveSpeed"] doubleValue];
+    NSString *speedTxt = spd > 0 ? [NSString stringWithFormat:@"%.1f m/s", spd] : @"0.0 m/s";
+    NSString *modeTxt = @"模拟中 · 定位";
+    NSMutableAttributedString *as = [[NSMutableAttributedString alloc] init];
+    [as appendAttributedString:[[NSAttributedString alloc] initWithString:modeTxt attributes:@{
+        NSFontAttributeName: [UIFont boldSystemFontOfSize:13],
+        NSForegroundColorAttributeName: [UIColor systemBlueColor],
+    }]];
+    [as appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"   %@", speedTxt] attributes:@{
+        NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightRegular],
+        NSForegroundColorAttributeName: [UIColor secondaryLabelColor],
+    }]];
+    [as appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"   %.5f, %.5f", lat, lon] attributes:@{
+        NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightRegular],
+        NSForegroundColorAttributeName: [UIColor secondaryLabelColor],
+    }]];
+    [self.statusBtn setAttributedTitle:as forState:UIControlStateNormal];
+}
+
 - (void)toggleSteps:(UIButton *)sender {
     self.expanded = !self.expanded;
     self.stepTable.hidden = !self.expanded;
@@ -935,13 +968,13 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     }];
 }
 
-/// 生长可视化：每段算路点序列追加为生长轨迹线（对齐原型 growRegionRoute 逐段 moveTo 生长）
+/// 生长可视化：每段算路点序列追加为生长轨迹线（算路点 WGS-84 → 画图转 GCJ-02，否则路线与点击点偏移数百米）
 - (void)appendGrowLine:(NSArray *)pts {
     if (![pts isKindOfClass:[NSArray class]] || pts.count < 2) return;
     CLLocationCoordinate2D *cs = malloc(pts.count * sizeof(CLLocationCoordinate2D));
     for (NSUInteger i = 0; i < pts.count; i++) {
         NSDictionary *p = pts[i];
-        cs[i] = CLLocationCoordinate2DMake([p[@"lat"] doubleValue], [p[@"lon"] doubleValue]);
+        cs[i] = [CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake([p[@"lat"] doubleValue], [p[@"lon"] doubleValue])];
     }
     TRGrowPolyline *line = [TRGrowPolyline polylineWithCoordinates:cs count:pts.count];
     free(cs);
