@@ -55,7 +55,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @implementation TRGrowPolyline
 @end
 
-@interface TRMapPickerViewController () <MKMapViewDelegate, UISearchBarDelegate, UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate, CLLocationManagerDelegate>
+@interface TRMapPickerViewController () <MKMapViewDelegate, UISearchBarDelegate, UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate, CLLocationManagerDelegate, UITableViewDragDelegate, UITableViewDropDelegate>
 @property (nonatomic, strong) MKMapView *mapView;
 @property (nonatomic, strong) UISearchBar *searchBar;
 @property (nonatomic, strong) UITableView *searchResultsView;       // 搜索下拉结果列表（搜索框内向下展开）
@@ -231,7 +231,9 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     table.layer.borderWidth = 0.5;
     table.layer.borderColor = [UIColor separatorColor].CGColor;
     table.backgroundColor = [UIColor systemBackgroundColor];
-    table.editing = YES; // 编辑模式（左侧删除 + 拖拽把手）
+    table.editing = NO; // 自绘 cell：左=拖动图标（dragDelegate），右=删除按钮（点击即删，无系统二次确认）
+    table.dragDelegate = self;
+    table.dropDelegate = self;
     table.separatorInset = UIEdgeInsetsMake(0, 40, 0, 0);
     table.layer.shadowColor = [UIColor blackColor].CGColor;
     table.layer.shadowOpacity = 0.12;
@@ -846,6 +848,50 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     }
 }
 
+/// 段目标锚点坐标（WGS；anchor 用 lat/lon，旧 route 兼容 to）
+- (CLLocationCoordinate2D)anchorWGSOfSegment:(NSDictionary *)seg {
+    if ([seg[@"to"] isKindOfClass:[NSDictionary class]]) {
+        return [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"to"][@"lat"] doubleValue], [seg[@"to"][@"lon"] doubleValue])];
+    }
+    return [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue])];
+}
+
+/// submittedPoints 中最后一个距 wgs <30m 的点索引（段终点≈目标锚点；锚点间距 >30m 唯一匹配）
+- (NSUInteger)lastPointIndexNearWGS:(CLLocationCoordinate2D)wgs {
+    const double thr = 30.0;
+    for (NSUInteger i = self.submittedPoints.count; i > 0; i--) {
+        NSDictionary *p = self.submittedPoints[i - 1];
+        if ([SimRouteCalculator haversineMeters:wgs to:CLLocationCoordinate2DMake([p[@"lat"] doubleValue], [p[@"lon"] doubleValue])] < thr) return i - 1;
+    }
+    return NSNotFound;
+}
+
+/// submittedPoints 中第一个距 wgs <30m 的点索引
+- (NSUInteger)firstPointIndexNearWGS:(CLLocationCoordinate2D)wgs {
+    const double thr = 30.0;
+    for (NSUInteger i = 0; i < self.submittedPoints.count; i++) {
+        NSDictionary *p = self.submittedPoints[i];
+        if ([SimRouteCalculator haversineMeters:wgs to:CLLocationCoordinate2DMake([p[@"lat"] doubleValue], [p[@"lon"] doubleValue])] < thr) return i;
+    }
+    return NSNotFound;
+}
+
+/// 完成局部重算（统一收尾：写轨迹 + 释放生成锁 + 执行挂起编辑）
+- (void)finishLocalRegenerate:(NSArray *)joined hint:(NSString *)hint {
+    if (joined.count >= 2) {
+        self.submittedPoints = joined;
+        self.committedSegCount = self.segments.count;
+        [self writeTrackFile:joined];
+        [self setHint:[NSString stringWithFormat:@"%@ · %lu 点", hint, (unsigned long)joined.count]];
+    } else {
+        [self setHint:hint];
+    }
+    self.isGenerating = NO;
+    [self runPendingEdit];
+}
+
+#pragma mark - 局部重算（锚点编辑只重算受影响段，其余段/生长线不重渲染）
+
 /// 删除第 idx 锚点（任意锚点）：基于当前位置局部重算——保留当前位置前的轨迹点，
 /// 从受影响锚点开始重生长；删除最后锚点（无下一个锚点）→ 保持当前位置（轨迹截断到当前位置）
 - (void)deleteSegmentAt:(NSInteger)idx {
@@ -877,21 +923,195 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     }
     [self updateStatus];
     [self syncSegmentsUI];
-    // 基于当前位置局部重算（删除的最后锚点→affected=count→保持当前位置；生成中挂起，编辑不丢）
-    NSInteger affected = MIN(idx, (NSInteger)self.segments.count);
-    [self runEdit:^{ [self regenerateFromIndex:affected]; }];
-    [self setHint:@"已删除锚点 · 基于当前位置重算路线"];
+    // 纯 anchor 链 → 局部重算（只重算跨过被删锚点的连接段，其余段/线不重渲染）；
+    // 删除的是 region 段或剩余链含 region → 退化为全量重算（锚点匹配切分对 region 段不可靠）
+    if ([self segmentsContainRegion] || [removed[@"type"] isEqualToString:@"region"]) {
+        NSInteger affected = MIN(idx, (NSInteger)self.segments.count);
+        [self runEdit:^{ [self regenerateFromIndex:affected]; }];
+        [self setHint:@"已删除锚点 · 基于当前位置重算路线"];
+    } else {
+        [self runEdit:^{ [self localRegenerateAfterDelete:idx]; }];
+    }
+}
+
+/// 删除锚点 k（segments 已删 k）后的局部重算：只重算"跨过被删锚点的连接段"（原段 k→k+1 合并为 锚k-1→锚k+1），
+/// 其余段点序列与生长线完全保留不重渲染；删链尾=截断、删首锚点=当前位置作起点
+- (void)localRegenerateAfterDelete:(NSInteger)k {
+    if (self.isGenerating) { self.pendingEditAction = ^{ [self localRegenerateAfterDelete:k]; }; return; }
+    self.isGenerating = YES;
+    NSInteger oldCount = (NSInteger)self.segments.count + 1; // 删前段数（k 为原索引）
+    BOOL isTail = (k >= oldCount - 1);                       // 删的是链尾锚点
+    // 受影响旧线 segmentIndex ∈ {k, k+1}（段 k：目标=锚k；段 k+1：起点=锚k）；后续线索引左移 1
+    for (id o in [self.mapView.overlays copy]) {
+        if (![o isKindOfClass:[TRGrowPolyline class]]) continue;
+        TRGrowPolyline *line = (TRGrowPolyline *)o;
+        if (line.segmentIndex == k || line.segmentIndex == k + 1) {
+            [self.mapView removeOverlay:o];
+        } else if (line.segmentIndex > k + 1) {
+            line.segmentIndex -= 1;
+        }
+    }
+    if (isTail) {
+        // 删链尾：截断（保留到原 k-1 锚点前），无新段
+        NSMutableArray *joined = [NSMutableArray array];
+        if (k > 0) {
+            CLLocationCoordinate2D anchorW = [self anchorWGSOfSegment:self.segments[k - 1]];
+            NSUInteger keepEnd = [self lastPointIndexNearWGS:anchorW];
+            if (keepEnd != NSNotFound && keepEnd < self.submittedPoints.count) {
+                for (NSUInteger i = 0; i <= keepEnd; i++) [joined addObject:self.submittedPoints[i]];
+            }
+        }
+        [self finishLocalRegenerate:joined hint:@"已删除最后锚点 · 保持当前位置"];
+        return;
+    }
+    // 新连接段（删除后 segments[k-1]=原锚k-1、segments[k]=原锚k+1）
+    CLLocationCoordinate2D fromW, toW;
+    NSString *mode;
+    if (k == 0) {
+        fromW = [self currentSimPosition];      // 删首：当前位置作起点 → 原锚1
+        toW = [self anchorWGSOfSegment:self.segments[0]];
+        mode = [self departModeForSegment:0];
+    } else {
+        fromW = [self anchorWGSOfSegment:self.segments[k - 1]];
+        toW = [self anchorWGSOfSegment:self.segments[k]];
+        mode = [self departModeForSegment:k];
+    }
+    // 切分：保留受影响段起点前（≤fromW 附近）与终点后（≥toW 附近）的点序列
+    NSMutableArray *joined = [NSMutableArray array];
+    NSUInteger keepEnd = [self lastPointIndexNearWGS:fromW];
+    if (keepEnd != NSNotFound && keepEnd < self.submittedPoints.count) {
+        for (NSUInteger i = 0; i <= keepEnd; i++) [joined addObject:self.submittedPoints[i]];
+    }
+    NSUInteger keepStart = [self firstPointIndexNearWGS:toW];
+    NSLog(@"[locsim-grow] del-recalc seg %ld: (%.5f,%.5f)->(%.5f,%.5f)", (long)k, fromW.latitude, fromW.longitude, toW.latitude, toW.longitude);
+    [SimRouteCalculator calculateRoutePointsFrom:fromW to:toW mode:mode completion:^(NSArray<NSDictionary *> *points, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(self) sself = self;
+            if (!sself) return;
+            if (error || points.count < 2) {
+                [sself setHint:@"已忽略无法重算的锚点"];
+            } else {
+                [joined addObjectsFromArray:points];
+                [sself appendGrowLine:points forSegment:k]; // 新连接段线（其余线保留不重渲染）
+            }
+            if (keepStart != NSNotFound && keepStart < sself.submittedPoints.count) {
+                for (NSUInteger i = keepStart; i < sself.submittedPoints.count; i++) [joined addObject:sself.submittedPoints[i]];
+            }
+            [sself finishLocalRegenerate:joined hint:@"已删除锚点 · 重算连接路线"];
+        });
+    }];
 }
 
 /// 拖拽排序后：基于当前位置局部重算（保留当前位置前轨迹点，从受影响位置重生长）
 - (void)moveSegmentFrom:(NSInteger)from to:(NSInteger)to {
     if (from < 0 || to < 0 || from >= (NSInteger)self.segments.count || to >= (NSInteger)self.segments.count || from == to) return;
     NSDictionary *item = self.segments[from];
+    NSArray *prevSegments = [self.segments copy]; // 重排前链（用于对比受影响段 + 切分旧点序列）
     [self.segments removeObjectAtIndex:from];
     [self.segments insertObject:item atIndex:to];
-    [self setHint:@"行程已重排 · 基于当前位置重算"];
     [self syncSegmentsUI];
-    [self runEdit:^{ [self regenerateFromIndex:0]; }]; // 生成中挂起，完成后再重算
+    // 纯 anchor 链 → 局部重算（只重算起点/目标邻接变化的段）；含 region 段 → 退化全量
+    if ([self segmentsContainRegion]) {
+        [self setHint:@"行程已重排 · 基于当前位置重算"];
+        [self runEdit:^{ [self regenerateFromIndex:0]; }]; // 生成中挂起，完成后再重算
+    } else {
+        [self runEdit:^{ [self localRegenerateAfterReorder:prevSegments]; }];
+    }
+}
+
+/// 拖拽重排后的局部重算：只对"起点或目标锚点邻接变化"的段重新算路（串行），
+/// 不变段复用旧轨迹点序列即时重画（无算路等待）；含 region 段由调用方退化为全量
+- (void)localRegenerateAfterReorder:(NSArray *)prevSegments {
+    if (self.isGenerating) { self.pendingEditAction = ^{ [self localRegenerateAfterReorder:prevSegments]; }; return; }
+    self.isGenerating = YES;
+    NSInteger newCount = (NSInteger)self.segments.count;
+    NSInteger oldCount = (NSInteger)prevSegments.count;
+    // 受影响段（新链索引 i≥1）：起点/目标锚点邻接组合在旧链中不存在 → 需重新算路
+    NSMutableIndexSet *affected = [NSMutableIndexSet indexSet];
+    for (NSInteger i = 1; i < newCount; i++) {
+        BOOL unchanged = NO;
+        for (NSInteger j = 1; j < oldCount; j++) {
+            if ([self sameAnchor:self.segments[i - 1] b:prevSegments[j - 1]] &&
+                [self sameAnchor:self.segments[i] b:prevSegments[j]]) { unchanged = YES; break; }
+        }
+        if (!unchanged) [affected addIndex:(NSUInteger)i];
+    }
+    // 切分旧 submittedPoints → 旧链段点（段 j = [firstNear(锚j-1) .. lastNear(锚j)]）
+    NSMutableDictionary *segPoints = [NSMutableDictionary dictionary];
+    for (NSInteger j = 1; j < oldCount; j++) {
+        CLLocationCoordinate2D aPrev = [self anchorWGSOfSegment:prevSegments[j - 1]];
+        CLLocationCoordinate2D aJ = [self anchorWGSOfSegment:prevSegments[j]];
+        NSUInteger s = [self firstPointIndexNearWGS:aPrev];
+        NSUInteger e = [self lastPointIndexNearWGS:aJ];
+        if (s == NSNotFound || e == NSNotFound || e < s) continue;
+        segPoints[@(j)] = [self.submittedPoints subarrayWithRange:NSMakeRange(s, e - s + 1)];
+    }
+    // 移除全部生长线（重排后段索引已变，统一按新链重画；不变段用保留点序列即时画，无算路等待）
+    for (id o in [self.mapView.overlays copy]) {
+        if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
+    }
+    __block NSMutableArray *joined = [NSMutableArray array];
+    __block NSInteger si = 1;
+    __block void (^step)(void);
+    step = ^{
+        if (si >= newCount) {
+            [self finishLocalRegenerate:joined hint:@"行程已重排 · 重算受影响段"];
+            return;
+        }
+        NSInteger i = si;
+        if ([affected containsIndex:(NSUInteger)i]) {
+            CLLocationCoordinate2D fromW = [self anchorWGSOfSegment:self.segments[i - 1]];
+            CLLocationCoordinate2D toW = [self anchorWGSOfSegment:self.segments[i]];
+            NSString *mode = [self departModeForSegment:i];
+            NSLog(@"[locsim-grow] reorder-recalc seg %ld: (%.5f,%.5f)->(%.5f,%.5f)", (long)i, fromW.latitude, fromW.longitude, toW.latitude, toW.longitude);
+            [SimRouteCalculator calculateRoutePointsFrom:fromW to:toW mode:mode completion:^(NSArray<NSDictionary *> *points, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    __strong typeof(self) sself = self;
+                    if (!sself) return;
+                    if (!error && points.count >= 2) {
+                        [joined addObjectsFromArray:points];
+                        [sself appendGrowLine:points forSegment:i];
+                    } else {
+                        [sself setHint:@"已忽略无法重算的段"];
+                    }
+                    si++;
+                    step();
+                });
+            }];
+        } else {
+            NSArray *pts = segPoints[@(i)];
+            if (pts.count) {
+                [joined addObjectsFromArray:pts];
+                [self appendGrowLine:pts forSegment:i]; // 不变段复用旧点序列即时重画
+            }
+            si++;
+            step();
+        }
+    };
+    step();
+}
+
+/// 两段锚点坐标是否相同（anchor 段存 lat/lon，直接值比较；纯 anchor 链无 region）
+- (BOOL)sameAnchor:(NSDictionary *)a b:(NSDictionary *)b {
+    double al = [a[@"lat"] doubleValue], alo = [a[@"lon"] doubleValue];
+    if ([a[@"to"] isKindOfClass:[NSDictionary class]]) {
+        al = [a[@"to"][@"lat"] doubleValue];
+        alo = [a[@"to"][@"lon"] doubleValue];
+    }
+    double bl = [b[@"lat"] doubleValue], blo = [b[@"lon"] doubleValue];
+    if ([b[@"to"] isKindOfClass:[NSDictionary class]]) {
+        bl = [b[@"to"][@"lat"] doubleValue];
+        blo = [b[@"to"][@"lon"] doubleValue];
+    }
+    return al == bl && alo == blo;
+}
+
+/// 编辑路径是否含 region 段（局部重算的锚点匹配切分对 region 段不可靠 → 退化为全量重算）
+- (BOOL)segmentsContainRegion {
+    for (NSDictionary *seg in self.segments) {
+        if ([seg[@"type"] isEqualToString:@"region"]) return YES;
+    }
+    return NO;
 }
 
 #pragma mark - 基于当前位置的局部重算（manager 注入写回 mobile plist 为当前位置真相）
@@ -1060,10 +1280,9 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             [self.mapView removeOverlay:o];
         }
     }
-    // 当前位置（WGS）
+    // 续算起点（WGS）：优先用轨迹截断点（轨迹上的位置）——lastFix 停止态=真实位置可能不在轨迹上，
+    // 直接作起点会让重算路线从画布外"随机位置"续到受影响锚点（编辑后路线乱连）
     CLLocationCoordinate2D curW = [self currentSimPosition];
-    // 重算期间 daemon 驻留当前位置（防沿旧轨迹乱走 + 重载回跳）
-    [self holdAtCurrentPosition:curW];
     NSMutableArray *joined = [NSMutableArray array];
     // 保留当前位置前的已提交轨迹点（截断到最近点）
     if (self.submittedPoints.count) {
@@ -1071,7 +1290,13 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         for (NSUInteger i = 0; i <= cut && i < self.submittedPoints.count; i++) {
             [joined addObject:self.submittedPoints[i]];
         }
+        if (joined.count) {
+            NSDictionary *lastP = joined.lastObject;
+            curW = CLLocationCoordinate2DMake([lastP[@"lat"] doubleValue], [lastP[@"lon"] doubleValue]);
+        }
     }
+    // 重算期间 daemon 驻留续算点（防沿旧轨迹乱走 + 重载回跳）
+    [self holdAtCurrentPosition:curW];
     [self setHint:@"正在重算路线…"];
     __weak typeof(self) weakSelf = self;
     [self buildPointsFromIndex:(NSUInteger)affectedIdx cur:curW joined:joined completion:^(NSArray *points) {
@@ -1122,19 +1347,51 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     static NSString *rid = @"SegCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:rid];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:rid];
-        cell.textLabel.font = [UIFont systemFontOfSize:12];
-        cell.detailTextLabel.font = [UIFont systemFontOfSize:10];
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:rid];
+        // 左：拖动图标（最前；拖拽排序走 dragDelegate，整行可拖）
+        UIImageView *drag = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"line.3.horizontal"]];
+        drag.tag = 201;
+        drag.tintColor = [UIColor secondaryLabelColor];
+        drag.frame = CGRectMake(10, 13, 20, 18);
+        drag.autoresizingMask = UIViewAutoresizingFlexibleBottomMargin | UIViewAutoresizingFlexibleRightMargin;
+        [cell.contentView addSubview:drag];
+        // 右：删除按钮（点击即删，无系统二次确认）
+        UIButton *del = [UIButton buttonWithType:UIButtonTypeSystem];
+        del.tag = 202;
+        [del setImage:[UIImage systemImageNamed:@"xmark.circle.fill"] forState:UIControlStateNormal];
+        del.tintColor = [UIColor systemRedColor];
+        del.frame = CGRectMake(cell.contentView.bounds.size.width - 46, 0, 46, 44);
+        del.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleHeight;
+        [del addTarget:self action:@selector(deleteStepTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [cell.contentView addSubview:del];
+        // 标题 / 副标题（自绘，避开左右按钮）
+        UILabel *tl = [[UILabel alloc] init];
+        tl.tag = 203;
+        tl.font = [UIFont systemFontOfSize:12];
+        tl.frame = CGRectMake(42, 5, cell.contentView.bounds.size.width - 42 - 56, 18);
+        tl.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleRightMargin;
+        [cell.contentView addSubview:tl];
+        UILabel *sl = [[UILabel alloc] init];
+        sl.tag = 204;
+        sl.font = [UIFont systemFontOfSize:10];
+        sl.textColor = [UIColor secondaryLabelColor];
+        sl.frame = CGRectMake(42, 23, cell.contentView.bounds.size.width - 42 - 56, 14);
+        sl.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleRightMargin;
+        [cell.contentView addSubview:sl];
     }
     if (indexPath.row >= (NSInteger)self.segments.count) {
-        cell.textLabel.text = @"暂无行程";
-        cell.detailTextLabel.text = @"点击地图设定起点";
-        cell.showsReorderControl = NO;
-        cell.editingAccessoryType = UITableViewCellAccessoryNone;
+        ((UILabel *)[cell.contentView viewWithTag:203]).text = @"暂无行程";
+        ((UILabel *)[cell.contentView viewWithTag:204]).text = @"点击地图设定起点";
+        [cell.contentView viewWithTag:201].hidden = YES;
+        [cell.contentView viewWithTag:202].hidden = YES;
         cell.userInteractionEnabled = NO;
         return cell;
     }
     cell.userInteractionEnabled = YES;
+    [cell.contentView viewWithTag:201].hidden = NO;
+    UIButton *del = (UIButton *)[cell.contentView viewWithTag:202];
+    del.hidden = NO;
+    del.tag = (NSInteger)indexPath.row; // 删除目标行（点击即删）
     NSDictionary *seg = self.segments[indexPath.row];
     NSString *type = seg[@"type"];
     NSString *title = @"";
@@ -1147,10 +1404,15 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         title = @"区域漫游";
         sub = [NSString stringWithFormat:@"%.0f m · %@ min", [seg[@"radius"] doubleValue], seg[@"durationMin"]];
     }
-    cell.textLabel.text = [NSString stringWithFormat:@"%ld  %@", (long)(indexPath.row + 1), title];
-    cell.detailTextLabel.text = sub;
-    cell.showsReorderControl = YES;
+    ((UILabel *)[cell.contentView viewWithTag:203]).text = [NSString stringWithFormat:@"%ld  %@", (long)(indexPath.row + 1), title];
+    ((UILabel *)[cell.contentView viewWithTag:204]).text = sub;
     return cell;
+}
+
+/// 步骤列表删除按钮：点击即删（无二次确认）
+- (void)deleteStepTapped:(UIButton *)sender {
+    NSInteger row = sender.tag;
+    if (row >= 0 && row < (NSInteger)self.segments.count) [self deleteSegmentAt:row];
 }
 
 /// 选中搜索结果 → 直接定位为当前位置 + 清空输入框 + 收起列表
@@ -1183,6 +1445,36 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 - (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)from toIndexPath:(NSIndexPath *)to {
     if (tableView == self.stepTable) {
         [self moveSegmentFrom:from.row to:to.row];
+    }
+}
+
+#pragma mark - UITableViewDragDelegate / UITableViewDropDelegate（原生拖拽排序：整行可拖）
+
+- (NSArray<UIDragItem *> *)tableView:(UITableView *)tableView itemsForBeginningDragSession:(id<UIDragSession>)session atIndexPath:(NSIndexPath *)indexPath {
+    if (tableView != self.stepTable) return @[];
+    if (indexPath.row < 0 || indexPath.row >= (NSInteger)self.segments.count) return @[];
+    NSItemProvider *ip = [[NSItemProvider alloc] initWithObject:@(indexPath.row)];
+    UIDragItem *item = [[UIDragItem alloc] initWithItemProvider:ip];
+    item.localObject = @(indexPath.row);
+    return @[item];
+}
+
+- (UITableViewDropProposal *)tableView:(UITableView *)tableView dropSessionDidUpdate:(id<UIDropSession>)session withDestinationIndexPath:(NSIndexPath *)destinationIndexPath {
+    if (tableView != self.stepTable) return [[UITableViewDropProposal alloc] initWithDropOperation:UIDropOperationForbidden];
+    return [[UITableViewDropProposal alloc] initWithDropOperation:UIDropOperationMove intent:UITableViewDropIntentInsertAtDestinationIndexPath];
+}
+
+- (void)tableView:(UITableView *)tableView performDropWithCoordinator:(id<UITableViewDropCoordinator>)coordinator {
+    if (tableView != self.stepTable) return;
+    NSIndexPath *dest = coordinator.destinationIndexPath;
+    if (!dest) dest = [NSIndexPath indexPathForRow:MAX(0, (NSInteger)self.segments.count - 1) inSection:0];
+    for (id<UITableViewDropItem> di in coordinator.items) {
+        NSNumber *fromRow = di.dragItem.localObject;
+        if ([fromRow isKindOfClass:[NSNumber class]]) {
+            NSInteger from = fromRow.integerValue;
+            if (from >= 0 && from < (NSInteger)self.segments.count) [self moveSegmentFrom:from to:dest.row];
+            break;
+        }
     }
 }
 
@@ -1254,6 +1546,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.committedSegCount = 0;
     }
     self.isGenerating = YES;
+    // 算路（异步）期间 daemon 驻留当前位置：防沿旧轨迹继续播放 + 算路完成后重载续播点跳变
+    if (self.locating) [self holdAtCurrentPosition:[self currentSimPosition]];
 
     NSMutableArray *joined = [self.submittedPoints mutableCopy];
     if (!joined) joined = [NSMutableArray array];
@@ -1357,6 +1651,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         return;
     }
     // 后续锚点：从上一位置（上一锚点/区域终点）生长路线到本锚点
+    NSLog(@"[locsim-grow] seg %lu %@: from (%.5f,%.5f) -> to (%.5f,%.5f)", (unsigned long)idx, type, cur.latitude, cur.longitude, toW.latitude, toW.longitude); // 生长顺序诊断
     [SimRouteCalculator calculateRoutePointsFrom:cur to:toW mode:mode completion:^(NSArray<NSDictionary *> *points, NSError *error) {
         // MKDirections completion 队列不保证主线程，UI 操作统一回主线程
         dispatch_async(dispatch_get_main_queue(), ^{
