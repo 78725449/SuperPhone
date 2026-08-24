@@ -168,10 +168,17 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.view addSubview:table];
     self.stepTable = table;
 
-    // 步行/驾车胶囊（左下）
+    // 步行/驾车胶囊（左下；不透明背景+阴影，浮层上可辨）
     UISegmentedControl *mode = [[UISegmentedControl alloc] initWithItems:@[@"🚶 步行", @"🚗 驾车"]];
     mode.translatesAutoresizingMaskIntoConstraints = NO;
     mode.selectedSegmentIndex = 0;
+    mode.backgroundColor = [UIColor systemBackgroundColor];
+    mode.layer.cornerRadius = 16;
+    mode.layer.masksToBounds = NO;
+    mode.layer.shadowColor = [UIColor blackColor].CGColor;
+    mode.layer.shadowOpacity = 0.25;
+    mode.layer.shadowRadius = 4;
+    mode.layer.shadowOffset = CGSizeMake(0, 1);
     [mode addTarget:self action:@selector(modeChanged:) forControlEvents:UIControlEventValueChanged];
     [self.view addSubview:mode];
     self.modeSeg = mode;
@@ -258,29 +265,28 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 #pragma mark - 手势：单击递增编排
 
+/// 单击地图 = 添加锚点（无起点差别：所有位置都是锚点）
+/// 第一个锚点无前驱（前方没有任何锚点）→ 仅当前定位（anchor 注入）；
+/// 后续锚点前方都有上一个锚点 → 从上一锚点生长路线到本锚点（增量生长）
 - (void)handleTap:(UITapGestureRecognizer *)g {
     CGPoint pt = [g locationInView:self.mapView];
     CLLocationCoordinate2D gcj = [self.mapView convertPoint:pt toCoordinateFromView:self.mapView];
-    if (!self.hasStart) {
-        // 首击 = 设起点（anchor 基底），自动开启定位
+    [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude)}];
+    self.cur = gcj;
+    [self placeCurAt:gcj];
+    if (self.segments.count == 1) {
+        // 第一个锚点：无前驱 → 直接作为当前定位
         self.hasStart = YES;
-        self.cur = gcj;
         self.locating = YES;
-        [self placeCurAt:gcj];
-        [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude)}];
         [self commitAnchor];
-        [self updateStatus];
-        [self syncSegmentsUI];
+        [self setHint:@"已设定位点 · 继续点击添加锚点生长路线"];
     } else {
-        // 再击 = 加路线段（上一位置为起点）
-        NSString *mode = self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk";
-        [self.segments addObject:@{@"type": @"route", @"to": @{@"lat": @(gcj.latitude), @"lon": @(gcj.longitude)}, @"mode": mode}];
-        self.cur = gcj;
-        [self placeCurAt:gcj];
-        [self updateStatus];
-        [self syncSegmentsUI];
+        // 后续锚点：从上一锚点生长路线（增量，上一段结束点=新段起点）
         [self commitItinerary];
+        [self setHint:@"已添加锚点 · 路线从上一位置生长"];
     }
+    [self updateStatus];
+    [self syncSegmentsUI];
 }
 
 #pragma mark - 手势：长按区域
@@ -516,24 +522,25 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     }
 }
 
-/// 搜索选中结果 → 直接作为当前定位（anchor 立即注入）+ 水滴锚点；重置旧编排避免路线错乱
+/// 搜索选中结果 → 添加锚点（与地图点击同构，无起点差别）
+/// 第一个锚点无前驱 → 直接作为当前定位；后续锚点 → 从上一锚点生长路线
 - (void)applySearchResult:(MKMapItem *)item {
     CLLocationCoordinate2D wgs = item.placemark.coordinate;
     CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:wgs];
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
-    // 搜索位置 = 新的当前定位起点：清空旧编排（严谨避免旧段与新起点错连造成路线错乱）
-    [self.segments removeAllObjects];
-    self.committedSegCount = 0;
-    self.submittedPoints = @[];
-    self.hasStart = YES;
-    self.cur = gcj;
-    self.locating = YES;
-    [self placeCurAt:gcj];
     [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude)}];
-    [self commitAnchor];          // anchor 立即注入（当前定位生效）
+    self.cur = gcj;
+    self.hasStart = YES;
+    [self placeCurAt:gcj];
+    if (self.segments.count == 1) {
+        self.locating = YES;
+        [self commitAnchor];          // 第一个锚点：直接当前定位
+    } else {
+        [self commitItinerary];       // 后续锚点：从上一锚点生长
+    }
     [self updateStatus];
-    [self syncSegmentsUI];        // 水滴锚点显示
-    [self setHint:item.name ?: @"已定位 · 继续点击添加路线"];
+    [self syncSegmentsUI];            // 水滴锚点显示
+    [self setHint:item.name ?: @"已添加锚点"];
 }
 
 #pragma mark - 状态 / 步骤 / 提示
@@ -620,25 +627,29 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     }
 }
 
-/// 删除第 idx 段（起点被删则重置编排）；路线自适应（预览按剩余段顺序重连，提交时按序拼接）
+/// 删除第 idx 锚点（任意锚点：删除中间锚点后，前一个与后一个锚点自动重算新路线；删除首个则后续成为无前驱锚点）
 - (void)deleteSegmentAt:(NSInteger)idx {
     if (idx < 0 || idx >= (NSInteger)self.segments.count) return;
-    NSDictionary *seg = self.segments[idx];
-    if ([seg[@"type"] isEqualToString:@"anchor"]) {
-        // 起点被删：若还有后续段，首段 route/region 的原点缺失 → 编排整体重置
-        [self.segments removeAllObjects];
+    [self.segments removeObjectAtIndex:idx];
+    // 模拟位置回退到最后一个剩余锚点
+    if (self.segments.count) {
+        NSDictionary *last = self.segments.lastObject;
+        if ([last[@"type"] isEqualToString:@"region"]) {
+            self.cur = CLLocationCoordinate2DMake([last[@"center"][@"lat"] doubleValue], [last[@"center"][@"lon"] doubleValue]);
+        } else {
+            self.cur = CLLocationCoordinate2DMake([last[@"lat"] doubleValue], [last[@"lon"] doubleValue]);
+        }
+        [self placeCurAt:self.cur];
+    } else {
         self.hasStart = NO;
         self.locating = NO;
-        [self updateStatus];
-        [self setHint:@"起点已删除 · 重新点击地图设定起点"];
-    } else {
-        [self.segments removeObjectAtIndex:idx];
-        [self setHint:@"已删除该段 · 路线自适应连接"];
     }
+    [self updateStatus];
     [self syncSegmentsUI];
-    // 删除段 → 重置提交状态（全量重建，避免增量起点错乱）
+    // 删除 → 重置提交状态（全量重建：前一锚点与后一锚点自动计算新路线）
     self.committedSegCount = 0;
-    if (self.hasStart && self.segments.count > 1) [self commitItinerary];
+    if (self.segments.count > 1) [self commitItinerary];
+    [self setHint:@"已删除锚点 · 前后锚点路线自动重连"];
 }
 
 /// 拖拽排序后：段顺序更新 → 预览/生成按新顺序拼接（起点固定为首段 anchor）
@@ -698,12 +709,9 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     NSString *title = @"";
     NSString *sub = @"";
     if ([type isEqualToString:@"anchor"]) {
-        title = @"起点";
+        title = @"锚点";
         CLLocationCoordinate2D w = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue])];
         sub = [NSString stringWithFormat:@"%.4f, %.4f", w.latitude, w.longitude];
-    } else if ([type isEqualToString:@"route"]) {
-        title = @"路线 → 终点";
-        sub = [seg[@"mode"] isEqualToString:@"drive"] ? @"驾车" : @"步行";
     } else {
         title = @"区域漫游";
         sub = [NSString stringWithFormat:@"%.0f m · %@ min", [seg[@"radius"] doubleValue], seg[@"durationMin"]];
@@ -873,7 +881,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.mapView addOverlay:line];
 }
 
-/// 逐段生成（递归；route 段算路、region 段计划+逐对算路、anchor 段作起点基底）
+/// 锚点链逐段生成（递归）：首个锚点无前驱→仅作起点；后续锚点→从上一位置生长路线；
+/// region 锚点→进入段（上一锚点→区域第一途经点）+ 区域内途经点链（processRegionPlan）
 - (void)buildPointsFromIndex:(NSUInteger)idx
                          cur:(CLLocationCoordinate2D)cur
                       joined:(NSMutableArray *)joined
@@ -881,31 +890,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     if (idx >= self.segments.count) { if (completion) completion(joined); return; }
     NSDictionary *seg = self.segments[idx];
     NSString *type = seg[@"type"];
-    if ([type isEqualToString:@"anchor"]) {
-        [self buildPointsFromIndex:idx + 1 cur:cur joined:joined completion:completion];
-    } else if ([type isEqualToString:@"route"]) {
-        CLLocationCoordinate2D toW = CLLocationCoordinate2DMake([seg[@"to"][@"lat"] doubleValue], [seg[@"to"][@"lon"] doubleValue]);
-        toW = [CoordTransform gcj02ToWgs84:toW];
-        NSString *mode = seg[@"mode"] ?: @"walk";
-        [SimRouteCalculator calculateRoutePointsFrom:cur to:toW mode:mode completion:^(NSArray<NSDictionary *> *points, NSError *error) {
-            // MKDirections completion 队列不保证主线程，UI 操作统一回主线程
-            dispatch_async(dispatch_get_main_queue(), ^{
-                __strong typeof(self) sself = self;
-                if (!sself) return;
-                if (error || points.count < 2) {
-                    [sself setHint:@"路线算路失败（请检查网络）"];
-                    if (completion) completion(@[]);
-                    return;
-                }
-                [joined addObjectsFromArray:points];
-                // 生长：逐段画线 + 蓝点推进（对齐原型 moveTo 逐段生长）
-                [sself appendGrowLine:points];
-                CLLocationCoordinate2D end = CLLocationCoordinate2DMake([points.lastObject[@"lat"] doubleValue], [points.lastObject[@"lon"] doubleValue]);
-                [sself placeCurAt:[CoordTransform wgs84ToGcj02:end]];
-                [sself buildPointsFromIndex:idx + 1 cur:end joined:joined completion:completion];
-            });
-        }];
-    } else if ([type isEqualToString:@"region"]) {
+    if ([type isEqualToString:@"region"]) {
         CLLocationCoordinate2D centerW = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"center"][@"lat"] doubleValue], [seg[@"center"][@"lon"] doubleValue])];
         double radius = [seg[@"radius"] doubleValue];
         double durationMin = [seg[@"durationMin"] doubleValue];
@@ -914,9 +899,40 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         NSDictionary *plan = [RegionSimulator generateRegionPlanCenter:centerW radius:radius mode:mode durationMin:durationMin startFrom:cur customK:customK];
         [self processRegionPlan:plan cur:cur mode:mode joined:joined
                     itineraryIdx:idx + 1 completion:completion];
-    } else {
-        [self buildPointsFromIndex:idx + 1 cur:cur joined:joined completion:completion];
+        return;
     }
+    // 锚点段：目标坐标（anchor 用 lat/lon；旧 route 段兼容用 to）
+    double toLat = [seg[@"lat"] doubleValue], toLon = [seg[@"lon"] doubleValue];
+    if ([seg[@"to"] isKindOfClass:[NSDictionary class]]) {
+        toLat = [seg[@"to"][@"lat"] doubleValue];
+        toLon = [seg[@"to"][@"lon"] doubleValue];
+    }
+    CLLocationCoordinate2D toW = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake(toLat, toLon)];
+    NSString *mode = [seg[@"mode"] isKindOfClass:[NSString class]] ? seg[@"mode"] : (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
+    if (idx == 0) {
+        // 首个锚点：无前驱 → 仅作起点，不生长路线
+        [self buildPointsFromIndex:idx + 1 cur:toW joined:joined completion:completion];
+        return;
+    }
+    // 后续锚点：从上一位置（上一锚点/区域终点）生长路线到本锚点
+    [SimRouteCalculator calculateRoutePointsFrom:cur to:toW mode:mode completion:^(NSArray<NSDictionary *> *points, NSError *error) {
+        // MKDirections completion 队列不保证主线程，UI 操作统一回主线程
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(self) sself = self;
+            if (!sself) return;
+            if (error || points.count < 2) {
+                [sself setHint:@"路线算路失败（请检查网络）"];
+                if (completion) completion(@[]);
+                return;
+            }
+            [joined addObjectsFromArray:points];
+            // 生长：逐段画线 + 蓝点推进（对齐原型 moveTo 逐段生长）
+            [sself appendGrowLine:points];
+            CLLocationCoordinate2D end = CLLocationCoordinate2DMake([points.lastObject[@"lat"] doubleValue], [points.lastObject[@"lon"] doubleValue]);
+            [sself placeCurAt:[CoordTransform wgs84ToGcj02:end]];
+            [sself buildPointsFromIndex:idx + 1 cur:end joined:joined completion:completion];
+        });
+    }];
 }
 
 /// 区域段：逐途经点 MKDirections 算路拼接（<30m/失败降级直线）+ 停留微动（§3.4.1）
@@ -1081,10 +1097,9 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             v.rightCalloutAccessoryView = del;
         }
         v.annotation = annotation;
-        // 实心水滴图钉（UIGraphicsImageRenderer 自绘：半圆顶+尖底+白边；start=紫/route=蓝/region=绿，对齐原型 segMark）
-        UIColor *color = [UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0];
-        if ([a.type isEqualToString:@"route"]) color = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0];
-        else if ([a.type isEqualToString:@"region"]) color = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0];
+        // 实心水滴图钉（UIGraphicsImageRenderer 自绘：半圆顶+尖底+白边；锚点=蓝/区域=绿）
+        UIColor *color = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0];
+        if ([a.type isEqualToString:@"region"]) color = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0];
         CGFloat sz = 22;
         UIGraphicsImageRenderer *ir = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(sz, sz + 6)];
         UIImage *img = [ir imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
