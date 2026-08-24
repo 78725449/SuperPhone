@@ -260,8 +260,9 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     if ([mode isEqualToString:@"anchor"] || [mode isEqualToString:@"itinerary"]) {
         self.locating = YES;
         if (lat != 0 || lon != 0) {
-            self.cur = CLLocationCoordinate2DMake(lat, lon); // 已是 WGS-84，画回地图转 GCJ
-            [self placeCurAt:[CoordTransform wgs84ToGcj02:self.cur]];
+            // defaults 存 WGS → 转 GCJ 维持 self.cur=GCJ 约定（否则后续 commitAnchor 会双重转换偏差）
+            self.cur = [CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake(lat, lon)];
+            [self placeCurAt:self.cur];
         }
     }
     [self updateStatus];
