@@ -1381,7 +1381,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.waypointAnns removeAllObjects];
     for (NSUInteger i = 0; i < wps.count; i++) {
         TRWaypointAnnotation *w = [[TRWaypointAnnotation alloc] init];
-        w.coordinate = [wps[i] MKCoordinateValue];
+        // 途经点坐标转 GCJ-02（plan 返回 WGS-84；地图显示坐标系=GCJ，与生长线 appendGrowLine 同转换，不转则图标偏离路线数百米）
+        w.coordinate = [CoordTransform wgs84ToGcj02:[wps[i] MKCoordinateValue]];
         [self.waypointAnns addObject:w];
         [self.mapView addAnnotation:w];
     }
@@ -1409,12 +1410,12 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             legMode = mode; // 固定模式（walk/drive）
         }
         double speed = [RegionSimulator effectiveSpeedForMode:legMode];
-        // 该段途经点标注内嵌出行图标（复用锚点水滴渲染；随机模式下每段确定后刷新）
+        // 该段途经点标注内嵌出行图标（与锚点同款蓝水滴；随机模式下每段确定后刷新）
         if (segIdx < self.waypointAnns.count) {
             TRWaypointAnnotation *w = self.waypointAnns[segIdx];
             w.mode = legMode;
             MKAnnotationView *wv = [self.mapView viewForAnnotation:w];
-            if (wv) wv.image = [self waterdropImageWithColor:[UIColor colorWithWhite:0.56 alpha:1.0] size:18 emoji:[self emojiForMode:legMode]];
+            if (wv) wv.image = [self waterdropImageWithColor:[UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0] size:18 emoji:[self emojiForMode:legMode]];
         }
         double segDist = [SimRouteCalculator haversineMeters:legCur to:wp];
 
@@ -1579,7 +1580,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         return v;
     }
     if ([annotation isKindOfClass:[TRWaypointAnnotation class]]) {
-        // 区域漫游途经点：灰色小水滴 + 该段出行方式图标（信息点，点击不删除；样式复用锚点水滴渲染）
+        // 区域漫游途经点：蓝色小水滴 + 该段出行方式图标（样式与锚点一致，仅不可点击删除；复用锚点水滴渲染）
         TRWaypointAnnotation *w = (TRWaypointAnnotation *)annotation;
         static NSString *rid = @"WaypointPin";
         MKAnnotationView *v = [mapView dequeueReusableAnnotationViewWithIdentifier:rid];
@@ -1589,7 +1590,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             v.userInteractionEnabled = YES; // 供 shouldReceiveTouch 拦截，防 tap 误加锚点
         }
         v.annotation = annotation;
-        v.image = [self waterdropImageWithColor:[UIColor colorWithWhite:0.56 alpha:1.0] size:18 emoji:[self emojiForMode:w.mode]];
+        v.image = [self waterdropImageWithColor:[UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0] size:18 emoji:[self emojiForMode:w.mode]];
         v.centerOffset = CGPointMake(0, -12); // 尖对准坐标点
         v.frame = CGRectMake(0, 0, 18, 24);
         return v;
