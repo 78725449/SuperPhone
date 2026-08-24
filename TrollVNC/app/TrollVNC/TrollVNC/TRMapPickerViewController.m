@@ -1026,13 +1026,19 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     self.isGenerating = YES;
     NSInteger newCount = (NSInteger)self.segments.count;
     NSInteger oldCount = (NSInteger)prevSegments.count;
-    // 受影响段（新链索引 i≥1）：起点/目标锚点邻接组合在旧链中不存在 → 需重新算路
+    // 受影响段（新链索引 i≥1）：起点/目标锚点邻接组合在旧链中不存在 → 需重新算路；
+    // 不变段记录其对应旧链段索引（重排后索引错位，取旧点序列须按旧索引）
     NSMutableIndexSet *affected = [NSMutableIndexSet indexSet];
+    NSMutableDictionary *reuseMap = [NSMutableDictionary dictionary]; // @(新链段i) -> @(旧链段j)
     for (NSInteger i = 1; i < newCount; i++) {
         BOOL unchanged = NO;
         for (NSInteger j = 1; j < oldCount; j++) {
             if ([self sameAnchor:self.segments[i - 1] b:prevSegments[j - 1]] &&
-                [self sameAnchor:self.segments[i] b:prevSegments[j]]) { unchanged = YES; break; }
+                [self sameAnchor:self.segments[i] b:prevSegments[j]]) {
+                unchanged = YES;
+                reuseMap[@(i)] = @(j);
+                break;
+            }
         }
         if (!unchanged) [affected addIndex:(NSUInteger)i];
     }
@@ -1079,7 +1085,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
                 });
             }];
         } else {
-            NSArray *pts = segPoints[@(i)];
+            NSNumber *oj = reuseMap[@(i)];
+            NSArray *pts = oj ? segPoints[oj] : nil;
             if (pts.count) {
                 [joined addObjectsFromArray:pts];
                 [self appendGrowLine:pts forSegment:i]; // 不变段复用旧点序列即时重画
