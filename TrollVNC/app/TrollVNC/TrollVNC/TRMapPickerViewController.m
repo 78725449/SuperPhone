@@ -313,9 +313,9 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     hole.hidden = YES;
     [fab addSubview:hole];
     self.fabCoinHole = hole;
-    // 渐变金底（对角：左上亮金 → 右下深金，铜钱立体感；FAB 固定 56×56）
+    // 渐变金底（对角：左上亮金 → 右下深金，铜钱立体感；FAB 固定 56×56——bounds 布局前为 0，固定尺寸兜底 + viewDidLayoutSubviews 同步）
     CAGradientLayer *grad = [CAGradientLayer layer];
-    grad.frame = fab.bounds;
+    grad.frame = CGRectMake(0, 0, 56, 56);
     grad.colors = @[(id)[UIColor colorWithRed:0.95 green:0.78 blue:0.30 alpha:1.0].CGColor, // 亮金
                     (id)[UIColor colorWithRed:0.83 green:0.63 blue:0.09 alpha:1.0].CGColor]; // 深金
     grad.startPoint = CGPointMake(0, 0);
@@ -1040,6 +1040,11 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     if (!uninitialized && [SimRouteCalculator haversineMeters:wgs to:self.lastAutoFocusWGS] < kAutoFocusThresholdM) return;
     self.lastAutoFocusWGS = wgs;
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance([CoordTransform wgs84ToGcj02:wgs], 3000, 3000) animated:YES];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    self.fabGoldGradient.frame = self.locateFab.bounds; // 渐变金底随 FAB 布局同步（创建时 bounds 为 0，必须布局后更新，否则铜钱背景近乎透明）
 }
 
 /// 地图立即聚焦到当前位置（首锚点/启动定位/停止/回前台时调用）
