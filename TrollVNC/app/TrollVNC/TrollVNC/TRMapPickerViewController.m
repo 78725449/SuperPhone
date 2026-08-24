@@ -25,6 +25,8 @@
 
 /// 轨迹文件路径（与 SimLocationController kSimTrackFilePath 一致，App 只当配置源、manager 注入执行）
 static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.simloc.json";
+/// manager 实时写回文件（daemon 每秒写当前注入位置+速度，App 轮询读取作位置真相）
+static NSString *const kLivePrefsPath = @"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist";
 static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 /// 锚点标注（关联编排段索引，点击删除该段；水滴图钉：start=紫/route=蓝/region=绿，对齐原型 segMark）
@@ -257,13 +259,21 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     NSString *mode = [d stringForKey:@"SimLocationMode"];
     double lat = [d doubleForKey:@"SimLocationLat"];
     double lon = [d doubleForKey:@"SimLocationLon"];
-    if ([mode isEqualToString:@"anchor"] || [mode isEqualToString:@"itinerary"]) {
+    // 仅当确实存在已设置的位置时才恢复定位中；无位置（从未设过）→ 保持停止态，
+    // 避免"幽灵定位"（显示定位中却无定位点）
+    if (([mode isEqualToString:@"anchor"] || [mode isEqualToString:@"itinerary"]) && (lat != 0 || lon != 0)) {
         self.locating = YES;
-        if (lat != 0 || lon != 0) {
-            // defaults 存 WGS → 转 GCJ 维持 self.cur=GCJ 约定（否则后续 commitAnchor 会双重转换偏差）
-            self.cur = [CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake(lat, lon)];
-            [self placeCurAt:self.cur];
-        }
+        // defaults 存 WGS → 转 GCJ 维持 self.cur=GCJ 约定（否则后续 commitAnchor 会双重转换偏差）
+        self.cur = [CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake(lat, lon)];
+        [self placeCurAt:self.cur];
+        // 视野移到当前定位点（默认视野在北京，不移则定位点不可见）；
+        // 以 daemon 实时写回坐标为准（若存在），否则退回 defaults 位置
+        NSDictionary *mobile = [NSDictionary dictionaryWithContentsOfFile:kLivePrefsPath];
+        double llat = [mobile[@"SimLocationLat"] doubleValue];
+        double llon = [mobile[@"SimLocationLon"] doubleValue];
+        CLLocationCoordinate2D view = self.cur;
+        if (llat != 0 || llon != 0) view = [CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake(llat, llon)];
+        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(view, 5000, 5000) animated:NO];
     }
     [self updateStatus];
 }
@@ -277,16 +287,17 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     CGPoint pt = [g locationInView:self.mapView];
     CLLocationCoordinate2D gcj = [self.mapView convertPoint:pt toCoordinateFromView:self.mapView];
     [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude)}];
-    self.cur = gcj;
-    [self placeCurAt:gcj];
     if (self.segments.count == 1) {
-        // 第一个锚点：无前驱 → 直接作为当前定位
+        // 第一个锚点：无前驱 → 点击点成为当前定位
         self.hasStart = YES;
+        self.cur = gcj;
+        [self placeCurAt:gcj];
         self.locating = YES;
         [self commitAnchor];
         [self setHint:@"已设定位点 · 继续点击添加锚点生长路线"];
     } else {
-        // 后续锚点：从上一锚点生长路线（增量，上一段结束点=新段起点）
+        // 后续锚点：点击点只是目标锚点——当前位置图标保持当前实际位置，不随点击瞬移
+        //（当前位置由 1s 定时器随注入实时刷新）
         [self commitItinerary];
         [self setHint:@"已添加锚点 · 路线从上一位置生长"];
     }
@@ -462,9 +473,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.regionPanel removeFromSuperview];
     self.regionPanel = nil;
     if (self.regionOverlay) { [self.mapView removeOverlay:self.regionOverlay]; self.regionOverlay = nil; }
-    // 模拟位置推进到区域中心（进入区域起点）
-    self.cur = self.regionCenter;
-    [self placeCurAt:self.regionCenter];
+    // 区域中心只是目标，不是当前位置——当前位置图标保持当前实际位置（不瞬移）
     [self updateStatus];
     [self syncSegmentsUI];
     [self commitItinerary];
@@ -536,14 +545,14 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:wgs];
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
     [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude)}];
-    self.cur = gcj;
-    self.hasStart = YES;
-    [self placeCurAt:gcj];
     if (self.segments.count == 1) {
+        self.hasStart = YES;
+        self.cur = gcj;
+        [self placeCurAt:gcj];
         self.locating = YES;
         [self commitAnchor];          // 第一个锚点：直接当前定位
     } else {
-        [self commitItinerary];       // 后续锚点：从上一锚点生长
+        [self commitItinerary];       // 后续锚点：从上一位置生长；当前位置图标保持当前实际位置
     }
     [self updateStatus];
     [self syncSegmentsUI];            // 水滴锚点显示
@@ -597,12 +606,14 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 /// 状态栏坐标/速度随移动实时变化 + 蓝点跟随（对齐原型 stat 实时性）
 - (void)refreshLiveStatus {
     if (!self.locating) return; // 停止态状态栏保持（坐标定格最后位置）
-    NSDictionary *mobile = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist"];
+    NSDictionary *mobile = [NSDictionary dictionaryWithContentsOfFile:kLivePrefsPath];
     double lat = [mobile[@"SimLocationLat"] doubleValue];
     double lon = [mobile[@"SimLocationLon"] doubleValue];
     if (lat == 0 && lon == 0) return;
-    // 蓝点跟随（写回坐标为 WGS → 画图转 GCJ）
-    [self placeCurAt:[CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake(lat, lon)]];
+    // 蓝点跟随（写回坐标为 WGS → 画图转 GCJ）；self.cur 同步为当前实际位置（GCJ 约定，
+    // 供模式切换重绘/重锚/重算作当前位置基准）
+    self.cur = [CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake(lat, lon)];
+    [self placeCurAt:self.cur];
     double spd = [mobile[@"SimLocationLiveSpeed"] doubleValue];
     NSString *speedTxt = spd > 0 ? [NSString stringWithFormat:@"%.1f m/s", spd] : @"0.0 m/s";
     NSString *modeTxt = @"模拟中 · 定位";
@@ -667,16 +678,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 - (void)deleteSegmentAt:(NSInteger)idx {
     if (idx < 0 || idx >= (NSInteger)self.segments.count) return;
     [self.segments removeObjectAtIndex:idx];
-    // 模拟位置回退到最后一个剩余锚点
-    if (self.segments.count) {
-        NSDictionary *last = self.segments.lastObject;
-        if ([last[@"type"] isEqualToString:@"region"]) {
-            self.cur = CLLocationCoordinate2DMake([last[@"center"][@"lat"] doubleValue], [last[@"center"][@"lon"] doubleValue]);
-        } else {
-            self.cur = CLLocationCoordinate2DMake([last[@"lat"] doubleValue], [last[@"lon"] doubleValue]);
-        }
-        [self placeCurAt:self.cur];
-    } else {
+    // 当前位置保持当前实际位置（不随锚点删除回退/瞬移；重算遵循"基于当前位置"原则）
+    if (!self.segments.count) {
         self.hasStart = NO;
         self.locating = NO;
     }
@@ -1001,10 +1004,9 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
                 return;
             }
             [joined addObjectsFromArray:points];
-            // 生长：逐段画线 + 蓝点推进（对齐原型 moveTo 逐段生长）
+            // 生长：逐段画线（当前位置图标不随生长瞬移——当前位置由注入实时位置驱动）
             [sself appendGrowLine:points];
             CLLocationCoordinate2D end = CLLocationCoordinate2DMake([points.lastObject[@"lat"] doubleValue], [points.lastObject[@"lon"] doubleValue]);
-            [sself placeCurAt:[CoordTransform wgs84ToGcj02:end]];
             [sself buildPointsFromIndex:idx + 1 cur:end joined:joined completion:completion];
         });
     }];
@@ -1066,10 +1068,9 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
                 target = MIN(target, 5000); // 点量上限，防内存爆
                 NSArray *resampled = [sself resamplePoints:pts toCount:target];
                 [legJoined addObjectsFromArray:resampled];
-                // 生长：真实道路段画线 + 蓝点推进（对齐原型 moveTo+stayAt 途经点间生长）
+                // 生长：真实道路段画线（当前位置图标不随生长瞬移——由注入实时位置驱动）
                 [sself appendGrowLine:resampled];
                 CLLocationCoordinate2D legEnd = CLLocationCoordinate2DMake([resampled.lastObject[@"lat"] doubleValue], [resampled.lastObject[@"lon"] doubleValue]);
-                [sself placeCurAt:[CoordTransform wgs84ToGcj02:legEnd]];
                 goStay(legEnd);
             });
         }];
