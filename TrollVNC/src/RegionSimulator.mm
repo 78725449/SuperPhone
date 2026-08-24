@@ -92,36 +92,7 @@ static const double kRegSpeedDrive = 13.9;
     return 120.0 + (double)arc4random_uniform(18000) / 100.0;
 }
 
-#pragma mark - 点序列生成（移动/停留）
-
-// 降级直线移动段：等距插值（步长=speed×1s），带转角平滑 + 坐标抖动 + 速度波动（拟人调料）
-// 仅用于途经点对 <30m 或 MKDirections 算路失败时（正常移动段走真实道路算路，见 SimItineraryPlanner）
-+ (NSArray<NSDictionary *> *)degradedLinePointsFrom:(CLLocationCoordinate2D)from
-                                                 to:(CLLocationCoordinate2D)to
-                                            seconds:(double)seconds
-                                              speed:(double)speed {
-    NSMutableArray *pts = [NSMutableArray array];
-    if (seconds <= 0) return pts;
-    NSUInteger steps = (NSUInteger)floor(seconds);
-    if (steps < 1) steps = 1;
-    double heading = [RegionSimulator _initialBearingFrom:from to:to];
-    for (NSUInteger i = 1; i <= steps; i++) {
-        double f = (double)i / (double)steps;
-        double lat = from.latitude + (to.latitude - from.latitude) * f
-                     + [RegionSimulator _jitter];
-        double lon = from.longitude + (to.longitude - from.longitude) * f
-                     + [RegionSimulator _jitter];
-        double spd = speed * (0.8 + (double)arc4random_uniform(400) / 1000.0); // ±20% 波动
-        double crs = heading + (double)arc4random_uniform(400) / 1000.0 * 6.0 - 1.2; // 航向 ±1.2°
-        [pts addObject:@{
-            @"lat": @(lat), @"lon": @(lon),
-            @"speed": @(spd), @"course": @(crs),
-            @"alt": @(45.0 + (double)arc4random_uniform(1000) / 1000.0 - 0.5), // ±0.5m
-            @"acc": @(3.0 + (double)arc4random_uniform(3000) / 1000.0),        // 3~6m
-        }];
-    }
-    return pts;
-}
+#pragma mark - 点序列生成（停留）
 
 // 停留段：同点微动（±1m 慢速漂移，speed 0.1~0.5m/s），拟人"原地活动"；追加到 pts
 + (void)appendStayPointsAt:(CLLocationCoordinate2D)at

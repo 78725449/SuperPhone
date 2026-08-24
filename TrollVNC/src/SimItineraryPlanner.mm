@@ -119,7 +119,7 @@
 
 // 区域漫游 = 进入段（cur → 途经点①）+ 途经点间段（①→②→…→K），每段 MKDirections 真实道路算路；
 // 段耗时 = 段距离/(速度×速度因子)，在真实算路 polyline 上重采样到目标点数（保持贴路）；
-// 途经点对 <30m 或算路失败 → 降级直线（明确标注 degraded，不伪装成真实道路）。
+// 途经点对 <30m 或算路失败 → 忽略该中间途经点，直接从当前位置进入下一途经点（对齐"忽略中间锚点"原则）。
 + (void)_processRegionPlan:(NSDictionary *)plan
                        cur:(CLLocationCoordinate2D)cur
                       mode:(NSString *)mode
@@ -142,23 +142,22 @@
     double factor = [factors[segIdx] doubleValue];
     double speed = [RegionSimulator effectiveSpeedForMode:mode];
     double segDist = [SimRouteCalculator haversineMeters:cur to:wp];
-    double segTime = segDist / (speed * factor);
     void (^goStay)(CLLocationCoordinate2D) = ^(CLLocationCoordinate2D end) {
         // 到达途经点后停留（同点微动）；最后途经点不收尾补满（收尾到点停）
         [RegionSimulator appendStayPointsAt:end seconds:staySec into:joined];
         [SimItineraryPlanner _processRegionPlan:plan cur:end mode:mode joined:joined segIdx:segIdx + 1 itineraryIdx:idx segments:segments completion:completion];
     };
     if (segDist < 30.0) {
-        TVLog(@"[locsim] region leg %lu degraded to line (<30m)", (unsigned long)segIdx);
-        [joined addObjectsFromArray:[RegionSimulator degradedLinePointsFrom:cur to:wp seconds:segTime speed:speed]];
-        goStay(wp);
+        // 途经点对 <30m 无法成路 → 忽略该中间途经点（对齐"忽略中间锚点"原则，不生成直线兜底），直接进入下一途经点
+        TVLog(@"[locsim] region leg %lu skipped (<30m)", (unsigned long)segIdx);
+        [SimItineraryPlanner _processRegionPlan:plan cur:cur mode:mode joined:joined segIdx:segIdx + 1 itineraryIdx:idx segments:segments completion:completion];
         return;
     }
     [SimRouteCalculator calculateRoutePointsFrom:cur to:wp mode:mode completion:^(NSArray<NSDictionary *> *points, NSError *error) {
         if (error || points.count < 2) {
-            TVLog(@"[locsim] region leg %lu degraded to line: %@", (unsigned long)segIdx, error.localizedDescription ?: @"too few points");
-            [joined addObjectsFromArray:[RegionSimulator degradedLinePointsFrom:cur to:wp seconds:segTime speed:speed]];
-            goStay(wp);
+            // 算路失败（无网络/无路网）→ 忽略该中间途经点，从当前位置继续进入下一途经点
+            TVLog(@"[locsim] region leg %lu skipped: %@", (unsigned long)segIdx, error.localizedDescription ?: @"too few points");
+            [SimItineraryPlanner _processRegionPlan:plan cur:cur mode:mode joined:joined segIdx:segIdx + 1 itineraryIdx:idx segments:segments completion:completion];
             return;
         }
         // 目标点数 = 段距离/(速度×因子)（因子>1 慢→点多，<1 快→点少，时间不平均）；

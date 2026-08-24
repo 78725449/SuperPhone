@@ -1023,8 +1023,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             __strong typeof(self) sself = self;
             if (!sself) return;
             if (error || points.count < 2) {
-                [sself setHint:@"路线算路失败（请检查网络）"];
-                if (completion) completion(@[]);
+                // 锚点间无法算路（<30m/无路网/失败）→ 忽略该中间锚点（对齐锚点链原则：
+                // 不生成直线兜底），从当前位置继续到下一个锚点
+                [sself setHint:@"已忽略无法算路的锚点"];
+                [sself buildPointsFromIndex:idx + 1 cur:cur joined:joined completion:completion];
                 return;
             }
             [joined addObjectsFromArray:points];
@@ -1037,7 +1039,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     }];
 }
 
-/// 区域段：逐途经点 MKDirections 算路拼接（<30m/失败降级直线）+ 停留微动（§3.4.1）
+/// 区域段：逐途经点 MKDirections 算路拼接（<30m/算路失败 → 忽略该中间途经点，直接进入下一途经点）+ 停留微动（§3.4.1）
 - (void)processRegionPlan:(NSDictionary *)plan
                       cur:(CLLocationCoordinate2D)cur
                      mode:(NSString *)mode
@@ -1063,7 +1065,6 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         double factor = [factors[segIdx] doubleValue];
         double speed = [RegionSimulator effectiveSpeedForMode:mode];
         double segDist = [SimRouteCalculator haversineMeters:legCur to:wp];
-        double segTime = segDist / (speed * factor);
 
         void (^goStay)(CLLocationCoordinate2D) = ^(CLLocationCoordinate2D end) {
             [RegionSimulator appendStayPointsAt:end seconds:staySec into:legJoined];
@@ -1072,12 +1073,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             processLeg();
         };
         if (segDist < 30.0) {
-            NSArray *degraded = [RegionSimulator degradedLinePointsFrom:legCur to:wp seconds:segTime speed:speed];
-            [legJoined addObjectsFromArray:degraded];
-            // 生长：降级直线段也画线 + 蓝点推进
-            [self appendGrowLine:degraded];
-            [self placeCurAt:[CoordTransform wgs84ToGcj02:wp]];
-            goStay(wp);
+            // 途经点对 <30m 无法成路 → 忽略该中间途经点（对齐"忽略中间锚点"原则），直接进入下一途经点
+            [self setHint:@"已忽略过近的途经点"];
+            segIdx++;
+            processLeg();
             return;
         }
         [SimRouteCalculator calculateRoutePointsFrom:legCur to:wp mode:mode completion:^(NSArray<NSDictionary *> *pts, NSError *error) {
@@ -1086,11 +1085,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
                 __strong typeof(self) sself = self;
                 if (!sself) return;
                 if (error || pts.count < 2) {
-                    NSArray *degraded = [RegionSimulator degradedLinePointsFrom:legCur to:wp seconds:segTime speed:speed];
-                    [legJoined addObjectsFromArray:degraded];
-                    [sself appendGrowLine:degraded];
-                    [sself placeCurAt:[CoordTransform wgs84ToGcj02:wp]];
-                    goStay(wp);
+                    // 算路失败 → 忽略该中间途经点，从当前位置继续进入下一途经点
+                    [sself setHint:@"已忽略无法算路的途经点"];
+                    segIdx++;
+                    processLeg();
                     return;
                 }
                 NSUInteger target = MAX(1, (NSUInteger)ceil(segDist / (speed * factor)));

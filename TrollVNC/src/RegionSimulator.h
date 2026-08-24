@@ -23,7 +23,7 @@ NS_ASSUME_NONNULL_BEGIN
  *   速度因子每段随机（0.7~1.3，时间不平均）→ 最后途经点不收尾补满（收尾到点停）
  * - 本类只输出"计划"（途经点 + 时间分配），不生成移动点序列——移动段由
  *   SimItineraryPlanner 对相邻途经点逐段 MKDirections 真实道路算路拼接（进入段起点=上一位置，
- *   途经点对 <30m 或算路失败降级直线，见 §3.4.1 生长式区域算路）
+ *   途经点对 <30m 或算路失败 → 忽略该中间途经点直接进入下一途经点，见 §3.4.1 生长式区域算路）
  * - 停留段（同点微动 ±1m）由 appendStayPointsAt: 生成
  */
 @interface RegionSimulator : NSObject
@@ -49,12 +49,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// 模式有效速度（walk 1.4 / drive 13.9 m/s；其他值按 walk 兜底）
 + (double)effectiveSpeedForMode:(NSString *)mode;
-
-/// 降级直线移动段（途经点对 <30m 或算路失败时用；§3.3.2 点格式，1s/点，速度±20% 波动）
-+ (NSArray<NSDictionary *> *)degradedLinePointsFrom:(CLLocationCoordinate2D)from
-                                                 to:(CLLocationCoordinate2D)to
-                                            seconds:(double)seconds
-                                              speed:(double)speed;
 
 /// 停留段：同点微动（±1m 慢速漂移 0.1~0.5m/s，拟人"原地活动"），追加到 pts
 + (void)appendStayPointsAt:(CLLocationCoordinate2D)at
