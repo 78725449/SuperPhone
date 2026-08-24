@@ -78,6 +78,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, copy) NSString *currentLegMode;       // 当前位置水滴的出行方式（当前段目标锚点的，walk/drive）
 @property (nonatomic, assign) double currentLegSpeed;              // 当前所在路线（出发锚点段）的生成速度——从段缓存 segmentPoints 取（含 ±10% 抖动；random 段反映实际随机模式）
 @property (nonatomic, assign) BOOL startupLockedToAnchor;          // 开启定位瞬间到注入落地前：锁定锚点位置显示（忽略真实 fix，防开启横跳）
+@property (nonatomic, strong) NSMutableArray *fabCoinLabels;              // 定位 FAB 铜钱四字（招财进宝，上/右/下/左顺时针）
+@property (nonatomic, strong) UIView *fabCoinHole;                        // 定位 FAB 铜钱方孔（定位中显示）
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
 @property (nonatomic, assign) BOOL hasFocusedMapOnce;            // 首帧启动聚焦是否已执行（避免 tab 往返重复聚焦）
 @property (nonatomic, strong) CLLocationManager *locationManager; // App 活跃位置订阅（授权 + startUpdatingLocation，didUpdateLocations 主驱动）
@@ -287,6 +289,27 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [fab addTarget:self action:@selector(toggleLocate:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:fab];
     self.locateFab = fab;
+    // 铜钱四字 + 方孔（定位中显示"招财进宝"，上/右/下/左顺时针；未开启隐藏）
+    self.fabCoinLabels = [NSMutableArray arrayWithCapacity:4];
+    NSArray *coins = @[@"招", @"财", @"进", @"宝"];
+    NSArray *dx = @[@0, @14, @0, @-14];
+    NSArray *dy = @[@-14, @0, @14, @0];
+    for (NSInteger i = 0; i < 4; i++) {
+        UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(28 - 9 + [dx[i] intValue], 28 - 9 + [dy[i] intValue], 18, 18)];
+        lb.text = coins[i];
+        lb.font = [UIFont systemFontOfSize:9 weight:UIFontWeightSemibold];
+        lb.textColor = [UIColor whiteColor];
+        lb.textAlignment = NSTextAlignmentCenter;
+        lb.hidden = YES;
+        [fab addSubview:lb];
+        [self.fabCoinLabels addObject:lb];
+    }
+    UIView *hole = [[UIView alloc] initWithFrame:CGRectMake(28 - 7, 28 - 7, 14, 14)];
+    hole.backgroundColor = [UIColor colorWithRed:0.45 green:0.33 blue:0.05 alpha:1.0]; // 深铜色方孔
+    hole.layer.cornerRadius = 2;
+    hole.hidden = YES;
+    [fab addSubview:hole];
+    self.fabCoinHole = hole;
 
     // 靶心聚焦按钮：定位 FAB 上方（透明，类靶心），点击聚焦到当前位置——
     // 应对手动编辑（增删锚点/拖动）偏离当前位置后的手动调整
@@ -806,11 +829,20 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     self.statusDot.layer.shadowColor = self.locating ? self.statusDot.backgroundColor.CGColor : [UIColor clearColor].CGColor;
     self.statusDot.layer.shadowOpacity = self.locating ? 0.6 : 0;
     self.statusDot.layer.shadowRadius = 3;
-    // FAB 图标/颜色随定位状态切换（未开启=品牌紫+定位图标；定位中=深金黄 D4A017+停止方块——金色=进行中状态，与"待开启"紫区分）
+    // FAB 状态切换：未开启=品牌紫+定位图标；定位中=深金黄铜钱（招财进宝四字+方孔，上/右/下/左顺时针——金色=进行中，与"待开启"紫区分）
     UIColor *brand = [UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0];
     UIColor *gold = [UIColor colorWithRed:0.83 green:0.63 blue:0.09 alpha:1.0]; // 深金黄 #D4A017
-    [self.locateFab setImage:[UIImage systemImageNamed:self.locating ? @"stop.fill" : @"location.fill"] forState:UIControlStateNormal];
-    [self.locateFab setBackgroundColor:self.locating ? gold : brand];
+    if (self.locating) {
+        [self.locateFab setBackgroundColor:gold];
+        [self.locateFab setImage:nil forState:UIControlStateNormal];
+        for (UILabel *lb in self.fabCoinLabels) lb.hidden = NO;
+        self.fabCoinHole.hidden = NO;
+    } else {
+        [self.locateFab setBackgroundColor:brand];
+        [self.locateFab setImage:[UIImage systemImageNamed:@"location.fill"] forState:UIControlStateNormal];
+        for (UILabel *lb in self.fabCoinLabels) lb.hidden = YES;
+        self.fabCoinHole.hidden = YES;
+    }
 }
 
 - (void)toggleSteps:(UIButton *)sender {
