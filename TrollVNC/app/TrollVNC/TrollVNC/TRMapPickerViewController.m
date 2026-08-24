@@ -79,7 +79,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, assign) double currentLegSpeed;              // 当前所在路线（出发锚点段）的生成速度——从段缓存 segmentPoints 取（含 ±10% 抖动；random 段反映实际随机模式）
 @property (nonatomic, assign) BOOL startupLockedToAnchor;          // 开启定位瞬间到注入落地前：锁定锚点位置显示（忽略真实 fix，防开启横跳）
 @property (nonatomic, strong) NSMutableArray *fabCoinLabels;              // 定位 FAB 铜钱四字（招财进宝，上/右/下/左顺时针）
-@property (nonatomic, strong) UIView *fabCoinHole;                        // 定位 FAB 铜钱方孔（定位中显示）
 @property (nonatomic, strong) CAGradientLayer *fabGoldGradient;           // 定位 FAB 铜钱渐变金底（定位中显示）
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
 @property (nonatomic, assign) BOOL hasFocusedMapOnce;            // 首帧启动聚焦是否已执行（避免 tab 往返重复聚焦）
@@ -290,7 +289,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [fab addTarget:self action:@selector(toggleLocate:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:fab];
     self.locateFab = fab;
-    // 铜钱四字 + 方孔 + 渐变金底（定位中显示"招财进宝"，上/右/下/左顺时针；未开启隐藏）
+    // 铜钱四字 + 渐变金底（定位中显示"招财进宝"，上/右/下/左顺时针；未开启隐藏；方孔镂空走 mask，见 updateStatus）
     self.fabCoinLabels = [NSMutableArray arrayWithCapacity:4];
     NSArray *coins = @[@"招", @"财", @"进", @"宝"];
     NSArray *dx = @[@0, @14, @0, @-14];
@@ -307,12 +306,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         [fab addSubview:lb];
         [self.fabCoinLabels addObject:lb];
     }
-    UIView *hole = [[UIView alloc] initWithFrame:CGRectMake(28 - 7, 28 - 7, 14, 14)];
-    hole.backgroundColor = [UIColor colorWithRed:0.23 green:0.16 blue:0.02 alpha:1.0]; // 深棕黑方孔（模拟镂空）
-    hole.layer.cornerRadius = 2;
-    hole.hidden = YES;
-    [fab addSubview:hole];
-    self.fabCoinHole = hole;
     // 渐变金底（对角：左上亮金 → 右下深金，铜钱立体感；FAB 固定 56×56——bounds 布局前为 0，固定尺寸兜底 + viewDidLayoutSubviews 同步）
     CAGradientLayer *grad = [CAGradientLayer layer];
     grad.frame = CGRectMake(0, 0, 56, 56);
@@ -851,15 +844,22 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.fabGoldGradient.hidden = NO;
         self.locateFab.layer.borderWidth = 1.5;
         self.locateFab.layer.borderColor = [UIColor colorWithRed:0.66 green:0.49 blue:0.03 alpha:1.0].CGColor; // 暗金描边（铜钱外缘）
+        // 方孔镂空（evenOdd：圆 − 中心方孔 → 孔区透明露出页面背景，空心铜钱）
+        CAShapeLayer *holeMask = [CAShapeLayer layer];
+        UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, 56, 56) cornerRadius:28];
+        [path appendPath:[UIBezierPath bezierPathWithRect:CGRectMake(22, 22, 12, 12)]];
+        path.usesEvenOddFillRule = YES;
+        holeMask.path = path.CGPath;
+        holeMask.fillRule = kCAFillRuleEvenOdd;
+        self.locateFab.layer.mask = holeMask;
         for (UILabel *lb in self.fabCoinLabels) lb.hidden = NO;
-        self.fabCoinHole.hidden = NO;
     } else {
         [self.locateFab setBackgroundColor:brand];
         [self.locateFab setImage:[UIImage systemImageNamed:@"location.fill"] forState:UIControlStateNormal];
         self.fabGoldGradient.hidden = YES;
         self.locateFab.layer.borderWidth = 0;
+        self.locateFab.layer.mask = nil;
         for (UILabel *lb in self.fabCoinLabels) lb.hidden = YES;
-        self.fabCoinHole.hidden = YES;
     }
 }
 
