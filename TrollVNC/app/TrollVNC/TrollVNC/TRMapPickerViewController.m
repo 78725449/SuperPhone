@@ -748,12 +748,12 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 }
 
 /// 锚点状态刷新：按当前位置在已提交轨迹中的最近索引，标记"已经过"的锚点为红（未经过保持蓝）；
-/// 当前位置水滴的出行方式 = 当前段目标锚点的出行方式（经过后切换到下一锚点的）
+/// 当前位置水滴的出行方式 = 出发锚点的（所在段由出发锚点以其生成时的出行方式前往；经过下一锚点时切换到其出行方式）
 /// liveW 为当前位置（WGS）；仅定位中生效（停止态颜色定格）
 - (void)updateAnchorPassStateWithLiveWGS:(CLLocationCoordinate2D)liveW {
     if (!self.locating || self.submittedPoints.count < 2) return;
     NSUInteger liveIdx = [self nearestPointIndexTo:liveW];
-    TRAnchorAnnotation *nextAnchor = nil; // 当前位置处/之后的第一个锚点 = 当前段目标
+    TRAnchorAnnotation *departAnchor = nil; // 当前位置所在段的出发锚点 = 最后一个 aIdx <= liveIdx
     for (TRAnchorAnnotation *a in self.anchors) {
         CLLocationCoordinate2D aW = [CoordTransform gcj02ToWgs84:a.coordinate];
         NSUInteger aIdx = [self nearestPointIndexTo:aW];
@@ -763,11 +763,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             MKAnnotationView *v = [self.mapView viewForAnnotation:a];
             if (v) v.image = [self waterdropImageWithColor:(passed ? [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0] : [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]) size:22 emoji:[self emojiForMode:a.mode]];
         }
-        if (!nextAnchor && aIdx >= liveIdx) nextAnchor = a;
+        if (aIdx <= liveIdx) departAnchor = a; // 持续更新 = 最后一个未越过的出发锚点
     }
-    // 当前位置出行方式：取当前段目标锚点的出行方式；链尾则保持最后一段的
-    NSString *mode = nextAnchor ? nextAnchor.mode
-                                : (self.anchors.count ? ((TRAnchorAnnotation *)self.anchors.lastObject).mode : nil);
+    // 当前位置出行方式：取所在段出发锚点的出行方式；链首/空则退回首个锚点或当前选择
+    NSString *mode = departAnchor ? departAnchor.mode
+                                  : (self.anchors.count ? ((TRAnchorAnnotation *)self.anchors.firstObject).mode : nil);
     mode = mode ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
     if (![self.currentLegMode isEqualToString:mode]) {
         self.currentLegMode = mode;
@@ -1022,6 +1022,18 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.mapView addOverlay:line];
 }
 
+/// 出发锚点的出行方式：段 idx 的路线由上一段（出发锚点）以其生成时的出行方式前往下一段
+/// （对齐"锚点图标 = 此锚点如何移动到下一锚点"原则）；无上一段时退回本段/当前选择
+- (NSString *)departModeForSegment:(NSUInteger)idx {
+    if (idx > 0) {
+        id m = self.segments[idx - 1][@"mode"];
+        if ([m isKindOfClass:[NSString class]]) return m;
+    }
+    id m2 = self.segments[idx][@"mode"];
+    if ([m2 isKindOfClass:[NSString class]]) return m2;
+    return (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
+}
+
 /// 锚点链逐段生成（递归）：首个锚点无前驱→仅作起点；后续锚点→从上一位置生长路线；
 /// region 锚点→进入段（上一锚点→区域第一途经点）+ 区域内途经点链（processRegionPlan）
 - (void)buildPointsFromIndex:(NSUInteger)idx
@@ -1035,10 +1047,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         CLLocationCoordinate2D centerW = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"center"][@"lat"] doubleValue], [seg[@"center"][@"lon"] doubleValue])];
         double radius = [seg[@"radius"] doubleValue];
         double durationMin = [seg[@"durationMin"] doubleValue];
-        NSString *mode = seg[@"mode"] ?: @"walk";
+        NSString *regionMode = seg[@"mode"] ?: @"walk";
         int customK = (int)[seg[@"waypointCount"] integerValue]; // >0 生效，0=随机
-        NSDictionary *plan = [RegionSimulator generateRegionPlanCenter:centerW radius:radius mode:mode durationMin:durationMin startFrom:cur customK:customK];
-        [self processRegionPlan:plan cur:cur mode:mode joined:joined
+        NSDictionary *plan = [RegionSimulator generateRegionPlanCenter:centerW radius:radius mode:regionMode durationMin:durationMin startFrom:cur customK:customK];
+        // 进入区域的段 = 出发锚点以其生成时的出行方式前往区域；区域内途经点链用区域配置的模式
+        [self processRegionPlan:plan cur:cur entryMode:[self departModeForSegment:idx] mode:regionMode joined:joined
                     itineraryIdx:idx + 1 completion:completion];
         return;
     }
@@ -1049,7 +1062,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         toLon = [seg[@"to"][@"lon"] doubleValue];
     }
     CLLocationCoordinate2D toW = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake(toLat, toLon)];
-    NSString *mode = [seg[@"mode"] isKindOfClass:[NSString class]] ? seg[@"mode"] : (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
+    // 出行方式 = 出发锚点的（本段目标由上一锚点以其生成时的出行方式前往）
+    NSString *mode = [self departModeForSegment:idx];
     if (idx == 0 && joined.count == 0) {
         // 首个锚点且无已提交轨迹：无前驱 → 仅作起点，不生长路线
         // （局部重算时 joined 含截断点 → 首个锚点也基于当前位置生长）
@@ -1078,9 +1092,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     }];
 }
 
-/// 区域段：逐途经点 MKDirections 算路拼接（<30m/算路失败 → 忽略该中间途经点，直接进入下一途经点）+ 停留微动（§3.4.1）
+/// 区域段：进入段（出发锚点模式）→ 区域内途经点链（区域配置模式）逐途经点 MKDirections 算路拼接
+/// （<30m/算路失败 → 忽略该中间途经点，直接进入下一途经点）+ 停留微动（§3.4.1）
 - (void)processRegionPlan:(NSDictionary *)plan
                       cur:(CLLocationCoordinate2D)cur
+                entryMode:(NSString *)entryMode
                      mode:(NSString *)mode
                    joined:(NSMutableArray *)joined
              itineraryIdx:(NSUInteger)nextIdx
@@ -1102,7 +1118,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         CLLocationCoordinate2D wp = [wps[segIdx] MKCoordinateValue];
         double staySec = [stay[segIdx] doubleValue];
         double factor = [factors[segIdx] doubleValue];
-        double speed = [RegionSimulator effectiveSpeedForMode:mode];
+        NSString *legMode = (segIdx == 0) ? entryMode : mode; // 进入段用出发锚点模式，区域内用区域配置模式
+        double speed = [RegionSimulator effectiveSpeedForMode:legMode];
         double segDist = [SimRouteCalculator haversineMeters:legCur to:wp];
 
         void (^goStay)(CLLocationCoordinate2D) = ^(CLLocationCoordinate2D end) {
@@ -1118,7 +1135,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             processLeg();
             return;
         }
-        [SimRouteCalculator calculateRoutePointsFrom:legCur to:wp mode:mode completion:^(NSArray<NSDictionary *> *pts, NSError *error) {
+        [SimRouteCalculator calculateRoutePointsFrom:legCur to:wp mode:legMode completion:^(NSArray<NSDictionary *> *pts, NSError *error) {
             // MKDirections completion 队列不保证主线程，UI 操作统一回主线程
             dispatch_async(dispatch_get_main_queue(), ^{
                 __strong typeof(self) sself = self;
