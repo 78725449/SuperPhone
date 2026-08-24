@@ -39,6 +39,13 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @implementation TRAnchorAnnotation
 @end
 
+/// 区域漫游途经点标注（信息点，不可点击删除；复用锚点水滴渲染，内嵌该段出行方式图标 🚶/🚗）
+@interface TRWaypointAnnotation : MKPointAnnotation
+@property (nonatomic, copy) NSString *mode; // 该段出行方式（walk/drive；random 区域每段随机决定）
+@end
+@implementation TRWaypointAnnotation
+@end
+
 /// 生长轨迹线（对齐原型 growPath/addedPath：区域自生长逐段可视化 + 完成后常显；与预览虚线区分）
 /// 分段式渲染：每个覆盖层挂所属编排段索引，增删/重算只动受影响段
 @interface TRGrowPolyline : MKPolyline
@@ -61,6 +68,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 @property (nonatomic, strong) NSMutableArray *segments;      // 编排段 @[@{type,point/to/radius/durationMin/mode}]
 @property (nonatomic, strong) NSMutableArray *anchors;       // 每段对应的锚点标注（TRAnchorAnnotation）
+@property (nonatomic, strong) NSMutableArray *waypointAnns;          // 区域漫游途经点标注（TRWaypointAnnotation，随区域段生成/重建）
+@property (nonatomic, assign) double currentWalkRatio;              // 区域随机模式当前步行占比（随 currentLegMode 同步，默认 0.7）
 @property (nonatomic, assign) CLLocationCoordinate2D cur;    // 当前模拟位置（地图坐标 GCJ-02）
 @property (nonatomic, assign) BOOL hasStart;
 @property (nonatomic, assign) BOOL locating;                // 定位开关状态
@@ -94,6 +103,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [super viewDidLoad];
     self.segments = [NSMutableArray array];
     self.anchors = [NSMutableArray array];
+    self.waypointAnns = [NSMutableArray array];
     // 初始无硬编码坐标（self.cur 默认 0,0）；初始视野/聚焦均以 locationd（真实）为准，
     // 无定位时由 focusMapOnCurrentLocation 守卫跳过，避免跳到无效坐标
     [self setupMap];
@@ -454,7 +464,9 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     CGFloat margin = 12;
     CGFloat w = self.view.bounds.size.width - margin * 2;
     CGFloat ph = 280;
-    UIView *panel = [[UIView alloc] initWithFrame:CGRectMake(margin, self.view.bounds.size.height - ph - 12, w, ph)];
+    // 面板底部补偿 safe area（容器底边已延伸到 tab bar 之后，不补偿则最下方按钮被导航栏压住）
+    CGFloat safeBottom = self.view.safeAreaInsets.bottom;
+    UIView *panel = [[UIView alloc] initWithFrame:CGRectMake(margin, self.view.bounds.size.height - ph - 12 - safeBottom, w, ph)];
     panel.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleWidth;
     panel.backgroundColor = [UIColor systemBackgroundColor];
     panel.layer.cornerRadius = 14;
@@ -749,9 +761,18 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     NSString *speedTxt = @"0.0 m/s";
     NSString *modeTxt = self.locating ? @"模拟中 · 定位" : @"已停止 · 定位";
     if (self.locating) {
-        // 速度 = 回调 fix 的 speed（daemon 注入 CLLocation 自带，经 locationd 广播；读 lastFix 而非 locationManager.location 属性缓存）
-        double mps = self.lastFix.speed;
-        speedTxt = mps > 0 ? [NSString stringWithFormat:@"%.1f m/s", mps] : @"0.0 m/s";
+        // 速度 = 当前段出行方式的平均速度（模拟播放按该模式速度推进；random 区域=步行/驾车按占比加权）
+        // 注：locationd 广播层对模拟注入位置不保留 CLLocation.speed（恒 -1/0），改用模式代表速度——零通道、与时序无耦合
+        NSString *m = self.currentLegMode ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
+        double mps;
+        if ([m isEqualToString:@"random"]) {
+            double wr = self.currentWalkRatio;
+            mps = [RegionSimulator effectiveSpeedForMode:@"walk"] * wr
+                + [RegionSimulator effectiveSpeedForMode:@"drive"] * (1.0 - wr);
+        } else {
+            mps = [RegionSimulator effectiveSpeedForMode:m];
+        }
+        speedTxt = [NSString stringWithFormat:@"%.1f m/s", mps];
     }
     // 富文本：模式加粗 + 速度等宽灰 + 坐标等宽灰（对齐原型 stat .m/.spd/.c）
     NSMutableAttributedString *as = [[NSMutableAttributedString alloc] init];
@@ -825,6 +846,12 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 /// 从受影响锚点开始重生长；删除最后锚点（无下一个锚点）→ 保持当前位置（轨迹截断到当前位置）
 - (void)deleteSegmentAt:(NSInteger)idx {
     if (idx < 0 || idx >= (NSInteger)self.segments.count) return;
+    NSDictionary *removed = self.segments[idx];
+    if ([removed[@"type"] isEqualToString:@"region"]) {
+        // 区域段删除 → 该区域不再生长，同步清途经点标注（重算不会触发 processRegionPlan 重建）
+        for (TRWaypointAnnotation *w in self.waypointAnns) [self.mapView removeAnnotation:w];
+        [self.waypointAnns removeAllObjects];
+    }
     [self.segments removeObjectAtIndex:idx];
     if (!self.segments.count) {
         // 全部锚点删除 → 停止定位并同步停止 daemon（写 mode=off，设备恢复真实定位），避免 App 停止但设备仍被模拟
@@ -982,6 +1009,13 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     mode = mode ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
     if (![self.currentLegMode isEqualToString:mode]) {
         self.currentLegMode = mode;
+        // 区域随机：同步步行占比（状态栏平均速度按此加权）；其余模式归一化默认值
+        self.currentWalkRatio = 0.7;
+        if ([mode isEqualToString:@"random"] && departAnchor) {
+            NSDictionary *seg = self.segments[departAnchor.segmentIndex];
+            double wr = [seg[@"walkRatio"] doubleValue];
+            if (wr > 0) self.currentWalkRatio = wr;
+        }
         [self refreshUserLocationView]; // 当前位置水滴切换出行图标（原生 MKUserLocation 视图）
     }
 }
@@ -1342,6 +1376,15 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     NSArray *stay = plan[@"staySeconds"];
     NSArray *factors = plan[@"moveFactors"];
     if (!wps.count) { [self buildPointsFromIndex:nextIdx cur:cur joined:joined completion:completion]; return; }
+    // 途经点标注：区域段生成/重算前清掉旧的，按 waypoints 重建（信息点，内嵌每段出行图标；复用锚点水滴渲染）
+    for (TRWaypointAnnotation *w in self.waypointAnns) [self.mapView removeAnnotation:w];
+    [self.waypointAnns removeAllObjects];
+    for (NSUInteger i = 0; i < wps.count; i++) {
+        TRWaypointAnnotation *w = [[TRWaypointAnnotation alloc] init];
+        w.coordinate = [wps[i] MKCoordinateValue];
+        [self.waypointAnns addObject:w];
+        [self.mapView addAnnotation:w];
+    }
     __block NSUInteger segIdx = 0;
     __block CLLocationCoordinate2D legCur = cur;
     __block NSMutableArray *legJoined = joined;
@@ -1366,6 +1409,13 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             legMode = mode; // 固定模式（walk/drive）
         }
         double speed = [RegionSimulator effectiveSpeedForMode:legMode];
+        // 该段途经点标注内嵌出行图标（复用锚点水滴渲染；随机模式下每段确定后刷新）
+        if (segIdx < self.waypointAnns.count) {
+            TRWaypointAnnotation *w = self.waypointAnns[segIdx];
+            w.mode = legMode;
+            MKAnnotationView *wv = [self.mapView viewForAnnotation:w];
+            if (wv) wv.image = [self waterdropImageWithColor:[UIColor colorWithWhite:0.56 alpha:1.0] size:18 emoji:[self emojiForMode:legMode]];
+        }
         double segDist = [SimRouteCalculator haversineMeters:legCur to:wp];
 
         void (^goStay)(CLLocationCoordinate2D) = ^(CLLocationCoordinate2D end) {
@@ -1528,6 +1578,22 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         v.frame = CGRectMake(0, 0, 22, 28);
         return v;
     }
+    if ([annotation isKindOfClass:[TRWaypointAnnotation class]]) {
+        // 区域漫游途经点：灰色小水滴 + 该段出行方式图标（信息点，点击不删除；样式复用锚点水滴渲染）
+        TRWaypointAnnotation *w = (TRWaypointAnnotation *)annotation;
+        static NSString *rid = @"WaypointPin";
+        MKAnnotationView *v = [mapView dequeueReusableAnnotationViewWithIdentifier:rid];
+        if (!v) {
+            v = [[MKAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:rid];
+            v.canShowCallout = NO;
+            v.userInteractionEnabled = YES; // 供 shouldReceiveTouch 拦截，防 tap 误加锚点
+        }
+        v.annotation = annotation;
+        v.image = [self waterdropImageWithColor:[UIColor colorWithWhite:0.56 alpha:1.0] size:18 emoji:[self emojiForMode:w.mode]];
+        v.centerOffset = CGPointMake(0, -12); // 尖对准坐标点
+        v.frame = CGRectMake(0, 0, 18, 24);
+        return v;
+    }
     if ([annotation isKindOfClass:[MKUserLocation class]]) {
         // 当前位置（原生管线）：数据源头=locationd（模拟开启=模拟位置/关闭=真实位置）；绿色水滴+出行方式图标外观
         static NSString *rid = @"CurPin";
@@ -1574,6 +1640,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             if ([v isKindOfClass:[MKAnnotationView class]]) {
                 MKAnnotationView *av = (MKAnnotationView *)v;
                 if ([av.annotation isKindOfClass:[TRAnchorAnnotation class]]) return NO;
+                if ([av.annotation isKindOfClass:[TRWaypointAnnotation class]]) return NO; // 途经点同锚点：不触发 tap 加锚点
             }
             v = v.superview;
         }
