@@ -1522,7 +1522,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     if (gestureRecognizer == self.mapTap) {
         UIView *v = touch.view;
         while (v) {
-            if ([v isKindOfClass:[MKAnnotationView class]] && [v.annotation isKindOfClass:[TRAnchorAnnotation class]]) return NO;
+            if ([v isKindOfClass:[MKAnnotationView class]]) {
+                MKAnnotationView *av = (MKAnnotationView *)v;
+                if ([av.annotation isKindOfClass:[TRAnchorAnnotation class]]) return NO;
+            }
             v = v.superview;
         }
     }
