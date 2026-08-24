@@ -68,6 +68,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, strong) UITableView *stepTable;        // 步骤列表（状态条展开；删除 + 拖拽排序）
 
 @property (nonatomic, strong) NSMutableArray *segments;      // 编排段 @[@{type,point/to/radius/durationMin/mode}]
+@property (nonatomic, strong) NSMutableArray *segmentPoints;        // 段点序列缓存（索引对齐 segments：段 i≥1 点序列，NSNull=待生成/失败）——锚点链唯一轨迹真相
+@property (nonatomic, assign) BOOL segmentZeroPending;                     // 删首锚点后"当前位置→新首锚"段 0 待生成（段 0 特殊机制：正常链段 0=首锚点仅起点恒有效）
 @property (nonatomic, strong) NSMutableArray *anchors;       // 每段对应的锚点标注（TRAnchorAnnotation）
 @property (nonatomic, strong) NSMutableArray *waypointAnns;          // 区域漫游途经点标注（TRWaypointAnnotation，随区域段生成/重建）
 @property (nonatomic, assign) double currentWalkRatio;              // 区域随机模式当前步行占比（随 currentLegMode 同步，默认 0.7）
@@ -86,8 +88,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, copy) void (^pendingEditAction)(void);     // 生成中挂起的最新编辑（完成后执行，最后一次生效）
 @property (nonatomic, strong) UITapGestureRecognizer *mapTap;      // 地图单击手势（handleTap；shouldReceiveTouch 拦截锚点水滴点击，防删除竞态）
 @property (nonatomic, assign) BOOL hasPromptedLocationAuth;        // 定位授权拒绝提示已弹出（一次性）
-@property (nonatomic, assign) NSInteger committedSegCount;          // 已提交到轨迹的段数（增量生长：只生长新段）
-@property (nonatomic, strong) NSArray *submittedPoints;             // 已提交的完整轨迹点序列（上一段结束点=新段起点）
+@property (nonatomic, strong) NSArray *submittedPoints;             // 已提交的完整轨迹点序列（segmentPoints 展平，播放/上传用）
 
 // 区域（长按）临时状态
 @property (nonatomic, assign) BOOL regionPicking;
@@ -103,6 +104,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.segments = [NSMutableArray array];
+    self.segmentPoints = [NSMutableArray array];
     self.anchors = [NSMutableArray array];
     self.waypointAnns = [NSMutableArray array];
     // 初始无硬编码坐标（self.cur 默认 0,0）；初始视野/聚焦均以 locationd（真实）为准，
@@ -856,53 +858,21 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     return [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue])];
 }
 
-/// submittedPoints 中最后一个距 wgs <30m 的点索引（段终点≈目标锚点；锚点间距 >30m 唯一匹配）
-- (NSUInteger)lastPointIndexNearWGS:(CLLocationCoordinate2D)wgs {
-    const double thr = 30.0;
-    for (NSUInteger i = self.submittedPoints.count; i > 0; i--) {
-        NSDictionary *p = self.submittedPoints[i - 1];
-        if ([SimRouteCalculator haversineMeters:wgs to:CLLocationCoordinate2DMake([p[@"lat"] doubleValue], [p[@"lon"] doubleValue])] < thr) return i - 1;
-    }
-    return NSNotFound;
-}
-
-/// submittedPoints 中第一个距 wgs <30m 的点索引
-- (NSUInteger)firstPointIndexNearWGS:(CLLocationCoordinate2D)wgs {
-    const double thr = 30.0;
-    for (NSUInteger i = 0; i < self.submittedPoints.count; i++) {
-        NSDictionary *p = self.submittedPoints[i];
-        if ([SimRouteCalculator haversineMeters:wgs to:CLLocationCoordinate2DMake([p[@"lat"] doubleValue], [p[@"lon"] doubleValue])] < thr) return i;
-    }
-    return NSNotFound;
-}
-
-/// 完成局部重算（统一收尾：写轨迹 + 释放生成锁 + 执行挂起编辑）
-- (void)finishLocalRegenerate:(NSArray *)joined hint:(NSString *)hint {
-    if (joined.count >= 2) {
-        self.submittedPoints = joined;
-        self.committedSegCount = self.segments.count;
-        [self writeTrackFile:joined];
-        [self setHint:[NSString stringWithFormat:@"%@ · %lu 点", hint, (unsigned long)joined.count]];
-    } else {
-        [self setHint:hint];
-    }
-    self.isGenerating = NO;
-    [self runPendingEdit];
-}
-
-#pragma mark - 局部重算（锚点编辑只重算受影响段，其余段/生长线不重渲染）
-
-/// 删除第 idx 锚点（任意锚点）：基于当前位置局部重算——保留当前位置前的轨迹点，
-/// 从受影响锚点开始重生长；删除最后锚点（无下一个锚点）→ 保持当前位置（轨迹截断到当前位置）
+/// 删除第 idx 锚点（任意锚点）：锚点链顺序语义——删锚 k 只重算跨过它的连接段（前驱→后继），
+/// 其余段点序列缓存与生长线保留；删首=当前位置作起点、删尾=轨迹截断保持当前位置
 - (void)deleteSegmentAt:(NSInteger)idx {
     if (idx < 0 || idx >= (NSInteger)self.segments.count) return;
     NSDictionary *removed = self.segments[idx];
     if ([removed[@"type"] isEqualToString:@"region"]) {
-        // 区域段删除 → 该区域不再生长，同步清途经点标注（重算不会触发 processRegionPlan 重建）
+        // 区域段删除 → 该区域不再生长，同步清途经点标注
         for (TRWaypointAnnotation *w in self.waypointAnns) [self.mapView removeAnnotation:w];
         [self.waypointAnns removeAllObjects];
     }
     [self.segments removeObjectAtIndex:idx];
+    // 段点序列同步删（索引对齐 segments：段 i 目标=segments[i]；删锚点 idx 后旧段 idx+1 前移到 idx）
+    if (idx < (NSInteger)self.segmentPoints.count) {
+        [self.segmentPoints removeObjectAtIndex:idx];
+    }
     if (!self.segments.count) {
         // 全部锚点删除 → 停止定位并同步停止 daemon（写 mode=off，设备恢复真实定位），避免 App 停止但设备仍被模拟
         self.hasStart = NO;
@@ -910,6 +880,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.pendingEditAction = nil;    // 清挂起编辑（空链无需再生成）
         self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 记停止时刻（同 toggleLocate）
         [self commitStop];
+        [self.segmentPoints removeAllObjects];
         for (id o in self.mapView.overlays) {
             if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
         }
@@ -921,184 +892,59 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         [self syncSegmentsUI];
         return;
     }
+    // 跨过被删锚点的合并段（新链段 idx：前驱锚点→后继锚点）标记待生成；删链尾则无（轨迹截断到上一锚点）
+    if (idx < (NSInteger)self.segments.count) {
+        if (idx == 0) self.segmentZeroPending = YES; // 删首锚点：当前位置作新起点 → 段 0（当前位置→新首锚）待生成
+        if (idx >= (NSInteger)self.segmentPoints.count) {
+            [self.segmentPoints addObject:[NSNull null]];
+        } else {
+            self.segmentPoints[idx] = [NSNull null];
+        }
+    }
     [self updateStatus];
     [self syncSegmentsUI];
-    // 纯 anchor 链 → 局部重算（只重算跨过被删锚点的连接段，其余段/线不重渲染）；
-    // 删除的是 region 段或剩余链含 region → 退化为全量重算（锚点匹配切分对 region 段不可靠）
-    if ([self segmentsContainRegion] || [removed[@"type"] isEqualToString:@"region"]) {
-        NSInteger affected = MIN(idx, (NSInteger)self.segments.count);
-        [self runEdit:^{ [self regenerateFromIndex:affected]; }];
-        [self setHint:@"已删除锚点 · 基于当前位置重算路线"];
-    } else {
-        [self runEdit:^{ [self localRegenerateAfterDelete:idx]; }];
-    }
+    // 顺序补齐：只重算标记段（其余段点序列缓存保留），无全量重算
+    [self runEdit:^{ [self syncChainAndGenerate]; }];
 }
 
-/// 删除锚点 k（segments 已删 k）后的局部重算：只重算"跨过被删锚点的连接段"（原段 k→k+1 合并为 锚k-1→锚k+1），
-/// 其余段点序列与生长线完全保留不重渲染；删链尾=截断、删首锚点=当前位置作起点
-- (void)localRegenerateAfterDelete:(NSInteger)k {
-    if (self.isGenerating) { self.pendingEditAction = ^{ [self localRegenerateAfterDelete:k]; }; return; }
-    self.isGenerating = YES;
-    NSInteger oldCount = (NSInteger)self.segments.count + 1; // 删前段数（k 为原索引）
-    BOOL isTail = (k >= oldCount - 1);                       // 删的是链尾锚点
-    // 受影响旧线 segmentIndex ∈ {k, k+1}（段 k：目标=锚k；段 k+1：起点=锚k）；后续线索引左移 1
-    for (id o in [self.mapView.overlays copy]) {
-        if (![o isKindOfClass:[TRGrowPolyline class]]) continue;
-        TRGrowPolyline *line = (TRGrowPolyline *)o;
-        if (line.segmentIndex == k || line.segmentIndex == k + 1) {
-            [self.mapView removeOverlay:o];
-        } else if (line.segmentIndex > k + 1) {
-            line.segmentIndex -= 1;
-        }
-    }
-    if (isTail) {
-        // 删链尾：截断（保留到原 k-1 锚点前），无新段
-        NSMutableArray *joined = [NSMutableArray array];
-        if (k > 0) {
-            CLLocationCoordinate2D anchorW = [self anchorWGSOfSegment:self.segments[k - 1]];
-            NSUInteger keepEnd = [self lastPointIndexNearWGS:anchorW];
-            if (keepEnd != NSNotFound && keepEnd < self.submittedPoints.count) {
-                for (NSUInteger i = 0; i <= keepEnd; i++) [joined addObject:self.submittedPoints[i]];
-            }
-        }
-        [self finishLocalRegenerate:joined hint:@"已删除最后锚点 · 保持当前位置"];
-        return;
-    }
-    // 新连接段（删除后 segments[k-1]=原锚k-1、segments[k]=原锚k+1）
-    CLLocationCoordinate2D fromW, toW;
-    NSString *mode;
-    if (k == 0) {
-        fromW = [self currentSimPosition];      // 删首：当前位置作起点 → 原锚1
-        toW = [self anchorWGSOfSegment:self.segments[0]];
-        mode = [self departModeForSegment:0];
-    } else {
-        fromW = [self anchorWGSOfSegment:self.segments[k - 1]];
-        toW = [self anchorWGSOfSegment:self.segments[k]];
-        mode = [self departModeForSegment:k];
-    }
-    // 切分：保留受影响段起点前（≤fromW 附近）与终点后（≥toW 附近）的点序列
-    NSMutableArray *joined = [NSMutableArray array];
-    NSUInteger keepEnd = [self lastPointIndexNearWGS:fromW];
-    if (keepEnd != NSNotFound && keepEnd < self.submittedPoints.count) {
-        for (NSUInteger i = 0; i <= keepEnd; i++) [joined addObject:self.submittedPoints[i]];
-    }
-    NSUInteger keepStart = [self firstPointIndexNearWGS:toW];
-    NSLog(@"[locsim-grow] del-recalc seg %ld: (%.5f,%.5f)->(%.5f,%.5f)", (long)k, fromW.latitude, fromW.longitude, toW.latitude, toW.longitude);
-    [SimRouteCalculator calculateRoutePointsFrom:fromW to:toW mode:mode completion:^(NSArray<NSDictionary *> *points, NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            __strong typeof(self) sself = self;
-            if (!sself) return;
-            if (error || points.count < 2) {
-                [sself setHint:@"已忽略无法重算的锚点"];
-            } else {
-                [joined addObjectsFromArray:points];
-                [sself appendGrowLine:points forSegment:k]; // 新连接段线（其余线保留不重渲染）
-            }
-            if (keepStart != NSNotFound && keepStart < sself.submittedPoints.count) {
-                for (NSUInteger i = keepStart; i < sself.submittedPoints.count; i++) [joined addObject:sself.submittedPoints[i]];
-            }
-            [sself finishLocalRegenerate:joined hint:@"已删除锚点 · 重算连接路线"];
-        });
-    }];
-}
-
-/// 拖拽排序后：基于当前位置局部重算（保留当前位置前轨迹点，从受影响位置重生长）
+/// 拖拽排序：只重排 segments + 段点序列缓存（按"起点/目标锚点对"匹配保留），邻接变化的段标记待生成，顺序补齐
 - (void)moveSegmentFrom:(NSInteger)from to:(NSInteger)to {
     if (from < 0 || to < 0 || from >= (NSInteger)self.segments.count || to >= (NSInteger)self.segments.count || from == to) return;
     NSDictionary *item = self.segments[from];
-    NSArray *prevSegments = [self.segments copy]; // 重排前链（用于对比受影响段 + 切分旧点序列）
+    NSArray *prevSegments = [self.segments copy];   // 重排前链（锚点邻接对比）
+    NSArray *prevSegPoints = [self.segmentPoints copy]; // 重排前段点序列缓存
     [self.segments removeObjectAtIndex:from];
     [self.segments insertObject:item atIndex:to];
-    [self syncSegmentsUI];
-    // 纯 anchor 链 → 局部重算（只重算起点/目标邻接变化的段）；含 region 段 → 退化全量
-    if ([self segmentsContainRegion]) {
-        [self setHint:@"行程已重排 · 基于当前位置重算"];
-        [self runEdit:^{ [self regenerateFromIndex:0]; }]; // 生成中挂起，完成后再重算
-    } else {
-        [self runEdit:^{ [self localRegenerateAfterReorder:prevSegments]; }];
-    }
-}
-
-/// 拖拽重排后的局部重算：只对"起点或目标锚点邻接变化"的段重新算路（串行），
-/// 不变段复用旧轨迹点序列即时重画（无算路等待）；含 region 段由调用方退化为全量
-- (void)localRegenerateAfterReorder:(NSArray *)prevSegments {
-    if (self.isGenerating) { self.pendingEditAction = ^{ [self localRegenerateAfterReorder:prevSegments]; }; return; }
-    self.isGenerating = YES;
-    NSInteger newCount = (NSInteger)self.segments.count;
-    NSInteger oldCount = (NSInteger)prevSegments.count;
-    // 受影响段（新链索引 i≥1）：起点/目标锚点邻接组合在旧链中不存在 → 需重新算路；
-    // 不变段记录其对应旧链段索引（重排后索引错位，取旧点序列须按旧索引）
-    NSMutableIndexSet *affected = [NSMutableIndexSet indexSet];
-    NSMutableDictionary *reuseMap = [NSMutableDictionary dictionary]; // @(新链段i) -> @(旧链段j)
-    for (NSInteger i = 1; i < newCount; i++) {
-        BOOL unchanged = NO;
-        for (NSInteger j = 1; j < oldCount; j++) {
+    // 段点序列按"起点/目标锚点对"重排：锚点邻接不变的段保留旧点序列（不重算），变化的段标记待生成
+    NSMutableArray *newSegPoints = [NSMutableArray arrayWithCapacity:self.segments.count];
+    for (NSInteger i = 0; i < (NSInteger)self.segments.count; i++) {
+        if (i == 0) {
+            // 段 0：链首未变则保留旧序列（prevSegPoints[0] 可能 NSNull=正常链无段 0），变化则待生成（由 segmentZeroPending 标记）
+            [newSegPoints addObject:(prevSegPoints.count ? prevSegPoints[0] : [NSNull null])];
+            continue;
+        }
+        BOOL found = NO;
+        for (NSInteger j = 1; j < (NSInteger)prevSegments.count; j++) {
             if ([self sameAnchor:self.segments[i - 1] b:prevSegments[j - 1]] &&
                 [self sameAnchor:self.segments[i] b:prevSegments[j]]) {
-                unchanged = YES;
-                reuseMap[@(i)] = @(j);
+                [newSegPoints addObject:(j < (NSInteger)prevSegPoints.count ? prevSegPoints[j] : [NSNull null])];
+                found = YES;
                 break;
             }
         }
-        if (!unchanged) [affected addIndex:(NSUInteger)i];
+        if (!found) [newSegPoints addObject:[NSNull null]]; // 邻接变化 → 待生成
     }
-    // 切分旧 submittedPoints → 旧链段点（段 j = [firstNear(锚j-1) .. lastNear(锚j)]）
-    NSMutableDictionary *segPoints = [NSMutableDictionary dictionary];
-    for (NSInteger j = 1; j < oldCount; j++) {
-        CLLocationCoordinate2D aPrev = [self anchorWGSOfSegment:prevSegments[j - 1]];
-        CLLocationCoordinate2D aJ = [self anchorWGSOfSegment:prevSegments[j]];
-        NSUInteger s = [self firstPointIndexNearWGS:aPrev];
-        NSUInteger e = [self lastPointIndexNearWGS:aJ];
-        if (s == NSNotFound || e == NSNotFound || e < s) continue;
-        segPoints[@(j)] = [self.submittedPoints subarrayWithRange:NSMakeRange(s, e - s + 1)];
+    // 段 0（删首后：当前位置→首锚）：仅当段 0 已存在（删首过）且链首锚点变化时标记重算；正常链/拖拽不产生段 0
+    if (prevSegPoints.count && [prevSegPoints[0] isKindOfClass:[NSArray class]]) {
+        self.segmentZeroPending = !(prevSegments.count && [self sameAnchor:self.segments[0] b:prevSegments[0]]);
     }
-    // 移除全部生长线（重排后段索引已变，统一按新链重画；不变段用保留点序列即时画，无算路等待）
-    for (id o in [self.mapView.overlays copy]) {
-        if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
-    }
-    __block NSMutableArray *joined = [NSMutableArray array];
-    __block NSInteger si = 1;
-    __block void (^step)(void);
-    step = ^{
-        if (si >= newCount) {
-            [self finishLocalRegenerate:joined hint:@"行程已重排 · 重算受影响段"];
-            return;
-        }
-        NSInteger i = si;
-        if ([affected containsIndex:(NSUInteger)i]) {
-            CLLocationCoordinate2D fromW = [self anchorWGSOfSegment:self.segments[i - 1]];
-            CLLocationCoordinate2D toW = [self anchorWGSOfSegment:self.segments[i]];
-            NSString *mode = [self departModeForSegment:i];
-            NSLog(@"[locsim-grow] reorder-recalc seg %ld: (%.5f,%.5f)->(%.5f,%.5f)", (long)i, fromW.latitude, fromW.longitude, toW.latitude, toW.longitude);
-            [SimRouteCalculator calculateRoutePointsFrom:fromW to:toW mode:mode completion:^(NSArray<NSDictionary *> *points, NSError *error) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    __strong typeof(self) sself = self;
-                    if (!sself) return;
-                    if (!error && points.count >= 2) {
-                        [joined addObjectsFromArray:points];
-                        [sself appendGrowLine:points forSegment:i];
-                    } else {
-                        [sself setHint:@"已忽略无法重算的段"];
-                    }
-                    si++;
-                    step();
-                });
-            }];
-        } else {
-            NSNumber *oj = reuseMap[@(i)];
-            NSArray *pts = oj ? segPoints[oj] : nil;
-            if (pts.count) {
-                [joined addObjectsFromArray:pts];
-                [self appendGrowLine:pts forSegment:i]; // 不变段复用旧点序列即时重画
-            }
-            si++;
-            step();
-        }
-    };
-    step();
+    self.segmentPoints = newSegPoints;
+    [self syncSegmentsUI];
+    // 顺序补齐：只重算标记段，其余段点序列缓存保留，无全量重算
+    [self runEdit:^{ [self syncChainAndGenerate]; }];
 }
 
-/// 两段锚点坐标是否相同（anchor 段存 lat/lon，直接值比较；纯 anchor 链无 region）
+/// 两段锚点坐标是否相同（anchor 段存 lat/lon，直接值比较）
 - (BOOL)sameAnchor:(NSDictionary *)a b:(NSDictionary *)b {
     double al = [a[@"lat"] doubleValue], alo = [a[@"lon"] doubleValue];
     if ([a[@"to"] isKindOfClass:[NSDictionary class]]) {
@@ -1111,14 +957,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         blo = [b[@"to"][@"lon"] doubleValue];
     }
     return al == bl && alo == blo;
-}
-
-/// 编辑路径是否含 region 段（局部重算的锚点匹配切分对 region 段不可靠 → 退化为全量重算）
-- (BOOL)segmentsContainRegion {
-    for (NSDictionary *seg in self.segments) {
-        if ([seg[@"type"] isEqualToString:@"region"]) return YES;
-    }
-    return NO;
 }
 
 #pragma mark - 基于当前位置的局部重算（manager 注入写回 mobile plist 为当前位置真相）
@@ -1261,71 +1099,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         }
         [self refreshUserLocationView]; // 当前位置水滴切换出行图标（原生 MKUserLocation 视图）
     }
-}
-
-/// 已提交轨迹中距目标最近的点索引（截断基准）
-- (NSUInteger)nearestPointIndexTo:(CLLocationCoordinate2D)targetW {
-    NSUInteger best = 0;
-    double bestD = DBL_MAX;
-    for (NSUInteger i = 0; i < self.submittedPoints.count; i++) {
-        NSDictionary *p = self.submittedPoints[i];
-        CLLocationCoordinate2D c = CLLocationCoordinate2DMake([p[@"lat"] doubleValue], [p[@"lon"] doubleValue]);
-        double d = [SimRouteCalculator haversineMeters:targetW to:c];
-        if (d < bestD) { bestD = d; best = i; }
-    }
-    return best;
-}
-
-/// 局部重算：保留当前位置前的已提交轨迹点，从 affectedIdx 锚点重生长到链尾
-/// （删除中间锚点→当前位置→下一锚点重算；无下一锚点→保持当前位置）
-- (void)regenerateFromIndex:(NSInteger)affectedIdx {
-    if (self.isGenerating) return;
-    self.isGenerating = YES;
-    // 分段式渲染：只移除受影响段（affectedIdx 起）的生长线，之前的段保持不重渲染（不闪/不丢状态）
-    for (id o in self.mapView.overlays) {
-        if ([o isKindOfClass:[TRGrowPolyline class]] && [(TRGrowPolyline *)o segmentIndex] >= affectedIdx) {
-            [self.mapView removeOverlay:o];
-        }
-    }
-    // 续算起点（WGS）：优先用轨迹截断点（轨迹上的位置）——lastFix 停止态=真实位置可能不在轨迹上，
-    // 直接作起点会让重算路线从画布外"随机位置"续到受影响锚点（编辑后路线乱连）
-    CLLocationCoordinate2D curW = [self currentSimPosition];
-    NSMutableArray *joined = [NSMutableArray array];
-    // 保留当前位置前的已提交轨迹点（截断到最近点）
-    if (self.submittedPoints.count) {
-        NSUInteger cut = [self nearestPointIndexTo:curW];
-        for (NSUInteger i = 0; i <= cut && i < self.submittedPoints.count; i++) {
-            [joined addObject:self.submittedPoints[i]];
-        }
-        if (joined.count) {
-            NSDictionary *lastP = joined.lastObject;
-            curW = CLLocationCoordinate2DMake([lastP[@"lat"] doubleValue], [lastP[@"lon"] doubleValue]);
-        }
-    }
-    // 重算期间 daemon 驻留续算点（防沿旧轨迹乱走 + 重载回跳）
-    [self holdAtCurrentPosition:curW];
-    [self setHint:@"正在重算路线…"];
-    __weak typeof(self) weakSelf = self;
-    [self buildPointsFromIndex:(NSUInteger)affectedIdx cur:curW joined:joined completion:^(NSArray *points) {
-        __strong typeof(self) sself = weakSelf;
-        if (!sself) return;
-        if (affectedIdx >= (NSInteger)sself.segments.count) {
-            // 无下一个锚点（affected 已到链尾）→ 保持当前位置（截断轨迹）
-            sself.submittedPoints = points;
-            sself.committedSegCount = sself.segments.count;
-            if (points.count) [sself writeTrackFile:points];
-            [sself setHint:@"已删除最后锚点 · 保持当前位置"];
-        } else if (points.count < 2) {
-            [sself setHint:@"路线重算失败（点不足）"];
-        } else {
-            sself.submittedPoints = points;
-            sself.committedSegCount = sself.segments.count;
-            [sself writeTrackFile:points];
-            [sself setHint:[NSString stringWithFormat:@"路线已重算 · %lu 点", (unsigned long)points.count]];
-        }
-        sself.isGenerating = NO;
-        [sself runPendingEdit]; // 生成期间挂起的编辑在此执行（最后一次生效）
-    }];
 }
 
 #pragma mark - UITableViewDataSource / Delegate（步骤列表：删除 + 拖拽排序）
@@ -1533,64 +1306,15 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     if (pending) pending();
 }
 
-/// 编排提交（增量生长原则）：从上一段结束点继续生长，不是每次都从起点重画。
-/// - 纯追加（新段数 > 已提交段数）→ 只生长新段（起点=已提交轨迹最后点），旧段/旧生长线保留
-/// - 删除/排序导致段数变化 → 全量重建（清生长线，从 anchor 起点重新生长）
+/// 编排提交（锚点链顺序生长原则）：新增锚点 → 新段标记待生成，顺序补齐只重算缺失段（无全量重建/重渲染）
 - (void)commitItinerary {
-    // 并发保护：正在生长时忽略新的提交（避免多流程竞争 overlay/文件）
+    // 并发保护：正在生长时忽略新的提交（runEdit 已挂起编辑，最后一次生效）
     if (self.isGenerating) return;
-
-    // 判断增量 vs 重建：纯追加且已有 ≥2 点的已提交轨迹 → 增量；否则全量重建
-    BOOL appendMode = (self.segments.count > self.committedSegCount)
-        && self.committedSegCount > 0
-        && self.submittedPoints.count >= 2;
-    if (!appendMode) {
-        // 重建：清掉旧生长轨迹（对齐原型 clearRoute/growPath 重置）
-        for (id o in self.mapView.overlays) {
-            if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
-        }
-        self.submittedPoints = @[];
-        self.committedSegCount = 0;
+    // 段点序列缓存补齐到链长（新锚点对应段为 NSNull 待生成）
+    while ((NSInteger)self.segmentPoints.count < (NSInteger)self.segments.count) {
+        [self.segmentPoints addObject:[NSNull null]];
     }
-    self.isGenerating = YES;
-    // 算路（异步）期间 daemon 驻留当前位置：防沿旧轨迹继续播放 + 算路完成后重载续播点跳变
-    if (self.locating) [self holdAtCurrentPosition:[self currentSimPosition]];
-
-    NSMutableArray *joined = [self.submittedPoints mutableCopy];
-    if (!joined) joined = [NSMutableArray array];
-    NSInteger startIdx = appendMode ? self.committedSegCount : 0;
-    CLLocationCoordinate2D start;
-    if (appendMode && joined.count) {
-        // 增量：起点 = 已提交轨迹最后点（上一段结束点，WGS）
-        NSDictionary *last = joined.lastObject;
-        start = CLLocationCoordinate2DMake([last[@"lat"] doubleValue], [last[@"lon"] doubleValue]);
-    } else {
-        // 重建：起点 = 编排 anchor（首个起点）
-        start = [CoordTransform gcj02ToWgs84:self.cur];
-        for (NSDictionary *seg in self.segments) {
-            if ([seg[@"type"] isEqualToString:@"anchor"]) {
-                start = CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue]);
-                break;
-            }
-        }
-    }
-    [self setHint:appendMode ? @"正在生长新段…" : @"正在生长轨迹…"];
-    __weak typeof(self) weakSelf = self;
-    [self buildPointsFromIndex:startIdx cur:start joined:joined completion:^(NSArray *points) {
-        __strong typeof(self) sself = weakSelf;
-        if (!sself) return;
-        if (points.count < 2) {
-            [sself setHint:@"轨迹生长失败（点不足）"];
-        } else {
-            // 更新提交状态：全部段已提交（含 anchor 段计数），完整轨迹 = 本次 points
-            sself.submittedPoints = points;
-            sself.committedSegCount = sself.segments.count;
-            [sself writeTrackFile:points];
-            [sself setHint:[NSString stringWithFormat:@"轨迹已提交 · %lu 点", (unsigned long)points.count]];
-        }
-        sself.isGenerating = NO;
-        [sself runPendingEdit]; // 生成期间挂起的编辑在此执行（最后一次生效）
-    }];
+    [self syncChainAndGenerate];
 }
 
 /// 生长可视化：每段算路点序列追加为生长轨迹线（算路点 WGS-84 → 画图转 GCJ-02，否则路线与点击点偏移数百米）
@@ -1632,112 +1356,130 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     return (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
 }
 
-/// 锚点链逐段生成（递归）：首个锚点无前驱→仅作起点；后续锚点→从上一位置生长路线；
-/// region 锚点→进入段（上一锚点→区域第一途经点）+ 区域内途经点链（processRegionPlan）
-- (void)buildPointsFromIndex:(NSUInteger)idx
-                         cur:(CLLocationCoordinate2D)cur
-                      joined:(NSMutableArray *)joined
-                  completion:(void (^)(NSArray *points))completion {
-    if (idx >= self.segments.count) { if (completion) completion(joined); return; }
-    NSDictionary *seg = self.segments[idx];
-    NSString *type = seg[@"type"];
-    if ([type isEqualToString:@"region"]) {
-        CLLocationCoordinate2D centerW = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"center"][@"lat"] doubleValue], [seg[@"center"][@"lon"] doubleValue])];
-        double radius = [seg[@"radius"] doubleValue];
-        double durationMin = [seg[@"durationMin"] doubleValue];
-        NSString *regionMode = seg[@"mode"] ?: @"walk";
-        double walkRatio = [seg[@"walkRatio"] doubleValue] > 0 ? [seg[@"walkRatio"] doubleValue] : 0.7; // 随机模式的步行占比（默认 70%）
-        int customK = (int)[seg[@"waypointCount"] integerValue]; // >0 生效，0=随机
-        NSDictionary *plan = [RegionSimulator generateRegionPlanCenter:centerW radius:radius mode:regionMode durationMin:durationMin startFrom:cur customK:customK];
-        // 进入区域的段 = 出发锚点以其生成时的出行方式前往区域；区域内途经点链用区域配置的模式（随机=每段随机）
-        [self processRegionPlan:plan cur:cur entryMode:[self departModeForSegment:idx] mode:regionMode walkRatio:walkRatio joined:joined
-                    itineraryIdx:idx + 1 completion:completion];
+/// 段 i 是否已有有效点序列（≥2 点）；段 0 特殊：正常链=首锚点仅起点恒有效（跳过），删首后=待生成（无效需生成）
+- (BOOL)segmentValid:(NSInteger)i {
+    if (i < 0 || i >= (NSInteger)self.segments.count) return NO;
+    if (i == 0) return !self.segmentZeroPending;
+    id pts = (i < (NSInteger)self.segmentPoints.count) ? self.segmentPoints[i] : nil;
+    return [pts isKindOfClass:[NSArray class]] && ((NSArray *)pts).count >= 2;
+}
+
+/// 生成段 i 点序列（anchor=两点算路；region=区域计划+途经点链整段），回调 pts（空=失败/忽略）
+- (void)generateSegment:(NSInteger)i completion:(void (^)(NSArray<NSDictionary *> *pts))completion {
+    NSDictionary *seg = self.segments[i];
+    if ([seg[@"type"] isEqualToString:@"region"]) {
+        [self generateRegionSegment:i completion:completion];
         return;
     }
-    // 锚点段：目标坐标（anchor 用 lat/lon；旧 route 段兼容用 to）
-    double toLat = [seg[@"lat"] doubleValue], toLon = [seg[@"lon"] doubleValue];
-    if ([seg[@"to"] isKindOfClass:[NSDictionary class]]) {
-        toLat = [seg[@"to"][@"lat"] doubleValue];
-        toLon = [seg[@"to"][@"lon"] doubleValue];
-    }
-    CLLocationCoordinate2D toW = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake(toLat, toLon)];
-    // 出行方式 = 出发锚点的（本段目标由上一锚点以其生成时的出行方式前往）
-    NSString *mode = [self departModeForSegment:idx];
-    if (idx == 0 && joined.count == 0) {
-        // 首个锚点且无已提交轨迹：无前驱 → 仅作起点，不生长路线
-        // （局部重算时 joined 含截断点 → 首个锚点也基于当前位置生长）
-        [self buildPointsFromIndex:idx + 1 cur:toW joined:joined completion:completion];
-        return;
-    }
-    // 后续锚点：从上一位置（上一锚点/区域终点）生长路线到本锚点
-    NSLog(@"[locsim-grow] seg %lu %@: from (%.5f,%.5f) -> to (%.5f,%.5f)", (unsigned long)idx, type, cur.latitude, cur.longitude, toW.latitude, toW.longitude); // 生长顺序诊断
-    [SimRouteCalculator calculateRoutePointsFrom:cur to:toW mode:mode completion:^(NSArray<NSDictionary *> *points, NSError *error) {
-        // MKDirections completion 队列不保证主线程，UI 操作统一回主线程
+    CLLocationCoordinate2D fromW = (i > 0) ? [self anchorWGSOfSegment:self.segments[i - 1]] : [self currentSimPosition];
+    CLLocationCoordinate2D toW = [self anchorWGSOfSegment:self.segments[i]];
+    NSString *mode = [self departModeForSegment:i];
+    NSLog(@"[locsim-grow] seg %ld %@: from (%.5f,%.5f) -> to (%.5f,%.5f)", (long)i, seg[@"type"], fromW.latitude, fromW.longitude, toW.latitude, toW.longitude); // 生长顺序诊断
+    [SimRouteCalculator calculateRoutePointsFrom:fromW to:toW mode:mode completion:^(NSArray<NSDictionary *> *points, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            __strong typeof(self) sself = self;
-            if (!sself) return;
             if (error || points.count < 2) {
-                // 锚点间无法算路（<30m/无路网/失败）→ 忽略该中间锚点（对齐锚点链原则：
-                // 不生成直线兜底），从当前位置继续到下一个锚点
-                [sself setHint:@"已忽略无法算路的锚点"];
-                [sself buildPointsFromIndex:idx + 1 cur:cur joined:joined completion:completion];
+                [self setHint:@"已忽略无法算路的锚点"];
+                if (completion) completion(@[]);
                 return;
             }
-            [joined addObjectsFromArray:points];
-            // 生长：逐段画线（当前位置图标不随生长瞬移——当前位置由注入实时位置驱动）
-            [sself appendGrowLine:points forSegment:(NSInteger)idx];
-            CLLocationCoordinate2D end = CLLocationCoordinate2DMake([points.lastObject[@"lat"] doubleValue], [points.lastObject[@"lon"] doubleValue]);
-            [sself buildPointsFromIndex:idx + 1 cur:end joined:joined completion:completion];
+            if (completion) completion(points);
         });
     }];
 }
 
-/// 区域段：进入段（出发锚点模式）→ 区域内途经点链（区域配置模式，随机=每段按 walkRatio 随机）逐途经点 MKDirections 算路拼接
-/// （<30m/算路失败 → 忽略该中间途经点，直接进入下一途经点）+ 停留微动（§3.4.1）
-- (void)processRegionPlan:(NSDictionary *)plan
-                      cur:(CLLocationCoordinate2D)cur
-                entryMode:(NSString *)entryMode
-                     mode:(NSString *)mode
-                walkRatio:(double)walkRatio
-                   joined:(NSMutableArray *)joined
-             itineraryIdx:(NSUInteger)nextIdx
-               completion:(void (^)(NSArray *points))completion {
+/// 锚点链顺序补齐：从第一个无效段（NSNull/失败）起按段顺序生成到链尾。
+/// 编辑（添加/删除/拖拽）只把受影响段标记为无效，此处只重算受影响段，其余段点序列缓存完全保留（无全量重算）
+- (void)syncChainAndGenerate {
+    if (self.isGenerating) return;
+    self.isGenerating = YES;
+    while ((NSInteger)self.segmentPoints.count < (NSInteger)self.segments.count) {
+        [self.segmentPoints addObject:[NSNull null]];
+    }
+    if (self.locating) [self holdAtCurrentPosition:[self currentSimPosition]]; // 算路期间 daemon 驻留当前位置
+    __block NSInteger i = self.segmentZeroPending ? 0 : 1; // 删首后段 0（当前位置→新首锚）待生成
+    __block void (^step)(void);
+    step = ^{
+        while (i < (NSInteger)self.segments.count && [self segmentValid:i]) i++;
+        if (i >= (NSInteger)self.segments.count) {
+            [self finishChainSync];
+            return;
+        }
+        NSInteger gen = i;
+        [self generateSegment:gen completion:^(NSArray<NSDictionary *> *pts) {
+            self.segmentPoints[gen] = (pts.count ? pts : [NSNull null]);
+            if (gen == 0) self.segmentZeroPending = NO; // 段 0 生成完（成功/失败），回归正常链语义
+            i = gen + 1;
+            step();
+        }];
+    };
+    step();
+}
+
+/// 全链收尾：展平 submittedPoints + 按段重画生长线（段点序列已缓存，同步瞬画不涉及算路）+ 写轨迹 + 释放生成锁
+- (void)finishChainSync {
+    NSMutableArray *joined = [NSMutableArray array];
+    for (NSInteger i = 0; i < (NSInteger)self.segments.count; i++) {
+        id pts = (i < (NSInteger)self.segmentPoints.count) ? self.segmentPoints[i] : nil;
+        if ([pts isKindOfClass:[NSArray class]]) [joined addObjectsFromArray:pts];
+    }
+    self.submittedPoints = joined;
+    for (id o in [self.mapView.overlays copy]) {
+        if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
+    }
+    for (NSInteger i = 0; i < (NSInteger)self.segments.count; i++) {
+        id pts = (i < (NSInteger)self.segmentPoints.count) ? self.segmentPoints[i] : nil;
+        if ([pts isKindOfClass:[NSArray class]] && ((NSArray *)pts).count >= 2) [self appendGrowLine:pts forSegment:i];
+    }
+    if (joined.count >= 2) [self writeTrackFile:joined];
+    [self setHint:[NSString stringWithFormat:@"路线已更新 · %lu 点", (unsigned long)joined.count]];
+    self.isGenerating = NO;
+    [self runPendingEdit];
+}
+
+/// 区域段整段生成：进入段（出发锚点模式）→ 区域内途经点链（区域配置模式，随机=每段按 walkRatio 随机）逐途经点 MKDirections 算路拼接
+/// （<30m/算路失败 → 忽略该中间途经点，直接进入下一途经点）+ 停留微动；回调整段点序列（不再递归后续段）
+- (void)generateRegionSegment:(NSInteger)i completion:(void (^)(NSArray<NSDictionary *> *pts))completion {
+    NSDictionary *seg = self.segments[i];
+    CLLocationCoordinate2D centerW = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"center"][@"lat"] doubleValue], [seg[@"center"][@"lon"] doubleValue])];
+    double radius = [seg[@"radius"] doubleValue];
+    double durationMin = [seg[@"durationMin"] doubleValue];
+    NSString *regionMode = seg[@"mode"] ?: @"walk";
+    double walkRatio = [seg[@"walkRatio"] doubleValue] > 0 ? [seg[@"walkRatio"] doubleValue] : 0.7; // 随机模式的步行占比（默认 70%）
+    int customK = (int)[seg[@"waypointCount"] integerValue]; // >0 生效，0=随机
+    CLLocationCoordinate2D cur = (i > 0) ? [self anchorWGSOfSegment:self.segments[i - 1]] : [self currentSimPosition];
+    NSDictionary *plan = [RegionSimulator generateRegionPlanCenter:centerW radius:radius mode:regionMode durationMin:durationMin startFrom:cur customK:customK];
     NSArray *wps = plan[@"waypoints"];
     NSArray *stay = plan[@"staySeconds"];
     NSArray *factors = plan[@"moveFactors"];
-    if (!wps.count) { [self buildPointsFromIndex:nextIdx cur:cur joined:joined completion:completion]; return; }
+    if (!wps.count) { if (completion) completion(@[]); return; }
     // 途经点标注：区域段生成/重算前清掉旧的，按 waypoints 重建（信息点，内嵌每段出行图标；复用锚点水滴渲染）
     for (TRWaypointAnnotation *w in self.waypointAnns) [self.mapView removeAnnotation:w];
     [self.waypointAnns removeAllObjects];
-    for (NSUInteger i = 0; i < wps.count; i++) {
+    for (NSUInteger k = 0; k < wps.count; k++) {
         TRWaypointAnnotation *w = [[TRWaypointAnnotation alloc] init];
         // 途经点坐标转 GCJ-02（plan 返回 WGS-84；地图显示坐标系=GCJ，与生长线 appendGrowLine 同转换，不转则图标偏离路线数百米）
-        w.coordinate = [CoordTransform wgs84ToGcj02:[wps[i] MKCoordinateValue]];
+        w.coordinate = [CoordTransform wgs84ToGcj02:[wps[k] MKCoordinateValue]];
         [self.waypointAnns addObject:w];
         [self.mapView addAnnotation:w];
     }
+    __block NSMutableArray *pts = [NSMutableArray array];
     __block NSUInteger segIdx = 0;
     __block CLLocationCoordinate2D legCur = cur;
-    __block NSMutableArray *legJoined = joined;
 
     // 递归块必须 __block：否则块内捕获的是创建时的未初始化指针（赋值后仍是垃圾），首次递归即崩溃
     __block void (^processLeg)(void);
     processLeg = ^{
-        if (segIdx >= wps.count) {
-            CLLocationCoordinate2D end = CLLocationCoordinate2DMake([legJoined.lastObject[@"lat"] doubleValue], [legJoined.lastObject[@"lon"] doubleValue]);
-            [self buildPointsFromIndex:nextIdx cur:end joined:legJoined completion:completion];
-            return;
-        }
+        if (segIdx >= wps.count) { if (completion) completion(pts); return; }
         CLLocationCoordinate2D wp = [wps[segIdx] MKCoordinateValue];
         double staySec = [stay[segIdx] doubleValue];
         double factor = [factors[segIdx] doubleValue];
         NSString *legMode;
         if (segIdx == 0) {
-            legMode = entryMode; // 进入段用出发锚点模式
-        } else if ([mode isEqualToString:@"random"]) {
+            legMode = [self departModeForSegment:i]; // 进入段用出发锚点模式
+        } else if ([regionMode isEqualToString:@"random"]) {
             legMode = ((double)arc4random_uniform(100) < walkRatio * 100) ? @"walk" : @"drive"; // 区域内段每段随机（按步行占比）
         } else {
-            legMode = mode; // 固定模式（walk/drive）
+            legMode = regionMode; // 固定模式（walk/drive）
         }
         double speed = [RegionSimulator effectiveSpeedForMode:legMode];
         // 该段途经点标注内嵌出行图标（与锚点同款蓝水滴；随机模式下每段确定后刷新）
@@ -1750,7 +1492,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         double segDist = [SimRouteCalculator haversineMeters:legCur to:wp];
 
         void (^goStay)(CLLocationCoordinate2D) = ^(CLLocationCoordinate2D end) {
-            [RegionSimulator appendStayPointsAt:end seconds:staySec into:legJoined];
+            [RegionSimulator appendStayPointsAt:end seconds:staySec into:pts];
             legCur = end;
             segIdx++;
             processLeg();
@@ -1762,24 +1504,20 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             processLeg();
             return;
         }
-        [SimRouteCalculator calculateRoutePointsFrom:legCur to:wp mode:legMode completion:^(NSArray<NSDictionary *> *pts, NSError *error) {
+        [SimRouteCalculator calculateRoutePointsFrom:legCur to:wp mode:legMode completion:^(NSArray<NSDictionary *> *ptsIn, NSError *error) {
             // MKDirections completion 队列不保证主线程，UI 操作统一回主线程
             dispatch_async(dispatch_get_main_queue(), ^{
-                __strong typeof(self) sself = self;
-                if (!sself) return;
-                if (error || pts.count < 2) {
+                if (error || ptsIn.count < 2) {
                     // 算路失败 → 忽略该中间途经点，从当前位置继续进入下一途经点
-                    [sself setHint:@"已忽略无法算路的途经点"];
+                    [self setHint:@"已忽略无法算路的途经点"];
                     segIdx++;
                     processLeg();
                     return;
                 }
                 NSUInteger target = MAX(1, (NSUInteger)ceil(segDist / (speed * factor)));
                 target = MIN(target, 5000); // 点量上限，防内存爆
-                NSArray *resampled = [sself resamplePoints:pts toCount:target];
-                [legJoined addObjectsFromArray:resampled];
-                // 生长：真实道路段画线（当前位置图标不随生长瞬移——由注入实时位置驱动）
-                [sself appendGrowLine:resampled forSegment:(NSInteger)(nextIdx - 1)];
+                NSArray *resampled = [self resamplePoints:ptsIn toCount:target];
+                [pts addObjectsFromArray:resampled];
                 CLLocationCoordinate2D legEnd = CLLocationCoordinate2DMake([resampled.lastObject[@"lat"] doubleValue], [resampled.lastObject[@"lon"] doubleValue]);
                 goStay(legEnd);
             });
