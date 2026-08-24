@@ -332,20 +332,18 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     ]];
 }
 
-/// 启动时读回 defaults（SimLocationMode + 坐标即状态真相），同步开关/蓝点
+/// 启动状态（2026-08-24 定：启动一律停止态）：
+/// 残留的 anchor/itinerary 模式强制写 off（App 启动态=停止=执行契约，daemon 强制对齐停止、locationd 恢复真实），
+/// 避免"启动即自动开启模拟 / 真实位置被当模拟位置 / 恢复态 Follow 干扰搜索聚焦"
 - (void)readCurrentStatus {
     NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite];
     NSString *mode = [d stringForKey:@"SimLocationMode"];
-    double lat = [d doubleForKey:@"SimLocationLat"];
-    double lon = [d doubleForKey:@"SimLocationLon"];
-    // 仅当确实存在已设置的位置时才恢复定位中；无位置（从未设过）→ 保持停止态，
-    // 避免"幽灵定位"（显示定位中却无定位点）
-    if (([mode isEqualToString:@"anchor"] || [mode isEqualToString:@"itinerary"]) && (lat != 0 || lon != 0)) {
-        self.locating = YES;
-        // defaults 存 WGS → 转 GCJ 维持 self.cur=GCJ 约定（否则后续 commitAnchor 会双重转换偏差）
-        self.cur = [CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake(lat, lon)];
-        // 当前位置视觉走原生 MKUserLocation（随 daemon 注入自动更新），此处无需自绘
+    if ([mode isEqualToString:@"anchor"] || [mode isEqualToString:@"itinerary"]) {
+        [d setObject:@"off" forKey:@"SimLocationMode"];
+        [d synchronize];
+        notify_post("com.82flex.trollvnc.prefs-changed");
     }
+    self.locating = NO;   // 不恢复定位中；self.cur 保持 0,0，初始视野/聚焦以 locationd（真实）为准
     [self updateStatus];
 }
 
@@ -541,8 +539,20 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     tf.font = [UIFont systemFontOfSize:13];
     tf.tag = isDur ? 601 : 602;
     tf.text = isDur ? @"10" : @"0";
+    // 数字键盘无回车键 → 顶部"完成"工具条收起（对齐系统惯例）
+    UIToolbar *bar = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 44)];
+    bar.items = @[
+        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
+        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(dismissRegionKeyboard)],
+    ];
+    tf.inputAccessoryView = bar;
     [panel addSubview:tf];
     return y + 36;
+}
+
+/// 区域面板数字键盘"完成"→ 收起键盘（配置值在确定时读取）
+- (void)dismissRegionKeyboard {
+    [self.view endEditing:YES];
 }
 
 - (void)cancelRegionConfig {
@@ -1301,7 +1311,9 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     __block CLLocationCoordinate2D legCur = cur;
     __block NSMutableArray *legJoined = joined;
 
-    void (^processLeg)(void) = ^{
+    // 递归块必须 __block：否则块内捕获的是创建时的未初始化指针（赋值后仍是垃圾），首次递归即崩溃
+    __block void (^processLeg)(void);
+    processLeg = ^{
         if (segIdx >= wps.count) {
             CLLocationCoordinate2D end = CLLocationCoordinate2DMake([legJoined.lastObject[@"lat"] doubleValue], [legJoined.lastObject[@"lon"] doubleValue]);
             [self buildPointsFromIndex:nextIdx cur:end joined:legJoined completion:completion];
