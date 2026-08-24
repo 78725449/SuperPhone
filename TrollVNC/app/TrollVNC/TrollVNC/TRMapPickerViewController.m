@@ -1595,14 +1595,26 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 
 /// 生长可视化：每段算路点序列追加为生长轨迹线（算路点 WGS-84 → 画图转 GCJ-02，否则路线与点击点偏移数百米）
 /// 分段式渲染：生长线挂所属编排段索引，增删/重算只动受影响段，不重画整条链
+/// 显示层降采样：轨迹点按 1 点/秒生成（步行 1.4m/点），长路线（区域段可达数千点）整条 polyline
+/// 在地图滚动/缩放时每帧重绘是"操作地图卡顿"主因——显示抽稀到 ≤600 点（轨迹文件保留全量播放精度）
 - (void)appendGrowLine:(NSArray *)pts forSegment:(NSInteger)segIdx {
     if (![pts isKindOfClass:[NSArray class]] || pts.count < 2) return;
-    CLLocationCoordinate2D *cs = malloc(pts.count * sizeof(CLLocationCoordinate2D));
-    for (NSUInteger i = 0; i < pts.count; i++) {
-        NSDictionary *p = pts[i];
+    static const NSUInteger kMaxLinePoints = 600;
+    NSArray *disp = pts;
+    if (pts.count > kMaxLinePoints) {
+        NSMutableArray *out = [NSMutableArray arrayWithCapacity:kMaxLinePoints];
+        [out addObject:pts.firstObject];
+        NSUInteger step = (pts.count - 1) / (kMaxLinePoints - 1);
+        for (NSUInteger i = step; i < pts.count - 1; i += step) [out addObject:pts[i]];
+        [out addObject:pts.lastObject];
+        disp = out;
+    }
+    CLLocationCoordinate2D *cs = malloc(disp.count * sizeof(CLLocationCoordinate2D));
+    for (NSUInteger i = 0; i < disp.count; i++) {
+        NSDictionary *p = disp[i];
         cs[i] = [CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake([p[@"lat"] doubleValue], [p[@"lon"] doubleValue])];
     }
-    TRGrowPolyline *line = [TRGrowPolyline polylineWithCoordinates:cs count:pts.count];
+    TRGrowPolyline *line = [TRGrowPolyline polylineWithCoordinates:cs count:disp.count];
     line.segmentIndex = segIdx;
     free(cs);
     [self.mapView addOverlay:line];
@@ -1833,10 +1845,25 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     return [mode isEqualToString:@"drive"] ? @"🚗" : @"🚶";
 }
 
+/// 颜色 → 稳定 key（位图缓存键用，避免 UIColor.description 不稳定）
+- (NSString *)colorHexKey:(UIColor *)c {
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    [c getRed:&r green:&g blue:&b alpha:&a];
+    return [NSString stringWithFormat:@"%02x%02x%02x", (int)(r * 255 + 0.5), (int)(g * 255 + 0.5), (int)(b * 255 + 0.5)];
+}
+
 /// 水滴图钉绘制（实心水滴：半圆顶+尖底+白边；颜色=状态分类；可内嵌出行方式图标）
+/// 结果按 (颜色,size,emoji) 缓存——viewForAnnotation 随地图滚动/缩放反复调用，
+/// 每次重复位图绘制是"操作地图卡顿"主因之一（颜色/大小/图标组合有限，缓存命中率极高）
 - (UIImage *)waterdropImageWithColor:(UIColor *)color size:(CGFloat)sz emoji:(NSString *)emoji {
+    static NSMutableDictionary *sPinCache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ sPinCache = [NSMutableDictionary dictionary]; });
+    NSString *key = [NSString stringWithFormat:@"%@|%.0f|%@", [self colorHexKey:color], sz, emoji ?: @""];
+    UIImage *cached = sPinCache[key];
+    if (cached) return cached;
     UIGraphicsImageRenderer *ir = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(sz, sz + 6)];
-    return [ir imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+    UIImage *img = [ir imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         UIBezierPath *p = [UIBezierPath bezierPath];
         [p moveToPoint:CGPointMake(sz / 2, sz + 6)]; // 底部尖
         [p addQuadCurveToPoint:CGPointMake(0, sz / 2) controlPoint:CGPointMake(1, sz - 3)]; // 左下弧
@@ -1855,6 +1882,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
                withAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:f]}];
         }
     }];
+    sPinCache[key] = img;
+    return img;
 }
 
 - (MKOverlayRenderer *)mapView:(MKMapView *)mapView rendererForOverlay:(id<MKOverlay>)overlay {
