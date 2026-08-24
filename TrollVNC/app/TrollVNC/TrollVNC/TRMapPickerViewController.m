@@ -59,6 +59,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @property (nonatomic, assign) BOOL locating;                // 定位开关状态
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
 @property (nonatomic, assign) BOOL isGenerating;            // 轨迹生成中（并发保护：正在生长时忽略新的 commit）
+@property (nonatomic, assign) NSInteger committedSegCount;          // 已提交到轨迹的段数（增量生长：只生长新段）
+@property (nonatomic, strong) NSArray *submittedPoints;             // 已提交的完整轨迹点序列（上一段结束点=新段起点）
 
 // 区域（长按）临时状态
 @property (nonatomic, assign) BOOL regionPicking;
@@ -521,6 +523,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
     // 搜索位置 = 新的当前定位起点：清空旧编排（严谨避免旧段与新起点错连造成路线错乱）
     [self.segments removeAllObjects];
+    self.committedSegCount = 0;
+    self.submittedPoints = @[];
     self.hasStart = YES;
     self.cur = gcj;
     self.locating = YES;
@@ -632,6 +636,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         [self setHint:@"已删除该段 · 路线自适应连接"];
     }
     [self syncSegmentsUI];
+    // 删除段 → 重置提交状态（全量重建，避免增量起点错乱）
+    self.committedSegCount = 0;
     if (self.hasStart && self.segments.count > 1) [self commitItinerary];
 }
 
@@ -643,6 +649,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.segments insertObject:item atIndex:to];
     [self setHint:@"行程已重排 · 路线自适应"];
     [self syncSegmentsUI];
+    // 排序 → 重置提交状态（全量重建）
+    self.committedSegCount = 0;
     if (self.hasStart && self.segments.count > 1) [self commitItinerary];
 }
 
@@ -795,27 +803,48 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     notify_post("com.82flex.trollvnc.prefs-changed");
 }
 
-/// 递增编排提交：异步逐段生成点序列（生长式：逐段画线+蓝点推进）→ 原子写轨迹文件 + 切 itinerary + notify
+/// 编排提交（增量生长原则）：从上一段结束点继续生长，不是每次都从起点重画。
+/// - 纯追加（新段数 > 已提交段数）→ 只生长新段（起点=已提交轨迹最后点），旧段/旧生长线保留
+/// - 删除/排序导致段数变化 → 全量重建（清生长线，从 anchor 起点重新生长）
 - (void)commitItinerary {
     // 并发保护：正在生长时忽略新的提交（避免多流程竞争 overlay/文件）
     if (self.isGenerating) return;
-    self.isGenerating = YES;
-    // 重新生长：清掉旧生长轨迹（对齐原型 clearRoute/growPath 重置）
-    for (id o in self.mapView.overlays) {
-        if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
+
+    // 判断增量 vs 重建：纯追加且已有 ≥2 点的已提交轨迹 → 增量；否则全量重建
+    BOOL appendMode = (self.segments.count > self.committedSegCount)
+        && self.committedSegCount > 0
+        && self.submittedPoints.count >= 2;
+    if (!appendMode) {
+        // 重建：清掉旧生长轨迹（对齐原型 clearRoute/growPath 重置）
+        for (id o in self.mapView.overlays) {
+            if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
+        }
+        self.submittedPoints = @[];
+        self.committedSegCount = 0;
     }
-    NSMutableArray *joined = [NSMutableArray array];
-    CLLocationCoordinate2D start = [CoordTransform gcj02ToWgs84:self.cur];
-    // 从编排起点取（首个 anchor 段）
-    for (NSDictionary *seg in self.segments) {
-        if ([seg[@"type"] isEqualToString:@"anchor"]) {
-            start = CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue]);
-            break;
+    self.isGenerating = YES;
+
+    NSMutableArray *joined = [self.submittedPoints mutableCopy];
+    if (!joined) joined = [NSMutableArray array];
+    NSInteger startIdx = appendMode ? self.committedSegCount : 0;
+    CLLocationCoordinate2D start;
+    if (appendMode && joined.count) {
+        // 增量：起点 = 已提交轨迹最后点（上一段结束点，WGS）
+        NSDictionary *last = joined.lastObject;
+        start = CLLocationCoordinate2DMake([last[@"lat"] doubleValue], [last[@"lon"] doubleValue]);
+    } else {
+        // 重建：起点 = 编排 anchor（首个起点）
+        start = [CoordTransform gcj02ToWgs84:self.cur];
+        for (NSDictionary *seg in self.segments) {
+            if ([seg[@"type"] isEqualToString:@"anchor"]) {
+                start = CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue]);
+                break;
+            }
         }
     }
-    [self setHint:@"正在生长轨迹…"];
+    [self setHint:appendMode ? @"正在生长新段…" : @"正在生长轨迹…"];
     __weak typeof(self) weakSelf = self;
-    [self buildPointsFromIndex:0 cur:start joined:joined completion:^(NSArray *points) {
+    [self buildPointsFromIndex:startIdx cur:start joined:joined completion:^(NSArray *points) {
         __strong typeof(self) sself = weakSelf;
         if (!sself) return;
         sself.isGenerating = NO;
@@ -823,6 +852,9 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             [sself setHint:@"轨迹生长失败（点不足）"];
             return;
         }
+        // 更新提交状态：全部段已提交（含 anchor 段计数），完整轨迹 = 本次 points
+        sself.submittedPoints = points;
+        sself.committedSegCount = sself.segments.count;
         [sself writeTrackFile:points];
         [sself setHint:[NSString stringWithFormat:@"轨迹已提交 · %lu 点", (unsigned long)points.count]];
     }];
@@ -1059,7 +1091,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             UIBezierPath *p = [UIBezierPath bezierPath];
             [p moveToPoint:CGPointMake(sz / 2, sz + 6)]; // 底部尖
             [p addQuadCurveToPoint:CGPointMake(0, sz / 2) controlPoint:CGPointMake(1, sz - 3)]; // 左下弧
-            [p addArcWithCenter:CGPointMake(sz / 2, sz / 2) radius:sz / 2 startAngle:M_PI endAngle:0 clockwise:NO]; // 顶部半圆
+            // 顶部半圆：从 π(左) 经 π/2(顶部) 到 0(右)——clockwise:YES（UIKit y 向下，NO 会画成下半圆导致上半透明）
+            [p addArcWithCenter:CGPointMake(sz / 2, sz / 2) radius:sz / 2 startAngle:M_PI endAngle:0 clockwise:YES];
             [p addQuadCurveToPoint:CGPointMake(sz / 2, sz + 6) controlPoint:CGPointMake(sz - 1, sz - 3)]; // 右下弧到尖
             [p closePath];
             [color setFill];
