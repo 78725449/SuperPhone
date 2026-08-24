@@ -72,7 +72,6 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @property (nonatomic, assign) BOOL isGenerating;            // 轨迹生成中（并发保护：正在生长时忽略新的 commit）
 @property (nonatomic, copy) void (^pendingEditAction)(void);     // 生成中挂起的最新编辑（完成后执行，最后一次生效）
 @property (nonatomic, assign) uint32_t locsimNotifyToken;          // daemon 注入事件订阅 token（状态栏/锚点状态即时刷新）
-@property (nonatomic, assign) BOOL pendingFollow;              // 待启用跟随：注入落地（locationd≈目标）后再开，避免先居中真实位置再跳锚点
 @property (nonatomic, strong) UITapGestureRecognizer *mapTap;      // 地图单击手势（handleTap；shouldReceiveTouch 拦截锚点水滴点击，防删除竞态）
 @property (nonatomic, assign) BOOL hasPromptedLocationAuth;        // 定位授权拒绝提示已弹出（一次性）
 @property (nonatomic, assign) NSInteger committedSegCount;          // 已提交到轨迹的段数（增量生长：只生长新段）
@@ -101,6 +100,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     // 真实定位：requestWhenInUse 需 Info.plist usage description；当前位置显示走 showsUserLocation（模拟/真实自动切换）
     self.locationManager = [[CLLocationManager alloc] init];
     self.locationManager.delegate = self;
+    // desiredAccuracy 放宽到 HundredMeters（原生能力利用）：默认 Best(~10m) 会被 locationd 扣住
+    // horizontalAccuracy>10m 的 fix 不推——daemon 注入模拟 fix acc=3~15m 随机，>10m 的部分会被扣住
+    // → App 收不到模拟位置（状态栏/聚焦恒真实）。放宽后所有模拟 fix 全推（真实定位精度仍够用）
+    self.locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters;
     if ([CLLocationManager authorizationStatus] == kCLAuthorizationStatusNotDetermined) {
         [self.locationManager requestWhenInUseAuthorization];
     } else if ([CLLocationManager authorizationStatus] != kCLAuthorizationStatusDenied &&
@@ -365,7 +368,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         self.locating = YES;
         [self commitAnchor];
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES]; // 立即聚焦锚点
-        self.pendingFollow = YES; // 注入落地（locationd≈锚点）后再启用原生跟随，避免先居中真实位置再跳锚点
+        self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 立即跟随（MKMapView 持续获取，见 toggleLocate 注释）
         [self setHint:@"已设定位点 · 继续点击添加锚点生长路线"];
     } else {
         // 后续锚点：点击点只是目标锚点——当前位置图标保持当前实际位置，不随点击瞬移
@@ -595,7 +598,6 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 /// 定位中 → 切原生跟随（跟随 MKUserLocation=locationd 注入位置，之后手动拖动仍自动退出）；未定位 → 聚焦真实位置
 - (void)focusCurrentPosition:(UIButton *)sender {
     if (self.locating) {
-        self.pendingFollow = NO; // 已显式聚焦，清待启用跟随
         self.mapView.userTrackingMode = MKUserTrackingModeFollow;
     } else {
         [self focusMapOnCurrentLocation];
@@ -606,7 +608,6 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     if (self.locating) {
         // 停止定位：位置停编排最后坐标（App 内保留显示），设备恢复真实定位
         self.locating = NO;
-        self.pendingFollow = NO;         // 清待启用跟随
         self.pendingEditAction = nil;    // 放弃生成中挂起的编辑（停止后不再生长/复活设备）
         [self commitStop];
         // 两态=订阅切换（统一模型）：重新订阅触发 locationd 立即按当前状态推——
@@ -627,7 +628,10 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         [self commitAnchor];
         [self refreshUserLocationView];       // 当前位置水滴恢复出行图标
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(self.cur, 3000, 3000) animated:YES]; // 立即聚焦当前位置
-        self.pendingFollow = YES;             // 注入落地（locationd≈目标）后再启用原生跟随，避免先居中真实位置再跳
+        // 立即切原生跟随（根因修复 2026-08-24）：MKMapView 仅在 Follow 模式内部位置源持续活跃获取——
+        // pendingFollow 延迟落地检测会让 MKMapView 停在 None 不获取，locationd 模拟位置永远收不到
+        //（实测：开启定位后位置不变，系统地图 Follow 实时显示，回 App 触发 Follow 才更新）
+        self.mapView.userTrackingMode = MKUserTrackingModeFollow;
     }
     [self updateStatus];
 }
@@ -687,7 +691,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         self.locating = YES;
         [self commitAnchor];
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
-        self.pendingFollow = YES; // 注入落地后再启用原生跟随
+        self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 立即跟随（MKMapView 持续获取，见 toggleLocate 注释）
     } else {
         // 后续锚点：不移动视野（保持当前位置聚焦），从上一位置生长（生成中挂起，编辑不丢）
         [self runEdit:^{ [self commitItinerary]; }];
@@ -779,14 +783,6 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         NSForegroundColorAttributeName: [UIColor secondaryLabelColor],
     }]];
     [self.statusBtn setAttributedTitle:as forState:UIControlStateNormal];
-    // 待启用的跟随：locationd 已到达目标位置（注入落地）再启用，避免先居中真实位置再跳的抖动
-    if (self.pendingFollow) {
-        CLLocationCoordinate2D targetW = [CoordTransform gcj02ToWgs84:self.cur];
-        if ([SimRouteCalculator haversineMeters:targetW to:liveW] < 100.0) {
-            self.pendingFollow = NO;
-            self.mapView.userTrackingMode = MKUserTrackingModeFollow;
-        }
-    }
 }
 
 - (void)toggleSteps:(UIButton *)sender {
@@ -841,7 +837,6 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         self.hasStart = NO;
         self.locating = NO;
         self.pendingEditAction = nil;    // 清挂起编辑（空链无需再生成）
-        self.pendingFollow = NO;         // 清待启用跟随
         [self commitStop];
         [self.locationManager stopUpdatingLocation]; // 两态=订阅切换：重新订阅触发 locationd 立即推真实 fix
         [self.locationManager startUpdatingLocation];
@@ -935,6 +930,12 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
         [self presentViewController:ac animated:YES completion:nil];
     }
+}
+
+/// 定位失败回调（原生能力利用）：定位错误（权限拒绝/无定位源/模拟注入异常）不再静默——
+/// 记录日志便于排查（权限拒绝的 UI 提示由 locationManagerDidChangeAuthorization 负责，此处不重复）
+- (void)locationManager:(CLLocationManager *)manager didFailWithError:(NSError *)error {
+    NSLog(@"[locsim] locationManager failed: code=%ld %@", (long)error.code, error.localizedDescription);
 }
 
 - (void)locationManager:(CLLocationManager *)manager didUpdateLocations:(NSArray<CLLocation *> *)locations {
@@ -1441,11 +1442,6 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 }
 
 #pragma mark - MKMapViewDelegate
-
-- (void)mapView:(MKMapView *)mapView regionWillChangeAnimated:(BOOL)animated {
-    // 用户手动拖动/缩放 → 取消待启用的跟随（程序化 setRegion 带 animated=YES，不误判）
-    if (!animated) self.pendingFollow = NO;
-}
 
 /// 出行方式 → 图标（与模式胶囊按钮同款）
 - (NSString *)emojiForMode:(NSString *)mode {
