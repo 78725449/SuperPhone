@@ -61,6 +61,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @property (nonatomic, assign) BOOL regionPicking;
 @property (nonatomic, assign) CLLocationCoordinate2D regionCenter;
 @property (nonatomic, assign) double regionRadiusM;
+@property (nonatomic, assign) CGPoint regionTouchOffset; // 手势起点-中心（像素偏移，拖移用）
 @property (nonatomic, strong) MKCircle *regionOverlay;
 @property (nonatomic, strong) MKPointAnnotation *curPin;    // 蓝点（自绘）
 @end
@@ -100,7 +101,9 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 }
 
 - (void)setupUI {
-    UISearchBar *sb = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 8, self.view.bounds.size.width - 24, 44)];
+    // 全部控件用 AutoLayout（viewDidLoad 时容器 bounds 未定，固定 frame 会错位）
+    UISearchBar *sb = [[UISearchBar alloc] init];
+    sb.translatesAutoresizingMaskIntoConstraints = NO;
     sb.placeholder = @"搜索地点（如：北京西站）";
     sb.delegate = self;
     sb.searchBarStyle = UISearchBarStyleMinimal;
@@ -112,11 +115,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
     // 状态条（可点击展开步骤；对齐原型 stat：左侧状态圆点 + 文字 + 右侧展开箭头）
     UIButton *statusBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    statusBtn.frame = CGRectMake(12, 60, self.view.bounds.size.width - 24, 32);
+    statusBtn.translatesAutoresizingMaskIntoConstraints = NO;
     statusBtn.backgroundColor = [UIColor systemBackgroundColor];
     statusBtn.layer.cornerRadius = 8;
     statusBtn.titleLabel.font = [UIFont systemFontOfSize:13];
-    statusBtn.titleEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 16);
+    statusBtn.titleEdgeInsets = UIEdgeInsetsMake(0, 14, 0, 18);
     [statusBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
     [statusBtn addTarget:self action:@selector(toggleSteps:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:statusBtn];
@@ -128,18 +131,21 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     sdot.backgroundColor = [UIColor systemGrayColor];
     [statusBtn addSubview:sdot];
     self.statusDot = sdot;
-    // 右侧展开箭头
-    UILabel *arr = [[UILabel alloc] initWithFrame:CGRectMake(statusBtn.bounds.size.width - 22, 6, 14, 20)];
+    // 右侧展开箭头（跟随按钮宽度右对齐）
+    UILabel *arr = [[UILabel alloc] initWithFrame:CGRectMake(0, 6, 14, 20)];
     arr.tag = 502;
     arr.text = @"▾";
     arr.font = [UIFont systemFontOfSize:11];
     arr.textColor = [UIColor secondaryLabelColor];
     arr.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
     [statusBtn addSubview:arr];
+    NSLayoutConstraint *arrRight = [NSLayoutConstraint constraintWithItem:arr attribute:NSLayoutAttributeTrailing relatedBy:NSLayoutRelationEqual toItem:statusBtn attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:-10];
+    NSLayoutConstraint *arrCenterY = [NSLayoutConstraint constraintWithItem:arr attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:statusBtn attribute:NSLayoutAttributeCenterY multiplier:1.0 constant:0];
+    [statusBtn addConstraints:@[arrRight, arrCenterY]];
 
     // 步骤列表（默认收起；地图左上卡片，删除 + 拖拽排序，对齐原型 segPanel）
-    UITableView *table = [[UITableView alloc] initWithFrame:CGRectMake(12, 96, 210, 200)
-                                                      style:UITableViewStylePlain];
+    UITableView *table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    table.translatesAutoresizingMaskIntoConstraints = NO;
     table.dataSource = self;
     table.delegate = self;
     table.hidden = YES;
@@ -158,17 +164,15 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
     // 步行/驾车胶囊（左下）
     UISegmentedControl *mode = [[UISegmentedControl alloc] initWithItems:@[@"🚶 步行", @"🚗 驾车"]];
+    mode.translatesAutoresizingMaskIntoConstraints = NO;
     mode.selectedSegmentIndex = 0;
     [mode addTarget:self action:@selector(modeChanged:) forControlEvents:UIControlEventValueChanged];
-    mode.frame = CGRectMake(12, self.view.bounds.size.height - 140, 150, 32);
-    mode.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleRightMargin;
     [self.view addSubview:mode];
     self.modeSeg = mode;
 
     // 定位开关 FAB（右下角圆形）
     UIButton *fab = [UIButton buttonWithType:UIButtonTypeCustom];
-    fab.frame = CGRectMake(self.view.bounds.size.width - 68, self.view.bounds.size.height - 140, 56, 56);
-    fab.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleLeftMargin;
+    fab.translatesAutoresizingMaskIntoConstraints = NO;
     fab.layer.cornerRadius = 28;
     fab.backgroundColor = [UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0]; // 品牌紫（对齐原型 fab）
     [fab setImage:[UIImage systemImageNamed:@"location.fill"] forState:UIControlStateNormal];
@@ -176,6 +180,36 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [fab addTarget:self action:@selector(toggleLocate:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:fab];
     self.locateFab = fab;
+
+    // 约束
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        // 搜索框：顶部 8、左右 12、高 40
+        [sb.topAnchor constraintEqualToAnchor:safe.topAnchor constant:8],
+        [sb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
+        [sb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
+        [sb.heightAnchor constraintEqualToConstant:40],
+        // 状态条：搜索框下 8
+        [statusBtn.topAnchor constraintEqualToAnchor:sb.bottomAnchor constant:8],
+        [statusBtn.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
+        [statusBtn.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
+        [statusBtn.heightAnchor constraintEqualToConstant:32],
+        // 步骤列表：状态条下 4、左 12、宽 210、高 200
+        [table.topAnchor constraintEqualToAnchor:statusBtn.bottomAnchor constant:4],
+        [table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
+        [table.widthAnchor constraintEqualToConstant:210],
+        [table.heightAnchor constraintEqualToConstant:200],
+        // 步行/驾车胶囊：左下
+        [mode.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
+        [mode.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-12],
+        [mode.widthAnchor constraintEqualToConstant:150],
+        [mode.heightAnchor constraintEqualToConstant:32],
+        // FAB：右下 56×56
+        [fab.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
+        [fab.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-12],
+        [fab.widthAnchor constraintEqualToConstant:56],
+        [fab.heightAnchor constraintEqualToConstant:56],
+    ]];
 }
 
 /// 启动时读回 defaults（SimLocationMode + 坐标即状态真相），同步开关/蓝点
@@ -223,36 +257,59 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 #pragma mark - 手势：长按区域
 
+/// 长按区域：出现遮罩（紫虚线圆）→ 圆内拖动移动中心 / 圆边拖动调半径 → 松开弹配置菜单（对齐原型 ring+ringHandle+param）
 - (void)handleLongPress:(UILongPressGestureRecognizer *)g {
     CGPoint pt = [g locationInView:self.mapView];
     CLLocationCoordinate2D gcj = [self.mapView convertPoint:pt toCoordinateFromView:self.mapView];
     switch (g.state) {
-        case UIGestureRecognizerStateBegan:
+        case UIGestureRecognizerStateBegan: {
             self.regionPicking = YES;
             self.regionCenter = gcj;
             self.regionRadiusM = 300;
+            CGPoint centerPt = [self.mapView convertCoordinate:self.regionCenter toPointToView:self.mapView];
+            self.regionTouchOffset = CGPointMake(pt.x - centerPt.x, pt.y - centerPt.y);
             [self addRegionOverlay];
+            [self setHint:@"拖动圆内移动区域 · 拖动圆边调节半径"];
             break;
-        case UIGestureRecognizerStateChanged:
-            if (self.regionPicking) {
-                // 拖动点距中心 = 半径（米）
+        }
+        case UIGestureRecognizerStateChanged: {
+            if (!self.regionPicking) break;
+            CGPoint centerPt = [self.mapView convertCoordinate:self.regionCenter toPointToView:self.mapView];
+            double distPx = hypot(pt.x - centerPt.x, pt.y - centerPt.y);
+            double radiusPx = [self pixelsForMeters:self.regionRadiusM];
+            if (distPx < radiusPx * 0.6) {
+                // 圆内拖动 → 移动区域中心（区域整体平移）
+                CLLocationCoordinate2D newCenter = [self.mapView convertPoint:CGPointMake(pt.x - self.regionTouchOffset.x, pt.y - self.regionTouchOffset.y)
+                                                          toCoordinateFromView:self.mapView];
+                self.regionCenter = newCenter;
+            } else {
+                // 圆边/外拖动 → 调节半径（手势点到中心距离）
                 CLLocationCoordinate2D gcjW = [CoordTransform gcj02ToWgs84:gcj];
                 CLLocationCoordinate2D centerW = [CoordTransform gcj02ToWgs84:self.regionCenter];
-                double d = [SimRouteCalculator haversineMeters:centerW to:gcjW];
-                self.regionRadiusM = MAX(50, MIN(5000, d));
-                [self addRegionOverlay];
+                self.regionRadiusM = MAX(50, MIN(5000, [SimRouteCalculator haversineMeters:centerW to:gcjW]));
             }
+            [self addRegionOverlay];
             break;
+        }
         case UIGestureRecognizerStateEnded:
         case UIGestureRecognizerStateCancelled:
             if (self.regionPicking) {
                 self.regionPicking = NO;
-                [self promptRegionDuration];
+                [self promptRegionDuration]; // 配置菜单（对齐原型 param：时长/途经点）
             }
             break;
         default:
             break;
     }
+}
+
+/// 当前地图缩放下的米→像素换算（经度方向近似）
+- (double)pixelsForMeters:(double)m {
+    CLLocationCoordinate2D c1 = self.regionCenter;
+    CLLocationCoordinate2D c2 = CLLocationCoordinate2DMake(c1.latitude, c1.longitude + (m / 111320.0));
+    CGPoint p1 = [self.mapView convertCoordinate:c1 toPointToView:self.mapView];
+    CGPoint p2 = [self.mapView convertCoordinate:c2 toPointToView:self.mapView];
+    return hypot(p2.x - p1.x, p2.y - p1.y);
 }
 
 - (void)addRegionOverlay {
@@ -831,43 +888,17 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
             [del setImage:[UIImage systemImageNamed:@"trash"] forState:UIControlStateNormal];
             del.frame = CGRectMake(0, 0, 30, 30);
             v.rightCalloutAccessoryView = del;
+            // 水滴 pin（SF Symbol mappin，尖指向坐标；start=紫/route=蓝/region=绿）
+            v.image = [UIImage systemImageNamed:@"mappin"];
+            v.centerOffset = CGPointMake(0, -v.image.size.height / 2); // 尖对齐坐标点
         }
         v.annotation = annotation;
-        // 水滴图钉（对齐原型 segMark：尖指向坐标，start=紫/route=蓝/region=绿）
-        for (UIView *sv in v.subviews) { if (sv.tag == 99) [sv removeFromSuperview]; }
-        UIColor *color = [UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0]; // 紫 --brand
-        if ([a.type isEqualToString:@"route"]) color = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]; // 蓝
-        else if ([a.type isEqualToString:@"region"]) color = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0]; // 绿
-        CGFloat sz = 18;
-        UIView *pin = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sz, sz)];
-        pin.tag = 99;
-        pin.layer.cornerRadius = sz / 2;
-        // 水滴：圆角 50% 50% 50% 0 + rotate(-45)（尖朝下指向坐标点）
-        pin.layer.cornerRadius = sz / 2;
-        pin.layer.masksToBounds = NO;
-        pin.backgroundColor = color;
-        // 用 45° 旋转的圆角方块模拟水滴（左下角变尖）
-        UIBezierPath *path = [UIBezierPath bezierPath];
-        [path moveToPoint:CGPointMake(0, sz * 0.85)];
-        [path addQuadCurveToPoint:CGPointMake(sz * 0.5, sz * 0.5) controlPoint:CGPointMake(0, sz * 0.5)];
-        [path addArcWithCenter:CGPointMake(sz * 0.5, sz * 0.5) radius:sz * 0.5 startAngle:M_PI endAngle:0 clockwise:YES];
-        [path addQuadCurveToPoint:CGPointMake(sz, sz * 0.85) controlPoint:CGPointMake(sz, sz * 0.5)];
-        [path addQuadCurveToPoint:CGPointMake(sz * 0.5, sz) controlPoint:CGPointMake(sz, sz * 1.0)];
-        [path addQuadCurveToPoint:CGPointMake(0, sz * 0.85) controlPoint:CGPointMake(0, sz * 1.0)];
-        [path closePath];
-        CAShapeLayer *shape = [CAShapeLayer layer];
-        shape.path = path.CGPath;
-        shape.fillColor = color.CGColor;
-        shape.strokeColor = [UIColor whiteColor].CGColor;
-        shape.lineWidth = 2;
-        shape.shadowColor = [UIColor blackColor].CGColor;
-        shape.shadowOpacity = 0.35;
-        shape.shadowRadius = 2;
-        shape.shadowOffset = CGSizeMake(0, 1);
-        [pin.layer addSublayer:shape];
-        v.frame = CGRectMake(0, 0, sz, sz + 4);
-        pin.center = CGPointMake(v.bounds.size.width / 2, v.bounds.size.height / 2 - 2);
-        [v addSubview:pin];
+        // 分色（对齐原型 segMark：start=紫/route=蓝/region=绿）
+        UIColor *color = [UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0];
+        if ([a.type isEqualToString:@"route"]) color = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0];
+        else if ([a.type isEqualToString:@"region"]) color = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0];
+        v.tintColor = color;
+        v.frame = CGRectMake(0, 0, v.image.size.width, v.image.size.height);
         v.calloutOffset = CGPointMake(0, -6);
         return v;
     }
