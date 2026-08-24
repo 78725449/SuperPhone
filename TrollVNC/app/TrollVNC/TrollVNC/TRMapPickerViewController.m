@@ -627,7 +627,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     }
 }
 
-/// 删除第 idx 锚点（任意锚点：删除中间锚点后，前一个与后一个锚点自动重算新路线；删除首个则后续成为无前驱锚点）
+/// 删除第 idx 锚点（任意锚点）：基于当前位置局部重算——保留当前位置前的轨迹点，
+/// 从受影响锚点开始重生长；删除最后锚点（无下一个锚点）→ 保持当前位置（轨迹截断到当前位置）
 - (void)deleteSegmentAt:(NSInteger)idx {
     if (idx < 0 || idx >= (NSInteger)self.segments.count) return;
     [self.segments removeObjectAtIndex:idx];
@@ -646,23 +647,89 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     }
     [self updateStatus];
     [self syncSegmentsUI];
-    // 删除 → 重置提交状态（全量重建：前一锚点与后一锚点自动计算新路线）
-    self.committedSegCount = 0;
-    if (self.segments.count > 1) [self commitItinerary];
-    [self setHint:@"已删除锚点 · 前后锚点路线自动重连"];
+    // 基于当前位置局部重算（删除的最后锚点→affected=count→保持当前位置）
+    NSInteger affected = MIN(idx, (NSInteger)self.segments.count);
+    [self regenerateFromIndex:affected];
+    [self setHint:@"已删除锚点 · 基于当前位置重算路线"];
 }
 
-/// 拖拽排序后：段顺序更新 → 预览/生成按新顺序拼接（起点固定为首段 anchor）
+/// 拖拽排序后：基于当前位置局部重算（保留当前位置前轨迹点，从受影响位置重生长）
 - (void)moveSegmentFrom:(NSInteger)from to:(NSInteger)to {
     if (from < 0 || to < 0 || from >= (NSInteger)self.segments.count || to >= (NSInteger)self.segments.count || from == to) return;
     NSDictionary *item = self.segments[from];
     [self.segments removeObjectAtIndex:from];
     [self.segments insertObject:item atIndex:to];
-    [self setHint:@"行程已重排 · 路线自适应"];
+    [self setHint:@"行程已重排 · 基于当前位置重算"];
     [self syncSegmentsUI];
-    // 排序 → 重置提交状态（全量重建）
-    self.committedSegCount = 0;
-    if (self.hasStart && self.segments.count > 1) [self commitItinerary];
+    [self regenerateFromIndex:0];
+}
+
+#pragma mark - 基于当前位置的局部重算（manager 注入写回 mobile plist 为当前位置真相）
+
+/// 读当前位置（WGS；manager 注入写回 mobile plist；无写回回退最近锚点）
+- (CLLocationCoordinate2D)currentSimPosition {
+    NSDictionary *mobile = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist"];
+    double lat = [mobile[@"SimLocationLat"] doubleValue];
+    double lon = [mobile[@"SimLocationLon"] doubleValue];
+    if (lat != 0 || lon != 0) return CLLocationCoordinate2DMake(lat, lon);
+    return [CoordTransform gcj02ToWgs84:self.cur];
+}
+
+/// 已提交轨迹中距目标最近的点索引（截断基准）
+- (NSUInteger)nearestPointIndexTo:(CLLocationCoordinate2D)targetW {
+    NSUInteger best = 0;
+    double bestD = DBL_MAX;
+    for (NSUInteger i = 0; i < self.submittedPoints.count; i++) {
+        NSDictionary *p = self.submittedPoints[i];
+        CLLocationCoordinate2D c = CLLocationCoordinate2DMake([p[@"lat"] doubleValue], [p[@"lon"] doubleValue]);
+        double d = [SimRouteCalculator haversineMeters:targetW to:c];
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+}
+
+/// 局部重算：保留当前位置前的已提交轨迹点，从 affectedIdx 锚点重生长到链尾
+/// （删除中间锚点→当前位置→下一锚点重算；无下一锚点→保持当前位置）
+- (void)regenerateFromIndex:(NSInteger)affectedIdx {
+    if (self.isGenerating) return;
+    self.isGenerating = YES;
+    // 清掉生长线（重画受影响之后的轨迹）
+    for (id o in self.mapView.overlays) {
+        if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
+    }
+    // 当前位置（WGS）
+    CLLocationCoordinate2D curW = [self currentSimPosition];
+    NSMutableArray *joined = [NSMutableArray array];
+    // 保留当前位置前的已提交轨迹点（截断到最近点）
+    if (self.submittedPoints.count) {
+        NSUInteger cut = [self nearestPointIndexTo:curW];
+        for (NSUInteger i = 0; i <= cut && i < self.submittedPoints.count; i++) {
+            [joined addObject:self.submittedPoints[i]];
+        }
+    }
+    [self setHint:@"正在重算路线…"];
+    __weak typeof(self) weakSelf = self;
+    [self buildPointsFromIndex:(NSUInteger)affectedIdx cur:curW joined:joined completion:^(NSArray *points) {
+        __strong typeof(self) sself = weakSelf;
+        if (!sself) return;
+        sself.isGenerating = NO;
+        // 无下一个锚点（affected 已到链尾）→ 保持当前位置（截断轨迹）
+        if (affectedIdx >= (NSInteger)sself.segments.count) {
+            sself.submittedPoints = points;
+            sself.committedSegCount = sself.segments.count;
+            if (points.count) [sself writeTrackFile:points];
+            [sself setHint:@"已删除最后锚点 · 保持当前位置"];
+            return;
+        }
+        if (points.count < 2) {
+            [sself setHint:@"路线重算失败（点不足）"];
+            return;
+        }
+        sself.submittedPoints = points;
+        sself.committedSegCount = sself.segments.count;
+        [sself writeTrackFile:points];
+        [sself setHint:[NSString stringWithFormat:@"路线已重算 · %lu 点", (unsigned long)points.count]];
+    }];
 }
 
 #pragma mark - UITableViewDataSource / Delegate（步骤列表：删除 + 拖拽排序）
@@ -909,8 +976,9 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     }
     CLLocationCoordinate2D toW = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake(toLat, toLon)];
     NSString *mode = [seg[@"mode"] isKindOfClass:[NSString class]] ? seg[@"mode"] : (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
-    if (idx == 0) {
-        // 首个锚点：无前驱 → 仅作起点，不生长路线
+    if (idx == 0 && joined.count == 0) {
+        // 首个锚点且无已提交轨迹：无前驱 → 仅作起点，不生长路线
+        // （局部重算时 joined 含截断点 → 首个锚点也基于当前位置生长）
         [self buildPointsFromIndex:idx + 1 cur:toW joined:joined completion:completion];
         return;
     }

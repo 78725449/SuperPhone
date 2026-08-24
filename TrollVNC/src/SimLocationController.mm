@@ -156,6 +156,8 @@ static const double kSimAnchorRangeM = 20.0;
     _currentSpeed = step;
     _currentCourse = course;
     _currentMode = @"anchor";
+    // 写回 mobile 域 plist（anchor 微动也更新当前位置真相）
+    [self _writebackPosition:lat lon:lon];
     [self _injectAnchorPointWithSpeed:step course:course];
 }
 
@@ -232,6 +234,17 @@ static const double kSimAnchorRangeM = 20.0;
     _currentLon = lon;
     _currentSpeed = speed;
     _currentCourse = course;
+    // 写回 mobile 域 plist（当前位置真相；App 删除/排序锚点局部重算时读取基准）
+    [self _writebackPosition:lat lon:lon];
+}
+
+/// 注入后写回 mobile 域 plist（保留其他键；root 可写 mobile 文件）
+- (void)_writebackPosition:(double)lat lon:(double)lon {
+    NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist"];
+    if (!d) d = [NSMutableDictionary dictionary];
+    d[@"SimLocationLat"] = @(lat);
+    d[@"SimLocationLon"] = @(lon);
+    [d writeToFile:@"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist" atomically:YES];
 }
 
 - (void)_stopTrack {
