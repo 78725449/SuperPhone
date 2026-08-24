@@ -439,14 +439,12 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.mapView addOverlay:self.regionOverlay];
 }
 
-/// 区域覆盖范围调节阀：实时更新半径、遮罩预览与菜单标题/数值（确定后按当前值入段）
+/// 区域覆盖范围调节阀：实时更新半径、遮罩预览与菜单数值（确定后按当前值入段）
 - (void)regionRadiusSliderChanged:(UISlider *)sender {
     self.regionRadiusM = MAX(50, MIN(5000, (double)sender.value));
     [self addRegionOverlay];
     UILabel *rLabel = (UILabel *)[self.regionPanel viewWithTag:604];
     rLabel.text = [NSString stringWithFormat:@"覆盖范围 %.0f m", self.regionRadiusM];
-    UILabel *title = (UILabel *)[self.regionPanel viewWithTag:606];
-    title.text = [NSString stringWithFormat:@"区域漫游 · 覆盖范围 %.0f m", self.regionRadiusM];
 }
 
 /// 区域配置菜单：地图底部卡片（时长/途经点/模式 + 取消/确定），对齐原型 param 参数条（非系统弹窗）
@@ -468,12 +466,6 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     self.regionPanel = panel;
 
     CGFloat y = 14;
-    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(14, y, w - 28, 20)];
-    title.text = [NSString stringWithFormat:@"区域漫游 · 覆盖范围 %.0f m", self.regionRadiusM];
-    title.font = [UIFont boldSystemFontOfSize:14];
-    title.tag = 606;
-    [panel addSubview:title];
-    y += 30;
 
     // 覆盖范围调节阀（精确控制区域覆盖范围，实时预览遮罩；长按拖动遮罩边缘快速调仍可用）
     UILabel *rLabel = [[UILabel alloc] initWithFrame:CGRectMake(14, y, 110, 30)];
@@ -507,33 +499,29 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [panel addSubview:ms];
     y += 40;
 
-    // 平衡调节阀（仅随机模式显示）：左=步行、右=驾车，滑块=步行比例（默认 70%），拖向哪端=提高哪端比例
-    UIView *ratioRow = [[UIView alloc] initWithFrame:CGRectMake(0, y, w, 34)];
+    // 平衡调节阀（仅随机模式显示，单行省空间）：左=「步行 xx%」、右=「驾车 xx%」，滑块=步行比例（默认 70%），拖向哪端=提高哪端比例
+    UIView *ratioRow = [[UIView alloc] initWithFrame:CGRectMake(0, y, w, 30)];
     ratioRow.tag = 608;
-    UILabel *wL = [[UILabel alloc] initWithFrame:CGRectMake(14, 0, 40, 30)];
-    wL.text = @"步行";
+    UILabel *wL = [[UILabel alloc] initWithFrame:CGRectMake(14, 0, 64, 30)];
+    wL.text = @"步行 70%";
     wL.font = [UIFont systemFontOfSize:12];
+    wL.tag = 610;
     [ratioRow addSubview:wL];
-    UISlider *ratio = [[UISlider alloc] initWithFrame:CGRectMake(58, 0, w - 116, 30)];
+    UISlider *ratio = [[UISlider alloc] initWithFrame:CGRectMake(84, 0, w - 160, 30)];
     ratio.minimumValue = 0;
     ratio.maximumValue = 1;
     ratio.value = 0.7; // 默认 70% 步行 / 30% 驾车
     ratio.tag = 607;
     [ratio addTarget:self action:@selector(regionRatioChanged:) forControlEvents:UIControlEventValueChanged];
     [ratioRow addSubview:ratio];
-    UILabel *dL = [[UILabel alloc] initWithFrame:CGRectMake(w - 54, 0, 40, 30)];
-    dL.text = @"驾车";
+    UILabel *dL = [[UILabel alloc] initWithFrame:CGRectMake(w - 84, 0, 70, 30)];
+    dL.text = @"驾车 30%";
     dL.font = [UIFont systemFontOfSize:12];
+    dL.textAlignment = NSTextAlignmentRight;
+    dL.tag = 611;
     [ratioRow addSubview:dL];
-    UILabel *ratioVal = [[UILabel alloc] initWithFrame:CGRectMake(w - 140, 34, 126, 16)];
-    ratioVal.text = @"步行 70% · 驾车 30%";
-    ratioVal.font = [UIFont systemFontOfSize:11];
-    ratioVal.textAlignment = NSTextAlignmentCenter;
-    ratioVal.tag = 609;
-    [ratioRow addSubview:ratioVal];
     [panel addSubview:ratioRow];
-    y += 34 + 16;
-    y += 2;
+    y += 32;
 
     UIButton *cancel = [UIButton buttonWithType:UIButtonTypeSystem];
     cancel.frame = CGRectMake(14, y, (w - 34) / 2, 40);
@@ -597,11 +585,13 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     row.hidden = (sender.selectedSegmentIndex != 1); // 仅"随机"（中间档）显示
 }
 
-/// 平衡调节阀变化：实时更新步行/驾车比例文案
+/// 平衡调节阀变化：实时更新两侧步行/驾车比例文案（左=步行 xx% 右=驾车 xx%）
 - (void)regionRatioChanged:(UISlider *)sender {
-    UILabel *v = (UILabel *)[self.regionPanel viewWithTag:609];
     int walkPct = (int)llround(sender.value * 100);
-    v.text = [NSString stringWithFormat:@"步行 %d%% · 驾车 %d%%", walkPct, 100 - walkPct];
+    UILabel *wL = (UILabel *)[self.regionPanel viewWithTag:610];
+    wL.text = [NSString stringWithFormat:@"步行 %d%%", walkPct];
+    UILabel *dL = (UILabel *)[self.regionPanel viewWithTag:611];
+    dL.text = [NSString stringWithFormat:@"驾车 %d%%", 100 - walkPct];
 }
 
 /// 确定：读配置 → 加入 region 段 → 自生长提交（时长 clamp 1~120，途经点 clamp 0~15）
