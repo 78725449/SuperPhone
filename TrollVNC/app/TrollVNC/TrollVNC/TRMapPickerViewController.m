@@ -72,11 +72,11 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, assign) BOOL segmentZeroPending;                     // 删首锚点后"当前位置→新首锚"段 0 待生成（段 0 特殊机制：正常链段 0=首锚点仅起点恒有效）
 @property (nonatomic, strong) NSMutableArray *anchors;       // 每段对应的锚点标注（TRAnchorAnnotation）
 @property (nonatomic, strong) NSMutableArray *waypointAnns;          // 区域漫游途经点标注（TRWaypointAnnotation，随区域段生成/重建）
-@property (nonatomic, assign) double currentWalkRatio;              // 区域随机模式当前步行占比（随 currentLegMode 同步，默认 0.7）
 @property (nonatomic, assign) CLLocationCoordinate2D cur;    // 当前模拟位置（地图坐标 GCJ-02）
 @property (nonatomic, assign) BOOL hasStart;
 @property (nonatomic, assign) BOOL locating;                // 定位开关状态
 @property (nonatomic, copy) NSString *currentLegMode;       // 当前位置水滴的出行方式（当前段目标锚点的，walk/drive）
+@property (nonatomic, assign) double currentLegSpeed;              // 当前所在路线（出发锚点段）的生成速度——从段缓存 segmentPoints 取（含 ±10% 抖动；random 段反映实际随机模式）
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
 @property (nonatomic, assign) BOOL hasFocusedMapOnce;            // 首帧启动聚焦是否已执行（避免 tab 往返重复聚焦）
 @property (nonatomic, strong) CLLocationManager *locationManager; // App 活跃位置订阅（授权 + startUpdatingLocation，didUpdateLocations 主驱动）
@@ -678,7 +678,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻：模拟分支只认晚于此的 fix（过滤注入落地前的真实残留）
         [self commitAnchor];
         [self refreshUserLocationView];       // 当前位置水滴恢复出行图标
-        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(self.cur, 3000, 3000) animated:YES]; // 立即聚焦锚点
         self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:self.cur]; // 自动聚焦基线=模拟位置（拖动退出 Follow 后模拟位置超阈值才拉回）
         self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随：MapKit 内部位置源持续订阅 locationd → 水滴跟随模拟位置（单一数据源）
     }
@@ -769,18 +768,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     NSString *speedTxt = @"0.0 m/s";
     NSString *modeTxt = self.locating ? @"模拟中 · 定位" : @"已停止 · 定位";
     if (self.locating) {
-        // 速度 = 当前段出行方式的平均速度（模拟播放按该模式速度推进；random 区域=步行/驾车按占比加权）
-        // 注：locationd 广播层对模拟注入位置不保留 CLLocation.speed（恒 -1/0），改用模式代表速度——零通道、与时序无耦合
-        NSString *m = self.currentLegMode ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
-        double mps;
-        if ([m isEqualToString:@"random"]) {
-            double wr = self.currentWalkRatio;
-            mps = [RegionSimulator effectiveSpeedForMode:@"walk"] * wr
-                + [RegionSimulator effectiveSpeedForMode:@"drive"] * (1.0 - wr);
-        } else {
-            mps = [RegionSimulator effectiveSpeedForMode:m];
-        }
-        speedTxt = [NSString stringWithFormat:@"%.1f m/s", mps];
+        // 速度 = 当前所在路线（出发锚点段）的生成速度——updateAnchorPassStateWithLiveWGS 已从段缓存更新 currentLegSpeed
+        speedTxt = [NSString stringWithFormat:@"%.1f m/s", self.currentLegSpeed];
     }
     // 富文本：模式加粗 + 速度等宽灰 + 坐标等宽灰（对齐原型 stat .m/.spd/.c）
     NSMutableAttributedString *as = [[NSMutableAttributedString alloc] init];
@@ -852,6 +841,10 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 
 /// 段目标锚点坐标（WGS；anchor 用 lat/lon，旧 route 兼容 to）
 - (CLLocationCoordinate2D)anchorWGSOfSegment:(NSDictionary *)seg {
+    if ([seg[@"type"] isEqualToString:@"region"]) {
+        // region 段目标锚点 = 区域中心（region 段无 lat/lon，缺失此分支会取到 (0,0) → 涉及 region 段的编辑路线乱连）
+        return [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"center"][@"lat"] doubleValue], [seg[@"center"][@"lon"] doubleValue])];
+    }
     if ([seg[@"to"] isKindOfClass:[NSDictionary class]]) {
         return [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"to"][@"lat"] doubleValue], [seg[@"to"][@"lon"] doubleValue])];
     }
@@ -892,9 +885,16 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         [self syncSegmentsUI];
         return;
     }
-    // 跨过被删锚点的合并段（新链段 idx：前驱锚点→后继锚点）标记待生成；删链尾则无（轨迹截断到上一锚点）
+    // 跨过被删锚点的合并段标记待生成；删链尾则无（轨迹截断到上一锚点）
     if (idx < (NSInteger)self.segments.count) {
-        if (idx == 0) self.segmentZeroPending = YES; // 删首锚点：当前位置作新起点 → 段 0（当前位置→新首锚）待生成
+        if (idx == 0) {
+            // 删首锚点：看当前位置是否还在首锚路线上（以"距新首锚是否已消费"判定，阈值同经过判定 25m）——
+            // 已到达新首锚（首锚路线完全消费）→ 直接删除（段 0 不生成，轨迹从新首锚继续，daemon 自当前位置续播）；
+            // 仍在路上 → 当前位置作新起点，段 0（当前位置→新首锚）待生成
+            CLLocationCoordinate2D newHeadW = [self anchorWGSOfSegment:self.segments[0]];
+            CLLocationCoordinate2D curW = [self currentSimPosition];
+            self.segmentZeroPending = ([SimRouteCalculator haversineMeters:curW to:newHeadW] >= 25.0);
+        }
         if (idx >= (NSInteger)self.segmentPoints.count) {
             [self.segmentPoints addObject:[NSNull null]];
         } else {
@@ -944,19 +944,11 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [self runEdit:^{ [self syncChainAndGenerate]; }];
 }
 
-/// 两段锚点坐标是否相同（anchor 段存 lat/lon，直接值比较）
+/// 两段锚点坐标是否相同（anchor 段存 lat/lon、region 段存 center，各自取坐标值比较）
 - (BOOL)sameAnchor:(NSDictionary *)a b:(NSDictionary *)b {
-    double al = [a[@"lat"] doubleValue], alo = [a[@"lon"] doubleValue];
-    if ([a[@"to"] isKindOfClass:[NSDictionary class]]) {
-        al = [a[@"to"][@"lat"] doubleValue];
-        alo = [a[@"to"][@"lon"] doubleValue];
-    }
-    double bl = [b[@"lat"] doubleValue], blo = [b[@"lon"] doubleValue];
-    if ([b[@"to"] isKindOfClass:[NSDictionary class]]) {
-        bl = [b[@"to"][@"lat"] doubleValue];
-        blo = [b[@"to"][@"lon"] doubleValue];
-    }
-    return al == bl && alo == blo;
+    CLLocationCoordinate2D aW = [self anchorWGSOfSegment:a];
+    CLLocationCoordinate2D bW = [self anchorWGSOfSegment:b];
+    return aW.latitude == bW.latitude && aW.longitude == bW.longitude;
 }
 
 #pragma mark - 基于当前位置的局部重算（manager 注入写回 mobile plist 为当前位置真相）
@@ -968,11 +960,10 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     return [CoordTransform gcj02ToWgs84:self.cur];
 }
 
-/// 停止后聚焦当前位置：读 lastFix（停止落地后首个真实 fix 到达校正）
-/// 同步记录停止瞬间位置（模拟残留）为自动聚焦基线——首个真实 fix 距此超阈值才聚焦（防残留抢占）
+/// 停止定位后只记录自动聚焦基线（停止瞬间位置=模拟残留）——不主动聚焦：
+/// 聚焦完全交给订阅驱动（首个真实 fix 距基线超阈值 → maybeAutoFocus 自动聚焦，防残留抢占）
 - (void)focusRealLocationNow {
     self.lastAutoFocusWGS = [self currentSimPosition];
-    [self focusMapOnCurrentLocation];
 }
 
 /// 自动聚焦（距离阈值）：fix 距上次自动聚焦点 ≥ 阈值才聚焦一次并更新基线。
@@ -1046,8 +1037,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         if ([loc.timestamp timeIntervalSince1970] < self.startTimestamp) return;
         self.lastFix = loc; // 记录回调 fix（坐标/速度真相源，不读属性缓存）
         self.cur = [CoordTransform wgs84ToGcj02:loc.coordinate];
+        [self updateAnchorPassStateWithLiveWGS:loc.coordinate]; // 先更新段速度/经过态，状态栏立即反映
         [self updateStatus];
-        [self updateAnchorPassStateWithLiveWGS:loc.coordinate];
         // 自动聚焦：Follow 原生已跟随无需重复；用户拖动退出 Follow 后模拟位置距上次聚焦点超阈值则拉回
         if (self.mapView.userTrackingMode != MKUserTrackingModeFollow) [self maybeAutoFocus:loc.coordinate];
         return;
@@ -1090,15 +1081,26 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     mode = mode ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
     if (![self.currentLegMode isEqualToString:mode]) {
         self.currentLegMode = mode;
-        // 区域随机：同步步行占比（状态栏平均速度按此加权）；其余模式归一化默认值
-        self.currentWalkRatio = 0.7;
-        if ([mode isEqualToString:@"random"] && departAnchor) {
-            NSDictionary *seg = self.segments[departAnchor.segmentIndex];
-            double wr = [seg[@"walkRatio"] doubleValue];
-            if (wr > 0) self.currentWalkRatio = wr;
-        }
         [self refreshUserLocationView]; // 当前位置水滴切换出行图标（原生 MKUserLocation 视图）
     }
+    // 当前段速度：从段缓存取"当前位置所在段"首点生成速度（出发锚点→下一锚点）
+    [self updateCurrentLegSpeedWithDepart:departAnchor mode:mode];
+}
+
+/// 当前段速度 = 段缓存中"当前位置所在段"首点生成的 speed（含 ±10% 抖动；random 段反映实际随机模式）——
+/// 从内存段缓存索引取（非序列化、非最近点扫描）；段无效/未生成时回退模式平均
+- (void)updateCurrentLegSpeedWithDepart:(TRAnchorAnnotation *)departAnchor mode:(NSString *)mode {
+    NSInteger segIdx = departAnchor ? departAnchor.segmentIndex + 1 : 1; // 当前段 = 出发锚点→下一锚点（无已过锚点=首锚路线=段 1）
+    double speed = 0;
+    if (segIdx >= 1 && segIdx < (NSInteger)self.segmentPoints.count) {
+        id pts = self.segmentPoints[segIdx];
+        if ([pts isKindOfClass:[NSArray class]] && ((NSArray *)pts).count) {
+            NSNumber *sp = ((NSArray *)pts).firstObject[@"speed"];
+            if ([sp isKindOfClass:[NSNumber class]]) speed = [sp doubleValue];
+        }
+    }
+    if (speed <= 0) speed = [RegionSimulator effectiveSpeedForMode:mode];
+    self.currentLegSpeed = speed;
 }
 
 #pragma mark - UITableViewDataSource / Delegate（步骤列表：删除 + 拖拽排序）
@@ -1556,24 +1558,30 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     return out;
 }
 
-/// 原子写轨迹文件（tmp + rename，防半截 JSON）；定位状态由 FAB 开关控制——
+/// 原子写轨迹文件（tmp + rename，防半截 JSON），定位状态由 FAB 开关控制——
 /// 仅在定位中才切 SimLocationMode=itinerary + notify（添加/删除锚点不改变定位状态，对齐原型"不随后续增删路线改变状态"）
+/// 异步化（2026-08-25）：全量轨迹 JSON（数万点≈数 MB）序列化 + 磁盘写在主线程同步执行是锚点列表操作卡顿主因——
+/// 移到后台队列，主线程只做 notify（daemon 感知靠 notify 读文件，notify_post 线程安全）
 - (void)writeTrackFile:(NSArray *)points {
-    NSDictionary *payload = @{ @"version": @1, @"points": points };
-    NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
-    if (!json) return;
-    NSString *tmp = [kSimTrackFilePath stringByAppendingString:@".tmp"];
-    if (![json writeToFile:tmp options:NSDataWritingAtomic error:nil]) return;
-    if ([[NSFileManager defaultManager] fileExistsAtPath:kSimTrackFilePath]) {
-        [[NSFileManager defaultManager] removeItemAtPath:kSimTrackFilePath error:nil];
-    }
-    if (![[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kSimTrackFilePath error:nil]) return;
-    if (self.locating) {
-        NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite];
-        [d setObject:@"itinerary" forKey:@"SimLocationMode"];
-        [d synchronize];
-        notify_post("com.82flex.trollvnc.prefs-changed");
-    }
+    NSArray *snapshot = [points copy];
+    BOOL locating = self.locating;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSDictionary *payload = @{ @"version": @1, @"points": snapshot };
+        NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+        if (!json) return;
+        NSString *tmp = [kSimTrackFilePath stringByAppendingString:@".tmp"];
+        if (![json writeToFile:tmp options:NSDataWritingAtomic error:nil]) return;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:kSimTrackFilePath]) {
+            [[NSFileManager defaultManager] removeItemAtPath:kSimTrackFilePath error:nil];
+        }
+        if (![[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kSimTrackFilePath error:nil]) return;
+        if (locating) {
+            NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite];
+            [d setObject:@"itinerary" forKey:@"SimLocationMode"];
+            [d synchronize];
+            notify_post("com.82flex.trollvnc.prefs-changed");
+        }
+    });
 }
 
 #pragma mark - MKMapViewDelegate
