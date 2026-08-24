@@ -71,6 +71,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @property (nonatomic, assign) BOOL hasFocusedRealOnce;           // 真实定位首次到达是否已聚焦（避免反复跳）
 @property (nonatomic, assign) NSTimeInterval startTimestamp;     // 开启定位时刻：模拟分支只认晚于此的 fix（过滤注入落地前的真实残留）
 @property (nonatomic, assign) NSTimeInterval stopTimestamp;      // 停止定位时刻：停止分支只认晚于此的 fix（过滤模拟残留/旧缓存）
+@property (nonatomic, strong) CLLocation *lastFix;              // 最近一次通过时间戳过滤的回调 fix（坐标/速度真相源，不读 locationManager 属性缓存）
 @property (nonatomic, assign) BOOL isGenerating;            // 轨迹生成中（并发保护：正在生长时忽略新的 commit）
 @property (nonatomic, copy) void (^pendingEditAction)(void);     // 生成中挂起的最新编辑（完成后执行，最后一次生效）
 @property (nonatomic, strong) UITapGestureRecognizer *mapTap;      // 地图单击手势（handleTap；shouldReceiveTouch 拦截锚点水滴点击，防删除竞态）
@@ -758,8 +759,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     NSString *speedTxt = @"0.0 m/s";
     NSString *modeTxt = self.locating ? @"模拟中 · 定位" : @"已停止 · 定位";
     if (self.locating) {
-        // 速度 = 活跃订阅（locationd 广播，daemon 注入时写入），与 didUpdateLocations 同源，避免"模式档位假速度"被实时值覆盖闪变
-        double mps = self.locationManager.location.speed; // 活跃订阅（locationd 广播）
+        // 速度 = 回调 fix 的 speed（daemon 注入 CLLocation 自带，经 locationd 广播；读 lastFix 而非 locationManager.location 属性缓存）
+        double mps = self.lastFix.speed;
         speedTxt = mps > 0 ? [NSString stringWithFormat:@"%.1f m/s", mps] : @"0.0 m/s";
     }
     // 富文本：模式加粗 + 速度等宽灰 + 坐标等宽灰（对齐原型 stat .m/.spd/.c）
@@ -874,15 +875,14 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 #pragma mark - 基于当前位置的局部重算（manager 注入写回 mobile plist 为当前位置真相）
 
-/// 读当前位置（WGS）——权威 = App 活跃订阅（locationManager.location，locationd 广播值）；
-/// 模拟开启=注入位置/关闭=真实位置；无定位时回退 self.cur
+/// 读当前位置（WGS）——权威 = 最近一次通过过滤的回调 fix（lastFix，locationd 广播真实值，不读 locationManager 属性缓存）；
+/// 模拟开启=注入位置/关闭=真实位置；无 fix 时回退 self.cur
 - (CLLocationCoordinate2D)currentSimPosition {
-    CLLocation *loc = self.locationManager.location; // App 活跃订阅（locationd 持续广播）
-    if (loc) return loc.coordinate;
+    if (self.lastFix) return self.lastFix.coordinate;
     return [CoordTransform gcj02ToWgs84:self.cur];
 }
 
-/// 停止后聚焦当前位置：读活跃订阅当前值（停止落地后 locationManager.location 逐步恢复真实，真实 fix 到达校正）
+/// 停止后聚焦当前位置：读 lastFix（停止落地后首个真实 fix 到达校正）
 - (void)focusRealLocationNow {
     self.hasFocusedRealOnce = NO;
     [self focusMapOnCurrentLocation];
@@ -948,6 +948,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     if (self.locating) {
         // 模拟态：只认晚于开启时刻的 fix（注入落地后的模拟位置）——过滤开启瞬间注入落地前的真实残留
         if ([loc.timestamp timeIntervalSince1970] < self.startTimestamp) return;
+        self.lastFix = loc; // 记录回调 fix（坐标/速度真相源，不读属性缓存）
         self.cur = [CoordTransform wgs84ToGcj02:loc.coordinate];
         [self updateStatus];
         [self updateAnchorPassStateWithLiveWGS:loc.coordinate];
@@ -955,6 +956,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     }
     // 停止态：只认晚于停止时刻的 fix（真实位置）——过滤停止瞬间的模拟残留/旧缓存
     if ([loc.timestamp timeIntervalSince1970] <= self.stopTimestamp) return;
+    self.lastFix = loc; // 记录回调 fix
     [self updateStatus];
     if (self.hasFocusedRealOnce) return;
     self.hasFocusedRealOnce = YES;
