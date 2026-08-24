@@ -111,7 +111,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     self.mapView.userTrackingMode = self.locating ? MKUserTrackingModeFollow : MKUserTrackingModeNone;
     // 启动：地图聚焦到当前所在位置（定位中=模拟位置（跟随）；未定位=真实位置，取不到则回退默认视野）
     [self focusMapOnCurrentLocation];
-    // daemon 注入事件订阅：注入即刷新状态栏/锚点状态（1s 轮询定时器保留作兜底，双源同幂）
+    // daemon 注入事件订阅：模拟态刷新唯一驱动源（注入即刷新状态栏/锚点状态；停止态由真实 fix 经 didUpdateLocations 驱动）
     __weak typeof(self) weakSelf = self;
     notify_register_dispatch("com.82flex.trollvnc.locsim-update", &_locsimNotifyToken, dispatch_get_main_queue(), ^(int token) {
         __strong typeof(weakSelf) sself = weakSelf;
@@ -165,9 +165,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     lp.delegate = self;
     [self.mapView addGestureRecognizer:lp];
 
-    // 实时位置刷新（1s：状态栏坐标/速度 + 蓝点随 manager 注入移动）
-    NSTimer *t = [NSTimer timerWithTimeInterval:1.0 target:self selector:@selector(refreshLiveStatus) userInfo:nil repeats:YES];
-    [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
+    // 无 1s 轮询定时器：模拟态刷新由 locsim-update 事件驱动（daemon 每次注入必发），停止态由真实 fix 经
+    // didUpdateLocations 驱动——两态各由真相源驱动，消除双触发重复刷新（曾致锚点状态扫描翻倍卡顿）
 }
 
 - (void)setupUI {
@@ -592,8 +591,8 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 
 #pragma mark - 定位开关 / 停止
 
-/// 靶心按钮：聚焦到当前位置（应对手动编辑拖动偏离当前位置后的手动调整）
-/// 定位中 → 切原生跟随（居中并锁定当前位置，之后手动拖动仍自动退出）；未定位 → 聚焦系统当前位置（locationd=真实/最后模拟）
+/// 靶心按钮：聚焦到"当前位置目标"（两态随定位开关：定位中=模拟注入位置，停止=locationd 真实位置，非死绑定系统位置）
+/// 定位中 → 切原生跟随（跟随 MKUserLocation=locationd 注入位置，之后手动拖动仍自动退出）；未定位 → 聚焦真实位置
 - (void)focusCurrentPosition:(UIButton *)sender {
     if (self.locating) {
         self.pendingFollow = NO; // 已显式聚焦，清待启用跟随
@@ -740,13 +739,19 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self.locateFab setBackgroundColor:self.locating ? brand : [UIColor systemGrayColor]];
 }
 
-/// 实时刷新（1s 定时器 + daemon 注入事件 notify locsim-update 双触发）：
-/// 定位中读当前位置（locationd 权威）→ 状态栏坐标/速度 + 锚点经过状态/当前位置出行图标切换
+/// 实时刷新（daemon 注入事件 notify locsim-update 驱动；已删 1s 定时器冗余双触发）：
+/// 定位中读当前位置（locationd 权威）→ 状态栏坐标/速度 + 锚点经过状态/当前位置出行图标切换；
+/// 停止态 → 状态栏坐标绑定 locationd 真实位置（真实 fix 由 didUpdateLocations 驱动）
 ///（当前位置视觉走原生 MKUserLocation，随 daemon 注入自动移动，不在此轮询）
 - (void)refreshLiveStatus {
-    if (!self.locating) return; // 停止态状态栏保持（坐标定格最后位置）
-    CLLocationCoordinate2D liveW = [self currentSimPosition]; // locationd 权威 → plist 回退
+    CLLocationCoordinate2D liveW = [self currentSimPosition]; // locationd 权威
     if (liveW.latitude == 0 && liveW.longitude == 0) return;
+    if (!self.locating) {
+        // 停止态（真实态）：状态栏坐标强制绑定 locationd 真实位置——定位开关关闭=取消注入，无"保留最后模拟坐标"回退；
+        // 锚点红蓝/出行图标定格（updateStatus 轻量，真实 fix 由 didUpdateLocations 高频驱动）
+        [self updateStatus];
+        return;
+    }
     // self.cur 同步为当前位置（GCJ 约定，供重锚/重算作当前位置基准）
     self.cur = [CoordTransform wgs84ToGcj02:liveW];
     // 锚点经过红蓝 + 当前位置出行图标切换（与原生点同源 locationd，避免双源偏差）
@@ -928,29 +933,33 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 - (void)locationManager:(CLLocationManager *)manager didUpdateLocations:(NSArray<CLLocation *> *)locations {
     CLLocation *loc = locations.lastObject;
     if (!loc) return;
-    // 定位中不跳（以模拟位置为准，跟随模式已居中）；未定位且尚未聚焦过真实位置 → 首次到达聚焦一次
-    if (self.locating || self.hasFocusedRealOnce) return;
+    // 定位中（模拟态）：位置由 daemon 注入驱动（locsim-update 事件→refreshLiveStatus），此处直接过滤，不干预模拟刷新
+    if (self.locating) return;
+    // 停止态（真实态）：真实 fix 到达 → 状态栏坐标立即绑定真实位置（两态随定位开关切换，不依赖事件/定时器）
+    [self updateStatus];
+    // 首次真实 fix 到达 → 聚焦真实位置一次（hasFocusedRealOnce 防反复跳；停止时已被 focusRealLocationNow 重置）
+    if (self.hasFocusedRealOnce) return;
     self.hasFocusedRealOnce = YES;
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance([CoordTransform wgs84ToGcj02:loc.coordinate], 3000, 3000) animated:YES];
 }
 
-/// 锚点状态刷新：按当前位置在已提交轨迹中的最近索引，标记"已经过"的锚点为红（未经过保持蓝）；
-/// 当前位置水滴的出行方式 = 出发锚点的（所在段由出发锚点以其生成时的出行方式前往；经过下一锚点时切换到其出行方式）
+/// 锚点状态刷新（O(锚点数)，修复全量轨迹扫描卡顿）：当前位置距锚点 < 阈值视为"经过"（passed 单调不回退），
+/// 锚点红蓝 + 当前位置水滴出行图标切换。轨迹单向推进（算路生成），无需按轨迹索引判定——
+/// 旧实现每刷新对每个锚点全量遍历 submittedPoints 找最近索引（区域轨迹可达数万点 → 主线程 O(A×P) haversine 卡死）
 /// liveW 为当前位置（WGS）；仅定位中生效（停止态颜色定格）
 - (void)updateAnchorPassStateWithLiveWGS:(CLLocationCoordinate2D)liveW {
-    if (!self.locating || self.submittedPoints.count < 2) return;
-    NSUInteger liveIdx = [self nearestPointIndexTo:liveW];
-    TRAnchorAnnotation *departAnchor = nil; // 当前位置所在段的出发锚点 = 最后一个 aIdx <= liveIdx
+    if (!self.locating || self.anchors.count == 0) return;
+    static const double kPassedThresholdM = 25.0; // 距锚点 25m 内视为经过（停留微动 ±1m 远小于阈值，锚点间距通常 >50m）
+    TRAnchorAnnotation *departAnchor = nil; // 当前位置所在段的出发锚点 = 已经过的最后一个锚点
     for (TRAnchorAnnotation *a in self.anchors) {
         CLLocationCoordinate2D aW = [CoordTransform gcj02ToWgs84:a.coordinate];
-        NSUInteger aIdx = [self nearestPointIndexTo:aW];
-        BOOL passed = aIdx < liveIdx; // 严格越过才视为经过
+        BOOL passed = [SimRouteCalculator haversineMeters:liveW to:aW] < kPassedThresholdM;
         if (passed != a.passed) {
             a.passed = passed;
             MKAnnotationView *v = [self.mapView viewForAnnotation:a];
             if (v) v.image = [self waterdropImageWithColor:(passed ? [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0] : [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]) size:22 emoji:[self emojiForMode:a.mode]];
         }
-        if (aIdx <= liveIdx) departAnchor = a; // 持续更新 = 最后一个未越过的出发锚点
+        if (a.passed) departAnchor = a; // 已经过的最后一个锚点 = 当前位置所在段的出发锚点
     }
     // 当前位置出行方式：取所在段出发锚点的出行方式；链首/空则退回首个锚点或当前选择
     NSString *mode = departAnchor ? departAnchor.mode
