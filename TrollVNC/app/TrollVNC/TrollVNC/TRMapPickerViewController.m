@@ -1561,12 +1561,17 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 
 /// 原子写轨迹文件（tmp + rename，防半截 JSON），定位状态由 FAB 开关控制——
 /// 仅在定位中才切 SimLocationMode=itinerary + notify（添加/删除锚点不改变定位状态，对齐原型"不随后续增删路线改变状态"）
-/// 异步化（2026-08-25）：全量轨迹 JSON（数万点≈数 MB）序列化 + 磁盘写在主线程同步执行是锚点列表操作卡顿主因——
-/// 移到后台队列，主线程只做 notify（daemon 感知靠 notify 读文件，notify_post 线程安全）
+/// 异步化 + 串行化（2026-08-25）：全量轨迹 JSON（数万点≈数 MB）序列化 + 磁盘写不阻塞主线程（锚点列表卡顿主因），
+/// 且用串行队列按提交顺序完整写盘——连续编辑并发写同一文件会覆盖/半截 → daemon 读到损坏轨迹跳点乱播
 - (void)writeTrackFile:(NSArray *)points {
     NSArray *snapshot = [points copy];
     BOOL locating = self.locating;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    static dispatch_queue_t sTrackWriteQueue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        sTrackWriteQueue = dispatch_queue_create("com.82flex.trollvnc.trackwrite", DISPATCH_QUEUE_SERIAL);
+    });
+    dispatch_async(sTrackWriteQueue, ^{
         NSDictionary *payload = @{ @"version": @1, @"points": snapshot };
         NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
         if (!json) return;
