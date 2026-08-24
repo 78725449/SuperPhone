@@ -751,7 +751,7 @@ import RFB from './novnc/core/rfb.js';
           var rd = new FileReader();
           rd.onload = function () {
             var b64 = rd.result.split(',')[1];
-            fetch('http://' + location.hostname + ':5802/', {
+            fetch((location.protocol === 'https:' ? 'https://' : 'http://') + location.hostname + ':5802/', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ op: 'album.import', params: { filename: f.name, data: b64 } })
