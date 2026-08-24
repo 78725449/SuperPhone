@@ -490,12 +490,42 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     ml.text = @"模式";
     ml.font = [UIFont systemFontOfSize:13];
     [panel addSubview:ml];
-    UISegmentedControl *ms = [[UISegmentedControl alloc] initWithItems:@[@"步行", @"驾车"]];
-    ms.selectedSegmentIndex = self.modeSeg.selectedSegmentIndex;
+    // 模式选择器：步行 | 随机（默认） | 驾车——随机=区域内每段出行方式随机（平衡调节阀调权重）
+    UISegmentedControl *ms = [[UISegmentedControl alloc] initWithItems:@[@"步行", @"随机", @"驾车"]];
+    ms.selectedSegmentIndex = 1; // 默认随机
     ms.frame = CGRectMake(128, y, w - 142, 30);
     ms.tag = 603;
+    [ms addTarget:self action:@selector(regionModeChanged:) forControlEvents:UIControlEventValueChanged];
     [panel addSubview:ms];
     y += 40;
+
+    // 平衡调节阀（仅随机模式显示）：左=步行、右=驾车，滑块=步行比例（默认 70%），拖向哪端=提高哪端比例
+    UIView *ratioRow = [[UIView alloc] initWithFrame:CGRectMake(0, y, w, 34)];
+    ratioRow.tag = 608;
+    UILabel *wL = [[UILabel alloc] initWithFrame:CGRectMake(14, 0, 40, 30)];
+    wL.text = @"步行";
+    wL.font = [UIFont systemFontOfSize:12];
+    [ratioRow addSubview:wL];
+    UISlider *ratio = [[UISlider alloc] initWithFrame:CGRectMake(58, 0, w - 116, 30)];
+    ratio.minimumValue = 0;
+    ratio.maximumValue = 1;
+    ratio.value = 0.7; // 默认 70% 步行 / 30% 驾车
+    ratio.tag = 607;
+    [ratio addTarget:self action:@selector(regionRatioChanged:) forControlEvents:UIControlEventValueChanged];
+    [ratioRow addSubview:ratio];
+    UILabel *dL = [[UILabel alloc] initWithFrame:CGRectMake(w - 54, 0, 40, 30)];
+    dL.text = @"驾车";
+    dL.font = [UIFont systemFontOfSize:12];
+    [ratioRow addSubview:dL];
+    UILabel *ratioVal = [[UILabel alloc] initWithFrame:CGRectMake(w - 140, 34, 126, 16)];
+    ratioVal.text = @"步行 70% · 驾车 30%";
+    ratioVal.font = [UIFont systemFontOfSize:11];
+    ratioVal.textAlignment = NSTextAlignmentCenter;
+    ratioVal.tag = 609;
+    [ratioRow addSubview:ratioVal];
+    [panel addSubview:ratioRow];
+    y += 34 + 16;
+    y += 2;
 
     UIButton *cancel = [UIButton buttonWithType:UIButtonTypeSystem];
     cancel.frame = CGRectMake(14, y, (w - 34) / 2, 40);
@@ -553,6 +583,19 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     [self setHint:@"长按地图添加区域漫游"];
 }
 
+/// 区域模式选择器变化：随机档显示平衡调节阀，固定档隐藏（对齐"选其他两个模式隐藏调节阀"）
+- (void)regionModeChanged:(UISegmentedControl *)sender {
+    UIView *row = [self.regionPanel viewWithTag:608];
+    row.hidden = (sender.selectedSegmentIndex != 1); // 仅"随机"（中间档）显示
+}
+
+/// 平衡调节阀变化：实时更新步行/驾车比例文案
+- (void)regionRatioChanged:(UISlider *)sender {
+    UILabel *v = (UILabel *)[self.regionPanel viewWithTag:609];
+    int walkPct = (int)llround(sender.value * 100);
+    v.text = [NSString stringWithFormat:@"步行 %d%% · 驾车 %d%%", walkPct, 100 - walkPct];
+}
+
 /// 确定：读配置 → 加入 region 段 → 自生长提交（时长 clamp 1~120，途经点 clamp 0~15）
 - (void)confirmRegionConfig {
     [self.view endEditing:YES];
@@ -562,15 +605,27 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     double dur = MAX(1, MIN(120, [durTf.text doubleValue] ?: 10));
     int customK = (int)[wpTf.text integerValue];
     customK = MAX(0, MIN(15, customK));
-    NSString *mode = (ms.selectedSegmentIndex == 1) ? @"drive" : @"walk";
-    [self.segments addObject:@{
-        @"type": @"region",
+    // 模式：步行(index0)/驾车(index2) 固定；随机(index1) → 存 walkRatio（平衡调节阀）
+    NSString *mode;
+    NSNumber *walkRatio = nil;
+    if (ms.selectedSegmentIndex == 0) {
+        mode = @"walk";
+    } else if (ms.selectedSegmentIndex == 2) {
+        mode = @"drive";
+    } else {
+        mode = @"random";
+        UISlider *ratio = (UISlider *)[self.regionPanel viewWithTag:607];
+        walkRatio = @(MAX(0.0, MIN(1.0, ratio.value)));
+    }
+    NSMutableDictionary *seg = [@{@"type": @"region",
         @"radius": @(self.regionRadiusM),
         @"durationMin": @(dur),
         @"mode": mode,
         @"waypointCount": @(customK),
         @"center": @{@"lat": @(self.regionCenter.latitude), @"lon": @(self.regionCenter.longitude)},
-    }];
+    } mutableCopy];
+    if (walkRatio) seg[@"walkRatio"] = walkRatio;
+    [self.segments addObject:seg];
     [self.regionPanel removeFromSuperview];
     self.regionPanel = nil;
     if (self.regionOverlay) { [self.mapView removeOverlay:self.regionOverlay]; self.regionOverlay = nil; }
@@ -1221,10 +1276,11 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         double radius = [seg[@"radius"] doubleValue];
         double durationMin = [seg[@"durationMin"] doubleValue];
         NSString *regionMode = seg[@"mode"] ?: @"walk";
+        double walkRatio = [seg[@"walkRatio"] doubleValue] > 0 ? [seg[@"walkRatio"] doubleValue] : 0.7; // 随机模式的步行占比（默认 70%）
         int customK = (int)[seg[@"waypointCount"] integerValue]; // >0 生效，0=随机
         NSDictionary *plan = [RegionSimulator generateRegionPlanCenter:centerW radius:radius mode:regionMode durationMin:durationMin startFrom:cur customK:customK];
-        // 进入区域的段 = 出发锚点以其生成时的出行方式前往区域；区域内途经点链用区域配置的模式
-        [self processRegionPlan:plan cur:cur entryMode:[self departModeForSegment:idx] mode:regionMode joined:joined
+        // 进入区域的段 = 出发锚点以其生成时的出行方式前往区域；区域内途经点链用区域配置的模式（随机=每段随机）
+        [self processRegionPlan:plan cur:cur entryMode:[self departModeForSegment:idx] mode:regionMode walkRatio:walkRatio joined:joined
                     itineraryIdx:idx + 1 completion:completion];
         return;
     }
@@ -1265,12 +1321,13 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
     }];
 }
 
-/// 区域段：进入段（出发锚点模式）→ 区域内途经点链（区域配置模式）逐途经点 MKDirections 算路拼接
+/// 区域段：进入段（出发锚点模式）→ 区域内途经点链（区域配置模式，随机=每段按 walkRatio 随机）逐途经点 MKDirections 算路拼接
 /// （<30m/算路失败 → 忽略该中间途经点，直接进入下一途经点）+ 停留微动（§3.4.1）
 - (void)processRegionPlan:(NSDictionary *)plan
                       cur:(CLLocationCoordinate2D)cur
                 entryMode:(NSString *)entryMode
                      mode:(NSString *)mode
+                walkRatio:(double)walkRatio
                    joined:(NSMutableArray *)joined
              itineraryIdx:(NSUInteger)nextIdx
                completion:(void (^)(NSArray *points))completion {
@@ -1293,7 +1350,14 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         CLLocationCoordinate2D wp = [wps[segIdx] MKCoordinateValue];
         double staySec = [stay[segIdx] doubleValue];
         double factor = [factors[segIdx] doubleValue];
-        NSString *legMode = (segIdx == 0) ? entryMode : mode; // 进入段用出发锚点模式，区域内用区域配置模式
+        NSString *legMode;
+        if (segIdx == 0) {
+            legMode = entryMode; // 进入段用出发锚点模式
+        } else if ([mode isEqualToString:@"random"]) {
+            legMode = ((double)arc4random_uniform(100) < walkRatio * 100) ? @"walk" : @"drive"; // 区域内段每段随机（按步行占比）
+        } else {
+            legMode = mode; // 固定模式（walk/drive）
+        }
         double speed = [RegionSimulator effectiveSpeedForMode:legMode];
         double segDist = [SimRouteCalculator haversineMeters:legCur to:wp];
 
