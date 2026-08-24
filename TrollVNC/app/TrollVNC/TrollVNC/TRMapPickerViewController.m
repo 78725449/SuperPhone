@@ -77,6 +77,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, assign) BOOL locating;                // 定位开关状态
 @property (nonatomic, copy) NSString *currentLegMode;       // 当前位置水滴的出行方式（当前段目标锚点的，walk/drive）
 @property (nonatomic, assign) double currentLegSpeed;              // 当前所在路线（出发锚点段）的生成速度——从段缓存 segmentPoints 取（含 ±10% 抖动；random 段反映实际随机模式）
+@property (nonatomic, assign) BOOL startupLockedToAnchor;          // 开启定位瞬间到注入落地前：锁定锚点位置显示（忽略真实 fix，防开启横跳）
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
 @property (nonatomic, assign) BOOL hasFocusedMapOnce;            // 首帧启动聚焦是否已执行（避免 tab 往返重复聚焦）
 @property (nonatomic, strong) CLLocationManager *locationManager; // App 活跃位置订阅（授权 + startUpdatingLocation，didUpdateLocations 主驱动）
@@ -377,6 +378,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.cur = gcj;
         self.locating = YES;
         self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻（同 toggleLocate）
+        self.startupLockedToAnchor = YES; // 注入落地前锁定锚点显示（防"真实→锚点"横跳，同 toggleLocate）
         [self commitAnchor];
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES]; // 立即聚焦锚点
         self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:gcj]; // 自动聚焦基线（同 toggleLocate）
@@ -645,6 +647,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [self.regionPanel removeFromSuperview];
     self.regionPanel = nil;
     if (self.regionOverlay) { [self.mapView removeOverlay:self.regionOverlay]; self.regionOverlay = nil; }
+    // 区域漫游可从当前位置进入（无前置 anchor 起点）——链首为 region 段即视为已设起点，允许开启定位
+    if (!self.hasStart) self.hasStart = YES;
     // 区域中心只是目标，不是当前位置——当前位置图标保持当前实际位置（不瞬移）
     [self updateStatus];
     [self syncSegmentsUI];
@@ -676,6 +680,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         }
         self.locating = YES;
         self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻：模拟分支只认晚于此的 fix（过滤注入落地前的真实残留）
+        self.startupLockedToAnchor = YES; // 开启瞬间到注入落地前：锁定锚点位置显示，忽略真实 fix（防"真实→锚点"横跳）
         [self commitAnchor];
         [self refreshUserLocationView];       // 当前位置水滴恢复出行图标
         self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:self.cur]; // 自动聚焦基线=模拟位置（拖动退出 Follow 后模拟位置超阈值才拉回）
@@ -738,6 +743,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.cur = gcj;
         self.locating = YES;
         self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻（同 toggleLocate）
+        self.startupLockedToAnchor = YES; // 注入落地前锁定锚点显示（防"真实→锚点"横跳，同 toggleLocate）
         [self commitAnchor];
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
         self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:gcj]; // 自动聚焦基线（同 toggleLocate）
@@ -1036,6 +1042,13 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     if (self.locating) {
         // 模拟态：只认晚于开启时刻的 fix（注入落地后的模拟位置）——过滤开启瞬间注入落地前的真实残留
         if ([loc.timestamp timeIntervalSince1970] < self.startTimestamp) return;
+        // 开启锁定：注入落地前 locationd 广播的还是真实位置——距锚点 >25m 的 fix 忽略（保持锚点显示，防"真实→锚点"横跳）；
+        // 注入落地后 fix≈锚点（<25m）→ 解锁，恢复 fix 驱动
+        if (self.startupLockedToAnchor) {
+            double d = [SimRouteCalculator haversineMeters:loc.coordinate to:[CoordTransform gcj02ToWgs84:self.cur]];
+            if (d > 25.0) return;
+            self.startupLockedToAnchor = NO;
+        }
         self.lastFix = loc; // 记录回调 fix（坐标/速度真相源，不读属性缓存）
         self.cur = [CoordTransform wgs84ToGcj02:loc.coordinate];
         [self updateAnchorPassStateWithLiveWGS:loc.coordinate]; // 先更新段速度/经过态，状态栏立即反映
@@ -1108,7 +1121,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (tableView == self.searchResultsView) return (NSInteger)self.searchResults.count;
-    return MAX(1, (NSInteger)self.segments.count); // 空态占位（对齐原型 segPanel .empty）
+    return (NSInteger)self.segments.count; // 无锚点时显示空白（不设占位行）
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -1138,43 +1151,23 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         drag.frame = CGRectMake(10, 13, 20, 18);
         drag.autoresizingMask = UIViewAutoresizingFlexibleBottomMargin | UIViewAutoresizingFlexibleRightMargin;
         [cell.contentView addSubview:drag];
-        // 右：删除按钮（点击即删，无系统二次确认）
-        UIButton *del = [UIButton buttonWithType:UIButtonTypeSystem];
-        del.tag = 202;
-        [del setImage:[UIImage systemImageNamed:@"xmark.circle.fill"] forState:UIControlStateNormal];
-        del.tintColor = [UIColor systemRedColor];
-        del.frame = CGRectMake(cell.contentView.bounds.size.width - 46, 0, 46, 44);
-        del.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleHeight;
-        [del addTarget:self action:@selector(deleteStepTapped:) forControlEvents:UIControlEventTouchUpInside];
-        [cell.contentView addSubview:del];
-        // 标题 / 副标题（自绘，避开左右按钮）
+        // 标题 / 副标题（自绘，避开左侧拖动图标；删除走系统原生右滑，无自绘删除按钮）
         UILabel *tl = [[UILabel alloc] init];
         tl.tag = 203;
         tl.font = [UIFont systemFontOfSize:12];
-        tl.frame = CGRectMake(42, 5, cell.contentView.bounds.size.width - 42 - 56, 18);
+        tl.frame = CGRectMake(42, 5, cell.contentView.bounds.size.width - 56, 18);
         tl.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleRightMargin;
         [cell.contentView addSubview:tl];
         UILabel *sl = [[UILabel alloc] init];
         sl.tag = 204;
         sl.font = [UIFont systemFontOfSize:10];
         sl.textColor = [UIColor secondaryLabelColor];
-        sl.frame = CGRectMake(42, 23, cell.contentView.bounds.size.width - 42 - 56, 14);
+        sl.frame = CGRectMake(42, 23, cell.contentView.bounds.size.width - 56, 14);
         sl.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleRightMargin;
         [cell.contentView addSubview:sl];
     }
-    if (indexPath.row >= (NSInteger)self.segments.count) {
-        ((UILabel *)[cell.contentView viewWithTag:203]).text = @"暂无行程";
-        ((UILabel *)[cell.contentView viewWithTag:204]).text = @"点击地图设定起点";
-        [cell.contentView viewWithTag:201].hidden = YES;
-        [cell.contentView viewWithTag:202].hidden = YES;
-        cell.userInteractionEnabled = NO;
-        return cell;
-    }
     cell.userInteractionEnabled = YES;
     [cell.contentView viewWithTag:201].hidden = NO;
-    UIButton *del = (UIButton *)[cell.contentView viewWithTag:202];
-    del.hidden = NO;
-    del.tag = (NSInteger)indexPath.row; // 删除目标行（点击即删）
     NSDictionary *seg = self.segments[indexPath.row];
     NSString *type = seg[@"type"];
     NSString *title = @"";
@@ -1192,12 +1185,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     return cell;
 }
 
-/// 步骤列表删除按钮：点击即删（无二次确认）
-- (void)deleteStepTapped:(UIButton *)sender {
-    NSInteger row = sender.tag;
-    if (row >= 0 && row < (NSInteger)self.segments.count) [self deleteSegmentAt:row];
-}
-
 /// 选中搜索结果 → 直接定位为当前位置 + 清空输入框 + 收起列表
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
@@ -1207,6 +1194,12 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.searchBar.text = @"";              // 清空搜索输入框
         [self.searchBar resignFirstResponder];
         self.searchResultsView.hidden = YES;
+        return;
+    }
+    // 状态栏行程列表：点击聚焦到该行锚点（anchor=锚点坐标，region=区域中心）
+    if (tableView == self.stepTable && indexPath.row >= 0 && indexPath.row < (NSInteger)self.segments.count) {
+        CLLocationCoordinate2D wgs = [self anchorWGSOfSegment:self.segments[indexPath.row]];
+        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance([CoordTransform wgs84ToGcj02:wgs], 2000, 2000) animated:YES];
     }
 }
 
@@ -1450,6 +1443,12 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     double walkRatio = [seg[@"walkRatio"] doubleValue] > 0 ? [seg[@"walkRatio"] doubleValue] : 0.7; // 随机模式的步行占比（默认 70%）
     int customK = (int)[seg[@"waypointCount"] integerValue]; // >0 生效，0=随机
     CLLocationCoordinate2D cur = (i > 0) ? [self anchorWGSOfSegment:self.segments[i - 1]] : [self currentSimPosition];
+    // 链首 region 段从当前位置进入——当前位置无效（冷启动未收到真实 fix，cur=0,0）时拦截，防路线从海中央连出
+    if (cur.latitude == 0 && cur.longitude == 0) {
+        [self setHint:@"尚未获取当前位置，请稍后再圈区域"];
+        if (completion) completion(@[]);
+        return;
+    }
     NSDictionary *plan = [RegionSimulator generateRegionPlanCenter:centerW radius:radius mode:regionMode durationMin:durationMin startFrom:cur customK:customK];
     NSArray *wps = plan[@"waypoints"];
     NSArray *stay = plan[@"staySeconds"];
