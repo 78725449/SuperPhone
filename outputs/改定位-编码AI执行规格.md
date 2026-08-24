@@ -272,7 +272,7 @@ App 入口（生产主路径，离线自治）—— 不经网关/注册表
 5. **入场/收尾结构**：开场先纯移动不立刻停（进场）；收尾"逛到某处到点了"停住（不是刚好走完）
 6. **校验收敛**：生成后实际总时长 ≈ T（±2%），不符微调停留时长/途经点距离迭代
 
-**生长式渲染（App 端，2026-08-24 定稿）**：区域段轨迹按"上一位置 → 途经点① → 途经点② → …"顺序**逐段异步算路、逐段渲染**（`MKMapView` + `MKPolyline` 逐段 `addOverlay`）——路线从上一位置逐步生长进区域，边算边画；全部完成 = 区域内完整真实道路漫游轨迹，确认后执行（蓝点沿真实道路逐点移动）。交互原型见 `outputs/locsim-app-prototype.html`（直线模拟占位，生产为真实算路）。
+**生长式区域算路（设备端 SimItineraryPlanner + RegionSimulator，2026-08-24 已实现）**：区域段轨迹 = 进入段（上一位置 → 途经点①）+ 途经点间段（①→②→…→K），每段调 `SimRouteCalculator calculateRoutePointsFrom:to:mode:completion:` 真实道路算路；段耗时 = 段距离/(有效速度 × 速度因子)，在真实算路 polyline 上重采样到目标点数（`_resamplePoints` 抽/插值，保持贴路不穿越）；途经点对 <30m 或算路失败 → 降级直线（`RegionSimulator degradedLinePointsFrom:`，TVLog 标注 degraded）；到达途经点停留（`appendStayPointsAt:` 同点微动），最后途经点不收尾补满（收尾到点停）。App 端按"上一位置→途经点①→…"**逐段算路逐段渲染生长**（MKPolyline 逐段 addOverlay）。交互原型见 `outputs/locsim-app-prototype.html`（直线模拟占位，生产为真实算路）。
 
 **拟人化生长参数（2026-08-24 定稿，原型已验证节奏）**——时间**不平均**是拟人核心，各环节均带随机，禁止均匀分布：
 
