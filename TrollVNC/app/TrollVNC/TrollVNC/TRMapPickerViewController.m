@@ -27,6 +27,7 @@
 /// 轨迹文件路径（与 SimLocationController kSimTrackFilePath 一致，App 只当配置源、manager 注入执行）
 static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.simloc.json";
 static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
+static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：fix 距上次聚焦点 ≥500m 才拉回（GPS 抖动 <50m 不打扰）
 
 /// 锚点标注（关联编排段索引，点击删除该段；水滴图钉状态分类：未经过=蓝/已经过=红，当前位置=绿；
 /// 水滴内嵌该锚点生成时所使用的出行方式图标 🚶/🚗）
@@ -77,7 +78,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
 @property (nonatomic, assign) BOOL hasFocusedMapOnce;            // 首帧启动聚焦是否已执行（避免 tab 往返重复聚焦）
 @property (nonatomic, strong) CLLocationManager *locationManager; // App 活跃位置订阅（授权 + startUpdatingLocation，didUpdateLocations 主驱动）
-@property (nonatomic, assign) BOOL hasFocusedRealOnce;           // 真实定位首次到达是否已聚焦（避免反复跳）
+@property (nonatomic, assign) CLLocationCoordinate2D lastAutoFocusWGS;   // 上次自动聚焦点（WGS）：fix 距此 ≥ 阈值才聚焦并更新（残留 fix≈基线不触发，替代 hasFocusedRealOnce）
 @property (nonatomic, assign) NSTimeInterval startTimestamp;     // 开启定位时刻：模拟分支只认晚于此的 fix（过滤注入落地前的真实残留）
 @property (nonatomic, assign) NSTimeInterval stopTimestamp;      // 停止定位时刻：停止分支只认晚于此的 fix（过滤模拟残留/旧缓存）
 @property (nonatomic, strong) CLLocation *lastFix;              // 最近一次通过时间戳过滤的回调 fix（坐标/速度真相源，不读 locationManager 属性缓存）
@@ -374,6 +375,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻（同 toggleLocate）
         [self commitAnchor];
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES]; // 立即聚焦锚点
+        self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:gcj]; // 自动聚焦基线（同 toggleLocate）
         self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（水滴跟随 locationd）
         [self setHint:@"已设定位点 · 继续点击添加锚点生长路线"];
     } else {
@@ -673,6 +675,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         [self commitAnchor];
         [self refreshUserLocationView];       // 当前位置水滴恢复出行图标
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(self.cur, 3000, 3000) animated:YES]; // 立即聚焦锚点
+        self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:self.cur]; // 自动聚焦基线=模拟位置（拖动退出 Follow 后模拟位置超阈值才拉回）
         self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随：MapKit 内部位置源持续订阅 locationd → 水滴跟随模拟位置（单一数据源）
     }
     [self updateStatus];
@@ -734,6 +737,7 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻（同 toggleLocate）
         [self commitAnchor];
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
+        self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:gcj]; // 自动聚焦基线（同 toggleLocate）
         self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（水滴跟随 locationd）
     } else {
         // 后续锚点：不移动视野（保持当前位置聚焦），从上一位置生长（生成中挂起，编辑不丢）
@@ -900,9 +904,19 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 }
 
 /// 停止后聚焦当前位置：读 lastFix（停止落地后首个真实 fix 到达校正）
+/// 同步记录停止瞬间位置（模拟残留）为自动聚焦基线——首个真实 fix 距此超阈值才聚焦（防残留抢占）
 - (void)focusRealLocationNow {
-    self.hasFocusedRealOnce = NO;
+    self.lastAutoFocusWGS = [self currentSimPosition];
     [self focusMapOnCurrentLocation];
+}
+
+/// 自动聚焦（距离阈值）：fix 距上次自动聚焦点 ≥ 阈值才聚焦一次并更新基线。
+/// 残留 fix（≈基线）不触发、大幅位移（停止回真实/模拟出视野）必触发、GPS 抖动（<50m）不打扰。
+- (void)maybeAutoFocus:(CLLocationCoordinate2D)wgs {
+    if (self.lastAutoFocusWGS.latitude == 0 && self.lastAutoFocusWGS.longitude == 0) return; // 基线未初始化
+    if ([SimRouteCalculator haversineMeters:wgs to:self.lastAutoFocusWGS] < kAutoFocusThresholdM) return;
+    self.lastAutoFocusWGS = wgs;
+    [self.mapView setRegion:MKCoordinateRegionMakeWithDistance([CoordTransform wgs84ToGcj02:wgs], 3000, 3000) animated:YES];
 }
 
 /// 地图立即聚焦到当前位置（首锚点/启动定位/停止/回前台时调用）
@@ -969,15 +983,17 @@ static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
         self.cur = [CoordTransform wgs84ToGcj02:loc.coordinate];
         [self updateStatus];
         [self updateAnchorPassStateWithLiveWGS:loc.coordinate];
+        // 自动聚焦：Follow 原生已跟随无需重复；用户拖动退出 Follow 后模拟位置距上次聚焦点超阈值则拉回
+        if (self.mapView.userTrackingMode != MKUserTrackingModeFollow) [self maybeAutoFocus:loc.coordinate];
         return;
     }
     // 停止态：只认晚于停止时刻的 fix（真实位置）——过滤停止瞬间的模拟残留/旧缓存
     if ([loc.timestamp timeIntervalSince1970] <= self.stopTimestamp) return;
     self.lastFix = loc; // 记录回调 fix
     [self updateStatus];
-    if (self.hasFocusedRealOnce) return;
-    self.hasFocusedRealOnce = YES;
-    [self.mapView setRegion:MKCoordinateRegionMakeWithDistance([CoordTransform wgs84ToGcj02:loc.coordinate], 3000, 3000) animated:YES];
+    // 自动聚焦（距离阈值）：真实 fix 距停止瞬间基线（模拟残留）超阈值才聚焦——
+    // 残留 fix（≈基线）不触发、真实 fix（画布外）必触发；GPS 收敛渐进超阈值再拉回
+    [self maybeAutoFocus:loc.coordinate];
 }
 
 /// App 自己的活跃订阅回调（locationd 广播）：唯一驱动
