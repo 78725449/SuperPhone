@@ -9,6 +9,8 @@
 
 #import "SimItineraryPlanner.h"
 
+#import <MapKit/MKGeometry.h> // NSValue valueWithMKCoordinate/MKCoordinateValue（途经点序列）
+
 #import "SimLocationController.h"
 #import "SimRouteCalculator.h"
 #import "RegionSimulator.h"
