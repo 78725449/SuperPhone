@@ -17,6 +17,8 @@
 
 // 轨迹点序列文件（大 payload 走文件，对齐 manager pid 平铺命名）
 static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.simloc.json";
+// 配置 plist（mobile 域=配置源：App 写 mobile、uploadTrackPoints 也写 mobile；root 域仅兜底）
+static NSString *const kSimMobilePrefsPath = @"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist";
 // 巡检间隔：失效检测 + 参数变更感知合一
 static const NSTimeInterval kSimPatrolInterval = 10.0;
 // track 逐点注入间隔（itinerary：1s/点）
@@ -319,10 +321,11 @@ static const double kSimAnchorRangeM = 20.0;
         if (error) *error = werr ?: [NSError errorWithDomain:@"SimLoc" code:6 userInfo:@{NSLocalizedDescriptionKey:@"轨迹文件替换失败"}];
         return NO;
     }
-    // 切 itinerary 模式（root 域；App 写 mobile 域由双域读取兜底）
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
-    [d setObject:@"itinerary" forKey:@"SimLocationMode"];
-    [d synchronize];
+    // 切 itinerary 模式（统一写 mobile 域 plist=配置源：App 也是 mobile 域写入，二者同域不冲突；
+    // 旧实现写 root 域，root 域一旦残留 SimLocationMode 会覆盖 App 的 mobile 写入 → App 开启定位永不生效）
+    NSMutableDictionary *mp = [NSMutableDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath] ?: [NSMutableDictionary dictionary];
+    mp[@"SimLocationMode"] = @"itinerary";
+    [mp writeToFile:kSimMobilePrefsPath atomically:YES];
     TVLog(@"[locsim] track uploaded: %lu points", (unsigned long)clean.count);
     return YES;
 }
@@ -380,11 +383,13 @@ static const double kSimAnchorRangeM = 20.0;
 #pragma mark - 参数读取（双域：root 域 → mobile 域 plist 回退）
 
 - (id)_readPref:(NSString *)key {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
-    id v = [d objectForKey:key];
+    // 配置源=mobile 域（App 与 uploadTrackPoints 都写 mobile，同域无覆盖问题）；
+    // root 域仅兜底——旧实现 root 域优先，daemon 曾写 root 残留 SimLocationMode 会永久覆盖 App 的 mobile 写入
+    NSDictionary *mobilePrefs = [NSDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath];
+    id v = mobilePrefs[key];
     if (v) return v;
-    NSDictionary *mobilePrefs = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist"];
-    return mobilePrefs[key];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    return [d objectForKey:key];
 }
 
 - (double)_readDouble:(NSString *)key def:(double)def {
