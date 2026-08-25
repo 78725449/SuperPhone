@@ -307,9 +307,11 @@ static NSDictionary *trFillContacts(NSInteger count, NSDictionary *ratios) {
     }
     if (dbErr && written == 0)
         return @{@"ok": @NO, @"error": dbErr};
-    NSString *killErr = trKillDaemon(@"contactsd");
+    // 不 kill contactsd（2026-08-25 定稿）：CNContactStore 写入由 contactsd 进程执行，其自身缓存/change-token 已同步
+    // 并广播 CNContactStoreDidChangeNotification 让系统通讯录自动刷新——kill 是 data.test 直写 DB 时代遗留，
+    // 反而打断所有 CNContactStore 客户端连接、制造重启窗口（清空/后续操作遇 CommunicationError 通信错误）。
     NSMutableDictionary *out = [@{@"ok": @YES, @"db": @"contacts", @"count": @(written)} mutableCopy];
-    if (killErr) out[@"killError"] = killErr; else out[@"kill"] = @"contactsd";
+    out[@"kill"] = @"none"; // 走 CNContactStore 无需 kill daemon（对比 calls/sms sqlite 直写必须 kill）
     return out;
 }
 
@@ -562,6 +564,25 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
 
 @implementation TRDataFiller
 
+// 仅通信类错误需要重试（contactsd XPC 连不上/超时）；授权被拒/identifier 失效等其他错误重试无意义
+static BOOL trIsContactsCommError(NSError *e) {
+    return e && [e.domain isEqualToString:CNErrorDomain] && e.code == CNErrorCodeCommunicationError;
+}
+
+// contactsd 就绪探测：CNContactStore 依赖 contactsd（XPC），被 kill（写后刷新）后重启窗口内连不上 →
+// CommunicationError(1)。清空前先等就绪（最多 maxWaitSec 秒，通信错误才等待；授权等其他错误立即失败）
+static BOOL trContactsDaemonReady(CNContactStore *store, int maxWaitSec, NSError **outErr) {
+    for (int i = 0; i < maxWaitSec; i++) {
+        NSError *e = nil;
+        CNContactFetchRequest *probe = [[CNContactFetchRequest alloc] initWithKeysToFetch:@[CNContactIdentifierKey]];
+        __block BOOL ok = [store enumerateContactsWithFetchRequest:probe error:&e usingBlock:^(CNContact *c, BOOL *s) {}];
+        if (ok) return YES;
+        if (!trIsContactsCommError(e)) { if (outErr) *outErr = e; return NO; }
+        [NSThread sleepForTimeInterval:1.0];
+    }
+    return NO;
+}
+
 + (NSDictionary *)fillDatabase:(NSString *)db
                          count:(NSInteger)count
                           seed:(uint64_t)seed
@@ -623,36 +644,44 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
         CNContactStore *store = [[CNContactStore alloc] init];
         // identifier 必须显式请求：iOS 15 上 deleteContact: 依赖 contact.identifier，缺省 keys 可能删除失败
         NSArray *keys = @[CNContactIdentifierKey, CNContactFamilyNameKey, CNContactPhoneNumbersKey];
-        CNContactFetchRequest *req = [[CNContactFetchRequest alloc] initWithKeysToFetch:keys];
-        __block NSMutableArray *toDelete = [NSMutableArray array];
-        // 枚举重试：contactsd 被 kill（写后刷新）后重启窗口内 CNContactStore XPC 连不上 → CommunicationError(1)。
-        // 通话/短信是 sqlite 直写不依赖 daemon，故只有联系人清空会中此招——等待 1s 重试自愈。
-        BOOL fetched = NO;
-        NSError *fErr = nil;
-        for (int at = 0; at < 3 && !fetched; at++) {
-            fErr = nil;
-            fetched = [store enumerateContactsWithFetchRequest:req error:&fErr usingBlock:^(CNContact *c, BOOL *stop) {
-                [toDelete addObject:c];
-            }];
-            if (!fetched) [NSThread sleepForTimeInterval:1.0];
-        }
-        if (!fetched) [errors addObject:[NSString stringWithFormat:@"通讯录枚举失败: %@", fErr.localizedDescription ?: @"未知"]];
-        for (NSInteger i = 0; i < (NSInteger)toDelete.count; i += 50) {
-            CNSaveRequest *dReq = [[CNSaveRequest alloc] init];
-            NSInteger end = MIN((NSInteger)toDelete.count, i + 50);
-            for (NSInteger j = i; j < end; j++) [dReq deleteContact:toDelete[j]];
-            // 删除批次重试（同上通信错误自愈）
-            BOOL ok = NO;
-            NSError *dErr = nil;
-            for (int at = 0; at < 3 && !ok; at++) {
-                dErr = nil;
-                ok = [store executeSaveRequest:dReq error:&dErr];
-                if (!ok) [NSThread sleepForTimeInterval:1.0];
+        // 1) 先等 contactsd 就绪（kill 后重启窗口，最多 6s；授权等其他错误立即失败不掩盖）
+        NSError *readyErr = nil;
+        if (!trContactsDaemonReady(store, 6, &readyErr)) {
+            [errors addObject:readyErr
+                ? [NSString stringWithFormat:@"通讯录服务不可用: %@ (code %ld)", readyErr.localizedDescription, (long)readyErr.code]
+                : @"通讯录服务不可用（contactsd 6s 内未就绪）"];
+        } else {
+            // 2) 枚举全部待删联系人（就绪后首轮基本成功；通信错误兜底重试 2 次）
+            CNContactFetchRequest *req = [[CNContactFetchRequest alloc] initWithKeysToFetch:keys];
+            __block NSMutableArray *toDelete = [NSMutableArray array];
+            BOOL fetched = NO;
+            NSError *fErr = nil;
+            for (int at = 0; at < 3 && !fetched; at++) {
+                fErr = nil;
+                fetched = [store enumerateContactsWithFetchRequest:req error:&fErr usingBlock:^(CNContact *c, BOOL *stop) {
+                    [toDelete addObject:c];
+                }];
+                if (!fetched && trIsContactsCommError(fErr)) [NSThread sleepForTimeInterval:1.0];
             }
-            if (ok) cleared += (end - i);
-            else [errors addObject:dErr.localizedDescription ?: @"CNContactStore 删除失败"];
+            if (!fetched) [errors addObject:[NSString stringWithFormat:@"通讯录枚举失败: %@ (code %ld)", fErr.localizedDescription ?: @"未知", (long)fErr.code]];
+            // 3) 分批删除：20 条/批（比 50 更稳，单批 XPC 事务小不易超时）；仅通信错误重试 3 次
+            for (NSInteger i = 0; i < (NSInteger)toDelete.count; i += 20) {
+                CNSaveRequest *dReq = [[CNSaveRequest alloc] init];
+                NSInteger end = MIN((NSInteger)toDelete.count, i + 20);
+                for (NSInteger j = i; j < end; j++) [dReq deleteContact:toDelete[j]];
+                BOOL ok = NO;
+                NSError *dErr = nil;
+                for (int at = 0; at < 3 && !ok; at++) {
+                    dErr = nil;
+                    ok = [store executeSaveRequest:dReq error:&dErr];
+                    if (!ok && trIsContactsCommError(dErr)) [NSThread sleepForTimeInterval:1.0];
+                }
+                if (ok) cleared += (end - i);
+                else [errors addObject:dErr.localizedDescription ?: @"CNContactStore 删除失败"];
+            }
         }
-        [kills addObject:@"contactsd"];
+        // 不 kill contactsd：CNContactStore 删除由 contactsd 执行（自同步 + change 通知），kill 反而制造重启窗口
+        //（同 fillContacts 2026-08-25 定稿；calls/sms 是 sqlite 直写，才需要 kill 对应 daemon 刷新）
     }
     for (NSString *k in kills) {
         NSString *ke = trKillDaemon(k);
