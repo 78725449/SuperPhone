@@ -3584,6 +3584,7 @@ static NSDictionary *tvExtHandleConfigGet(rfbClientPtr cl, NSDictionary *params)
 static NSDictionary *tvExtHandleConfigSet(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleDataProbe(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleDataFill(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleDataClear(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleDataRead(rfbClientPtr cl, NSDictionary *params);
 // HTTP 管理 API（5802）：首包可能已含部分 body，由 tvHttpApiHandleClient 复用
 static NSData *tvHttpApiReadBodyFromPartial(int fd, SSL *ssl, NSData *partial);
