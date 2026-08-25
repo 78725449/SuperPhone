@@ -12,7 +12,7 @@ const outDir = join(here, '..', '..', '..', 'TrollVNC', 'src');
 const date = new Date().toISOString().slice(0, 10);
 
 const arrFn = (name, arr) =>
-  `static NSArray *${name}(void) {\n    return @[\n${arr.map((x) => `        @"${x}",`).join('\n')}\n    ];\n}`;
+  `NSArray *${name}(void) {\n    return @[\n${arr.map((x) => `        @"${x}",`).join('\n')}\n    ];\n}`;
 const header = `// TRCorpus.h —— 构建产物（勿手改，改 corpus.js 后重跑 build-tr-corpus.mjs；构建于 ${date}）
 // 语料单一数据源：trollvnc-farm/test/data-gen/corpus.js（规格 §1.2，营销行业分组）
 #import <Foundation/Foundation.h>
@@ -70,7 +70,7 @@ ${arrFn('kSmsBankTexts', SMS_TEMPLATES.bank)}
 
 ${arrFn('kSmsCarrierTexts', SMS_TEMPLATES.carrierSms)}
 
-static NSArray *kSmsMarketingIndustries(void) {
+NSArray *kSmsMarketingIndustries(void) {
     return @[
 ${mktIndustries}
     ];
