@@ -119,7 +119,7 @@ uint32_t trHlrRandomPrefix(NSString *city) {
     int count = kHlrCities[idx].count;
     // xorshift64（与 TRDataFiller trRand 同构常量），避免依赖调用方 PRNG 状态
     static uint64_t s = 0;
-    if (!s) s = (uint64_t)[[NSDate date] timeIntervalSinceReferenceDate] * 1000.0 | 1;
+    if (!s) s = ((uint64_t)([[NSDate date] timeIntervalSinceReferenceDate] * 1000.0)) | 1;
     s ^= s << 13; s ^= s >> 7; s ^= s << 17;
     int ri = (int)(s % (uint64_t)count);
     uint32_t start = kHlrRanges[(off + ri) * 2];
