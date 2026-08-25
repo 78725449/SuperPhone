@@ -36,6 +36,7 @@ trollvncserver_FILES += src/TRDataFiller.mm
 # 数据填充构建产物（corpus.js/数据源 → ObjC 常量，勿手改）
 trollvncserver_FILES += src/TRCorpus.mm
 trollvncserver_FILES += src/TRAreaCodes.mm
+trollvncserver_FILES += src/TRHlr.mm
 
 trollvncserver_CFLAGS += -fobjc-arc
 trollvncserver_CFLAGS += -Wno-unknown-warning-option
@@ -146,6 +147,7 @@ trollvncmanager_FILES += src/TRDataFiller.mm
 # 数据填充构建产物（corpus.js/数据源 → ObjC 常量，勿手改）
 trollvncmanager_FILES += src/TRCorpus.mm
 trollvncmanager_FILES += src/TRAreaCodes.mm
+trollvncmanager_FILES += src/TRHlr.mm
 trollvncmanager_FRAMEWORKS += UIKit
 
 trollvncmanager_CFLAGS += -fobjc-arc

@@ -514,9 +514,14 @@
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             NSDictionary *res = [TRDataFiller clearDatabase:_kind];
             dispatch_async(dispatch_get_main_queue(), ^{
-                self.resultLabel.text = [res[@"ok"] boolValue]
-                    ? [NSString stringWithFormat:@"已清空 %@ 条%@", res[@"cleared"], [self kindTitle]]
-                    : [NSString stringWithFormat:@"清空失败：%@", res[@"error"] ?: @"未知错误"];
+                if ([res[@"ok"] boolValue]) {
+                    NSArray *errs = res[@"errors"];
+                    self.resultLabel.text = errs.count
+                        ? [NSString stringWithFormat:@"已清空 %@ 条%@（部分失败：%@）", res[@"cleared"], [self kindTitle], [errs componentsJoinedByString:@"; "]]
+                        : [NSString stringWithFormat:@"已清空 %@ 条%@", res[@"cleared"], [self kindTitle]];
+                } else {
+                    self.resultLabel.text = [NSString stringWithFormat:@"清空失败：%@", res[@"error"] ?: @"未知错误"];
+                }
             });
         });
     }]];

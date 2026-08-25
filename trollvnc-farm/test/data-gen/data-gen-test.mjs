@@ -4,6 +4,7 @@ import { matchRole, generateRemark, ROLE_ORDER } from './role-lexicon.js';
 import { generateContacts, AREA } from './contacts-gen.js';
 import { generateCalls, CARRIER_SVC } from './calls-gen.js';
 import { generateSms } from './sms-gen.js';
+import { readFileSync } from 'node:fs';
 
 let pass = 0, fail = 0;
 function check(name, cond, detail = '') {
@@ -37,8 +38,17 @@ const LANDLINE_RE = /^0\d{2,3}\d{7,8}$/;
   check('count=1 边界', generateContacts({ count: 1, city: '北京', seed: 1 }).length === 1);
   check('count=500 上限', generateContacts({ count: 500, city: '北京', seed: 1 }).length === 500);
   check('占比单极值(family=1) 不崩', generateContacts({ count: 50, city: '北京', seed: 1, ratios: { friend: 0, work: 0, service: 0, family: 1, business: 0 } }).every((c) => c.role === 'family'));
-  check('regionLocal=0 全固话', generateContacts({ count: 20, city: '广州', seed: 2, regionLocal: 0 }).every((c) => LANDLINE_RE.test(c.phone)));
-  check('regionLocal=1 全手机', generateContacts({ count: 20, city: '广州', seed: 2, regionLocal: 1 }).every((c) => PHONE_RE.test(c.phone)));
+  // 新语义（D1 §2.5 HLR）：regionLocal 只决定手机号是否本地归属；service/business 30% 固话独立于此。
+  // regionLocal=0 → 手机全为全国随机（非本地 HLR 前缀）；regionLocal=1 → 本地手机全命中广州 HLR 前缀
+  {
+    const r0 = generateContacts({ count: 200, city: '广州', seed: 2, regionLocal: 0 });
+    const hlr = JSON.parse(readFileSync(new URL('./hlr-prefixes.json', import.meta.url), 'utf8'));
+    const gzSet = new Set();
+    for (const [s, e] of hlr['广州']) for (let p = s; p <= e; p++) gzSet.add(String(p));
+    check('regionLocal=0 无本地固话泛滥(仅服务/机构类)', r0.every((c) => PHONE_RE.test(c.phone) || ((c.role === 'service' || c.role === 'business') && LANDLINE_RE.test(c.phone))));
+    const locals1 = generateContacts({ count: 200, city: '广州', seed: 2, regionLocal: 1 }).filter((c) => c.role !== 'service' && c.role !== 'business');
+    check('regionLocal=1 非服务类手机全部归属所选城市(HLR)', locals1.every((c) => PHONE_RE.test(c.phone) && gzSet.has(c.phone.slice(0, 7))));
+  }
   check('数据源表完整性（条目≥300、直辖市区号正确）', Object.keys(AREA).length >= 300 && AREA['北京'].areaCode === '10' && AREA['深圳'].areaCode === '755');
 }
 

@@ -19,6 +19,7 @@
 
 #import "TRCorpus.h"   // 语料构建产物（corpus.js → ObjC 常量；勿手改）
 #import "TRAreaCodes.h" // 区号构建产物（数据源 → 静态表；勿手改）
+#import "TRHlr.h" // 号段归属地构建产物（phone2region → 静态区间表；勿手改）
 
 #import <sqlite3.h>
 #import <sys/types.h>
@@ -69,11 +70,17 @@ static NSString *trGenerateRemark(TRContactRole role, NSString *familyName, NSSt
     }
 }
 
-#pragma mark - 号码（完整号段池 kPhoneSegments 构建产物；固话 0+区号+8 位，区号 TRAreaCodes）
+#pragma mark - 号码（完整号段池 kPhoneSegments + 归属地 TRHlr 构建产物；固话 0+区号+8 位，区号 TRAreaCodes）
 
 static NSString *trRandomPhone(void) {
     NSString *seg = kPhoneSegments()[trRandInt(0, (NSInteger)kPhoneSegments().count - 1)];
     return [NSString stringWithFormat:@"%@%ld", seg, (long)trRandInt(10000000, 99999999)]; // 3 位号段 + 8 位尾号
+}
+// 本地归属手机号：常住城市 HLR 前缀（7 位）+ 4 位尾号；城市无数据回退 NULL（调用方回退全国随机）
+static NSString *trRandomLocalPhone(NSString *city) {
+    uint32_t prefix = trHlrRandomPrefix(city);
+    if (!prefix) return nil;
+    return [NSString stringWithFormat:@"%u%04u", prefix, (unsigned)trRandInt(0, 9999)];
 }
 static NSString *trRandomLandline(NSString *areaCode) {
     return [NSString stringWithFormat:@"0%@%ld%ld%ld%ld%ld%ld%ld%ld", areaCode,
@@ -275,10 +282,14 @@ static NSDictionary *trFillContacts(NSInteger count, NSDictionary *ratios) {
             NSString *giv = kGivenNames()[trRandInt(0, (NSInteger)kGivenNames().count - 1)];
             NSString *name = trGenerateRemark(role, fam, giv);
             NSString *phone;
-            if (trRand01() < regionLocal) {
-                phone = trRandomPhone();
-            } else {
+            // 号码分配（D1 §2.5 HLR 语义，与 Node contacts-gen 同构）：机构/生活服务类小比例本地固话；
+            // regionLocal 分支 = 常住城市归属手机号（HLR 前缀），其余 = 全国随机手机号
+            if ((role == TRRoleService || role == TRRoleBusiness) && trRand01() < 0.3) {
                 phone = trRandomLandline(areaCode);
+            } else if (trRand01() < regionLocal) {
+                phone = trRandomLocalPhone(city) ?: trRandomPhone();
+            } else {
+                phone = trRandomPhone();
             }
             if ([used containsObject:phone]) { j--; continue; } // 生成集内去重
             [used addObject:phone];
@@ -334,7 +345,8 @@ static NSDictionary *trFillCalls(NSInteger count, NSDictionary *ratios) {
     sqlite3_int64 ent = trDbScalar(db, @"SELECT Z_ENT FROM Z_PRIMARYKEY WHERE Z_NAME LIKE '%CallRecord%' LIMIT 1");
     if (!ent) ent = trDbScalar(db, @"SELECT Z_ENT FROM ZCALLRECORD LIMIT 1");
     sqlite3_int64 pk = trDbScalar(db, @"SELECT MAX(Z_PK) FROM ZCALLRECORD") + 1;
-    double now = [[NSDate date] timeIntervalSince1970];
+    // Cocoa epoch（2001-01-01）：ZCALLRECORD.ZDATE 是 Cocoa 纪元秒，用 timeIntervalSince1970（Unix 1970）会偏移 31 年（实测显示 2057 年）
+    double now = [[NSDate date] timeIntervalSinceReferenceDate];
 
     __block NSInteger written = 0;
     __block NSString *dbErr = nil;
@@ -425,7 +437,8 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
         if (db) sqlite3_close(db);
         return @{@"ok": @NO, @"error": [NSString stringWithFormat:@"打开失败: %@", e]};
     }
-    double now = [[NSDate date] timeIntervalSince1970];
+    // Cocoa epoch（2001-01-01）：message.date 是 Cocoa 纪元纳秒，用 timeIntervalSince1970（Unix 1970）会偏移 31 年（实测显示 2057 年）
+    double now = [[NSDate date] timeIntervalSinceReferenceDate];
     NSInteger written = 0;
     NSString *dbErr = nil;
 
@@ -609,20 +622,23 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
     if (all || [db isEqualToString:@"contacts"]) {
         CNContactStore *store = [[CNContactStore alloc] init];
         NSError *err = nil;
-        NSArray *keys = @[CNContactFamilyNameKey, CNContactPhoneNumbersKey];
+        // identifier 必须显式请求：iOS 15 上 deleteContact: 依赖 contact.identifier，缺省 keys 可能删除失败
+        NSArray *keys = @[CNContactIdentifierKey, CNContactFamilyNameKey, CNContactPhoneNumbersKey];
         CNContactFetchRequest *req = [[CNContactFetchRequest alloc] initWithKeysToFetch:keys];
         __block NSMutableArray *toDelete = [NSMutableArray array];
-        [store enumerateContactsWithFetchRequest:req error:&err usingBlock:^(CNContact *c, BOOL *stop) {
+        if (![store enumerateContactsWithFetchRequest:req error:&err usingBlock:^(CNContact *c, BOOL *stop) {
             [toDelete addObject:c];
-        }];
+        }] && err) {
+            [errors addObject:[NSString stringWithFormat:@"通讯录枚举失败: %@", err.localizedDescription]];
+        }
         for (NSInteger i = 0; i < (NSInteger)toDelete.count; i += 50) {
             CNSaveRequest *dReq = [[CNSaveRequest alloc] init];
             NSInteger end = MIN((NSInteger)toDelete.count, i + 50);
             for (NSInteger j = i; j < end; j++) [dReq deleteContact:toDelete[j]];
             NSError *dErr = nil;
-            if (![store executeSaveRequest:dReq error:&dErr]) [errors addObject:dErr.localizedDescription ?: @"CNContactStore 删除失败"];
+            if ([store executeSaveRequest:dReq error:&dErr]) cleared += (end - i);
+            else [errors addObject:dErr.localizedDescription ?: @"CNContactStore 删除失败"];
         }
-        cleared += toDelete.count;
         [kills addObject:@"contactsd"];
     }
     for (NSString *k in kills) {

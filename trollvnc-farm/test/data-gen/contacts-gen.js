@@ -9,6 +9,8 @@ import { readFileSync } from 'node:fs';
 // 数据源产物（构建期生成，禁止手工精简表）
 export const AREA = JSON.parse(readFileSync(new URL('./area-codes.json', import.meta.url), 'utf8'));
 const PHONE_SEGMENTS = JSON.parse(readFileSync(new URL('./number-segments.json', import.meta.url), 'utf8'));
+// 号段归属地（build-tr-hlr.mjs 构建产物，phone2region 数据源）：{city: [[start,end],...]} 7 位前缀区间
+const HLR = JSON.parse(readFileSync(new URL('./hlr-prefixes.json', import.meta.url), 'utf8'));
 
 const DEFAULT_REL = { friend: 0.55, work: 0.20, service: 0.12, family: 0.08, business: 0.05 };
 
@@ -16,6 +18,14 @@ function randomMobile() {
   const seg = rng.pick(PHONE_SEGMENTS);
   const tail = rng.randInt(10000000, 99999999);
   return seg + tail; // 3 位号段 + 8 位尾号 = 11 位
+}
+
+function randomLocalMobile(city) {
+  const rs = HLR[city];
+  if (!rs || !rs.length) return null; // 城市无归属地数据（调用方回退全国随机）
+  const [s, e] = rs[rng.randInt(0, rs.length - 1)];
+  const prefix = rng.randInt(s, e); // 7 位前缀（3 号段 + 4 HLR）
+  return String(prefix) + String(rng.randInt(0, 9999)).padStart(4, '0'); // + 4 位尾号
 }
 
 function randomLandline(areaCode) {
@@ -50,10 +60,14 @@ export function generateContacts(p) {
     const given = rng.pick(GIVEN_NAMES);
     const name = generateRemark(role, fam, given, rng);
     let phone;
-    if (rng.rand01() < regionLocal) {
-      phone = randomMobile();
-    } else {
+    // 号码分配（D1 §2.5 HLR 语义）：机构/生活服务类小比例本地固话（区号体现地区）；
+    // regionLocal 分支 = 常住城市归属手机号（HLR 前缀），其余 = 全国随机手机号
+    if ((role === 'service' || role === 'business') && rng.rand01() < 0.3) {
       phone = randomLandline(cityInfo.areaCode);
+    } else if (rng.rand01() < regionLocal) {
+      phone = randomLocalMobile(p.city) || randomMobile();
+    } else {
+      phone = randomMobile();
     }
     if (used.has(phone)) { i--; continue; } // 生成集内去重
     used.add(phone);
