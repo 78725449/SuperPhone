@@ -648,6 +648,7 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
     BOOL all = [db isEqualToString:@"all"];
     NSInteger cleared = 0;
     NSDictionary *callsMeta = nil; // 通话库诊断（2026-08-25，真机确认无同款机制后删除）：触发器列表 + ZCALLRECORD 字段
+    NSDictionary *smsMeta = nil; // 短信库诊断（2026-08-25，真机确认口径后删除）：message flags/join 分布 + chat state 分布
     NSMutableArray *kills = [NSMutableArray array];
     NSMutableArray *errors = [NSMutableArray array];
     __block NSInteger remainContacts = -1; // 清空后残留数（-1=未校验/校验失败；仅 contacts 分支写入，非 contacts 清空不受影响）
@@ -687,9 +688,33 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
         sqlite3 *d = NULL;
         if (sqlite3_open_v2(path.UTF8String, &d, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL) == SQLITE_OK) {
             trRegisterTriggerFuncs(d); // DELETE 前注册 message 表触发器依赖函数（防 no such function → 残留/数字虚高）
-            // 计数口径（2026-08-25 定稿）：仅统计信息 App 可见消息——排除软删除标记行（flags&4，iOS 删除短信=标记 0x04 永留表内，App 不显示）
-            // 且须有 chat_message_join 关联（孤儿/join 失败残留不计）；曾致清空数字虚高（900+ vs 列表 20）且随生成递增
-            cleared += (NSInteger)trDbScalar(d, @"SELECT COUNT(*) FROM message m WHERE m.service='SMS' AND (m.flags & 4) = 0 AND EXISTS(SELECT 1 FROM chat_message_join j WHERE j.message_id = m.ROWID)");
+            // 顺带诊断：message 按 flags 分组 / join 有无分布 + chat 按 state 分组（真机定论显示口径）
+            NSMutableArray *flagsDist = [NSMutableArray array];
+            sqlite3_stmt *fs2 = NULL;
+            if (sqlite3_prepare_v2(d, "SELECT flags, COUNT(*) FROM message WHERE service='SMS' GROUP BY flags", -1, &fs2, NULL) == SQLITE_OK) {
+                while (sqlite3_step(fs2) == SQLITE_ROW) {
+                    [flagsDist addObject:[NSString stringWithFormat:@"flags=%lld n=%lld", (long long)sqlite3_column_int64(fs2, 0), (long long)sqlite3_column_int64(fs2, 1)]];
+                }
+            }
+            sqlite3_finalize(fs2);
+            NSMutableArray *joinDist = [NSMutableArray array];
+            sqlite3_stmt *js = NULL;
+            if (sqlite3_prepare_v2(d, "SELECT COUNT(*) FROM message m WHERE m.service='SMS' AND EXISTS(SELECT 1 FROM chat_message_join j WHERE j.message_id = m.ROWID)", -1, &js, NULL) == SQLITE_OK) {
+                if (sqlite3_step(js) == SQLITE_ROW) [joinDist addObject:[NSString stringWithFormat:@"with_join=%lld", (long long)sqlite3_column_int64(js, 0)]];
+            }
+            sqlite3_finalize(js);
+            NSMutableArray *chatState = [NSMutableArray array];
+            sqlite3_stmt *cs2 = NULL;
+            if (sqlite3_prepare_v2(d, "SELECT state, is_filtered, COUNT(*) FROM chat WHERE service_name='SMS' GROUP BY state, is_filtered", -1, &cs2, NULL) == SQLITE_OK) {
+                while (sqlite3_step(cs2) == SQLITE_ROW) {
+                    [chatState addObject:[NSString stringWithFormat:@"state=%lld flt=%lld n=%lld", (long long)sqlite3_column_int64(cs2, 0), (long long)sqlite3_column_int64(cs2, 1), (long long)sqlite3_column_int64(cs2, 2)]];
+                }
+            }
+            sqlite3_finalize(cs2);
+            smsMeta = @{@"flagsDist": flagsDist, @"joinDist": joinDist, @"chatState": chatState};
+            // 计数口径（2026-08-25 定稿）：会话口径——信息 App 主界面=会话列表（chat 表），message 行/join 关联与显示脱节
+            // （EXISTS join + flags 曾把实际可见短信全排除报 0；软删历史行仍在 chat 维度被计数，属"清空全部短信"应有语义）
+            cleared += (NSInteger)trDbScalar(d, @"SELECT COUNT(*) FROM chat WHERE service_name='SMS' AND is_filtered=0 AND is_archived=0 AND is_blackholed=0");
             NSString *e = nil;
             // 保留 iMessage：仅清 SMS 相关链（设计 §7.2）
             trDbExec(d, @"DELETE FROM chat_message_join WHERE message_id IN (SELECT ROWID FROM message WHERE service='SMS')", &e);
@@ -743,6 +768,7 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
     }
     NSMutableDictionary *out = [@{@"ok": @YES, @"db": db, @"cleared": @(cleared)} mutableCopy];
     if (callsMeta) out[@"callsMeta"] = callsMeta; // 通话库诊断（仅 calls/all 清空时存在）
+    if (smsMeta) out[@"smsMeta"] = smsMeta; // 短信库诊断（仅 sms/all 清空时存在）
     // kill 失败降级（2026-08-25 定稿）："未找到进程"= daemon 未常驻/App 未运行，属正常，忽略；
     // 其余 kill 错误为信息级（killError 字段），不进 errors——不误报"部分失败"（清空本体已成功）
     NSMutableArray *killErrs = [NSMutableArray array];

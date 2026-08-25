@@ -285,14 +285,9 @@
         }
         y += (CGFloat)items.count * 34;
     }
-    // 合计 + 重置默认（对齐原型 .sum + .rst）
-    CGFloat sumW = w - 90;
-    UILabel *sum = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, sumW, 20)];
-    sum.tag = 777;
-    sum.font = [UIFont systemFontOfSize:12];
-    [self.scrollView addSubview:sum];
+    // 重置默认（合计标签已移除 2026-08-25：互斥保证恒 100%，无需展示）
     UIButton *rst = [UIButton buttonWithType:UIButtonTypeSystem];
-    rst.frame = CGRectMake(margin + sumW + 4, y, 86, 20);
+    rst.frame = CGRectMake(margin, y, w, 20);
     [rst setTitle:@"重置默认" forState:UIControlStateNormal];
     rst.titleLabel.font = [UIFont systemFontOfSize:12];
     [rst setTitleColor:[UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0] forState:UIControlStateNormal];
@@ -400,22 +395,6 @@
     for (TRRatioRow *row in self.rows) {
         row.value.text = [NSString stringWithFormat:@"%ld%%", (long)(NSInteger)row.slider.value];
     }
-    // 合计标签（tag 777）
-    for (UIView *v in self.scrollView.subviews) {
-        if (v.tag == 777 && [v isKindOfClass:[UILabel class]]) {
-            NSMutableString *txt = [NSMutableString string];
-            for (NSInteger gi = 0; gi < (NSInteger)self.groupSizes.count; gi++) {
-                NSArray *gr = [self rowsInGroup:gi];
-                NSInteger sum = 0;
-                for (TRRatioRow *r in gr) sum += (NSInteger)r.slider.value;
-                if (gi > 0) [txt appendString:@" · "];
-                [txt appendFormat:@"组%ld %ld%%", (long)(gi + 1), (long)sum];
-            }
-            [txt appendString:@" ✓"];
-            ((UILabel *)v).text = [NSString stringWithFormat:@"合计 %@", txt];
-            ((UILabel *)v).textColor = [UIColor systemGreenColor];
-        }
-    }
 }
 
 - (void)countChanged:(UISlider *)sender { [self refreshCountLabel]; }
@@ -426,6 +405,75 @@
 }
 - (void)refreshLocalRatioLabel {
     self.localRatioLabel.text = [NSString stringWithFormat:@"%ld%%", (long)(NSInteger)self.localRatioSlider.value];
+}
+
+/// 结果对话框（2026-08-25 定稿，原型 result-dialog.html）：居中模态卡片——遮罩+圆角卡片+圆形图标+标题+详情+确认
+- (void)showResultDialogWithIcon:(NSString *)icon color:(UIColor *)color title:(NSString *)title detail:(NSString *)detail {
+    CGFloat w = self.view.bounds.size.width;
+    CGFloat margin = 32;
+    UIView *mask = [[UIView alloc] initWithFrame:self.view.bounds];
+    mask.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35];
+    mask.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    mask.tag = 20260825; // 结果对话框标识（重复弹出先移除旧）
+    for (UIView *v in self.view.subviews) if (v.tag == 20260825) [v removeFromSuperview];
+    [self.view addSubview:mask];
+    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(margin, 0, w - margin * 2, 0)];
+    card.backgroundColor = [UIColor whiteColor];
+    card.layer.cornerRadius = 16;
+    card.layer.masksToBounds = YES;
+    CGFloat cw = card.bounds.size.width;
+    // 图标
+    UILabel *ic = [[UILabel alloc] initWithFrame:CGRectMake(0, 22, cw, 46)];
+    ic.text = icon;
+    ic.textAlignment = NSTextAlignmentCenter;
+    ic.font = [UIFont boldSystemFontOfSize:24];
+    ic.textColor = [UIColor whiteColor];
+    ic.backgroundColor = color;
+    ic.layer.cornerRadius = 23;
+    ic.layer.masksToBounds = YES;
+    CGFloat iw = 46;
+    ic.frame = CGRectMake((cw - iw) / 2, 22, iw, iw);
+    [card addSubview:ic];
+    // 标题
+    UILabel *tt = [[UILabel alloc] initWithFrame:CGRectMake(0, 78, cw, 26)];
+    tt.text = title;
+    tt.textAlignment = NSTextAlignmentCenter;
+    tt.font = [UIFont boldSystemFontOfSize:17];
+    [card addSubview:tt];
+    // 详情
+    UILabel *dd = [[UILabel alloc] initWithFrame:CGRectMake(18, 110, cw - 36, 0)];
+    dd.text = detail;
+    dd.textAlignment = NSTextAlignmentCenter;
+    dd.font = [UIFont systemFontOfSize:14];
+    dd.textColor = [UIColor grayColor];
+    dd.numberOfLines = 0;
+    [dd sizeToFit];
+    CGFloat ddW = cw - 36;
+    CGRect ddf = dd.frame;
+    ddf.size.width = ddW;
+    ddf.size.height = MAX(20, dd.frame.size.height);
+    dd.frame = ddf;
+    [card addSubview:dd];
+    // 分隔线 + 确认按钮
+    CGFloat by = CGRectGetMaxY(dd.frame) + 18;
+    UIView *line = [[UIView alloc] initWithFrame:CGRectMake(0, by, cw, 0.5)];
+    line.backgroundColor = [UIColor colorWithWhite:0.9 alpha:1];
+    [card addSubview:line];
+    UIButton *okBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    okBtn.frame = CGRectMake(0, by + 1, cw, 44);
+    [okBtn setTitle:@"完成" forState:UIControlStateNormal];
+    okBtn.titleLabel.font = [UIFont boldSystemFontOfSize:16];
+    [okBtn setTitleColor:[UIColor systemBlueColor] forState:UIControlStateNormal];
+    __weak UIView *wMask = mask;
+    [okBtn addTarget:nil action:nil forControlEvents:UIControlEventTouchUpInside];
+    [okBtn addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dismissResultDialog:)]];
+    [card addSubview:okBtn];
+    CGFloat cardH = by + 46;
+    card.frame = CGRectMake(margin, (self.view.bounds.size.height - cardH) / 2, cw, cardH);
+    [mask addSubview:card];
+}
+- (void)dismissResultDialog:(UITapGestureRecognizer *)g {
+    for (UIView *v in self.view.subviews) if (v.tag == 20260825) [v removeFromSuperview];
 }
 
 #pragma mark - 省市选择器 / 收发比 / 清空
@@ -487,13 +535,19 @@
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             NSDictionary *res = [TRDataFiller clearDatabase:_kind];
             dispatch_async(dispatch_get_main_queue(), ^{
-                if ([res[@"ok"] boolValue]) {
-                    NSArray *errs = res[@"errors"];
-                    self.resultLabel.text = errs.count
-                        ? [NSString stringWithFormat:@"已清空 %@ 条%@（部分失败：%@）", res[@"cleared"], [self kindTitle], [errs componentsJoinedByString:@"; "]]
-                        : [NSString stringWithFormat:@"已清空 %@ 条%@", res[@"cleared"], [self kindTitle]];
+                NSArray *errs = res[@"errors"];
+                if (![res[@"ok"] boolValue]) {
+                    self.resultLabel.text = @"";
+                    [self showResultDialogWithIcon:@"✕" color:[UIColor systemRedColor] title:@"清空失败"
+                        detail:res[@"error"] ?: @"未知错误"];
+                } else if (errs.count > 0) {
+                    self.resultLabel.text = @"";
+                    [self showResultDialogWithIcon:@"!" color:[UIColor systemOrangeColor] title:@"清空未完全"
+                        detail:[NSString stringWithFormat:@"已清空 %@ 条%@（部分失败：%@）", res[@"cleared"], [self kindTitle], [errs componentsJoinedByString:@"; "]]];
                 } else {
-                    self.resultLabel.text = [NSString stringWithFormat:@"清空失败：%@", res[@"error"] ?: @"未知错误"];
+                    self.resultLabel.text = @"";
+                    [self showResultDialogWithIcon:@"✓" color:[UIColor systemGreenColor] title:@"已清空"
+                        detail:[NSString stringWithFormat:@"已清空 %@ 条%@", res[@"cleared"], [self kindTitle]]];
                 }
             });
         });
@@ -555,10 +609,13 @@
                                                 ratios:req[@"ratios"]];
         dispatch_async(dispatch_get_main_queue(), ^{
             if ([res[@"ok"] boolValue]) {
-                self.resultLabel.text = [NSString stringWithFormat:@"已生成 %@ %@ 条，刷新 %@ 生效",
-                                         [self kindTitle], res[@"count"] ?: @(count), res[@"kill"] ?: @"daemon"];
+                self.resultLabel.text = @"";
+                [self showResultDialogWithIcon:@"✓" color:[UIColor systemGreenColor] title:@"已生成"
+                    detail:[NSString stringWithFormat:@"已生成 %@ %@ 条，刷新 %@ 生效", [self kindTitle], res[@"count"] ?: @(count), res[@"kill"] ?: @"daemon"]];
             } else {
-                self.resultLabel.text = [NSString stringWithFormat:@"生成失败：%@", res[@"error"] ?: @"未知错误"];
+                self.resultLabel.text = @"";
+                [self showResultDialogWithIcon:@"✕" color:[UIColor systemRedColor] title:@"生成失败"
+                    detail:res[@"error"] ?: @"未知错误"];
             }
         });
     });
