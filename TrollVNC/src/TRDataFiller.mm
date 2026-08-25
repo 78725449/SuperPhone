@@ -399,6 +399,28 @@ static NSDictionary *trFillCalls(NSInteger count, NSDictionary *ratios) {
     if (!pool) return @{@"ok": @NO, @"error": @"通讯录为空，请先生成通讯录（联系人内选人依赖它）"};
     NSDictionary *byRole = pool[@"byRole"];
 
+    // 取证诊断（2026-08-25 排查"被删通讯录号码重现"）：枚举通讯录号码前 7 位分布 → 5902 stderr 日志
+    // （确认通话选人池里是否有"最近删除/残留"联系人；确认后删除本段）
+    {
+        NSArray *all = pool[@"all"];
+        NSMutableDictionary *p7 = [NSMutableDictionary dictionary];
+        for (NSDictionary *c in all) {
+            NSString *ph = c[@"phone"];
+            if (ph.length >= 7) {
+                NSString *k = [ph substringToIndex:7];
+                p7[k] = @([p7[k] integerValue] + 1);
+            }
+        }
+        NSArray *sorted = [p7 keysSortedByValueUsingComparator:^NSComparisonResult(id a, id b) {
+            return [p7[b] compare:p7[a]];
+        }];
+        NSMutableString *diag = [NSMutableString stringWithFormat:@"[calls-diag] pool=%lu ", (unsigned long)all.count];
+        for (NSString *k in [sorted subarrayWithRange:NSMakeRange(0, MIN(30, sorted.count))]) {
+            [diag appendFormat:@"%@:%@ ", k, p7[k]];
+        }
+        fprintf(stderr, "%s\n", diag.UTF8String);
+    }
+
     NSString *path = @"/var/mobile/Library/CallHistoryDB/CallHistory.storedata";
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(path.UTF8String, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK) {
