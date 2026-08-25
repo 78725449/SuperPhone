@@ -15,9 +15,6 @@
 #import "ScreenCapturer.h"
 #import "TRGatewayClient.h"
 #import "TRWatchDog.h"
-#import "SimLocationController.h"
-#import "SimRouteCalculator.h"
-#import "SimItineraryPlanner.h"
 #import "TRDataFiller.h"
 #import "Logging.h"
 #import <UIKit/UIKit.h>
@@ -722,127 +719,8 @@ static NSDictionary *TRSearchGatewaySync(void) {
         [defs synchronize];
         return @{@"ok":@YES, @"name":name};
     }];
-    // sim.location.track：轨迹点序列上传（大 payload 经 invoke，注册表 Native）——只做"数据搬运 + 触发"，
-    // 点序列由网关 TrajectoryGen 生成（§3.4），executor 落盘 + 切 itinerary，SimLocationController 自治推进。
-    [self _registerControl:@"sim.location.track" title:@"上传定位轨迹" icon:@"📍" route:TRCapRouteNative
-        params:@[@{@"name":@"points",@"type":@"array",@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSArray *pts = p[@"points"];
-            NSError *lerr = nil;
-            if (![SimLocationController uploadTrackPoints:pts error:&lerr]) {
-                if (e) *e = lerr ?: [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"轨迹上传失败"}];
-                return nil;
-            }
-            // 立即让 Controller 重读（文件已就绪 + mode=itinerary），不等 10s 巡检
-            [[SimLocationController sharedController] reloadFromPrefs];
-            return @{@"ok":@YES, @"count":@(pts.count)};
-        }];
-    // sim.location.status：当前位置状态（供 web/App 地图实时显示"现在在哪"）
-    [self _registerControl:@"sim.location.status" title:@"定位状态" icon:@"📍" route:TRCapRouteNative
-        params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            return [SimLocationController currentStatus];
-        }];
-    // sim.route.calculate：Apple 地图原生算路（两点沿真实道路）——异步算路→落盘→切 track，立即 ack
-    // （MKDirections 联网算路 1-3s 超 invoke 5s 超时，故异步执行，设备端自治推进）
-    [self _registerControl:@"sim.route.calculate" title:@"算路轨迹" icon:@"🗺️" route:TRCapRouteNative
-        params:@[
-            @{@"name":@"from",@"type":@"object",@"required":@YES},
-            @{@"name":@"to",@"type":@"object",@"required":@YES},
-            @{@"name":@"mode",@"type":@"string",@"required":@NO},
-        ]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSDictionary *from = p[@"from"], *to = p[@"to"];
-            if (![from isKindOfClass:[NSDictionary class]] || ![to isKindOfClass:[NSDictionary class]]) {
-                if (e) *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"from/to 缺失"}];
-                return nil;
-            }
-            CLLocationCoordinate2D fromC = CLLocationCoordinate2DMake([from[@"lat"] doubleValue], [from[@"lon"] doubleValue]);
-            CLLocationCoordinate2D toC = CLLocationCoordinate2DMake([to[@"lat"] doubleValue], [to[@"lon"] doubleValue]);
-            if (fromC.latitude < -90.0 || fromC.latitude > 90.0 || fromC.longitude < -180.0 || fromC.longitude > 180.0 ||
-                toC.latitude < -90.0 || toC.latitude > 90.0 || toC.longitude < -180.0 || toC.longitude > 180.0) {
-                if (e) *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey:@"坐标超出 WGS-84 范围"}];
-                return nil;
-            }
-            NSString *mode = [p[@"mode"] isKindOfClass:[NSString class]] ? p[@"mode"] : @"walk";
-            // 2026-08-24：calculateRouteFrom 已并入（SimRouteCalculator 改为纯算路，落盘由调用方负责）
-            [SimRouteCalculator calculateRoutePointsFrom:fromC to:toC mode:mode completion:^(NSArray<NSDictionary *> *points, NSError *error) {
-                if (error || points.count < 2) {
-                    TVLog(@"[simroute] calculate failed: %@", error.localizedDescription ?: @"too few points");
-                    return;
-                }
-                NSError *uerr = nil;
-                if (![SimLocationController uploadTrackPoints:points error:&uerr]) {
-                    TVLog(@"[simroute] upload failed: %@", uerr.localizedDescription ?: @"unknown");
-                    return;
-                }
-                [[SimLocationController sharedController] reloadFromPrefs];
-                TVLog(@"[simroute] ok: %lu points, mode=%@", (unsigned long)points.count, mode);
-            }];
-            return @{@"ok":@YES, @"status":@"calculating"};
-        }];
-    // sim.itinerary：定位编排（route/region/anchor 段按序拼接，段起点静态绑定）
-    // 异步执行：route 段 MKDirections 联网算路 > 5s invoke 超时，立即 ack，SimItineraryPlanner 后台串行生成
-    [self _registerControl:@"sim.itinerary" title:@"定位编排" icon:@"🗺️" route:TRCapRouteNative
-        params:@[
-            @{@"name":@"segments",@"type":@"array",@"required":@YES},
-        ]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSArray *segs = p[@"segments"];
-            if (![segs isKindOfClass:[NSArray class]] || segs.count == 0) {
-                if (e) *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"segments 不能为空"}];
-                return nil;
-            }
-            [SimItineraryPlanner submitItinerary:segs completion:^(NSDictionary *result, NSError *err) {
-                if (err) {
-                    TVLog(@"[locsim] itinerary failed: %@", err.localizedDescription ?: @"unknown");
-                } else {
-                    TVLog(@"[locsim] itinerary done: %@", result);
-                }
-            }];
-            return @{@"ok":@YES, @"status":@"calculating"};
-        }];
-    // data.fill：数据填充（联系人/通话/短信批量生成，M5 阶段 2）——写库单一实现于 TRDataFiller
-    // 共享模块（App 伪装页进程内直调 / 本注册表 invoke / server 0x50+5802 分派 三入口同一实现）
-    [self _registerControl:@"data.fill" title:@"数据填充" icon:@"📥" route:TRCapRouteNative
-        params:@[
-            @{@"name":@"db",@"type":@"string",@"required":@YES},
-            @{@"name":@"count",@"type":@"number",@"required":@YES},
-            @{@"name":@"seed",@"type":@"number",@"required":@NO},
-            @{@"name":@"ratios",@"type":@"object",@"required":@NO},
-        ]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSString *db = p[@"db"];
-            NSInteger count = [p[@"count"] integerValue];
-            if (![db isKindOfClass:[NSString class]] || count < 1) {
-                if (e) *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"db/count 缺失"}];
-                return nil;
-            }
-            uint64_t seed = [p[@"seed"] unsignedLongLongValue];
-            NSDictionary *ratios = [p[@"ratios"] isKindOfClass:[NSDictionary class]] ? p[@"ratios"] : nil;
-            NSDictionary *res = [TRDataFiller fillDatabase:db count:count seed:seed ratios:ratios];
-            if ([res[@"ok"] boolValue]) return res;
-            if (e) *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey: res[@"error"] ?: @"填充失败"}];
-            return nil;
-        }];
-    // data.clear：清空数据（contacts/calls/sms/all，设计 §7）——与 data.fill 对称，写库单一实现于 TRDataFiller
-    [self _registerControl:@"data.clear" title:@"清空数据" icon:@"🗑️" route:TRCapRouteNative
-        params:@[
-            @{@"name":@"db",@"type":@"string",@"required":@YES},
-        ]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSString *db = p[@"db"];
-            if (![db isKindOfClass:[NSString class]]) {
-                if (e) *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"db 缺失"}];
-                return nil;
-            }
-            NSDictionary *res = [TRDataFiller clearDatabase:db];
-            if ([res[@"ok"] boolValue]) return res;
-            if (e) *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey: res[@"error"] ?: @"清空失败"}];
-            return nil;
-        }];
     // data.read：读取数据（calls/sms/contacts 白名单表最近 N 行，2026-08-25 能力缺口补齐）
-    // 读库逻辑单一实现于 TRDataFiller（注册表 invoke / server 0x50+5802 三入口同一实现）；失败转 NSError 对齐 data.fill
+    // 读库逻辑单一实现于 TRDataFiller（注册表 invoke / server 0x50+5802 三入口同一实现）；失败转 NSError 对齐外部错误格式
     [self _registerControl:@"data.read" title:@"读取数据" icon:@"📖" route:TRCapRouteNative
         params:@[
             @{@"name":@"db",@"type":@"string",@"required":@YES},
@@ -1193,7 +1071,8 @@ static NSDictionary *TRSearchGatewaySync(void) {
     [self _registerConfig:@"WatchdogExitTimeout" title:@"退出超时" type:@"number" min:@1 max:@60 step:@1 reload:TRConfigReloadHot];
     [self _registerConfig:@"CaptureFps" title:@"采集帧率" type:@"number" min:@1 max:@30 step:@1 reload:TRConfigReloadHot];
     [self _registerConfig:@"HeartbeatIntervalSec" title:@"网关心跳间隔" type:@"number" min:@5 max:@300 step:@5 reload:TRConfigReloadGateway];
-    // 定位模拟（SimLocation*：改定位自治参数，设备端 SimLocationController 巡检感知，instant 语义；group:locsim 见网关 caps.js）
+    // 定位模拟（SimLocation*：App 定位 UI ↔ daemon 的配置通道——App 写 mobile 域、daemon _readPref 读取注入；
+    // 2026-08-26 前端 locsim 组已去除，本 schema 保留供 App/daemon 使用，勿随网关 caps.js 删除）
     [self _registerConfig:@"SimLocationMode" title:@"定位模拟模式" type:@"enum"
         enumValues:@[@"off",@"anchor",@"itinerary"] enumTitles:@[@"关闭",@"锚点",@"轨迹"] reload:TRConfigReloadInstant];
     [self _registerConfig:@"SimLocationLat" title:@"目标纬度" type:@"number" min:@(-90) max:@90 step:@0.0001 reload:TRConfigReloadInstant];

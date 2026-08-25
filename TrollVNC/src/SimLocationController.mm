@@ -273,7 +273,7 @@ static const double kSimAnchorRangeM = 20.0;
     return @[];
 }
 
-#pragma mark - 轨迹上传（sim.location.track executor 调用）
+#pragma mark - 轨迹上传（App 定位 UI/算路模块直调；2026-08-26 起 sim.location.track 已收敛）
 
 + (BOOL)uploadTrackPoints:(NSArray<NSDictionary *> *)points error:(NSError **)error {
     if (![points isKindOfClass:[NSArray class]] || points.count == 0) {
@@ -327,7 +327,7 @@ static const double kSimAnchorRangeM = 20.0;
     return YES;
 }
 
-#pragma mark - 当前位置状态（sim.location.status 查询）
+#pragma mark - 当前位置状态（App/daemon 查询；2026-08-26 起 sim.location.status 已收敛）
 
 + (NSDictionary *)currentStatus {
     SimLocationController *c = [SimLocationController sharedController];

@@ -21,8 +21,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// 数据填充共享模块（App 主路径 + daemon 补充入口，多 target 编译）
 /// - App 伪装页：进程内直调（生产主路径，早期规格 DataFillerCoordinator 定案）
-/// - 注册表 data.fill：manager 进程执行（网关/隧道外部调用点）
-/// - 5901 0x50 / 5802：server 进程（AI 工具/调试）
+/// - 注册表 data.read：manager 进程执行（愿景 B 跨网读库闭环；2026-08-26 写能力已收敛仅 App 内部，data.fill/data.clear 不再外部注册）
+/// - 5901 0x50 / 5802：server 进程（data.read 维护/检查接口）
 /// 写库逻辑单一实现：calls/sms 直写（sqlite3）+ contacts CNContactStore，写后 kill 对应 daemon。
 /// 参数：{db:'contacts'|'calls'|'sms', count, seed, ratios:{...}}；seed 确定性随机（同 seed 可复现）。
 @interface TRDataFiller : NSObject

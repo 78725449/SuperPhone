@@ -37,12 +37,6 @@ trollvncserver_FILES += src/TRDataFiller.mm
 trollvncserver_FILES += src/TRCorpus.mm
 trollvncserver_FILES += src/TRAreaCodes.mm
 trollvncserver_FILES += src/TRHlr.mm
-# 定位链路（2026-08-25 能力缺口补齐：5802/0x50 的 sim.itinerary 需链接；注入仍由 manager daemon 主导）
-trollvncserver_FILES += src/SimLocationManager.mm
-trollvncserver_FILES += src/SimLocationController.mm
-trollvncserver_FILES += src/SimRouteCalculator.mm
-trollvncserver_FILES += src/RegionSimulator.mm
-trollvncserver_FILES += src/SimItineraryPlanner.mm
 
 trollvncserver_CFLAGS += -fobjc-arc
 trollvncserver_CFLAGS += -Wno-unknown-warning-option
@@ -109,7 +103,6 @@ trollvncserver_FRAMEWORKS += QuartzCore
 trollvncserver_FRAMEWORKS += Security
 trollvncserver_FRAMEWORKS += UIKit
 trollvncserver_FRAMEWORKS += UserNotifications
-trollvncserver_FRAMEWORKS += MapKit
 
 trollvncserver_PRIVATE_FRAMEWORKS += FrontBoardServices
 
@@ -142,12 +135,11 @@ trollvncmanager_FILES += src/ScreenCapturer.mm
 trollvncmanager_FILES += src/TRDaemonBridgeManager.mm
 # 自签证书生成（原 TRCapabilityRegistry 内实现抽出共享，trollvncmanager 与 trollvncserver 各自编译）
 trollvncmanager_FILES += src/TRSelfSignedCert.mm
-# 全系统改定位：注入原语 + 自治控制器 + Apple 地图算路 + 区域漫游 + 编排（MKDirections 两点沿真实道路轨迹）
+# 全系统改定位：注入原语 + 自治控制器 + Apple 地图算路 + 区域漫游（MKDirections 两点沿真实道路轨迹）
 trollvncmanager_FILES += src/SimLocationManager.mm
 trollvncmanager_FILES += src/SimLocationController.mm
 trollvncmanager_FILES += src/SimRouteCalculator.mm
 trollvncmanager_FILES += src/RegionSimulator.mm
-trollvncmanager_FILES += src/SimItineraryPlanner.mm
 # 共享模块（App 伪装页 / server / manager 三 target 各自编译同一份源码，写库单一实现）
 trollvncmanager_FILES += src/CoordTransform.mm
 trollvncmanager_FILES += src/TRDataFiller.mm

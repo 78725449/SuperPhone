@@ -30,7 +30,7 @@ export function headingDeg(from, to) {
  * @param {{lat:number,lon:number}} from 起点（WGS-84）
  * @param {{lat:number,lon:number}} to   终点（WGS-84）
  * @param {object} opt { speed:'walk'|'cycle'|'drive', jitterM:米(默认0.5), altBase:米(默认45), rand:()=>number 可选注入随机源 }
- * @returns {Array<{lat,lon,speed,course,alt,acc}>} 点序列（已含拟人参数，直接供 sim.location.track）
+ * @returns {Array<{lat,lon,speed,course,alt,acc}>} 点序列（已含拟人参数；2026-08-26 起 sim.location.track 外部能力已收敛，本模块供 App 算法原型/测试使用）
  */
 export function interpolateRoute(from, to, opt = {}) {
   const mps = SPEED_DEFS[opt.speed] || SPEED_DEFS.walk;

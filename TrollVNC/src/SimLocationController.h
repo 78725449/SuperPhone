@@ -35,12 +35,12 @@ NS_ASSUME_NONNULL_BEGIN
 /// prefs-changed 通知后调用：重读参数并应用（加速生效，巡检仍是兜底）
 - (void)reloadFromPrefs;
 
-/// 上传轨迹点序列（供 `sim.location.track` executor 调用）：
+/// 上传轨迹点序列（App 定位 UI/算路模块直调；2026-08-26 起注册表 sim.location.track 已移除）：
 /// 校验坐标范围 → 原子写轨迹文件（临时文件 rename）→ 写 SimLocationMode=itinerary
 /// @return YES 成功；NO 失败并置 error
 + (BOOL)uploadTrackPoints:(NSArray<NSDictionary *> *)points error:(NSError **)error;
 
-/// 当前位置状态（供 `sim.location.status` 查询）：{mode, lat, lon, speed, course}
+/// 当前位置状态（App/daemon 查询当前注入状态；2026-08-26 起注册表 sim.location.status 已移除）：{mode, lat, lon, speed, course}
 + (NSDictionary *)currentStatus;
 
 @end

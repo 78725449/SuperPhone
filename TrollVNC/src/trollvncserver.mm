@@ -63,7 +63,6 @@
 #import "PSAssistiveTouchSettingsDetail.h"
 #import "STHIDEventGenerator.h"
 #import "ScreenCapturer.h"
-#import "SimItineraryPlanner.h" // 定位编排（sim.itinerary 能力执行；bootstrap SDK 需显式导入，勿依赖间接导入）
 #import "TRScreenHasher.h"
 #import "TRSelfSignedCert.h"
 #import "TRDataFiller.h"
@@ -3583,11 +3582,7 @@ static NSDictionary *tvExtHandleClipboardGet(rfbClientPtr cl, NSDictionary *para
 static NSDictionary *tvExtHandleTypePaste(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleConfigGet(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleConfigSet(rfbClientPtr cl, NSDictionary *params);
-static NSDictionary *tvExtHandleDataProbe(rfbClientPtr cl, NSDictionary *params);
-static NSDictionary *tvExtHandleDataFill(rfbClientPtr cl, NSDictionary *params);
-static NSDictionary *tvExtHandleDataClear(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleDataRead(rfbClientPtr cl, NSDictionary *params);
-static NSDictionary *tvExtHandleSimItinerary(rfbClientPtr cl, NSDictionary *params); // 定位编排（2026-08-25，三入口同一纯函数）
 // HTTP 管理 API（5802）：首包可能已含部分 body，由 tvHttpApiHandleClient 复用
 static NSData *tvHttpApiReadBodyFromPartial(int fd, SSL *ssl, NSData *partial);
 
@@ -3708,16 +3703,8 @@ static rfbBool tvExtHandleMessage(rfbClientPtr cl, void *data,
         resp = tvExtHandleConfigGet(cl, params);
     } else if ([op isEqualToString:@"config.set"]) {
         resp = tvExtHandleConfigSet(cl, params);
-    } else if ([op isEqualToString:@"data.probe"]) {
-        resp = tvExtHandleDataProbe(cl, params);
-    } else if ([op isEqualToString:@"data.fill"]) {
-        resp = tvExtHandleDataFill(cl, params);
-    } else if ([op isEqualToString:@"data.clear"]) {
-        resp = tvExtHandleDataClear(cl, params);
     } else if ([op isEqualToString:@"data.read"]) {
         resp = tvExtHandleDataRead(cl, params);
-    } else if ([op isEqualToString:@"sim.itinerary"]) {
-        resp = tvExtHandleSimItinerary(cl, params);
     } else {
         resp = tvExtErr([NSString stringWithFormat:@"未知操作: %@", op ?: @""]);
     }
@@ -3968,131 +3955,16 @@ static BOOL tvHidOpToSelector(NSString *op, SEL *outSel) {
     return YES;
 }
 
-/**
- * data.probe —— 数据生成能力 POC 验证（2026-08-24）
- * 目的：实证三个系统库（通话/短信/通讯录）在当前 iOS 版本的 schema 与写权限，
- * 为数据生成功能定稿写入 SQL 提供事实依据（设备 iOS 15+）。
- * 行为：仅读 sqlite_master + 事务回滚写测试，不修改任何业务数据。
- */
-static NSDictionary *tvExtHandleDataProbe(rfbClientPtr cl, NSDictionary *params) {
-    (void)cl;
-    NSString *dbName = params[@"db"];
-    static NSDictionary *kDBPaths = nil;
-    if (!kDBPaths) {
-        kDBPaths = @{
-            @"calls": @"/var/mobile/Library/CallHistoryDB/CallHistory.storedata",
-            @"sms": @"/var/mobile/Library/SMS/sms.db",
-            @"contacts": @"/var/mobile/Library/AddressBook/AddressBook.sqlitedb",
-        };
-    }
-    NSString *path = kDBPaths[dbName];
-    if (![path isKindOfClass:[NSString class]] || path.length == 0)
-        return tvExtErr(@"data.probe 缺少参数 db（calls/sms/contacts）");
-
-    NSMutableDictionary *out = [NSMutableDictionary dictionary];
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSDictionary *attr = [fm attributesOfItemAtPath:path error:nil];
-    if (!attr) {
-        out[@"exists"] = @NO;
-        out[@"path"] = path;
-        return tvExtOk(out);
-    }
-    out[@"exists"] = @YES;
-    out[@"path"] = path;
-    out[@"size"] = attr[NSFileSize];
-    out[@"perms"] = [NSString stringWithFormat:@"%o", [attr[NSFilePosixPermissions] unsignedIntValue]];
-    out[@"owner"] = [NSString stringWithFormat:@"%@:%@", attr[NSFileOwnerAccountID], attr[NSFileGroupOwnerAccountID]];
-
-    sqlite3 *db = NULL;
-    int rc = sqlite3_open_v2(path.UTF8String, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL);
-    if (rc != SQLITE_OK) {
-        NSString *err = [NSString stringWithUTF8String:sqlite3_errmsg(db) ?: "unknown"];
-        if (db) sqlite3_close(db);
-        return tvExtErr([NSString stringWithFormat:@"打开失败(rc=%d): %@", rc, err]);
-    }
-
-    // 读表结构
-    NSMutableArray *tables = [NSMutableArray array];
-    sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db, "SELECT name, sql FROM sqlite_master WHERE type IN ('table','view') ORDER BY name", -1, &stmt, NULL) == SQLITE_OK) {
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
-            const char *name = (const char *)sqlite3_column_text(stmt, 0);
-            const char *sql = (const char *)sqlite3_column_text(stmt, 1);
-            [tables addObject:@{
-                @"name": name ? [NSString stringWithUTF8String:name] : @"",
-                @"sql": sql ? [NSString stringWithUTF8String:sql] : @"",
-            }];
-        }
-    }
-    sqlite3_finalize(stmt);
-    out[@"tables"] = tables;
-
-    // 写权限测试：永久表 + 事务回滚（验证主库可写，事务回滚不残留）
-    int wOk = 0;
-    char *errMsg = NULL;
-    if (sqlite3_exec(db, "BEGIN", NULL, NULL, &errMsg) == SQLITE_OK &&
-        sqlite3_exec(db, "CREATE TABLE _probe_tmp(x INTEGER)", NULL, NULL, &errMsg) == SQLITE_OK &&
-        sqlite3_exec(db, "INSERT INTO _probe_tmp VALUES(1)", NULL, NULL, &errMsg) == SQLITE_OK &&
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, &errMsg) == SQLITE_OK) {
-        wOk = 1;
-    }
-    out[@"writable"] = @(wOk);
-    if (!wOk) out[@"writeError"] = errMsg ? [NSString stringWithUTF8String:errMsg] : @"write test failed";
-    if (errMsg) sqlite3_free(errMsg);
-
-    sqlite3_close(db);
-    return tvExtOk(out);
-}
-
-// ===== data.fill 数据填充（批量生成，2026-08-24 M5 阶段 2）=====
-// 正式能力：联系人/通话/短信批量拟人生成。写库逻辑单一实现于共享模块 TRDataFiller
-// （App 伪装页进程内直调 / 注册表 data.fill invoke / 本 0x50+5802 分派 三入口同一实现）。
-// data.test（单条硬编码测试数据）已退役（用户拍板：正式能力 = data.fill，不要 test）——
-// 其写库语句并入 TRDataFiller（count=1 等价）；原 tvCocoaNow/tvDbExec/tvDbScalar/
-// tvDbGuidFunc/tvDbNoopFunc/tvFindPidByName/tvKillDaemon 辅助随 data.test 一并删除。
-
-static NSDictionary *tvExtHandleDataFill(rfbClientPtr cl, NSDictionary *params) {
-    (void)cl;
-    NSString *db = params[@"db"];
-    NSInteger count = [params[@"count"] integerValue];
-    if (![db isKindOfClass:[NSString class]] || count < 1)
-        return tvExtErr(@"data.fill 缺少参数 db（contacts/calls/sms）+ count（1~1000）");
-    uint64_t seed = [params[@"seed"] unsignedLongLongValue];
-    NSDictionary *ratios = [params[@"ratios"] isKindOfClass:[NSDictionary class]] ? params[@"ratios"] : nil;
-    // 写库 + kill daemon 全在共享模块 TRDataFiller（与 App 伪装页进程内直调 / 注册表 invoke 同一实现）
-    return [TRDataFiller fillDatabase:db count:count seed:seed ratios:ratios];
-}
-
-// data.clear 清空数据（2026-08-25）：与 data.fill 对称，5801 直连页「清空库」按钮走此入口。
-static NSDictionary *tvExtHandleDataClear(rfbClientPtr cl, NSDictionary *params) {
-    (void)cl;
-    NSString *db = params[@"db"];
-    if (![db isKindOfClass:[NSString class]])
-        return tvExtErr(@"data.clear 缺少参数 db（contacts/calls/sms/all）");
-    return [TRDataFiller clearDatabase:db];
-}
-
-// ===== data.read 数据读取验证（2026-08-24）=====
-// 读取指定库现有数据（最近 N 条），验证「读取链路 + 系统数据格式」——写入前的先决验证。
-// 2026-08-25 能力缺口补齐：实现提取至 TRDataFiller readDatabase（manager/注册表与 server 0x50+5802 共享），此处为薄封装。
+// ===== data.read 数据读取（维护/检查接口）=====
+// 读取指定库现有数据（最近 N 行，白名单表/limit≤50）——远程排查数据实现（ZHANDLE 残留/计数口径等）的只读命脉。
+// 2026-08-26 收敛定案：data.fill/data.clear/data.probe/sim.itinerary 外部入口已移除（仅 App 内部直调底层模块），
+// data.read 保留 0x50+5802 作为唯一维护接口 + 注册表 invoke（愿景 B 跨网读库闭环）。
+// 实现提取至 TRDataFiller readDatabase（manager/注册表与 server 0x50+5802 共享），此处为薄封装。
 
 static NSDictionary *tvExtHandleDataRead(rfbClientPtr cl, NSDictionary *params) {
     (void)cl;
     NSInteger limit = [params[@"limit"] isKindOfClass:[NSNumber class]] ? [params[@"limit"] integerValue] : 5;
     return [TRDataFiller readDatabase:params[@"db"] table:params[@"table"] limit:limit];
-}
-
-// sim.itinerary：定位编排（2026-08-25 能力缺口补齐，0x50/5802 共用纯函数）
-// 与 TRCapabilityRegistry executor 同逻辑：异步算路（>5s invoke 超时立即 ack），SimItineraryPlanner 后台串行生成
-static NSDictionary *tvExtHandleSimItinerary(rfbClientPtr cl, NSDictionary *params) {
-    (void)cl;
-    NSArray *segs = params[@"segments"];
-    if (![segs isKindOfClass:[NSArray class]] || segs.count == 0)
-        return tvExtErr(@"sim.itinerary 缺少参数 segments");
-    [SimItineraryPlanner submitItinerary:segs completion:^(NSDictionary *result, NSError *err) {
-        TVLog(@"[locsim] itinerary %@", err ? err.localizedDescription : @"done");
-    }];
-    return tvExtOk(@{@"status": @"calculating"});
 }
 
 /** app.list/app.open 的 LSApplicationWorkspace 实例（惰性加载） */
@@ -4119,16 +3991,8 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         return tvExtHandleConfigGet(NULL, params);
     } else if ([op isEqualToString:@"config.set"]) {
         return tvExtHandleConfigSet(NULL, params);
-    } else if ([op isEqualToString:@"data.probe"]) {
-        return tvExtHandleDataProbe(NULL, params);
-    } else if ([op isEqualToString:@"data.fill"]) {
-        return tvExtHandleDataFill(NULL, params);
-    } else if ([op isEqualToString:@"data.clear"]) {
-        return tvExtHandleDataClear(NULL, params);
     } else if ([op isEqualToString:@"data.read"]) {
         return tvExtHandleDataRead(NULL, params);
-    } else if ([op isEqualToString:@"sim.itinerary"]) {
-        return tvExtHandleSimItinerary(NULL, params);
     }
     // ===== touch.* 独立触控（2026-08-23，AI 工具/脚本经 5802 HTTP 直接注入，不依赖 5901 RFB 会话）=====
     // 与 TRCapabilityRegistry touch.tap/swipe 契约一致：坐标 0-1 归一化（屏幕比例）。
