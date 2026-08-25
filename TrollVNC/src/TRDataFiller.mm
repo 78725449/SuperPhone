@@ -133,6 +133,11 @@ static NSString *trKillDaemon(NSString *procName) {
     return nil;
 }
 
+// kill 未找到进程判断（2026-08-25）：daemon 未常驻/App 未运行属正常，调用方忽略
+static BOOL trKillNotFound(NSString *err) {
+    return err != nil && [err hasPrefix:@"未找到进程"];
+}
+
 #pragma mark - 通话算法（D2 §2.2：分层选人/昼夜权重/Zipf 陌生号/时长对数/运营商客服）
 
 // 反查分层选人权重（family 4.0 / work 3.0 / friend 2.0 / service 1.0 / business 0.5）
@@ -414,8 +419,12 @@ static NSDictionary *trFillCalls(NSInteger count, NSDictionary *ratios) {
     if (dbErr && written == 0)
         return @{@"ok": @NO, @"error": dbErr};
     NSString *killErr = trKillDaemon(@"callservicesd");
+    if (trKillNotFound(killErr)) killErr = nil; // daemon 未常驻=忽略
+    NSString *appErr = trKillDaemon(@"MobilePhone"); // 电话 App 自动重启（未运行=未找到=忽略）
+    if (trKillNotFound(appErr)) appErr = nil;
     NSMutableDictionary *out = [@{@"ok": @YES, @"db": @"calls", @"count": @(written)} mutableCopy];
     if (killErr) out[@"killError"] = killErr; else out[@"kill"] = @"callservicesd";
+    if (appErr) out[@"appKillError"] = appErr; else out[@"appKill"] = @"MobilePhone";
     return out;
 }
 
@@ -562,8 +571,12 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
     if (dbErr && written == 0)
         return @{@"ok": @NO, @"error": dbErr};
     NSString *killErr = trKillDaemon(@"imagent");
+    if (trKillNotFound(killErr)) killErr = nil; // daemon 未常驻=忽略
+    NSString *appErr = trKillDaemon(@"MobileSMS"); // 信息 App 自动重启（未运行=未找到=忽略）
+    if (trKillNotFound(appErr)) appErr = nil;
     NSMutableDictionary *out = [@{@"ok": @YES, @"db": @"sms", @"count": @(written)} mutableCopy];
     if (killErr) out[@"killError"] = killErr; else out[@"kill"] = @"imagent";
+    if (appErr) out[@"appKillError"] = appErr; else out[@"appKill"] = @"MobileSMS";
     return out;
 }
 
@@ -601,6 +614,7 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
             trDbExec(d, @"PRAGMA wal_checkpoint(TRUNCATE)", nil);
             sqlite3_close(d);
             [kills addObject:@"callservicesd"];
+            [kills addObject:@"MobilePhone"]; // 电话 App（自动重启实现"立即生效"；未运行则 kill 找不到=忽略）
         } else {
             [errors addObject:[NSString stringWithFormat:@"calls 库打开失败: %@", [NSString stringWithUTF8String:sqlite3_errmsg(d) ?: "unknown"]]];
             if (d) sqlite3_close(d);
@@ -610,7 +624,8 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
         NSString *path = @"/var/mobile/Library/SMS/sms.db";
         sqlite3 *d = NULL;
         if (sqlite3_open_v2(path.UTF8String, &d, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL) == SQLITE_OK) {
-            cleared += (NSInteger)trDbScalar(d, @"SELECT COUNT(*) FROM message WHERE service='SMS'");
+            // 计数口径（2026-08-25 定稿）：仅统计信息 App 可见消息（有 chat_message_join 关联的 SMS 行）——孤儿行（join 失败残留/历史）count 得到但 App 不显示，曾致清空数字虚高且随生成递增
+            cleared += (NSInteger)trDbScalar(d, @"SELECT COUNT(*) FROM message m WHERE m.service='SMS' AND EXISTS(SELECT 1 FROM chat_message_join j WHERE j.message_id = m.ROWID)");
             NSString *e = nil;
             // 保留 iMessage：仅清 SMS 相关链（设计 §7.2）
             trDbExec(d, @"DELETE FROM chat_message_join WHERE message_id IN (SELECT ROWID FROM message WHERE service='SMS')", &e);
@@ -622,6 +637,7 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
             trDbExec(d, @"PRAGMA wal_checkpoint(TRUNCATE)", nil);
             sqlite3_close(d);
             [kills addObject:@"imagent"];
+            [kills addObject:@"MobileSMS"]; // 信息 App（同上）
         } else {
             [errors addObject:[NSString stringWithFormat:@"sms 库打开失败: %@", [NSString stringWithUTF8String:sqlite3_errmsg(d) ?: "unknown"]]];
             if (d) sqlite3_close(d);
@@ -661,11 +677,16 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
         }
         // 不 kill contactsd：写删由 contactsd 执行自同步 + change 通知自动刷新（kill 是直写 DB 时代遗留，自伤）
     }
+    NSMutableDictionary *out = [@{@"ok": @YES, @"db": db, @"cleared": @(cleared)} mutableCopy];
+    // kill 失败降级（2026-08-25 定稿）："未找到进程"= daemon 未常驻/App 未运行，属正常，忽略；
+    // 其余 kill 错误为信息级（killError 字段），不进 errors——不误报"部分失败"（清空本体已成功）
+    NSMutableArray *killErrs = [NSMutableArray array];
     for (NSString *k in kills) {
         NSString *ke = trKillDaemon(k);
-        if (ke) [errors addObject:ke];
+        if (!ke || trKillNotFound(ke)) continue;
+        [killErrs addObject:ke];
     }
-    NSMutableDictionary *out = [@{@"ok": @YES, @"db": db, @"cleared": @(cleared)} mutableCopy];
+    if (killErrs.count) out[@"killError"] = [killErrs componentsJoinedByString:@"; "];
     if (remainContacts > 0) {
         out[@"ok"] = @NO;
         out[@"remaining"] = @(remainContacts);
