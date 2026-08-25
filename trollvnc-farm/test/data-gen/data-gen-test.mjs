@@ -85,7 +85,7 @@ const LANDLINE_RE = /^0\d{2,3}\d{7,8}$/;
   check('服务类均 fromMe=false', sms.filter((s) => s.phone).every((s) => s.fromMe === false));
   check('inRatio=1 家人朋友全我发', generateSms({ count: 50, days: 3, seed: 5, inRatio: 1, ratios: { code: 0, express: 0, bank: 0, carrierSms: 0, marketing: 0, family: 1 } }).every((s) => s.fromMe === true));
   check('inRatio=0 家人朋友全我收', generateSms({ count: 50, days: 3, seed: 5, inRatio: 0, ratios: { code: 0, express: 0, bank: 0, carrierSms: 0, marketing: 0, family: 1 } }).every((s) => s.fromMe === false));
-  check('非家人短信发件均为服务/特服号格式', sms.filter((s) => s.phone).every((s) => /^(10086|10010|10000|106\d{0,7}|101\d{0,7}|100\d{0,7}|95\d{3,5})$/.test(s.phone)));
+  check('非家人短信发件均为服务/特服号格式', sms.filter((s) => s.phone).every((s) => /^(10086|10010|10000|106\d{0,8}|95\d{3,5}|111\d{2,4})$/.test(s.phone)));
   check('运营商短信发件=特服号', sms.some((s) => s.phone === '10086') && sms.filter((s) => s.phone === '10086').every((s) => !s.text.includes('尾号') && !s.text.includes('快件') && !s.text.includes('验证码')));
   check('内容非空', sms.every((s) => s.text && s.text.length > 0));
   check('同 seed 可复现', JSON.stringify(generateSms({ count: 100, days: 7, seed: 11, carrier: 'cmcc' })) === JSON.stringify(sms));

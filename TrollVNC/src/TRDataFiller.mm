@@ -334,6 +334,10 @@ static NSString *trFillTemplate(NSString *tpl, NSString *carrier, NSArray *brand
 static NSString *trCarrierSvcPhone(NSString *carrier) {
     return [carrier isEqualToString:@"cucc"] ? @"10010" : ([carrier isEqualToString:@"ctcc"] ? @"10000" : @"10086");
 }
+// 106 企业特服号（验证码/营销短信发件；106 号段真实服务短信专用，非私人手机号）——106 + 8 位 = 11 位
+static NSString *trRandomSvc106(void) {
+    return [NSString stringWithFormat:@"106%08ld", (long)trRandInt(0, 99999999)];
+}
 
 #pragma mark - 各库批量写入
 
@@ -592,19 +596,18 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
         } else if (type == 3) { // carrierSms：运营商服务短信，发件=特服号
             phone = svcPhone;
             text = trFillTemplate(kSmsCarrierTexts()[trRandInt(0, (NSInteger)kSmsCarrierTexts().count - 1)], carrier, nil);
-        } else if (type == 4) { // marketing：随机行业组（品牌-内容强关联）
+        } else if (type == 4) { // marketing：随机行业组（品牌-内容强关联），发件=106 营销特服号
             NSArray *inds = kSmsMarketingIndustries();
             NSDictionary *g = inds[trRandInt(0, (NSInteger)inds.count - 1)];
-            phone = trRandomPhone();
+            phone = trRandomSvc106();
             NSArray *tmpls = g[@"templates"];
             text = trFillTemplate(tmpls[trRandInt(0, (NSInteger)tmpls.count - 1)], carrier, g[@"brands"]);
-        } else { // code/express/bank：服务短信，陌生号单条
-            phone = trRandomPhone();
+        } else { // code/express/bank：服务短信，发件=服务号码（验证码 106 特服号 / 快递短号池 / 银行短号池，非私人手机号）
             NSArray *pool = nil;
             switch (type) {
-                case 0: pool = kSmsCodeTexts(); break;
-                case 1: pool = kSmsExpressTexts(); break;
-                default: pool = kSmsBankTexts(); break;
+                case 0: phone = trRandomSvc106(); pool = kSmsCodeTexts(); break;       // 验证码：106 特服号
+                case 1: phone = kSmsSvcExpress()[trRandInt(0, (NSInteger)kSmsSvcExpress().count - 1)]; pool = kSmsExpressTexts(); break; // 快递：953xx/955xx 客服短号
+                default: phone = kSmsSvcBank()[trRandInt(0, (NSInteger)kSmsSvcBank().count - 1)]; pool = kSmsBankTexts(); break;       // 银行：955xx 客服短号
             }
             text = trFillTemplate(pool[trRandInt(0, (NSInteger)pool.count - 1)], carrier, nil);
         }

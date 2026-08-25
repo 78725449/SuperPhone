@@ -4,7 +4,7 @@
 import * as rng from './rng.js';
 import { matchRole } from './role-lexicon.js';
 import { CIRCADIAN_WEIGHTS, CARRIER_SVC } from './calls-gen.js';
-import { SMS_TEMPLATES, BRAND_POOLS } from './corpus.js'; // 语料库（任务 2，规格 §1.2）
+import { SMS_TEMPLATES, BRAND_POOLS, SMS_SVC_BANK, SMS_SVC_EXPRESS } from './corpus.js'; // 语料库（任务 2，规格 §1.2）+ 服务短信发件号池
 
 export const CARRIER_NAMES = { cmcc: '中国移动', cucc: '中国联通', ctcc: '中国电信' };
 
@@ -81,14 +81,15 @@ export function generateSms(p) {
       continue;
     }
     if (type === 'marketing') {
-      // 营销：随机行业组 → 组品牌池 + 组模板（品牌-内容强关联）
+      // 营销：随机行业组 → 组品牌池 + 组模板（品牌-内容强关联），发件=106 营销特服号
       const inds = Object.keys(SMS_TEMPLATES.marketing);
       const g = SMS_TEMPLATES.marketing[inds[rng.randInt(0, inds.length - 1)]];
-      msgs.push({ phone: randomSvcPhone(), text: fillTemplate(rng.pick(g.templates), carrier, g.brands), ts, fromMe: false });
+      msgs.push({ phone: svc106(), text: fillTemplate(rng.pick(g.templates), carrier, g.brands), ts, fromMe: false });
       continue;
     }
-    // 服务/陌生类：陌生号单条
-    msgs.push({ phone: randomSvcPhone(), text: fillTemplate(rng.pick(SMS_TEMPLATES[type]), carrier), ts, fromMe: false });
+    // 服务类（code/express/bank）：发件=服务号码——验证码 106 特服号 / 快递 953xx-955xx 客服短号 / 银行 955xx 客服短号（非私人手机号）
+    const svc = type === 'bank' ? rng.pick(SMS_SVC_BANK) : type === 'express' ? rng.pick(SMS_SVC_EXPRESS) : svc106();
+    msgs.push({ phone: svc, text: fillTemplate(rng.pick(SMS_TEMPLATES[type]), carrier), ts, fromMe: false });
   }
   // 未接来电联动（D2 §2.3）：跟 1 条"您有一个未接来电"
   if (!missedLinked && p.recentMissed && p.recentMissed.length && rng.rand01() < 0.3) {
@@ -99,8 +100,7 @@ export function generateSms(p) {
   return msgs.slice(0, count);
 }
 
-function randomSvcPhone() {
-  const p = rng.pick(['106', '101', '100', '95']);
-  const n = p === '95' ? String(rng.randInt(10000, 99999)) : String(rng.randInt(1000000, 9999999));
-  return p + n;
+// 106 企业特服号（验证码/营销发件；与 ObjC trRandomSvc106 同构：106 + 8 位 = 11 位）
+function svc106() {
+  return '106' + String(rng.randInt(0, 99999999)).padStart(8, '0');
 }

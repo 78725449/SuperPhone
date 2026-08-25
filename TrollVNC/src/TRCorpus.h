@@ -24,4 +24,6 @@ NSArray<NSString *> *kOrgs(void);
 NSArray<NSString *> *kProducts(void);
 NSArray<NSString *> *kEcoms(void);
 NSArray<NSString *> *kBrands(void);
+NSArray<NSString *> *kSmsSvcBank(void);
+NSArray<NSString *> *kSmsSvcExpress(void);
 NSArray<NSString *> *kPhoneSegments(void);

@@ -8,7 +8,7 @@ import { generateSms } from './sms-gen.js';
 
 const PHONE_RE = /^1[3-9]\d{9}$/;
 const LANDLINE_RE = /^0\d{2,3}\d{7,8}$/;
-const SVC_PHONE_RE = /^(10086|10010|10000|106\d{0,7}|101\d{0,7}|100\d{0,7}|95\d{3,5})$/;
+const SVC_PHONE_RE = /^(10086|10010|10000|106\d{0,8}|95\d{3,5}|111\d{2,4})$/;
 
 let pass = 0, fail = 0;
 const failures = [];

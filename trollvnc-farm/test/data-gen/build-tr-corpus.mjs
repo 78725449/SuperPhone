@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const { FAMILY_NAMES, GIVEN_NAMES, NICKNAMES, ROLE_WORDS, SMS_TEMPLATES, BRAND_POOLS } =
+const { FAMILY_NAMES, GIVEN_NAMES, NICKNAMES, ROLE_WORDS, SMS_TEMPLATES, BRAND_POOLS, SMS_SVC_BANK, SMS_SVC_EXPRESS } =
   await import('./corpus.js');
 const numberSegments = JSON.parse(readFileSync(join(here, 'number-segments.json'), 'utf8'));
 const outDir = join(here, '..', '..', '..', 'TrollVNC', 'src');
@@ -39,6 +39,8 @@ NSArray<NSString *> *kOrgs(void);
 NSArray<NSString *> *kProducts(void);
 NSArray<NSString *> *kEcoms(void);
 NSArray<NSString *> *kBrands(void);
+NSArray<NSString *> *kSmsSvcBank(void);
+NSArray<NSString *> *kSmsSvcExpress(void);
 NSArray<NSString *> *kPhoneSegments(void);
 `;
 
@@ -95,6 +97,10 @@ ${arrFn('kProducts', BRAND_POOLS.products)}
 ${arrFn('kEcoms', BRAND_POOLS.ecoms)}
 
 ${arrFn('kBrands', BRAND_POOLS.brands)}
+
+${arrFn('kSmsSvcBank', SMS_SVC_BANK)}
+
+${arrFn('kSmsSvcExpress', SMS_SVC_EXPRESS)}
 
 ${arrFn('kPhoneSegments', numberSegments)}
 `;
