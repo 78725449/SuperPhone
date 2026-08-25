@@ -841,6 +841,27 @@ static NSDictionary *TRSearchGatewaySync(void) {
             if (e) *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey: res[@"error"] ?: @"清空失败"}];
             return nil;
         }];
+    // data.read：读取数据（calls/sms/contacts 白名单表最近 N 行，2026-08-25 能力缺口补齐）
+    // 读库逻辑单一实现于 TRDataFiller（注册表 invoke / server 0x50+5802 三入口同一实现）；失败转 NSError 对齐 data.fill
+    [self _registerControl:@"data.read" title:@"读取数据" icon:@"📖" route:TRCapRouteNative
+        params:@[
+            @{@"name":@"db",@"type":@"string",@"required":@YES},
+            @{@"name":@"table",@"type":@"string",@"required":@NO},
+            @{@"name":@"limit",@"type":@"number",@"required":@NO},
+        ]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            NSString *db = p[@"db"];
+            if (![db isKindOfClass:[NSString class]]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"db 缺失"}];
+                return nil;
+            }
+            NSString *table = [p[@"table"] isKindOfClass:[NSString class]] ? p[@"table"] : nil;
+            NSInteger limit = [p[@"limit"] isKindOfClass:[NSNumber class]] ? [p[@"limit"] integerValue] : 5;
+            NSDictionary *res = [TRDataFiller readDatabase:db table:table limit:limit];
+            if ([res[@"ok"] boolValue]) return res;
+            if (e) *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey: res[@"error"] ?: @"读取失败"}];
+            return nil;
+        }];
 }
 
 /**

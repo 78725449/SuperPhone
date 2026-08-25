@@ -108,6 +108,41 @@ static BOOL trDbExec(sqlite3 *db, NSString *sql, NSString **err) {
     return YES;
 }
 
+/** 查询多行（data.read 用，移植自 trollvncserver tvDbQueryRows）；INTEGER/FLOAT→number，TEXT→string，
+ *  BLOB→base64，NULL→NSNull；失败返回空数组并填 outErr（NSDictionary @{@"error":...}） */
+static NSArray *trDbQueryRows(sqlite3 *db, NSString *sql, NSDictionary **outErr) {
+    NSMutableArray *rows = [NSMutableArray array];
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql.UTF8String, -1, &stmt, NULL) != SQLITE_OK) {
+        if (outErr) *outErr = @{@"error": [NSString stringWithUTF8String:sqlite3_errmsg(db) ?: "unknown"]};
+        return rows;
+    }
+    int ncol = sqlite3_column_count(stmt);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        NSMutableDictionary *row = [NSMutableDictionary dictionary];
+        for (int i = 0; i < ncol; i++) {
+            const char *cname = sqlite3_column_name(stmt, i);
+            NSString *k = cname ? [NSString stringWithUTF8String:cname] : [NSString stringWithFormat:@"c%d", i];
+            int t = sqlite3_column_type(stmt, i);
+            if (t == SQLITE_INTEGER) row[k] = @(sqlite3_column_int64(stmt, i));
+            else if (t == SQLITE_FLOAT) row[k] = @(sqlite3_column_double(stmt, i));
+            else if (t == SQLITE_TEXT) {
+                const char *tx = (const char *)sqlite3_column_text(stmt, i);
+                row[k] = tx ? [NSString stringWithUTF8String:tx] : @"";
+            } else if (t == SQLITE_BLOB) {
+                const void *blob = sqlite3_column_blob(stmt, i);
+                int len = sqlite3_column_bytes(stmt, i);
+                row[k] = [[NSData dataWithBytes:blob length:(NSUInteger)len] base64EncodedStringWithOptions:0];
+            } else {
+                row[k] = [NSNull null];
+            }
+        }
+        [rows addObject:row];
+    }
+    sqlite3_finalize(stmt);
+    return rows;
+}
+
 // 触发器函数 stub（2026-08-25）：iOS sms.db message 表带系统触发器（FTS/未读计数），触发器调用系统
 // sqlite 连接注册的自定义函数（老版 read() 等），直连缺失 → DELETE 报 no such function → 残留/数字虚高。
 // 注册返回 0 的无副作用 stub，触发器结构原样保留，自适应任意 iOS 版本（不硬编码函数名）。
@@ -798,6 +833,67 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
         out[@"error"] = [NSString stringWithFormat:@"仍有 %ld 条联系人未能删除（可能来自 iCloud 同步/只读账户/SIM 卡），请检查 设置→通讯录→账户", (long)remainContacts];
     }
     if (errors.count) out[@"errors"] = errors;
+    return out;
+}
+
+// ===== data.read 数据读取（2026-08-25 能力缺口补齐）=====
+// 读取指定库现有数据（最近 N 行），验证「读取链路 + 系统数据格式」——写入前的先决验证。
+// 移植自 trollvncserver tvExtHandleDataRead：kDBPaths + 白名单表 + SELECT * ORDER BY ROWID DESC LIMIT。
+// 返回结构对齐旧实现（含 ok 字段），trollvncserver 5802/0x50 薄封装直接透传、注册表 invoke 检测 ok 转 NSError。
+
++ (NSDictionary *)readDatabase:(NSString *)dbName table:(NSString *)table limit:(NSInteger)limit {
+    if (![dbName isKindOfClass:[NSString class]])
+        return @{@"ok": @NO, @"error": @"data.read 缺少参数 db（calls/sms/contacts）"};
+    if (limit < 1 || limit > 50) limit = 5;
+    static NSDictionary *kDBPaths = nil;
+    if (!kDBPaths) {
+        kDBPaths = @{
+            @"calls": @"/var/mobile/Library/CallHistoryDB/CallHistory.storedata",
+            @"sms": @"/var/mobile/Library/SMS/sms.db",
+            @"contacts": @"/var/mobile/Library/AddressBook/AddressBook.sqlitedb",
+        };
+    }
+    NSString *path = kDBPaths[dbName];
+    if (![path isKindOfClass:[NSString class]] || path.length == 0)
+        return @{@"ok": @NO, @"error": @"data.read 缺少参数 db（calls/sms/contacts）"};
+
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path.UTF8String, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK) {
+        NSString *e = [NSString stringWithUTF8String:sqlite3_errmsg(db) ?: "unknown"];
+        if (db) sqlite3_close(db);
+        return @{@"ok": @NO, @"error": [NSString stringWithFormat:@"打开失败: %@", e]};
+    }
+
+    NSDictionary *qerr = nil;
+    NSArray *rows = nil;
+    // table 参数（可选，白名单）：默认读各库主表，可按需读 chat/handle 等关联表排查
+    NSArray *allowed = nil;
+    NSString *defaultTable = nil;
+    if ([dbName isEqualToString:@"calls"]) {
+        allowed = @[@"ZCALLRECORD", @"ZHANDLE", @"Z_PRIMARYKEY"];
+        defaultTable = @"ZCALLRECORD";
+    } else if ([dbName isEqualToString:@"sms"]) {
+        allowed = @[@"message", @"chat", @"handle", @"chat_message_join", @"chat_handle_join"];
+        defaultTable = @"message";
+    } else if ([dbName isEqualToString:@"contacts"]) {
+        allowed = @[@"ABPerson", @"ABMultiValue", @"ABStore"];
+        defaultTable = @"ABPerson";
+    } else {
+        sqlite3_close(db);
+        return @{@"ok": @NO, @"error": @"未知 db: calls/sms/contacts"};
+    }
+    if (table && ![table isKindOfClass:[NSString class]]) { sqlite3_close(db); return @{@"ok": @NO, @"error": @"table 必须为字符串"}; }
+    if (table && ![allowed containsObject:table]) { sqlite3_close(db); return @{@"ok": @NO, @"error": [NSString stringWithFormat:@"table 不在白名单: %@", table]}; }
+    if (!table) table = defaultTable;
+    rows = trDbQueryRows(db, [NSString stringWithFormat:@"SELECT * FROM %@ ORDER BY ROWID DESC LIMIT %ld", table, (long)limit], &qerr);
+    sqlite3_close(db);
+
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    out[@"ok"] = @YES;
+    out[@"db"] = dbName;
+    out[@"count"] = @(rows.count);
+    out[@"rows"] = rows;
+    if (qerr) out[@"error"] = qerr[@"error"];
     return out;
 }
 

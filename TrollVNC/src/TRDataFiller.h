@@ -43,6 +43,15 @@ NS_ASSUME_NONNULL_BEGIN
 /// @return {ok:YES, db, cleared}；失败 {ok:NO, error}
 + (NSDictionary *)clearDatabase:(NSString *)db;
 
+/// 读取指定库现有数据（最近 N 行；读库链路验证/跨网管理，能力缺口补齐 2026-08-25）
+/// @param dbName 'calls' | 'sms' | 'contacts'
+/// @param table  白名单表（可空，默认读各库主表：calls→ZCALLRECORD、sms→message、contacts→ABPerson；
+///               另可按需读 ZHANDLE/chat/handle 等关联表排查，见实现内白名单）
+/// @param limit  行数上限（钳制 1~50，默认 5）
+/// @return 成功 {ok:YES, db, count, rows}；失败 {ok:NO, error}；
+///         查询出错 {ok:YES, db, count:0, rows:[], error}（行为对齐旧 tvExtHandleDataRead）
++ (NSDictionary *)readDatabase:(NSString *)dbName table:(nullable NSString *)table limit:(NSInteger)limit;
+
 @end
 
 NS_ASSUME_NONNULL_END
