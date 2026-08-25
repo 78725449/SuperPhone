@@ -9,6 +9,16 @@ const buf = readFileSync(join(here, 'area-data', 'phone.dat'));
 const indexOffset = buf.readInt32LE(4);
 const size = (buf.length - indexOffset) / 9;
 
+// 2026-08-26 过滤：剔除不可作普通手机号的前缀（与 build-area-table.mjs SEGMENTS 同清单）——
+// 虚拟运营商 162/165/167/170/171、物联网 145/146/147/148/149、卫星移动 174（1740-1745 天通）；
+// 另 134 内的 1349（卫星移动）为 4 位段，3 位粒度无法分离，此处按 7 位前缀单独过滤（1349000-1349999）。
+const BAD_HEAD3 = new Set(['145','146','147','148','149','162','165','167','170','171','174']);
+const isBadPrefix = (p) => {
+  const head = String(Math.floor(p / 10000)); // 7 位前缀前 3 位
+  if (BAD_HEAD3.has(head)) return true;
+  return p >= 1349000 && p < 1350000;
+};
+
 // 解析索引 → 城市 → 前缀列表
 const cityPrefix = new Map();
 for (let i = 0; i < size; i++) {
@@ -19,6 +29,7 @@ for (let i = 0; i < size; i++) {
   const content = buf.toString('utf8', infoOffset, end).replace(/\0/g, '');
   const city = (content.split('|')[1] || '').trim();
   if (!city) continue;
+  if (isBadPrefix(prefix)) continue;
   if (!cityPrefix.has(city)) cityPrefix.set(city, []);
   cityPrefix.get(city).push(prefix);
 }
