@@ -108,6 +108,53 @@ static BOOL trDbExec(sqlite3 *db, NSString *sql, NSString **err) {
     return YES;
 }
 
+// 触发器函数 stub（2026-08-25）：iOS sms.db message 表带系统触发器（FTS/未读计数），触发器调用系统
+// sqlite 连接注册的自定义函数（老版 read() 等），直连缺失 → DELETE 报 no such function → 残留/数字虚高。
+// 注册返回 0 的无副作用 stub，触发器结构原样保留，自适应任意 iOS 版本（不硬编码函数名）。
+static void trTriggerStub(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc; (void)argv;
+    sqlite3_result_int(ctx, 0);
+}
+static void trRegisterTriggerFuncs(sqlite3 *db) {
+    const char *sql = "SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name='message'";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return;
+    static NSSet *kSkip = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        kSkip = [NSSet setWithArray:@[@"SELECT",@"FROM",@"WHERE",@"WHEN",@"BEGIN",@"END",@"UPDATE",@"INSERT",@"DELETE",@"IF",@"CASE",@"CAST",@"ABS",@"MIN",@"MAX",@"COUNT",@"SUM",@"LENGTH",@"SUBSTR",@"IFNULL",@"COALESCE",@"NULLIF",@"UPPER",@"LOWER",@"TRIM",@"ROUND",@"OLD",@"NEW",@"ROWID",@"AND",@"OR",@"NOT",@"NULL",@"IS",@"IN",@"EXISTS",@"LIKE",@"GLOB",@"BETWEEN",@"INTO",@"VALUES",@"PRAGMA",@"RAISE",@"TYPEOF",@"CHAR",@"PRINTF",@"QUOTE",@"REPLACE",@"INSTR",@"LAST_INSERT_ROWID",@"CHANGES",@"TOTAL_CHANGES",@"RANDOM",@"RANDOMBLOB",@"ZEROBLOB",@"SOUNDEX",@"UNICODE",@"HEX",@"LIKELIHOOD",@"LIKELY",@"UNLIKELY",@"IIF",@"DATETIME",@"DATE",@"TIME",@"STRFTIME",@"JULIANDAY",@"UNIXEPOCH"]];
+    });
+    NSMutableSet *funcs = [NSMutableSet set];
+    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(" options:0 error:nil];
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char *txt = sqlite3_column_text(stmt, 0);
+        if (!txt) continue;
+        NSString *s = [NSString stringWithUTF8String:(const char *)txt];
+        [re enumerateMatchesInString:s options:0 range:NSMakeRange(0, s.length) usingBlock:^(NSTextCheckingResult *m, NSMatchingFlags f, BOOL *stop) {
+            NSString *fn = [s substringWithRange:[m rangeAtIndex:1]];
+            if ([kSkip containsObject:fn.uppercaseString]) return;
+            [funcs addObject:fn];
+        }];
+    }
+    sqlite3_finalize(stmt);
+    // 注册前查 pragma_function_list 是否已存在同名函数（内建/系统注册），存在则跳过——防 stub 覆盖内建变参函数（如时间函数族）
+    sqlite3_stmt *fs = NULL;
+    BOOL hasPragma = (sqlite3_prepare_v2(db, "SELECT name FROM pragma_function_list", -1, &fs, NULL) == SQLITE_OK);
+    for (NSString *fn in funcs) {
+        if (hasPragma) {
+            BOOL exists = NO;
+            while (sqlite3_step(fs) == SQLITE_ROW) {
+                const unsigned char *n = sqlite3_column_text(fs, 0);
+                if (n && strcasecmp((const char *)n, fn.UTF8String) == 0) { exists = YES; break; }
+            }
+            sqlite3_reset(fs);
+            if (exists) continue;
+        }
+        sqlite3_create_function(db, fn.UTF8String, -1, SQLITE_UTF8, NULL, trTriggerStub, NULL, NULL);
+    }
+    if (fs) sqlite3_finalize(fs);
+}
+
 #pragma mark - kill daemon（sysctl 枚举 + POSIX kill；同 uid 可杀，launchd 自动拉起）
 
 static pid_t trFindPidByName(const char *name) {
@@ -600,6 +647,7 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
     if (![db isKindOfClass:[NSString class]]) return @{@"ok": @NO, @"error": @"db 缺失"};
     BOOL all = [db isEqualToString:@"all"];
     NSInteger cleared = 0;
+    NSDictionary *callsMeta = nil; // 通话库诊断（2026-08-25，真机确认无同款机制后删除）：触发器列表 + ZCALLRECORD 字段
     NSMutableArray *kills = [NSMutableArray array];
     NSMutableArray *errors = [NSMutableArray array];
     __block NSInteger remainContacts = -1; // 清空后残留数（-1=未校验/校验失败；仅 contacts 分支写入，非 contacts 清空不受影响）
@@ -612,6 +660,20 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
             trDbExec(d, @"DELETE FROM ZCALLRECORD", &e); // 不动 Z_PRIMARYKEY（ROWID 空洞正常，D5 §7.4）
             if (e) [errors addObject:e];
             trDbExec(d, @"PRAGMA wal_checkpoint(TRUNCATE)", nil);
+            // 顺带诊断：CallHistory 触发器列表 + ZCALLRECORD 字段清单（真机确认无同款机制）
+            NSMutableArray *trigs = [NSMutableArray array];
+            sqlite3_stmt *ts = NULL;
+            if (sqlite3_prepare_v2(d, "SELECT name FROM sqlite_master WHERE type='trigger'", -1, &ts, NULL) == SQLITE_OK) {
+                while (sqlite3_step(ts) == SQLITE_ROW) [trigs addObject:[NSString stringWithUTF8String:(const char *)sqlite3_column_text(ts, 0) ?: ""]];
+            }
+            sqlite3_finalize(ts);
+            NSMutableArray *cols = [NSMutableArray array];
+            sqlite3_stmt *cs = NULL;
+            if (sqlite3_prepare_v2(d, "PRAGMA table_info(ZCALLRECORD)", -1, &cs, NULL) == SQLITE_OK) {
+                while (sqlite3_step(cs) == SQLITE_ROW) [cols addObject:[NSString stringWithUTF8String:(const char *)sqlite3_column_text(cs, 1) ?: ""]];
+            }
+            sqlite3_finalize(cs);
+            callsMeta = @{@"triggers": trigs, @"columns": cols};
             sqlite3_close(d);
             [kills addObject:@"callservicesd"];
             [kills addObject:@"MobilePhone"]; // 电话 App（自动重启实现"立即生效"；未运行则 kill 找不到=忽略）
@@ -624,8 +686,10 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
         NSString *path = @"/var/mobile/Library/SMS/sms.db";
         sqlite3 *d = NULL;
         if (sqlite3_open_v2(path.UTF8String, &d, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL) == SQLITE_OK) {
-            // 计数口径（2026-08-25 定稿）：仅统计信息 App 可见消息（有 chat_message_join 关联的 SMS 行）——孤儿行（join 失败残留/历史）count 得到但 App 不显示，曾致清空数字虚高且随生成递增
-            cleared += (NSInteger)trDbScalar(d, @"SELECT COUNT(*) FROM message m WHERE m.service='SMS' AND EXISTS(SELECT 1 FROM chat_message_join j WHERE j.message_id = m.ROWID)");
+            trRegisterTriggerFuncs(d); // DELETE 前注册 message 表触发器依赖函数（防 no such function → 残留/数字虚高）
+            // 计数口径（2026-08-25 定稿）：仅统计信息 App 可见消息——排除软删除标记行（flags&4，iOS 删除短信=标记 0x04 永留表内，App 不显示）
+            // 且须有 chat_message_join 关联（孤儿/join 失败残留不计）；曾致清空数字虚高（900+ vs 列表 20）且随生成递增
+            cleared += (NSInteger)trDbScalar(d, @"SELECT COUNT(*) FROM message m WHERE m.service='SMS' AND (m.flags & 4) = 0 AND EXISTS(SELECT 1 FROM chat_message_join j WHERE j.message_id = m.ROWID)");
             NSString *e = nil;
             // 保留 iMessage：仅清 SMS 相关链（设计 §7.2）
             trDbExec(d, @"DELETE FROM chat_message_join WHERE message_id IN (SELECT ROWID FROM message WHERE service='SMS')", &e);
@@ -678,6 +742,7 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
         // 不 kill contactsd：写删由 contactsd 执行自同步 + change 通知自动刷新（kill 是直写 DB 时代遗留，自伤）
     }
     NSMutableDictionary *out = [@{@"ok": @YES, @"db": db, @"cleared": @(cleared)} mutableCopy];
+    if (callsMeta) out[@"callsMeta"] = callsMeta; // 通话库诊断（仅 calls/all 清空时存在）
     // kill 失败降级（2026-08-25 定稿）："未找到进程"= daemon 未常驻/App 未运行，属正常，忽略；
     // 其余 kill 错误为信息级（killError 字段），不进 errors——不误报"部分失败"（清空本体已成功）
     NSMutableArray *killErrs = [NSMutableArray array];
