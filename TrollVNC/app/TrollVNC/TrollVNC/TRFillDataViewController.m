@@ -44,7 +44,7 @@
 @property (nonatomic, strong) NSString *selectedCity;        // 选中市（中文，区号表 key）
 @property (nonatomic, strong) UISlider *localRatioSlider;    // 本地占比（联系人）
 @property (nonatomic, strong) UILabel *localRatioLabel;
-@property (nonatomic, strong) UISlider *inRatioSlider;       // 收发比（短信，我发占比，默认 20%）
+@property (nonatomic, strong) UISlider *inRatioSlider;       // 我收占比（短信，默认 80%＝收8发2；生成换算 inRatio=100-我收）
 @property (nonatomic, strong) UILabel *inRatioLabel;
 @property (nonatomic, strong) UIButton *seedButton;
 @property (nonatomic, strong) UILabel *resultLabel;
@@ -93,7 +93,7 @@
     CGFloat margin = 20;
     CGFloat w = self.view.bounds.size.width - margin * 2;
 
-    // 联系人专属：常住地区（BRPickerView 省市选择）+ 本地占比
+    // 联系人专属：常住地区（BRPickerView 省市选择）
     if ([_kind isEqualToString:@"contacts"]) {
         y = [self addRowLabel:@"常住地区" y:y] + 24;
         UIButton *cityBtn = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -112,19 +112,6 @@
         self.selectedProvince = @"北京";
         self.selectedCity = @"北京";
         y += 44;
-
-        y = [self addRowLabel:@"本地占比" y:y] + 24;
-        UISlider *lr = [[UISlider alloc] initWithFrame:CGRectMake(margin, y, w - 70, 30)];
-        lr.minimumValue = 0; lr.maximumValue = 100; lr.value = 65;
-        [lr addTarget:self action:@selector(localRatioChanged:) forControlEvents:UIControlEventValueChanged];
-        [sv addSubview:lr];
-        self.localRatioSlider = lr;
-        UILabel *lv = [[UILabel alloc] initWithFrame:CGRectMake(w + margin - 66, y + 3, 66, 24)];
-        lv.textAlignment = NSTextAlignmentRight;
-        lv.font = [UIFont systemFontOfSize:13];
-        [sv addSubview:lv];
-        self.localRatioLabel = lv;
-        y += 34;
     }
 
     // 短信/通话专属：时间范围 + 本人运营商
@@ -150,14 +137,29 @@
     y = [self addRatioGroupsAtY:y];
     y += 8;
 
-    // 短信专属：收发比（默认 20% = 发2收8；仅作用于家人朋友类，设计 §6.1；单行：标签+滑条+值，对齐比例滑条行布局）
+    // 随机种子（标题与组件同行："随机种子" Label + 数字组件，点击随机；依赖提示删除后不丢失——生成失败时 fillDatabase 会返回"请先生成通讯录"）
+    UILabel *seedL = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, 96, 40)];
+    seedL.text = @"随机种子";
+    seedL.font = [UIFont systemFontOfSize:13];
+    [sv addSubview:seedL];
+    UIButton *seedBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    seedBtn.frame = CGRectMake(margin + 100, y, w - 100, 40);
+    [seedBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+    seedBtn.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    seedBtn.layer.cornerRadius = 8;
+    [seedBtn addTarget:self action:@selector(randomizeSeed:) forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:seedBtn];
+    self.seedButton = seedBtn;
+    y += 48;
+
+    // 短信专属：我收的（默认 80% = 收8发2，仅作用于家人朋友类；单行：标签+滑条+值；生成时换算 inRatio=100-我收）
     if ([_kind isEqualToString:@"sms"]) {
         UILabel *irl = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, 96, 30)];
-        irl.text = @"收发比";
+        irl.text = @"我收的";
         irl.font = [UIFont systemFontOfSize:13];
         [sv addSubview:irl];
         UISlider *ir = [[UISlider alloc] initWithFrame:CGRectMake(margin + 100, y, w - 158, 30)];
-        ir.minimumValue = 0; ir.maximumValue = 100; ir.value = 20;
+        ir.minimumValue = 0; ir.maximumValue = 100; ir.value = 80;
         [ir addTarget:self action:@selector(inRatioChanged:) forControlEvents:UIControlEventValueChanged];
         [sv addSubview:ir];
         self.inRatioSlider = ir;
@@ -170,27 +172,39 @@
         [self refreshInRatioLabel];
     }
 
-    // 随机种子（标题与种子同行显示，点击行随机；依赖提示删除后不丢失——生成失败时 fillDatabase 会返回"请先生成通讯录"）
-    UIButton *seedBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    seedBtn.frame = CGRectMake(margin, y, w, 40);
-    [seedBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
-    seedBtn.backgroundColor = [UIColor secondarySystemBackgroundColor];
-    seedBtn.layer.cornerRadius = 8;
-    [seedBtn addTarget:self action:@selector(randomizeSeed:) forControlEvents:UIControlEventTouchUpInside];
-    [sv addSubview:seedBtn];
-    self.seedButton = seedBtn;
-    y += 48;
+    // 联系人专属：本地占比（单行，移到生成数量上方）
+    if ([_kind isEqualToString:@"contacts"]) {
+        UILabel *lrl = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, 96, 30)];
+        lrl.text = @"本地占比";
+        lrl.font = [UIFont systemFontOfSize:13];
+        [sv addSubview:lrl];
+        UISlider *lr = [[UISlider alloc] initWithFrame:CGRectMake(margin + 100, y, w - 158, 30)];
+        lr.minimumValue = 0; lr.maximumValue = 100; lr.value = 65;
+        [lr addTarget:self action:@selector(localRatioChanged:) forControlEvents:UIControlEventValueChanged];
+        [sv addSubview:lr];
+        self.localRatioSlider = lr;
+        UILabel *lv = [[UILabel alloc] initWithFrame:CGRectMake(margin + 100 + w - 158 + 4, y, 40, 30)];
+        lv.textAlignment = NSTextAlignmentRight;
+        lv.font = [UIFont systemFontOfSize:13];
+        [sv addSubview:lv];
+        self.localRatioLabel = lv;
+        y += 34;
+        [self refreshLocalRatioLabel];
+    }
 
-    // 生成数量（操作习惯：数量在生成按钮上一行）
-    y = [self addRowLabel:@"生成数量" y:y] + 24;
-    UISlider *cs = [[UISlider alloc] initWithFrame:CGRectMake(margin, y, w - 70, 30)];
+    // 生成数量（单行；操作习惯：数量在生成按钮上一行）
+    UILabel *cl = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, 96, 30)];
+    cl.text = @"生成数量";
+    cl.font = [UIFont systemFontOfSize:13];
+    [sv addSubview:cl];
+    UISlider *cs = [[UISlider alloc] initWithFrame:CGRectMake(margin + 100, y, w - 158, 30)];
     cs.minimumValue = 1;
     cs.maximumValue = 500;
     cs.value = [self defaultCount];
     [cs addTarget:self action:@selector(countChanged:) forControlEvents:UIControlEventValueChanged];
     [sv addSubview:cs];
     self.countSlider = cs;
-    UILabel *cv = [[UILabel alloc] initWithFrame:CGRectMake(w + margin - 66, y + 3, 66, 24)];
+    UILabel *cv = [[UILabel alloc] initWithFrame:CGRectMake(margin + 100 + w - 158 + 4, y, 40, 30)];
     cv.textAlignment = NSTextAlignmentRight;
     cv.font = [UIFont systemFontOfSize:13];
     [sv addSubview:cv];
@@ -321,7 +335,7 @@
         gi++;
     }
     if (self.localRatioSlider) self.localRatioSlider.value = 65;
-    if (self.inRatioSlider) self.inRatioSlider.value = 20;
+    if (self.inRatioSlider) self.inRatioSlider.value = 80; // 我收占比默认 80（收8发2）
     [self refreshRatioLabels];
     [self refreshInRatioLabel];
     self.resultLabel.text = @"";
@@ -438,7 +452,7 @@
 }
 
 - (void)refreshSeedButton {
-    [self.seedButton setTitle:[NSString stringWithFormat:@"随机种子  %llu", self.seed] forState:UIControlStateNormal];
+    [self.seedButton setTitle:[NSString stringWithFormat:@"%llu", self.seed] forState:UIControlStateNormal]; // 标题独立 Label，"随机种子" + 数字组件
 }
 
 #pragma mark - 省市选择器 / 收发比 / 清空
@@ -536,7 +550,7 @@
         for (NSUInteger i = 0; i < keys.count && i < gr.count; i++) {
             ratios[keys[i]] = @([(TRRatioRow *)gr[i] slider].value / 100.0);
         }
-        if (self.inRatioSlider) ratios[@"inRatio"] = @(self.inRatioSlider.value / 100.0);
+        if (self.inRatioSlider) ratios[@"inRatio"] = @((100.0 - self.inRatioSlider.value) / 100.0); // 我发占比 = 100 - 我收占比
         ratios[@"days"] = @[@1, @3, @7, @30][self.daysSeg.selectedSegmentIndex];
         ratios[@"carrier"] = @[@"cmcc", @"cucc", @"ctcc"][self.carrierSeg.selectedSegmentIndex];
     } else { // calls
