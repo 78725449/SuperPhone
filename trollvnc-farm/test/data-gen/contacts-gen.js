@@ -44,11 +44,15 @@ function randomLandline(areaCode) {
  * @param {number} [p.seed]
  * @returns {{name:string, phone:string, role:string, city:string}[]}
  */
+// 城市名归一（2026-08-25 对齐 ObjC trNormalizeCity）：调用方可能传"杭州市"带后缀，AREA/HLR key 无后缀（"杭州"）
+const normCity = (c) => (typeof c === 'string' ? c.replace(/特别行政区|维吾尔自治区|回族自治区|壮族自治区|自治区|省|市/g, '') : '');
+
 export function generateContacts(p) {
   const count = Math.max(1, Math.min(500, p.count | 0));
   const ratios = { ...DEFAULT_REL, ...(p.ratios || {}) };
   const regionLocal = p.regionLocal === undefined ? 0.65 : p.regionLocal;
-  const cityInfo = AREA[p.city] || AREA['北京'];
+  const city = normCity(p.city); // 归一城市名
+  const cityInfo = AREA[city] || AREA['北京'];
   rng.seed(p.seed);
   const roles = ['friend', 'work', 'service', 'family', 'business'];
   const w = roles.map((r) => Math.max(0, Math.min(1, ratios[r] || 0)));
@@ -65,7 +69,7 @@ export function generateContacts(p) {
     if ((role === 'service' || role === 'business') && rng.rand01() < 0.3) {
       phone = randomLandline(cityInfo.areaCode);
     } else if (rng.rand01() < regionLocal) {
-      phone = randomLocalMobile(p.city) || randomMobile();
+      phone = randomLocalMobile(city) || randomMobile();
     } else {
       phone = randomMobile();
     }

@@ -611,7 +611,7 @@
             if ([res[@"ok"] boolValue]) {
                 self.resultLabel.text = @"";
                 [self showResultDialogWithIcon:@"✓" color:[UIColor systemGreenColor] title:@"已生成"
-                    detail:[NSString stringWithFormat:@"已生成 %@ %@ 条，刷新 %@ 生效", [self kindTitle], res[@"count"] ?: @(count), res[@"kill"] ?: @"daemon"]];
+                    detail:[NSString stringWithFormat:@"已生成 %@ %@ 条", [self kindTitle], res[@"count"] ?: @(count)]];
             } else {
                 self.resultLabel.text = @"";
                 [self showResultDialogWithIcon:@"✕" color:[UIColor systemRedColor] title:@"生成失败"

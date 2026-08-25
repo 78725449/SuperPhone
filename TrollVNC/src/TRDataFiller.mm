@@ -302,6 +302,15 @@ static NSString *trCarrierSvcPhone(NSString *carrier) {
 
 #pragma mark - 各库批量写入
 
+// 城市名归一（2026-08-25 修复）：App/5801 传入可能带"市/省/自治区"后缀（BRPickerView 数据源 regions.json 城市名带"市"，如"杭州市"），
+// 而 AREA/HLR 表 key 为无后缀（"杭州"）——不归一则本地号/区号全回退（全国随机/北京区号），致通讯录与通话地区"断裂"
+static NSString *trNormalizeCity(NSString *city) {
+    if (![city isKindOfClass:[NSString class]]) return @"北京";
+    NSArray *suf = @[@"特别行政区", @"维吾尔自治区", @"回族自治区", @"壮族自治区", @"自治区", @"省", @"市"];
+    for (NSString *s in suf) city = [city stringByReplacingOccurrencesOfString:s withString:@""];
+    return city.length ? city : @"北京";
+}
+
 /// 联系人：CNContactStore（关系构成 → 角色 → 备注名互斥；完整号段 + 区号固话；设计 §4）
 static NSDictionary *trFillContacts(NSInteger count, NSDictionary *ratios) {
     double regionLocal = 0.65;
@@ -313,7 +322,7 @@ static NSDictionary *trFillContacts(NSInteger count, NSDictionary *ratios) {
         NSNumber *v = ratios[roles[i]];
         if ([v isKindOfClass:[NSNumber class]]) w[i] = MAX(0.0, MIN(1.0, v.doubleValue));
     }
-    NSString *city = [ratios[@"city"] isKindOfClass:[NSString class]] ? ratios[@"city"] : @"北京";
+    NSString *city = trNormalizeCity(ratios[@"city"]); // 归一城市名（去"市/省"后缀，AREA/HLR key 无后缀）
     NSString *areaCode = trAreaCodeForCity(city);
 
     NSInteger written = 0;
