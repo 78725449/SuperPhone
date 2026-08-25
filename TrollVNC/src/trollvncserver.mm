@@ -4109,7 +4109,7 @@ static NSDictionary *tvExtHandleDataRead(rfbClientPtr cl, NSDictionary *params) 
     (void)cl;
     NSString *dbName = params[@"db"];
     NSInteger limit = [params[@"limit"] isKindOfClass:[NSNumber class]] ? [params[@"limit"] integerValue] : 5;
-    if (limit < 1 || limit > 300) limit = 5; // 300 上限（2026-08-26 临时扩大取证 ZHANDLE 全量，确认后还原 50）
+    if (limit < 1 || limit > 50) limit = 5;
     static NSDictionary *kDBPaths = nil;
     if (!kDBPaths) {
         kDBPaths = @{
