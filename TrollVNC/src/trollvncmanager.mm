@@ -40,6 +40,7 @@
 #import "TRWatchDog.h"
 #import "SimLocationManager.h"
 #import "SimLocationController.h"
+#import "TRDailyTrajectory.h"
 #import "libproc.h"
 
 #define SINGLETON_MARKER_PATH "/var/mobile/Library/Caches/com.82flex.trollvnc.manager.pid"
@@ -583,6 +584,9 @@ int main(int argc, const char *argv[]) {
 
         // 改定位自治控制器：读 SimLocation* 参数恢复上次模式 + 启动 10s 巡检（离线自治，C3）
         [[SimLocationController sharedController] start];
+
+        // 每日轨迹（2026-08-26）：每日通话/短信/未接 + 每周新增联系人（真人行为模拟，默认开启）
+        [TRDailyTrajectory start];
     }
 
     {
