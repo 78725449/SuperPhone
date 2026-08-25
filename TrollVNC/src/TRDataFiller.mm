@@ -621,22 +621,35 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
     }
     if (all || [db isEqualToString:@"contacts"]) {
         CNContactStore *store = [[CNContactStore alloc] init];
-        NSError *err = nil;
         // identifier 必须显式请求：iOS 15 上 deleteContact: 依赖 contact.identifier，缺省 keys 可能删除失败
         NSArray *keys = @[CNContactIdentifierKey, CNContactFamilyNameKey, CNContactPhoneNumbersKey];
         CNContactFetchRequest *req = [[CNContactFetchRequest alloc] initWithKeysToFetch:keys];
         __block NSMutableArray *toDelete = [NSMutableArray array];
-        if (![store enumerateContactsWithFetchRequest:req error:&err usingBlock:^(CNContact *c, BOOL *stop) {
-            [toDelete addObject:c];
-        }] && err) {
-            [errors addObject:[NSString stringWithFormat:@"通讯录枚举失败: %@", err.localizedDescription]];
+        // 枚举重试：contactsd 被 kill（写后刷新）后重启窗口内 CNContactStore XPC 连不上 → CommunicationError(1)。
+        // 通话/短信是 sqlite 直写不依赖 daemon，故只有联系人清空会中此招——等待 1s 重试自愈。
+        BOOL fetched = NO;
+        NSError *fErr = nil;
+        for (int at = 0; at < 3 && !fetched; at++) {
+            fErr = nil;
+            fetched = [store enumerateContactsWithFetchRequest:req error:&fErr usingBlock:^(CNContact *c, BOOL *stop) {
+                [toDelete addObject:c];
+            }];
+            if (!fetched) [NSThread sleepForTimeInterval:1.0];
         }
+        if (!fetched) [errors addObject:[NSString stringWithFormat:@"通讯录枚举失败: %@", fErr.localizedDescription ?: @"未知"]];
         for (NSInteger i = 0; i < (NSInteger)toDelete.count; i += 50) {
             CNSaveRequest *dReq = [[CNSaveRequest alloc] init];
             NSInteger end = MIN((NSInteger)toDelete.count, i + 50);
             for (NSInteger j = i; j < end; j++) [dReq deleteContact:toDelete[j]];
+            // 删除批次重试（同上通信错误自愈）
+            BOOL ok = NO;
             NSError *dErr = nil;
-            if ([store executeSaveRequest:dReq error:&dErr]) cleared += (end - i);
+            for (int at = 0; at < 3 && !ok; at++) {
+                dErr = nil;
+                ok = [store executeSaveRequest:dReq error:&dErr];
+                if (!ok) [NSThread sleepForTimeInterval:1.0];
+            }
+            if (ok) cleared += (end - i);
             else [errors addObject:dErr.localizedDescription ?: @"CNContactStore 删除失败"];
         }
         [kills addObject:@"contactsd"];
