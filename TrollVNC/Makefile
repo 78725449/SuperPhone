@@ -37,6 +37,12 @@ trollvncserver_FILES += src/TRDataFiller.mm
 trollvncserver_FILES += src/TRCorpus.mm
 trollvncserver_FILES += src/TRAreaCodes.mm
 trollvncserver_FILES += src/TRHlr.mm
+# 定位链路（2026-08-25 能力缺口补齐：5802/0x50 的 sim.itinerary 需链接；注入仍由 manager daemon 主导）
+trollvncserver_FILES += src/SimLocationManager.mm
+trollvncserver_FILES += src/SimLocationController.mm
+trollvncserver_FILES += src/SimRouteCalculator.mm
+trollvncserver_FILES += src/RegionSimulator.mm
+trollvncserver_FILES += src/SimItineraryPlanner.mm
 
 trollvncserver_CFLAGS += -fobjc-arc
 trollvncserver_CFLAGS += -Wno-unknown-warning-option
@@ -103,6 +109,7 @@ trollvncserver_FRAMEWORKS += QuartzCore
 trollvncserver_FRAMEWORKS += Security
 trollvncserver_FRAMEWORKS += UIKit
 trollvncserver_FRAMEWORKS += UserNotifications
+trollvncserver_FRAMEWORKS += MapKit
 
 trollvncserver_PRIVATE_FRAMEWORKS += FrontBoardServices
 
