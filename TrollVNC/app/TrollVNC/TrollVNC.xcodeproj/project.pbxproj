@@ -151,14 +151,14 @@
 		A1000000000000000000002C /* TRCorpus.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/TRCorpus.mm; sourceTree = "<group>"; };
 		A1000000000000000000002D /* TRAreaCodes.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/TRAreaCodes.h; sourceTree = "<group>"; };
 		A1000000000000000000002E /* TRAreaCodes.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/TRAreaCodes.mm; sourceTree = "<group>"; };
-		BR0000000000000000000020 /* BRDatePickerView+BR.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BRPickerView/BRDatePickerView+BR.m; sourceTree = "<group>"; };
+		BR0000000000000000000020 /* BRDatePickerView+BR.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "BRPickerView/BRDatePickerView+BR.m"; sourceTree = "<group>"; };
 		BR0000000000000000000021 /* BRDatePickerView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BRPickerView/BRDatePickerView.m; sourceTree = "<group>"; };
 		BR0000000000000000000022 /* BRPickerAlertView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BRPickerView/BRPickerAlertView.m; sourceTree = "<group>"; };
 		BR0000000000000000000023 /* BRPickerStyle.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BRPickerView/BRPickerStyle.m; sourceTree = "<group>"; };
 		BR0000000000000000000024 /* BRTextModel.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BRPickerView/BRTextModel.m; sourceTree = "<group>"; };
 		BR0000000000000000000025 /* BRTextPickerView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BRPickerView/BRTextPickerView.m; sourceTree = "<group>"; };
-		BR0000000000000000000026 /* NSBundle+BRPickerView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BRPickerView/NSBundle+BRPickerView.m; sourceTree = "<group>"; };
-		BR0000000000000000000027 /* NSDate+BRPickerView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BRPickerView/NSDate+BRPickerView.m; sourceTree = "<group>"; };
+		BR0000000000000000000026 /* NSBundle+BRPickerView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "BRPickerView/NSBundle+BRPickerView.m"; sourceTree = "<group>"; };
+		BR0000000000000000000027 /* NSDate+BRPickerView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "BRPickerView/NSDate+BRPickerView.m"; sourceTree = "<group>"; };
 		BR0000000000000000000028 /* BRPickerView.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = BRPickerView/BRPickerView.bundle; sourceTree = "<group>"; };
 		BR0000000000000000000029 /* TRRegions.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/TRRegions.h; sourceTree = "<group>"; };
 		BR0000000000000000000030 /* TRRegions.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/TRRegions.mm; sourceTree = "<group>"; };
