@@ -435,6 +435,12 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
     NSString *carrier = [ratios[@"carrier"] isKindOfClass:[NSString class]] ? ratios[@"carrier"] : @"cmcc";
     NSString *svcPhone = trCarrierSvcPhone(carrier);
 
+    // 依赖校验（2026-08-25 定稿）：家人朋友短信依赖通讯录反查角色，通讯录为空整体拦截
+    // （与通话生成一致，设计 §3.3 L191；Node generateSms 作为纯算法原型仍可脱离通讯录生成）
+    NSDictionary *famPool = trLoadContactPool(nil);
+    if (!famPool) return @{@"ok": @NO, @"error": @"通讯录为空，请先生成通讯录（家人朋友短信依赖通讯录）"};
+    NSArray *famNumbers = famPool[@"byRole"][@(TRRoleFamily)] ?: @[];
+
     NSString *path = @"/var/mobile/Library/SMS/sms.db";
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(path.UTF8String, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK) {
@@ -446,11 +452,6 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
     double now = [[NSDate date] timeIntervalSinceReferenceDate];
     NSInteger written = 0;
     NSString *dbErr = nil;
-
-    // 家人朋友号码池（反差确认：家人消息号码在通讯录可查；通讯录空退化为随机号）
-    NSDictionary *famPool = trLoadContactPool(nil);
-    NSArray *famNumbers = @[];
-    if (famPool) famNumbers = famPool[@"byRole"][@(TRRoleFamily)] ?: @[];
 
     // 未接来电联动（D2 §2.3）：查最近未接陌生号 → 跟 1 条"您有一个未接来电"
     NSString *missedPhone = nil;
@@ -588,6 +589,7 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
     NSInteger cleared = 0;
     NSMutableArray *kills = [NSMutableArray array];
     NSMutableArray *errors = [NSMutableArray array];
+    __block NSInteger remainContacts = -1; // 清空后残留数（-1=未校验/校验失败；仅 contacts 分支写入，非 contacts 清空不受影响）
     if (all || [db isEqualToString:@"calls"]) {
         NSString *path = @"/var/mobile/Library/CallHistoryDB/CallHistory.storedata";
         sqlite3 *d = NULL;
@@ -646,6 +648,17 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
             if ([store executeSaveRequest:dReq error:&dErr]) cleared += (end - i);
             else [errors addObject:dErr.localizedDescription ?: @"CNContactStore 删除失败"];
         }
+        // 清空后校验（2026-08-25 定稿）：重新枚举统计残留；>0 = 部分失败显式报错
+        // （只读账户/SIM/iCloud 回写无法删除时给用户明确感知，避免"看似清空实际未删干净"）
+        remainContacts = 0;
+        CNContactFetchRequest *vReq = [[CNContactFetchRequest alloc] initWithKeysToFetch:@[CNContactIdentifierKey]];
+        NSError *vErr = nil;
+        if (![store enumerateContactsWithFetchRequest:vReq error:&vErr usingBlock:^(CNContact *c, BOOL *stop) {
+            remainContacts++;
+        }] && vErr) {
+            [errors addObject:[NSString stringWithFormat:@"清空后校验失败: %@", vErr.localizedDescription ?: @"未知"]];
+            remainContacts = -1; // 校验失败不判定残留
+        }
         // 不 kill contactsd：写删由 contactsd 执行自同步 + change 通知自动刷新（kill 是直写 DB 时代遗留，自伤）
     }
     for (NSString *k in kills) {
@@ -653,6 +666,11 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
         if (ke) [errors addObject:ke];
     }
     NSMutableDictionary *out = [@{@"ok": @YES, @"db": db, @"cleared": @(cleared)} mutableCopy];
+    if (remainContacts > 0) {
+        out[@"ok"] = @NO;
+        out[@"remaining"] = @(remainContacts);
+        out[@"error"] = [NSString stringWithFormat:@"仍有 %ld 条联系人未能删除（可能来自 iCloud 同步/只读账户/SIM 卡），请检查 设置→通讯录→账户", (long)remainContacts];
+    }
     if (errors.count) out[@"errors"] = errors;
     return out;
 }
