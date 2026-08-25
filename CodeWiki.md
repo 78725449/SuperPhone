@@ -438,10 +438,11 @@ UIKit 三 Tab App（SceneDelegate → TRMainTabBarController）：
 ```
 AppDelegate.m                  生命周期 + 崩溃落盘 + 启动 ServiceCoordinator/HotspotManager
 SceneDelegate.m                构建窗口 + 根 VC（@try Tab / @catch 回退设置页）
-TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所有 Tab 顶部导航栏隐藏）
+TRMainTabBarController.m       四 Tab 容器（紫色调 RGB 107/78/255，所有 Tab 顶部导航栏隐藏）
   ├── Tab 1 连接 = TVNCConnectViewController
   ├── Tab 2 控制 = TVNCConsoleWebViewController（WKWebView 加载 ?container=ipa）
-  └── Tab 3 设置 = TVNCRootListController（PSRootController 包装）
+  ├── Tab 3 伪装 = TRDisguiseViewController（M5 伪装页：位置模拟/联系人/通话/短信 四子页容器）
+  └── Tab 4 设置 = TVNCRootListController（PSRootController 包装）
 ```
 
 #### 4.2.1 TVNCConsoleWebViewController — 控制 Tab 内核
@@ -507,7 +508,21 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 - `performFetch` — 调 TVNCGatewayClient.fetchDevicesWithCompletion；按结果判定 Registered/Disconnected/BridgeConnected（桥接模式可达即达，不重试）
 - `retryIfNeeded` — MIN(startInterval * (1<<retryCount), maxInterval) 退避
 
-#### 4.2.6 TVNCRootListController — 设置 Tab
+#### 4.2.6 伪装页·位置模拟（TRDisguiseViewController + TRMapPickerViewController）
+
+**TRDisguiseViewController** — M5 伪装页容器：segmented control 顶部切换子页（`addChildViewController` 挂载，`vc.view.frame = containerView.bounds`）；位置模拟子页 = TRMapPickerViewController。
+
+**TRMapPickerViewController** — 地图位置模拟核心（Apple 地图 + 活跃订阅唯一驱动）：
+
+- **锚点链编排**：`segments`（anchor/region 段）+ `segmentPoints` 段点序列缓存（锚点链唯一轨迹真相）——添加=新段标记待生成顺序补齐、删除=段缓存同步删+合并段（前驱→后继）标记待生成、拖拽=按起点/目标锚点邻接重排（邻接不变段保留旧点序列），只对标记段重算 MKDirections（`SimRouteCalculator.calculateRoutePointsFrom` 真实道路），**无全量重算**；删首分流（当前位置距新首锚 <25m 直接删，否则当前位置→新首锚重算段 0）；region 段目标锚点=区域中心；生长线按段缓存瞬画 + 按 segmentIndex 分色（5 色循环，段 0 深紫）
+- **区域漫游**：region 段入链即置 `hasStart`（可从当前位置进入）；`RegionSimulator.generateRegionPlan`（K 途经点亚线性饱和 3~15/停留/速度因子）→ 进入段（出发锚点模式）+ 区域内逐途经点 MKDirections 拼接（<30m/失败忽略该途经点）；模式 walk/random（默认，walkRatio 平衡阀）/drive
+- **定位开关**：anchor（当前位置驻留+微动）/ itinerary（轨迹逐秒推进）/ off；`startupLockedToAnchor`（开启瞬间忽略距锚点 >25m 的真实 fix 防"真实→锚点"横跳，注入落地解锁）；自动聚焦=距离阈值（`lastAutoFocusWGS` 基线，启动未初始化=(0,0)→首个 fix 聚焦，fix 距基线 ≥500m 才聚焦）；停止后再开启距真实 >500m 时 setRegion 瞬间跳回
+- **播放**：`finishChainSync` 按段索引展平 → `writeTrackFile`（异步+串行队列写盘）→ daemon 轨迹文件 mtime 指纹重载 → 从当前注入位置 haversine 最近点续播；`_trackIndex` 单调推进逐点注入（正常播放 100% 顺序）
+- **状态栏/列表**：速度=当前段缓存首点 speed（`departAnchor.segmentIndex+1`）；点击行聚焦该行程首锚点；删除走系统原生右滑；无锚点显示空白
+- **FAB**：未开启=品牌紫+location.fill；定位中=渐变金底（CAGradientLayer，viewDidLayoutSubviews 同步 frame）+ 暗金描边 + 招财进宝四字（楷体深棕，上/右/下/左顺时针）+ mask 镂空方孔
+- **daemon 链路**：SimLocationManager（CLSimulationManager 注入，每次 stop→clear→append→flush→start + 投递参数）/ SimLocationController（读 SimLocation* 参数驱动状态机，mobile 域优先 root 兜底）
+
+#### 4.2.7 TVNCRootListController — 设置 Tab
 
 **核心职责**：PSRootController 子类；加载 Root.plist 或 ManagedRoot.plist；restart 级配置变更防抖自动重启服务；自签 CA 证书生成/导出；网关 Bonjour 搜索；查看日志 / 重置默认。
 
@@ -523,7 +538,7 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 - `viewLogs` — StripedTextTableViewController 打开 `<jbroot>/tmp/trollvnc-stderr.log`
 - `searchGateway` / `presentFoundGateways` / `saveGateway:port:` — `_superphone-farm._tcp` Bonjour 搜索；1.5s 后弹选择 sheet；写 GatewayHost + GatewayPort=18081（端口固定忽略搜索值）
 
-#### 4.2.7 TVNCClientListController — 客户端列表
+#### 4.2.8 TVNCClientListController — 客户端列表
 
 **核心职责**：通过 5901 RFB 扩展消息（0x50 请求 / 0x80 响应）执行 `clients.list` / `clients.disconnect` / `clients.block` / `clients.unblock`；冻结/解冻持久化；**通知驱动即时刷新 + 5s 轮询兜底**（2026-08-23：监听 trollvncserver `clients-changed` darwin 通知即时刷新，轮询保留兜底）；右滑操作 + 长按菜单。
 
@@ -533,7 +548,7 @@ TRMainTabBarController.m       三 Tab 容器（紫色调 RGB 107/78/255，所�
 - `reloadDataFromServer` — 后台 TVNCControlInvoke(@"clients.list", nil) → 主线程 applyRows
 - `freezeClientWithId:` / `unfreezeHost:` — 本地 frozenHosts 持久化 + RFB clients.block/clients.unblock
 
-#### 4.2.8 其他 App 文件
+#### 4.2.9 其他 App 文件
 
 - **TVNCHotspotManager**：NEHotspotHelper 注册（保活兜底）；任何 hotspot 命令回调时拉起 VNC 服务
 - **TVNCListItemsController**：PSListItemsController 子类（仅设置主题色，用于 PSLinkListCell 子页）

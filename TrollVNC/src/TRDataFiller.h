@@ -38,6 +38,11 @@ NS_ASSUME_NONNULL_BEGIN
                           seed:(uint64_t)seed
                         ratios:(nullable NSDictionary *)ratios;
 
+/// 清空指定库（contacts/calls/sms/all；设计 §7）
+/// @param db 'contacts' | 'calls' | 'sms' | 'all'
+/// @return {ok:YES, db, cleared}；失败 {ok:NO, error}
++ (NSDictionary *)clearDatabase:(NSString *)db;
+
 @end
 
 NS_ASSUME_NONNULL_END

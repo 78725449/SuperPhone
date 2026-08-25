@@ -71,6 +71,10 @@ export const BATCH_CAPS = [
       { name: 'seed', title: '种子', type: 'number', required: false },
       { name: 'ratios', title: '比例', type: 'object', required: false },
     ] },
+  { id: 'data.clear', title: '清空数据', icon: '🗑️', category: 'native',
+    params: [
+      { name: 'db', title: '库（contacts/calls/sms/all）', type: 'string', required: true },
+    ] },
 ];
 
 /** 聚焦画布多点手势定义（2026-08-16：画布多指识别 → touch.* invoke）。

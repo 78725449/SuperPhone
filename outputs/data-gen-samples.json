@@ -1,0 +1,1316 @@
+{
+  "group-a": {
+    "config": {
+      "name": "group-a",
+      "seed": 1001,
+      "city": "北京",
+      "carrier": "cmcc",
+      "inRatio": 0.2,
+      "regionLocal": 0.65,
+      "rel": {
+        "friend": 0.55,
+        "work": 0.2,
+        "service": 0.12,
+        "family": 0.08,
+        "business": 0.05
+      },
+      "call": {
+        "contact": 0.7,
+        "stranger": 0.3,
+        "incoming": 0.4,
+        "outgoing": 0.4,
+        "missed": 0.2
+      },
+      "sms": {
+        "code": 0.35,
+        "express": 0.2,
+        "bank": 0.15,
+        "carrierSms": 0.1,
+        "marketing": 0.1,
+        "family": 0.1
+      }
+    },
+    "contacts": [
+      {
+        "name": "洪彤悦",
+        "phone": "19824695110",
+        "role": "friend",
+        "city": "北京"
+      },
+      {
+        "name": "跟单员汤",
+        "phone": "0109023018",
+        "role": "service",
+        "city": "北京"
+      },
+      {
+        "name": "健身教练姜",
+        "phone": "13796279040",
+        "role": "service",
+        "city": "北京"
+      },
+      {
+        "name": "义子",
+        "phone": "18128673560",
+        "role": "family",
+        "city": "北京"
+      },
+      {
+        "name": "郝逊",
+        "phone": "0102435585",
+        "role": "friend",
+        "city": "北京"
+      },
+      {
+        "name": "肖彤菲",
+        "phone": "13465151459",
+        "role": "friend",
+        "city": "北京"
+      },
+      {
+        "name": "婆婆",
+        "phone": "18019156510",
+        "role": "family",
+        "city": "北京"
+      },
+      {
+        "name": "白黛-人力",
+        "phone": "0107292626",
+        "role": "work",
+        "city": "北京"
+      },
+      {
+        "name": "陆蕾欣",
+        "phone": "17072880210",
+        "role": "friend",
+        "city": "北京"
+      },
+      {
+        "name": "司机毛",
+        "phone": "0108864656",
+        "role": "service",
+        "city": "北京"
+      },
+      {
+        "name": "家教夏",
+        "phone": "18643418259",
+        "role": "service",
+        "city": "北京"
+      },
+      {
+        "name": "侯孝",
+        "phone": "0103860907",
+        "role": "friend",
+        "city": "北京"
+      },
+      {
+        "name": "信用卡中心客服",
+        "phone": "13664167399",
+        "role": "business",
+        "city": "北京"
+      },
+      {
+        "name": "刘桂",
+        "phone": "0106741117",
+        "role": "friend",
+        "city": "北京"
+      },
+      {
+        "name": "范然迪",
+        "phone": "18637525150",
+        "role": "friend",
+        "city": "北京"
+      },
+      {
+        "name": "龙让",
+        "phone": "15362967340",
+        "role": "friend",
+        "city": "北京"
+      },
+      {
+        "name": "梁坤",
+        "phone": "13025569280",
+        "role": "friend",
+        "city": "北京"
+      },
+      {
+        "name": "美容院客服",
+        "phone": "18654727120",
+        "role": "business",
+        "city": "北京"
+      },
+      {
+        "name": "陆国庆-机械",
+        "phone": "19029950930",
+        "role": "work",
+        "city": "北京"
+      },
+      {
+        "name": "韦皓",
+        "phone": "0109640585",
+        "role": "friend",
+        "city": "北京"
+      }
+    ],
+    "calls": [
+      {
+        "phone": "0108864656",
+        "name": "司机毛",
+        "originated": 0,
+        "answered": 1,
+        "duration": 25,
+        "ts": 1787381350.1904
+      },
+      {
+        "phone": "16679258510",
+        "name": "担保客服",
+        "originated": 1,
+        "answered": 1,
+        "duration": 169,
+        "ts": 1787366293.4352
+      },
+      {
+        "phone": "18128673560",
+        "name": "义子",
+        "originated": 1,
+        "answered": 1,
+        "duration": 265,
+        "ts": 1787390266.7568
+      },
+      {
+        "phone": "10086",
+        "name": null,
+        "originated": 0,
+        "answered": 0,
+        "duration": 0,
+        "ts": 1787490070.0752
+      },
+      {
+        "phone": "19148766690",
+        "name": "江瑜-影视",
+        "originated": 1,
+        "answered": 1,
+        "duration": 30,
+        "ts": 1787391932.2896
+      },
+      {
+        "phone": "19523147830",
+        "name": "杜语嫣-猎头",
+        "originated": 0,
+        "answered": 0,
+        "duration": 0,
+        "ts": 1787400683.1408
+      },
+      {
+        "phone": "18019156510",
+        "name": "婆婆",
+        "originated": 1,
+        "answered": 1,
+        "duration": 118,
+        "ts": 1787566800.2736
+      },
+      {
+        "phone": "0105670748",
+        "name": "朱峨-设计",
+        "originated": 0,
+        "answered": 0,
+        "duration": 0,
+        "ts": 1787503353.4704
+      },
+      {
+        "phone": "13280720380",
+        "name": null,
+        "originated": 0,
+        "answered": 0,
+        "duration": 0,
+        "ts": 1787615398.2864
+      },
+      {
+        "phone": "13465151459",
+        "name": "肖彤菲",
+        "originated": 0,
+        "answered": 0,
+        "duration": 0,
+        "ts": 1787569834.296
+      },
+      {
+        "phone": "18019156510",
+        "name": "婆婆",
+        "originated": 1,
+        "answered": 1,
+        "duration": 51,
+        "ts": 1787553198.7536
+      },
+      {
+        "phone": "18019156510",
+        "name": "婆婆",
+        "originated": 0,
+        "answered": 0,
+        "duration": 0,
+        "ts": 1787573955.4032
+      },
+      {
+        "phone": "18128673560",
+        "name": "义子",
+        "originated": 1,
+        "answered": 1,
+        "duration": 96,
+        "ts": 1787540287.0512
+      },
+      {
+        "phone": "18128673560",
+        "name": "义子",
+        "originated": 0,
+        "answered": 0,
+        "duration": 0,
+        "ts": 1787483048.2608
+      },
+      {
+        "phone": "18019156510",
+        "name": "婆婆",
+        "originated": 1,
+        "answered": 1,
+        "duration": 126,
+        "ts": 1787541484.9872
+      },
+      {
+        "phone": "13280720380",
+        "name": null,
+        "originated": 0,
+        "answered": 0,
+        "duration": 0,
+        "ts": 1787455051.464
+      },
+      {
+        "phone": "19081221950",
+        "name": null,
+        "originated": 0,
+        "answered": 1,
+        "duration": 120,
+        "ts": 1787611706.1552
+      },
+      {
+        "phone": "13280720380",
+        "name": null,
+        "originated": 1,
+        "answered": 1,
+        "duration": 127,
+        "ts": 1787518397.8704
+      },
+      {
+        "phone": "18949219300",
+        "name": "方烽-工作室",
+        "originated": 1,
+        "answered": 1,
+        "duration": 20,
+        "ts": 1787497937.832
+      },
+      {
+        "phone": "18019156510",
+        "name": "婆婆",
+        "originated": 0,
+        "answered": 1,
+        "duration": 64,
+        "ts": 1787556957.0672
+      }
+    ],
+    "sms": [
+      {
+        "phone": "1009696943",
+        "text": "【王者荣耀】您的验证码 8417，用于账号登录。",
+        "ts": 1787368746,
+        "fromMe": false
+      },
+      {
+        "phone": "9512274",
+        "text": "【中信银行】验证码 4463，正在修改绑定手机。",
+        "ts": 1787390267,
+        "fromMe": false
+      },
+      {
+        "phone": "1004021750",
+        "text": "【虎牙】验证码 9308，正在登录虎牙直播。",
+        "ts": 1787423912,
+        "fromMe": false
+      },
+      {
+        "phone": "1069469288",
+        "text": "【众安保险】您可申请38万额度贷款，点击链接查看。",
+        "ts": 1787550078,
+        "fromMe": false
+      },
+      {
+        "phone": "10086",
+        "text": "【中国移动】您的积分将在23日清零，请尽快兑换。",
+        "ts": 1787408818,
+        "fromMe": false
+      },
+      {
+        "phone": "1008422030",
+        "text": "【光大银行】您尾号1109的账户13:12转入 4160.06 元。",
+        "ts": 1787534942,
+        "fromMe": false
+      },
+      {
+        "phone": "1006862825",
+        "text": "您的包裹已从京东发出，预计12日送达。",
+        "ts": 1787391744,
+        "fromMe": false
+      },
+      {
+        "phone": "1069980353",
+        "text": "【工商银行】您的手机银行登录密码已修改。",
+        "ts": 1787468922,
+        "fromMe": false
+      },
+      {
+        "phone": "1016411304",
+        "text": "【光大银行】您的 ETC 账户17:30扣款 4029.63 元。",
+        "ts": 1787556958,
+        "fromMe": false
+      },
+      {
+        "phone": "1061612612",
+        "text": "【华夏银行】您尾号2532的账户13:40转出 1594.59 元。",
+        "ts": 1787476454,
+        "fromMe": false
+      },
+      {
+        "phone": "9565791",
+        "text": "【钉钉】您正在登录钉钉，验证码 520422。",
+        "ts": 1787436414,
+        "fromMe": false
+      },
+      {
+        "phone": "1004512088",
+        "text": "【唯品会】验证码 792585，用于登录/注册。",
+        "ts": 1787373919,
+        "fromMe": false
+      },
+      {
+        "phone": "1061038277",
+        "text": "【去哪儿】验证码 1165，正在绑定手机。",
+        "ts": 1787492608,
+        "fromMe": false
+      },
+      {
+        "phone": "1065961178",
+        "text": "【Steam】您的 Steam 验证码 856234，用于登录。",
+        "ts": 1787513245,
+        "fromMe": false
+      },
+      {
+        "phone": "1018160912",
+        "text": "您的包裹正在派送，预计 1 小时内到达。",
+        "ts": 1787589083,
+        "fromMe": false
+      },
+      {
+        "phone": "10086",
+        "text": "您已成功开通视频彩铃服务，月费 2239.06 元。",
+        "ts": 1787587791,
+        "fromMe": false
+      },
+      {
+        "phone": "10086",
+        "text": "您本月已使用 3.1 GB，其中夜间流量 0.6 GB。",
+        "ts": 1787513172,
+        "fromMe": false
+      },
+      {
+        "phone": "1004815253",
+        "text": "您的包裹正在等待天气好转后派送。",
+        "ts": 1787384040,
+        "fromMe": false
+      },
+      {
+        "phone": "1007524136",
+        "text": "【阿里云】您的验证码 8363，正在登录阿里云。",
+        "ts": 1787449032,
+        "fromMe": false
+      },
+      {
+        "phone": "1004878208",
+        "text": "【订票助手】验证码 1530，用于取票。",
+        "ts": 1787462733,
+        "fromMe": false
+      }
+    ]
+  },
+  "group-b": {
+    "config": {
+      "name": "group-b",
+      "seed": 2002,
+      "city": "杭州",
+      "carrier": "cucc",
+      "inRatio": 0.5,
+      "regionLocal": 0.5,
+      "rel": {
+        "friend": 0.4,
+        "work": 0.3,
+        "service": 0.1,
+        "family": 0.15,
+        "business": 0.05
+      },
+      "call": {
+        "contact": 0.5,
+        "stranger": 0.5,
+        "incoming": 0.3,
+        "outgoing": 0.5,
+        "missed": 0.2
+      },
+      "sms": {
+        "code": 0.4,
+        "express": 0.15,
+        "bank": 0.1,
+        "carrierSms": 0.15,
+        "marketing": 0.15,
+        "family": 0.05
+      }
+    },
+    "contacts": [
+      {
+        "name": "董曦桐",
+        "phone": "05715313130",
+        "role": "friend",
+        "city": "浙江"
+      },
+      {
+        "name": "李玥-网络",
+        "phone": "05712470322",
+        "role": "work",
+        "city": "浙江"
+      },
+      {
+        "name": "侯嫱",
+        "phone": "13066710890",
+        "role": "friend",
+        "city": "浙江"
+      },
+      {
+        "name": "罗珍",
+        "phone": "05715277253",
+        "role": "friend",
+        "city": "浙江"
+      },
+      {
+        "name": "潘建军-家电",
+        "phone": "15996439150",
+        "role": "work",
+        "city": "浙江"
+      },
+      {
+        "name": "岳母",
+        "phone": "05713654824",
+        "role": "family",
+        "city": "浙江"
+      },
+      {
+        "name": "宠物医生于",
+        "phone": "05719393950",
+        "role": "service",
+        "city": "浙江"
+      },
+      {
+        "name": "洪萏",
+        "phone": "13470595290",
+        "role": "friend",
+        "city": "浙江"
+      },
+      {
+        "name": "祖母",
+        "phone": "05718787375",
+        "role": "family",
+        "city": "浙江"
+      },
+      {
+        "name": "薛博文",
+        "phone": "15965667070",
+        "role": "friend",
+        "city": "浙江"
+      },
+      {
+        "name": "夏语汐",
+        "phone": "05714681961",
+        "role": "friend",
+        "city": "浙江"
+      },
+      {
+        "name": "王瑾",
+        "phone": "05714876062",
+        "role": "friend",
+        "city": "浙江"
+      },
+      {
+        "name": "谭擎宇-餐饮",
+        "phone": "05719660504",
+        "role": "work",
+        "city": "浙江"
+      },
+      {
+        "name": "姚萏-人力",
+        "phone": "05719012588",
+        "role": "work",
+        "city": "浙江"
+      },
+      {
+        "name": "孙巽",
+        "phone": "14710888840",
+        "role": "friend",
+        "city": "浙江"
+      },
+      {
+        "name": "史震",
+        "phone": "05712703040",
+        "role": "friend",
+        "city": "浙江"
+      },
+      {
+        "name": "方恬",
+        "phone": "05717575103",
+        "role": "friend",
+        "city": "浙江"
+      },
+      {
+        "name": "卢若楠-公司",
+        "phone": "17776080610",
+        "role": "work",
+        "city": "浙江"
+      },
+      {
+        "name": "孟乐-影视",
+        "phone": "05714481552",
+        "role": "work",
+        "city": "浙江"
+      },
+      {
+        "name": "理疗师袁",
+        "phone": "13558074580",
+        "role": "service",
+        "city": "浙江"
+      }
+    ],
+    "calls": [
+      {
+        "phone": "05718989595",
+        "name": "彭珺",
+        "originated": 0,
+        "answered": 1,
+        "duration": 25,
+        "ts": 1787554092.4752
+      },
+      {
+        "phone": "14663034030",
+        "name": null,
+        "originated": 1,
+        "answered": 1,
+        "duration": 128,
+        "ts": 1787597551.848
+      },
+      {
+        "phone": "14663034030",
+        "name": null,
+        "originated": 1,
+        "answered": 1,
+        "duration": 188,
+        "ts": 1787517081.3072
+      },
+      {
+        "phone": "13533907960",
+        "name": null,
+        "originated": 0,
+        "answered": 0,
+        "duration": 0,
+        "ts": 1787367168.3216
+      },
+      {
+        "phone": "18981628210",
+        "name": null,
+        "originated": 1,
+        "answered": 1,
+        "duration": 202,
+        "ts": 1787463389.928
+      },
+      {
+        "phone": "05716730266",
+        "name": "余迪文-建设",
+        "originated": 0,
+        "answered": 1,
+        "duration": 117,
+        "ts": 1787385028.3248
+      },
+      {
+        "phone": "13558074580",
+        "name": "理疗师袁",
+        "originated": 0,
+        "answered": 1,
+        "duration": 20,
+        "ts": 1787394846.4752
+      },
+      {
+        "phone": "13467327210",
+        "name": null,
+        "originated": 0,
+        "answered": 1,
+        "duration": 120,
+        "ts": 1787591097.0768
+      },
+      {
+        "phone": "16244788510",
+        "name": "二伯",
+        "originated": 0,
+        "answered": 0,
+        "duration": 0,
+        "ts": 1787448124.9488
+      },
+      {
+        "phone": "13467327210",
+        "name": null,
+        "originated": 0,
+        "answered": 1,
+        "duration": 150,
+        "ts": 1787620981.7136
+      },
+      {
+        "phone": "05718120538",
+        "name": "姐夫",
+        "originated": 1,
+        "answered": 1,
+        "duration": 98,
+        "ts": 1787586144.888
+      },
+      {
+        "phone": "18510762300",
+        "name": null,
+        "originated": 1,
+        "answered": 1,
+        "duration": 127,
+        "ts": 1787445881.0544
+      },
+      {
+        "phone": "18981628210",
+        "name": null,
+        "originated": 0,
+        "answered": 0,
+        "duration": 0,
+        "ts": 1787421339.912
+      },
+      {
+        "phone": "16244788510",
+        "name": "二伯",
+        "originated": 0,
+        "answered": 1,
+        "duration": 1240.9944,
+        "ts": 1787599340.9328
+      },
+      {
+        "phone": "18981628210",
+        "name": null,
+        "originated": 0,
+        "answered": 1,
+        "duration": 20,
+        "ts": 1787373400.008
+      },
+      {
+        "phone": "13558074580",
+        "name": "理疗师袁",
+        "originated": 1,
+        "answered": 1,
+        "duration": 119,
+        "ts": 1787620974.6288
+      },
+      {
+        "phone": "05717433201",
+        "name": "大伯",
+        "originated": 1,
+        "answered": 1,
+        "duration": 185,
+        "ts": 1787397132.7056
+      },
+      {
+        "phone": "18510762300",
+        "name": null,
+        "originated": 0,
+        "answered": 1,
+        "duration": 20,
+        "ts": 1787569293.5184
+      },
+      {
+        "phone": "05718787375",
+        "name": "祖母",
+        "originated": 1,
+        "answered": 1,
+        "duration": 145,
+        "ts": 1787601907.1856
+      },
+      {
+        "phone": "18510762300",
+        "name": null,
+        "originated": 0,
+        "answered": 1,
+        "duration": 34,
+        "ts": 1787614950.1296
+      }
+    ],
+    "sms": [
+      {
+        "phone": "1004823623",
+        "text": "【招商银行】验证码 411465，请勿转发给任何人。",
+        "ts": 1787450120,
+        "fromMe": false
+      },
+      {
+        "phone": "9528059",
+        "text": "【蒙商消费】您的贷款申请已通过初审，请补充资料。",
+        "ts": 1787511152,
+        "fromMe": false
+      },
+      {
+        "phone": "9562431",
+        "text": "【饿了么】本次登录验证码 3390。",
+        "ts": 1787414587,
+        "fromMe": false
+      },
+      {
+        "phone": "10010",
+        "text": "您本月已参与充值翻倍活动，获赠 4005.00 元。",
+        "ts": 1787424268,
+        "fromMe": false
+      },
+      {
+        "phone": "1015477446",
+        "text": "【京东】您正在修改支付密码，验证码 907887。",
+        "ts": 1787495011,
+        "fromMe": false
+      },
+      {
+        "phone": "10010",
+        "text": "您已成功办理补换卡业务，新卡21日生效。",
+        "ts": 1787489400,
+        "fromMe": false
+      },
+      {
+        "phone": "1061945171",
+        "text": "【快手】验证码 212777，正在登录快手。",
+        "ts": 1787459701,
+        "fromMe": false
+      },
+      {
+        "phone": "1068300341",
+        "text": "【腾讯云】验证码 710023，正在登录腾讯云。",
+        "ts": 1787487700,
+        "fromMe": false
+      },
+      {
+        "phone": "1003825946",
+        "text": "【王者荣耀】您的验证码 5903，用于账号登录。",
+        "ts": 1787495673,
+        "fromMe": false
+      },
+      {
+        "phone": "9591425",
+        "text": "【应用商店】验证码 601053，用于购买。",
+        "ts": 1787469807,
+        "fromMe": false
+      },
+      {
+        "phone": "1062077516",
+        "text": "【农业银行】动态密码 988179，切勿告知他人。",
+        "ts": 1787380790,
+        "fromMe": false
+      },
+      {
+        "phone": "1015352175",
+        "text": "【微信】验证码 1142，请勿泄露给他人。",
+        "ts": 1787431034,
+        "fromMe": false
+      },
+      {
+        "phone": "9513490",
+        "text": "【邮储银行】您的信用卡额度已提升至 4470.55 元。",
+        "ts": 1787384490,
+        "fromMe": false
+      },
+      {
+        "phone": "1064646521",
+        "text": "【网约车】验证码 9392，正在登录打车。",
+        "ts": 1787382718,
+        "fromMe": false
+      },
+      {
+        "phone": "9563341",
+        "text": "[抖音] 6593 是您的验证码，5 分钟内有效。如非本人操作请忽略。",
+        "ts": 1787606542,
+        "fromMe": false
+      },
+      {
+        "phone": "9536044",
+        "text": "【Epic】验证码 6749，用于验证您的邮箱。",
+        "ts": 1787506491,
+        "fromMe": false
+      },
+      {
+        "phone": "9530121",
+        "text": "【广发银行】您尾号7003的账户已开通动账提醒。",
+        "ts": 1787424941,
+        "fromMe": false
+      },
+      {
+        "phone": "9588053",
+        "text": "【游戏中心】验证码 1272，正在验证。",
+        "ts": 1787448796,
+        "fromMe": false
+      },
+      {
+        "phone": "9553998",
+        "text": "【小红书】验证码 7223，用于账号安全验证。",
+        "ts": 1787486659,
+        "fromMe": false
+      },
+      {
+        "phone": "9574958",
+        "text": "【百度】验证码 7481，正在登录百度账号。",
+        "ts": 1787518520,
+        "fromMe": false
+      }
+    ]
+  },
+  "group-c": {
+    "config": {
+      "name": "group-c",
+      "seed": 3003,
+      "city": "广州",
+      "carrier": "ctcc",
+      "inRatio": 0.1,
+      "regionLocal": 0.8,
+      "rel": {
+        "friend": 0.3,
+        "work": 0.15,
+        "service": 0.2,
+        "family": 0.25,
+        "business": 0.1
+      },
+      "call": {
+        "contact": 0.9,
+        "stranger": 0.1,
+        "incoming": 0.5,
+        "outgoing": 0.3,
+        "missed": 0.2
+      },
+      "sms": {
+        "code": 0.3,
+        "express": 0.25,
+        "bank": 0.1,
+        "carrierSms": 0.1,
+        "marketing": 0.2,
+        "family": 0.05
+      }
+    },
+    "contacts": [
+      {
+        "name": "营养师徐",
+        "phone": "0203172624",
+        "role": "service",
+        "city": "广东"
+      },
+      {
+        "name": "保险代理客服",
+        "phone": "18260038830",
+        "role": "business",
+        "city": "广东"
+      },
+      {
+        "name": "月子中心客服",
+        "phone": "13523838490",
+        "role": "business",
+        "city": "广东"
+      },
+      {
+        "name": "阿姨",
+        "phone": "18949673530",
+        "role": "family",
+        "city": "广东"
+      },
+      {
+        "name": "大舅",
+        "phone": "14521334960",
+        "role": "family",
+        "city": "广东"
+      },
+      {
+        "name": "眼科医生邓",
+        "phone": "13036744940",
+        "role": "service",
+        "city": "广东"
+      },
+      {
+        "name": "金鹏煊",
+        "phone": "16683083060",
+        "role": "friend",
+        "city": "广东"
+      },
+      {
+        "name": "张宏",
+        "phone": "0204561267",
+        "role": "friend",
+        "city": "广东"
+      },
+      {
+        "name": "保险代理客服",
+        "phone": "17366151810",
+        "role": "business",
+        "city": "广东"
+      },
+      {
+        "name": "莫琪瑶",
+        "phone": "17582101250",
+        "role": "friend",
+        "city": "广东"
+      },
+      {
+        "name": "弟弟",
+        "phone": "15261275610",
+        "role": "family",
+        "city": "广东"
+      },
+      {
+        "name": "林杰伦",
+        "phone": "18794013380",
+        "role": "friend",
+        "city": "广东"
+      },
+      {
+        "name": "尹瑶",
+        "phone": "15557774610",
+        "role": "friend",
+        "city": "广东"
+      },
+      {
+        "name": "奶奶",
+        "phone": "14943162480",
+        "role": "family",
+        "city": "广东"
+      },
+      {
+        "name": "热力客服",
+        "phone": "19436925300",
+        "role": "business",
+        "city": "广东"
+      },
+      {
+        "name": "大姑妈",
+        "phone": "0206930893",
+        "role": "family",
+        "city": "广东"
+      },
+      {
+        "name": "牙医肖",
+        "phone": "0202507092",
+        "role": "service",
+        "city": "广东"
+      },
+      {
+        "name": "覃泽昊-教育",
+        "phone": "14853430940",
+        "role": "work",
+        "city": "广东"
+      },
+      {
+        "name": "大舅妈",
+        "phone": "17133922000",
+        "role": "family",
+        "city": "广东"
+      },
+      {
+        "name": "旗舰店客服",
+        "phone": "14816607800",
+        "role": "business",
+        "city": "广东"
+      }
+    ],
+    "calls": [
+      {
+        "phone": "18794013380",
+        "name": "林杰伦",
+        "originated": 0,
+        "answered": 1,
+        "duration": 354,
+        "ts": 1787525208.7824
+      },
+      {
+        "phone": "14661062760",
+        "name": "女婿",
+        "originated": 1,
+        "answered": 1,
+        "duration": 784.5132,
+        "ts": 1787573797.7232
+      },
+      {
+        "phone": "0202507092",
+        "name": "牙医肖",
+        "originated": 0,
+        "answered": 1,
+        "duration": 114,
+        "ts": 1787427131.1312
+      },
+      {
+        "phone": "10000",
+        "name": null,
+        "originated": 0,
+        "answered": 1,
+        "duration": 46,
+        "ts": 1787621652.9552
+      },
+      {
+        "phone": "19010862830",
+        "name": "徐心怡",
+        "originated": 0,
+        "answered": 1,
+        "duration": 86,
+        "ts": 1787518026.0048
+      },
+      {
+        "phone": "17582101250",
+        "name": "莫琪瑶",
+        "originated": 1,
+        "answered": 1,
+        "duration": 117,
+        "ts": 1787363832.8496
+      },
+      {
+        "phone": "0206930893",
+        "name": "大姑妈",
+        "originated": 0,
+        "answered": 1,
+        "duration": 20,
+        "ts": 1787558515.7232
+      },
+      {
+        "phone": "13575843820",
+        "name": null,
+        "originated": 0,
+        "answered": 1,
+        "duration": 192,
+        "ts": 1787552302.7856
+      },
+      {
+        "phone": "0206930893",
+        "name": "大姑妈",
+        "originated": 0,
+        "answered": 0,
+        "duration": 0,
+        "ts": 1787526559.128
+      },
+      {
+        "phone": "13575843820",
+        "name": null,
+        "originated": 0,
+        "answered": 0,
+        "duration": 0,
+        "ts": 1787514331.9728
+      },
+      {
+        "phone": "16699198550",
+        "name": "花艺师梁",
+        "originated": 0,
+        "answered": 0,
+        "duration": 0,
+        "ts": 1787536409.9376
+      },
+      {
+        "phone": "14853430940",
+        "name": "覃泽昊-教育",
+        "originated": 1,
+        "answered": 1,
+        "duration": 20,
+        "ts": 1787513472.4656
+      },
+      {
+        "phone": "0203172624",
+        "name": "营养师徐",
+        "originated": 0,
+        "answered": 1,
+        "duration": 186,
+        "ts": 1787572436.232
+      },
+      {
+        "phone": "17582101250",
+        "name": "莫琪瑶",
+        "originated": 1,
+        "answered": 1,
+        "duration": 49,
+        "ts": 1787442866.7312
+      },
+      {
+        "phone": "15747456290",
+        "name": "徐玳-家电",
+        "originated": 0,
+        "answered": 1,
+        "duration": 57,
+        "ts": 1787564867.9376
+      },
+      {
+        "phone": "0206930893",
+        "name": "大姑妈",
+        "originated": 0,
+        "answered": 1,
+        "duration": 38,
+        "ts": 1787524694.8752
+      },
+      {
+        "phone": "18794013380",
+        "name": "林杰伦",
+        "originated": 0,
+        "answered": 1,
+        "duration": 51,
+        "ts": 1787493617.2272
+      },
+      {
+        "phone": "0209290794",
+        "name": "钱锴-纺织",
+        "originated": 1,
+        "answered": 1,
+        "duration": 37,
+        "ts": 1787577175.272
+      },
+      {
+        "phone": "17133922000",
+        "name": "大舅妈",
+        "originated": 1,
+        "answered": 1,
+        "duration": 259,
+        "ts": 1787529544.0752
+      },
+      {
+        "phone": "15774001610",
+        "name": "陈福",
+        "originated": 0,
+        "answered": 1,
+        "duration": 120,
+        "ts": 1787516038.1136
+      }
+    ],
+    "sms": [
+      {
+        "phone": "1008964937",
+        "text": "您的快递已放入45号快递柜，请凭取件码 2065 取件。",
+        "ts": 1787611215,
+        "fromMe": false
+      },
+      {
+        "phone": "1004020004",
+        "text": "您的包裹已由梧桐驿站代收，取件码 2714。",
+        "ts": 1787513532,
+        "fromMe": false
+      },
+      {
+        "phone": null,
+        "text": "爸妈下周来住几天",
+        "ts": 1787375666,
+        "fromMe": false
+      },
+      {
+        "phone": "9596223",
+        "text": "【浦发银行】您的账户 3804 状态正常，如有疑问请拨打客服热线。",
+        "ts": 1787516563,
+        "fromMe": false
+      },
+      {
+        "phone": "1005366143",
+        "text": "【邮箱】您的邮箱验证码 918617，用于绑定新设备。",
+        "ts": 1787454189,
+        "fromMe": false
+      },
+      {
+        "phone": "9537808",
+        "text": "【斗鱼】验证码 534309，30 分钟内有效。",
+        "ts": 1787455639,
+        "fromMe": false
+      },
+      {
+        "phone": "9587552",
+        "text": "【戴尔】旧手机回收最高抵 17 千。",
+        "ts": 1787508597,
+        "fromMe": false
+      },
+      {
+        "phone": null,
+        "text": "孩子的兴趣班老师请假了",
+        "ts": 1787503366,
+        "fromMe": false
+      },
+      {
+        "phone": "1017110730",
+        "text": "您的快件5073733000已签收，欢迎再次使用菜鸟。",
+        "ts": 1787439071,
+        "fromMe": false
+      },
+      {
+        "phone": "10000",
+        "text": "您的手机已欠费停机，请尽快充值恢复。",
+        "ts": 1787527369,
+        "fromMe": false
+      },
+      {
+        "phone": "1068397883",
+        "text": "【中信银行】您尾号3713的信用卡境外交易 4015.76 元。",
+        "ts": 1787528559,
+        "fromMe": false
+      },
+      {
+        "phone": "9533888",
+        "text": "【民生银行】您的手机银行登录密码已修改。",
+        "ts": 1787567316,
+        "fromMe": false
+      },
+      {
+        "phone": "9529230",
+        "text": "您的包裹正在派送，请保持电话畅通。",
+        "ts": 1787557384,
+        "fromMe": false
+      },
+      {
+        "phone": "1067927687",
+        "text": "【去哪儿】验证码 2708，正在登录。",
+        "ts": 1787489007,
+        "fromMe": false
+      },
+      {
+        "phone": "1005333878",
+        "text": "您的包裹因节假日将延迟派送。",
+        "ts": 1787564386,
+        "fromMe": false
+      },
+      {
+        "phone": "1005851684",
+        "text": "【学信网】验证码 1938，用于登录学信网。",
+        "ts": 1787513437,
+        "fromMe": false
+      },
+      {
+        "phone": "1004457125",
+        "text": "【猿辅导】体验课 1 节 4372.02 元，器械全免。",
+        "ts": 1787438886,
+        "fromMe": false
+      },
+      {
+        "phone": "1017709545",
+        "text": "【高德】望江府 附近酒店周末特惠，含早。",
+        "ts": 1787460197,
+        "fromMe": false
+      },
+      {
+        "phone": "1065461570",
+        "text": "【斗鱼】验证码 403086，30 分钟内有效。",
+        "ts": 1787453460,
+        "fromMe": false
+      },
+      {
+        "phone": "1005254858",
+        "text": "【应用商店】验证码 196431，用于购买。",
+        "ts": 1787369406,
+        "fromMe": false
+      }
+    ]
+  }
+}

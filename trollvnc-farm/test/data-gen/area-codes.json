@@ -1,0 +1,1290 @@
+{
+  "石家庄": {
+    "province": "河北",
+    "areaCode": "311"
+  },
+  "唐山": {
+    "province": "河北",
+    "areaCode": "315"
+  },
+  "秦皇岛": {
+    "province": "河北",
+    "areaCode": "335"
+  },
+  "邯郸": {
+    "province": "河北",
+    "areaCode": "310"
+  },
+  "邢台": {
+    "province": "河北",
+    "areaCode": "319"
+  },
+  "保定": {
+    "province": "河北",
+    "areaCode": "312"
+  },
+  "张家口": {
+    "province": "河北",
+    "areaCode": "313"
+  },
+  "承德": {
+    "province": "河北",
+    "areaCode": "314"
+  },
+  "沧州": {
+    "province": "河北",
+    "areaCode": "317"
+  },
+  "廊坊": {
+    "province": "河北",
+    "areaCode": "316"
+  },
+  "衡水": {
+    "province": "河北",
+    "areaCode": "318"
+  },
+  "太原": {
+    "province": "山西",
+    "areaCode": "351"
+  },
+  "大同": {
+    "province": "山西",
+    "areaCode": "352"
+  },
+  "阳泉": {
+    "province": "山西",
+    "areaCode": "353"
+  },
+  "长治": {
+    "province": "山西",
+    "areaCode": "355"
+  },
+  "晋城": {
+    "province": "山西",
+    "areaCode": "356"
+  },
+  "朔州": {
+    "province": "山西",
+    "areaCode": "349"
+  },
+  "晋中": {
+    "province": "山西",
+    "areaCode": "354"
+  },
+  "运城": {
+    "province": "山西",
+    "areaCode": "359"
+  },
+  "忻州": {
+    "province": "山西",
+    "areaCode": "350"
+  },
+  "临汾": {
+    "province": "山西",
+    "areaCode": "357"
+  },
+  "吕梁": {
+    "province": "山西",
+    "areaCode": "358"
+  },
+  "呼和浩特": {
+    "province": "内蒙古",
+    "areaCode": "471"
+  },
+  "包头": {
+    "province": "内蒙古",
+    "areaCode": "472"
+  },
+  "乌海": {
+    "province": "内蒙古",
+    "areaCode": "473"
+  },
+  "赤峰": {
+    "province": "内蒙古",
+    "areaCode": "476"
+  },
+  "通辽": {
+    "province": "内蒙古",
+    "areaCode": "475"
+  },
+  "鄂尔多斯": {
+    "province": "内蒙古",
+    "areaCode": "477"
+  },
+  "呼伦贝尔": {
+    "province": "内蒙古",
+    "areaCode": "470"
+  },
+  "巴彦淖尔": {
+    "province": "内蒙古",
+    "areaCode": "478"
+  },
+  "乌兰察布": {
+    "province": "内蒙古",
+    "areaCode": "474"
+  },
+  "兴安盟": {
+    "province": "内蒙古",
+    "areaCode": "482"
+  },
+  "锡林郭勒盟": {
+    "province": "内蒙古",
+    "areaCode": "479"
+  },
+  "阿拉善盟": {
+    "province": "内蒙古",
+    "areaCode": "483"
+  },
+  "沈阳": {
+    "province": "辽宁",
+    "areaCode": "24"
+  },
+  "大连": {
+    "province": "辽宁",
+    "areaCode": "411"
+  },
+  "鞍山": {
+    "province": "辽宁",
+    "areaCode": "412"
+  },
+  "抚顺": {
+    "province": "辽宁",
+    "areaCode": "413"
+  },
+  "本溪": {
+    "province": "辽宁",
+    "areaCode": "414"
+  },
+  "丹东": {
+    "province": "辽宁",
+    "areaCode": "415"
+  },
+  "锦州": {
+    "province": "辽宁",
+    "areaCode": "416"
+  },
+  "营口": {
+    "province": "辽宁",
+    "areaCode": "417"
+  },
+  "阜新": {
+    "province": "辽宁",
+    "areaCode": "418"
+  },
+  "辽阳": {
+    "province": "辽宁",
+    "areaCode": "419"
+  },
+  "盘锦": {
+    "province": "辽宁",
+    "areaCode": "427"
+  },
+  "铁岭": {
+    "province": "辽宁",
+    "areaCode": "410"
+  },
+  "朝阳": {
+    "province": "辽宁",
+    "areaCode": "421"
+  },
+  "葫芦岛": {
+    "province": "辽宁",
+    "areaCode": "429"
+  },
+  "长春": {
+    "province": "吉林",
+    "areaCode": "431"
+  },
+  "吉林": {
+    "province": "吉林",
+    "areaCode": "432"
+  },
+  "四平": {
+    "province": "吉林",
+    "areaCode": "434"
+  },
+  "辽源": {
+    "province": "吉林",
+    "areaCode": "437"
+  },
+  "通化": {
+    "province": "吉林",
+    "areaCode": "435"
+  },
+  "白山": {
+    "province": "吉林",
+    "areaCode": "439"
+  },
+  "松原": {
+    "province": "吉林",
+    "areaCode": "438"
+  },
+  "白城": {
+    "province": "吉林",
+    "areaCode": "436"
+  },
+  "延边朝鲜族自治州": {
+    "province": "吉林",
+    "areaCode": "433"
+  },
+  "哈尔滨": {
+    "province": "黑龙江",
+    "areaCode": "451"
+  },
+  "齐齐哈尔": {
+    "province": "黑龙江",
+    "areaCode": "452"
+  },
+  "鸡西": {
+    "province": "黑龙江",
+    "areaCode": "467"
+  },
+  "鹤岗": {
+    "province": "黑龙江",
+    "areaCode": "468"
+  },
+  "双鸭山": {
+    "province": "黑龙江",
+    "areaCode": "469"
+  },
+  "大庆": {
+    "province": "黑龙江",
+    "areaCode": "459"
+  },
+  "伊春": {
+    "province": "黑龙江",
+    "areaCode": "458"
+  },
+  "佳木斯": {
+    "province": "黑龙江",
+    "areaCode": "454"
+  },
+  "七台河": {
+    "province": "黑龙江",
+    "areaCode": "464"
+  },
+  "牡丹江": {
+    "province": "黑龙江",
+    "areaCode": "453"
+  },
+  "黑河": {
+    "province": "黑龙江",
+    "areaCode": "456"
+  },
+  "绥化": {
+    "province": "黑龙江",
+    "areaCode": "455"
+  },
+  "大兴安岭地区": {
+    "province": "黑龙江",
+    "areaCode": "457"
+  },
+  "南京": {
+    "province": "江苏",
+    "areaCode": "25"
+  },
+  "无锡": {
+    "province": "江苏",
+    "areaCode": "510"
+  },
+  "徐州": {
+    "province": "江苏",
+    "areaCode": "516"
+  },
+  "常州": {
+    "province": "江苏",
+    "areaCode": "519"
+  },
+  "苏州": {
+    "province": "江苏",
+    "areaCode": "512"
+  },
+  "南通": {
+    "province": "江苏",
+    "areaCode": "513"
+  },
+  "连云港": {
+    "province": "江苏",
+    "areaCode": "518"
+  },
+  "淮安": {
+    "province": "江苏",
+    "areaCode": "517"
+  },
+  "盐城": {
+    "province": "江苏",
+    "areaCode": "515"
+  },
+  "扬州": {
+    "province": "江苏",
+    "areaCode": "514"
+  },
+  "镇江": {
+    "province": "江苏",
+    "areaCode": "511"
+  },
+  "泰州": {
+    "province": "江苏",
+    "areaCode": "523"
+  },
+  "宿迁": {
+    "province": "江苏",
+    "areaCode": "527"
+  },
+  "杭州": {
+    "province": "浙江",
+    "areaCode": "571"
+  },
+  "宁波": {
+    "province": "浙江",
+    "areaCode": "574"
+  },
+  "温州": {
+    "province": "浙江",
+    "areaCode": "577"
+  },
+  "嘉兴": {
+    "province": "浙江",
+    "areaCode": "573"
+  },
+  "湖州": {
+    "province": "浙江",
+    "areaCode": "572"
+  },
+  "绍兴": {
+    "province": "浙江",
+    "areaCode": "575"
+  },
+  "金华": {
+    "province": "浙江",
+    "areaCode": "579"
+  },
+  "衢州": {
+    "province": "浙江",
+    "areaCode": "570"
+  },
+  "舟山": {
+    "province": "浙江",
+    "areaCode": "580"
+  },
+  "台州": {
+    "province": "浙江",
+    "areaCode": "576"
+  },
+  "丽水": {
+    "province": "浙江",
+    "areaCode": "578"
+  },
+  "合肥": {
+    "province": "安徽",
+    "areaCode": "551"
+  },
+  "芜湖": {
+    "province": "安徽",
+    "areaCode": "553"
+  },
+  "蚌埠": {
+    "province": "安徽",
+    "areaCode": "552"
+  },
+  "淮南": {
+    "province": "安徽",
+    "areaCode": "554"
+  },
+  "马鞍山": {
+    "province": "安徽",
+    "areaCode": "555"
+  },
+  "淮北": {
+    "province": "安徽",
+    "areaCode": "561"
+  },
+  "铜陵": {
+    "province": "安徽",
+    "areaCode": "562"
+  },
+  "安庆": {
+    "province": "安徽",
+    "areaCode": "556"
+  },
+  "黄山": {
+    "province": "安徽",
+    "areaCode": "559"
+  },
+  "滁州": {
+    "province": "安徽",
+    "areaCode": "550"
+  },
+  "阜阳": {
+    "province": "安徽",
+    "areaCode": "558"
+  },
+  "宿州": {
+    "province": "安徽",
+    "areaCode": "557"
+  },
+  "六安": {
+    "province": "安徽",
+    "areaCode": "564"
+  },
+  "亳州": {
+    "province": "安徽",
+    "areaCode": "567"
+  },
+  "池州": {
+    "province": "安徽",
+    "areaCode": "566"
+  },
+  "宣城": {
+    "province": "安徽",
+    "areaCode": "563"
+  },
+  "福州": {
+    "province": "福建",
+    "areaCode": "591"
+  },
+  "厦门": {
+    "province": "福建",
+    "areaCode": "592"
+  },
+  "莆田": {
+    "province": "福建",
+    "areaCode": "594"
+  },
+  "三明": {
+    "province": "福建",
+    "areaCode": "598"
+  },
+  "泉州": {
+    "province": "福建",
+    "areaCode": "595"
+  },
+  "漳州": {
+    "province": "福建",
+    "areaCode": "596"
+  },
+  "南平": {
+    "province": "福建",
+    "areaCode": "599"
+  },
+  "龙岩": {
+    "province": "福建",
+    "areaCode": "597"
+  },
+  "宁德": {
+    "province": "福建",
+    "areaCode": "593"
+  },
+  "南昌": {
+    "province": "江西",
+    "areaCode": "791"
+  },
+  "景德镇": {
+    "province": "江西",
+    "areaCode": "798"
+  },
+  "萍乡": {
+    "province": "江西",
+    "areaCode": "799"
+  },
+  "九江": {
+    "province": "江西",
+    "areaCode": "792"
+  },
+  "新余": {
+    "province": "江西",
+    "areaCode": "790"
+  },
+  "鹰潭": {
+    "province": "江西",
+    "areaCode": "701"
+  },
+  "赣州": {
+    "province": "江西",
+    "areaCode": "797"
+  },
+  "吉安": {
+    "province": "江西",
+    "areaCode": "796"
+  },
+  "宜春": {
+    "province": "江西",
+    "areaCode": "795"
+  },
+  "抚州": {
+    "province": "江西",
+    "areaCode": "794"
+  },
+  "上饶": {
+    "province": "江西",
+    "areaCode": "793"
+  },
+  "济南": {
+    "province": "山东",
+    "areaCode": "531"
+  },
+  "青岛": {
+    "province": "山东",
+    "areaCode": "532"
+  },
+  "淄博": {
+    "province": "山东",
+    "areaCode": "533"
+  },
+  "枣庄": {
+    "province": "山东",
+    "areaCode": "632"
+  },
+  "东营": {
+    "province": "山东",
+    "areaCode": "546"
+  },
+  "烟台": {
+    "province": "山东",
+    "areaCode": "535"
+  },
+  "潍坊": {
+    "province": "山东",
+    "areaCode": "536"
+  },
+  "济宁": {
+    "province": "山东",
+    "areaCode": "537"
+  },
+  "泰安": {
+    "province": "山东",
+    "areaCode": "538"
+  },
+  "威海": {
+    "province": "山东",
+    "areaCode": "631"
+  },
+  "日照": {
+    "province": "山东",
+    "areaCode": "633"
+  },
+  "临沂": {
+    "province": "山东",
+    "areaCode": "539"
+  },
+  "德州": {
+    "province": "山东",
+    "areaCode": "534"
+  },
+  "聊城": {
+    "province": "山东",
+    "areaCode": "635"
+  },
+  "滨州": {
+    "province": "山东",
+    "areaCode": "543"
+  },
+  "菏泽": {
+    "province": "山东",
+    "areaCode": "530"
+  },
+  "郑州": {
+    "province": "河南",
+    "areaCode": "371"
+  },
+  "开封": {
+    "province": "河南",
+    "areaCode": "378"
+  },
+  "洛阳": {
+    "province": "河南",
+    "areaCode": "379"
+  },
+  "平顶山": {
+    "province": "河南",
+    "areaCode": "375"
+  },
+  "安阳": {
+    "province": "河南",
+    "areaCode": "372"
+  },
+  "鹤壁": {
+    "province": "河南",
+    "areaCode": "392"
+  },
+  "新乡": {
+    "province": "河南",
+    "areaCode": "373"
+  },
+  "焦作": {
+    "province": "河南",
+    "areaCode": "391"
+  },
+  "濮阳": {
+    "province": "河南",
+    "areaCode": "393"
+  },
+  "许昌": {
+    "province": "河南",
+    "areaCode": "374"
+  },
+  "漯河": {
+    "province": "河南",
+    "areaCode": "395"
+  },
+  "三门峡": {
+    "province": "河南",
+    "areaCode": "398"
+  },
+  "南阳": {
+    "province": "河南",
+    "areaCode": "377"
+  },
+  "商丘": {
+    "province": "河南",
+    "areaCode": "370"
+  },
+  "信阳": {
+    "province": "河南",
+    "areaCode": "376"
+  },
+  "周口": {
+    "province": "河南",
+    "areaCode": "394"
+  },
+  "驻马店": {
+    "province": "河南",
+    "areaCode": "396"
+  },
+  "武汉": {
+    "province": "湖北",
+    "areaCode": "27"
+  },
+  "黄石": {
+    "province": "湖北",
+    "areaCode": "714"
+  },
+  "十堰": {
+    "province": "湖北",
+    "areaCode": "719"
+  },
+  "宜昌": {
+    "province": "湖北",
+    "areaCode": "717"
+  },
+  "鄂州": {
+    "province": "湖北",
+    "areaCode": "711"
+  },
+  "荆门": {
+    "province": "湖北",
+    "areaCode": "724"
+  },
+  "孝感": {
+    "province": "湖北",
+    "areaCode": "712"
+  },
+  "荆州": {
+    "province": "湖北",
+    "areaCode": "716"
+  },
+  "黄冈": {
+    "province": "湖北",
+    "areaCode": "713"
+  },
+  "咸宁": {
+    "province": "湖北",
+    "areaCode": "715"
+  },
+  "随州": {
+    "province": "湖北",
+    "areaCode": "722"
+  },
+  "恩施土家族苗族自治州": {
+    "province": "湖北",
+    "areaCode": "718"
+  },
+  "长沙": {
+    "province": "湖南",
+    "areaCode": "731"
+  },
+  "株洲": {
+    "province": "湖南",
+    "areaCode": "731"
+  },
+  "湘潭": {
+    "province": "湖南",
+    "areaCode": "731"
+  },
+  "衡阳": {
+    "province": "湖南",
+    "areaCode": "734"
+  },
+  "邵阳": {
+    "province": "湖南",
+    "areaCode": "739"
+  },
+  "岳阳": {
+    "province": "湖南",
+    "areaCode": "730"
+  },
+  "常德": {
+    "province": "湖南",
+    "areaCode": "736"
+  },
+  "张家界": {
+    "province": "湖南",
+    "areaCode": "744"
+  },
+  "益阳": {
+    "province": "湖南",
+    "areaCode": "737"
+  },
+  "郴州": {
+    "province": "湖南",
+    "areaCode": "735"
+  },
+  "永州": {
+    "province": "湖南",
+    "areaCode": "746"
+  },
+  "怀化": {
+    "province": "湖南",
+    "areaCode": "745"
+  },
+  "娄底": {
+    "province": "湖南",
+    "areaCode": "738"
+  },
+  "湘西土家族苗族自治州": {
+    "province": "湖南",
+    "areaCode": "743"
+  },
+  "广州": {
+    "province": "广东",
+    "areaCode": "20"
+  },
+  "韶关": {
+    "province": "广东",
+    "areaCode": "751"
+  },
+  "深圳": {
+    "province": "广东",
+    "areaCode": "755"
+  },
+  "珠海": {
+    "province": "广东",
+    "areaCode": "756"
+  },
+  "汕头": {
+    "province": "广东",
+    "areaCode": "754"
+  },
+  "佛山": {
+    "province": "广东",
+    "areaCode": "757"
+  },
+  "江门": {
+    "province": "广东",
+    "areaCode": "750"
+  },
+  "湛江": {
+    "province": "广东",
+    "areaCode": "759"
+  },
+  "茂名": {
+    "province": "广东",
+    "areaCode": "668"
+  },
+  "肇庆": {
+    "province": "广东",
+    "areaCode": "758"
+  },
+  "惠州": {
+    "province": "广东",
+    "areaCode": "752"
+  },
+  "梅州": {
+    "province": "广东",
+    "areaCode": "753"
+  },
+  "汕尾": {
+    "province": "广东",
+    "areaCode": "660"
+  },
+  "河源": {
+    "province": "广东",
+    "areaCode": "762"
+  },
+  "阳江": {
+    "province": "广东",
+    "areaCode": "662"
+  },
+  "清远": {
+    "province": "广东",
+    "areaCode": "763"
+  },
+  "东莞": {
+    "province": "广东",
+    "areaCode": "769"
+  },
+  "中山": {
+    "province": "广东",
+    "areaCode": "760"
+  },
+  "潮州": {
+    "province": "广东",
+    "areaCode": "768"
+  },
+  "揭阳": {
+    "province": "广东",
+    "areaCode": "663"
+  },
+  "云浮": {
+    "province": "广东",
+    "areaCode": "766"
+  },
+  "南宁": {
+    "province": "广西",
+    "areaCode": "771"
+  },
+  "柳州": {
+    "province": "广西",
+    "areaCode": "772"
+  },
+  "桂林": {
+    "province": "广西",
+    "areaCode": "773"
+  },
+  "梧州": {
+    "province": "广西",
+    "areaCode": "774"
+  },
+  "北海": {
+    "province": "广西",
+    "areaCode": "779"
+  },
+  "防城港": {
+    "province": "广西",
+    "areaCode": "770"
+  },
+  "钦州": {
+    "province": "广西",
+    "areaCode": "777"
+  },
+  "贵港": {
+    "province": "广西",
+    "areaCode": "775"
+  },
+  "玉林": {
+    "province": "广西",
+    "areaCode": "775"
+  },
+  "百色": {
+    "province": "广西",
+    "areaCode": "776"
+  },
+  "贺州": {
+    "province": "广西",
+    "areaCode": "774"
+  },
+  "河池": {
+    "province": "广西",
+    "areaCode": "778"
+  },
+  "来宾": {
+    "province": "广西",
+    "areaCode": "772"
+  },
+  "崇左": {
+    "province": "广西",
+    "areaCode": "771"
+  },
+  "海口": {
+    "province": "海南",
+    "areaCode": "898"
+  },
+  "三亚": {
+    "province": "海南",
+    "areaCode": "898"
+  },
+  "成都": {
+    "province": "四川",
+    "areaCode": "28"
+  },
+  "自贡": {
+    "province": "四川",
+    "areaCode": "813"
+  },
+  "攀枝花": {
+    "province": "四川",
+    "areaCode": "812"
+  },
+  "泸州": {
+    "province": "四川",
+    "areaCode": "830"
+  },
+  "德阳": {
+    "province": "四川",
+    "areaCode": "838"
+  },
+  "绵阳": {
+    "province": "四川",
+    "areaCode": "816"
+  },
+  "广元": {
+    "province": "四川",
+    "areaCode": "839"
+  },
+  "遂宁": {
+    "province": "四川",
+    "areaCode": "825"
+  },
+  "内江": {
+    "province": "四川",
+    "areaCode": "832"
+  },
+  "乐山": {
+    "province": "四川",
+    "areaCode": "833"
+  },
+  "南充": {
+    "province": "四川",
+    "areaCode": "817"
+  },
+  "眉山": {
+    "province": "四川",
+    "areaCode": "833"
+  },
+  "宜宾": {
+    "province": "四川",
+    "areaCode": "831"
+  },
+  "广安": {
+    "province": "四川",
+    "areaCode": "826"
+  },
+  "达州": {
+    "province": "四川",
+    "areaCode": "818"
+  },
+  "雅安": {
+    "province": "四川",
+    "areaCode": "835"
+  },
+  "巴中": {
+    "province": "四川",
+    "areaCode": "827"
+  },
+  "资阳": {
+    "province": "四川",
+    "areaCode": "832"
+  },
+  "阿坝藏族羌族自治州": {
+    "province": "四川",
+    "areaCode": "837"
+  },
+  "甘孜藏族自治州": {
+    "province": "四川",
+    "areaCode": "836"
+  },
+  "凉山彝族自治州": {
+    "province": "四川",
+    "areaCode": "834"
+  },
+  "贵阳": {
+    "province": "贵州",
+    "areaCode": "851"
+  },
+  "六盘水": {
+    "province": "贵州",
+    "areaCode": "858"
+  },
+  "遵义": {
+    "province": "贵州",
+    "areaCode": "852"
+  },
+  "安顺": {
+    "province": "贵州",
+    "areaCode": "853"
+  },
+  "黔西南布依族苗族自治州": {
+    "province": "贵州",
+    "areaCode": "859"
+  },
+  "黔东南苗族侗族自治州": {
+    "province": "贵州",
+    "areaCode": "855"
+  },
+  "黔南布依族苗族自治州": {
+    "province": "贵州",
+    "areaCode": "854"
+  },
+  "昆明": {
+    "province": "云南",
+    "areaCode": "871"
+  },
+  "曲靖": {
+    "province": "云南",
+    "areaCode": "874"
+  },
+  "玉溪": {
+    "province": "云南",
+    "areaCode": "877"
+  },
+  "保山": {
+    "province": "云南",
+    "areaCode": "875"
+  },
+  "昭通": {
+    "province": "云南",
+    "areaCode": "870"
+  },
+  "丽江": {
+    "province": "云南",
+    "areaCode": "888"
+  },
+  "普洱": {
+    "province": "云南",
+    "areaCode": "879"
+  },
+  "临沧": {
+    "province": "云南",
+    "areaCode": "883"
+  },
+  "楚雄彝族自治州": {
+    "province": "云南",
+    "areaCode": "878"
+  },
+  "红河哈尼族彝族自治州": {
+    "province": "云南",
+    "areaCode": "873"
+  },
+  "文山壮族苗族自治州": {
+    "province": "云南",
+    "areaCode": "876"
+  },
+  "西双版纳傣族自治州": {
+    "province": "云南",
+    "areaCode": "691"
+  },
+  "大理白族自治州": {
+    "province": "云南",
+    "areaCode": "872"
+  },
+  "德宏傣族景颇族自治州": {
+    "province": "云南",
+    "areaCode": "692"
+  },
+  "怒江傈僳族自治州": {
+    "province": "云南",
+    "areaCode": "886"
+  },
+  "迪庆藏族自治州": {
+    "province": "云南",
+    "areaCode": "887"
+  },
+  "拉萨": {
+    "province": "西藏",
+    "areaCode": "891"
+  },
+  "阿里地区": {
+    "province": "西藏",
+    "areaCode": "897"
+  },
+  "西安": {
+    "province": "陕西",
+    "areaCode": "29"
+  },
+  "铜川": {
+    "province": "陕西",
+    "areaCode": "919"
+  },
+  "宝鸡": {
+    "province": "陕西",
+    "areaCode": "917"
+  },
+  "渭南": {
+    "province": "陕西",
+    "areaCode": "913"
+  },
+  "延安": {
+    "province": "陕西",
+    "areaCode": "911"
+  },
+  "汉中": {
+    "province": "陕西",
+    "areaCode": "916"
+  },
+  "榆林": {
+    "province": "陕西",
+    "areaCode": "912"
+  },
+  "安康": {
+    "province": "陕西",
+    "areaCode": "915"
+  },
+  "商洛": {
+    "province": "陕西",
+    "areaCode": "914"
+  },
+  "兰州": {
+    "province": "甘肃",
+    "areaCode": "931"
+  },
+  "嘉峪关": {
+    "province": "甘肃",
+    "areaCode": "937"
+  },
+  "金昌": {
+    "province": "甘肃",
+    "areaCode": "935"
+  },
+  "白银": {
+    "province": "甘肃",
+    "areaCode": "943"
+  },
+  "天水": {
+    "province": "甘肃",
+    "areaCode": "938"
+  },
+  "武威": {
+    "province": "甘肃",
+    "areaCode": "935"
+  },
+  "张掖": {
+    "province": "甘肃",
+    "areaCode": "936"
+  },
+  "平凉": {
+    "province": "甘肃",
+    "areaCode": "933"
+  },
+  "酒泉": {
+    "province": "甘肃",
+    "areaCode": "937"
+  },
+  "庆阳": {
+    "province": "甘肃",
+    "areaCode": "934"
+  },
+  "定西": {
+    "province": "甘肃",
+    "areaCode": "932"
+  },
+  "陇南": {
+    "province": "甘肃",
+    "areaCode": "939"
+  },
+  "临夏回族自治州": {
+    "province": "甘肃",
+    "areaCode": "930"
+  },
+  "甘南藏族自治州": {
+    "province": "甘肃",
+    "areaCode": "941"
+  },
+  "西宁": {
+    "province": "青海",
+    "areaCode": "971"
+  },
+  "海北藏族自治州": {
+    "province": "青海",
+    "areaCode": "970"
+  },
+  "黄南藏族自治州": {
+    "province": "青海",
+    "areaCode": "973"
+  },
+  "海南藏族自治州": {
+    "province": "青海",
+    "areaCode": "974"
+  },
+  "果洛藏族自治州": {
+    "province": "青海",
+    "areaCode": "975"
+  },
+  "玉树藏族自治州": {
+    "province": "青海",
+    "areaCode": "976"
+  },
+  "银川": {
+    "province": "宁夏",
+    "areaCode": "951"
+  },
+  "石嘴山": {
+    "province": "宁夏",
+    "areaCode": "952"
+  },
+  "吴忠": {
+    "province": "宁夏",
+    "areaCode": "953"
+  },
+  "固原": {
+    "province": "宁夏",
+    "areaCode": "954"
+  },
+  "中卫": {
+    "province": "宁夏",
+    "areaCode": "955"
+  },
+  "乌鲁木齐": {
+    "province": "新疆",
+    "areaCode": "991"
+  },
+  "克拉玛依": {
+    "province": "新疆",
+    "areaCode": "990"
+  },
+  "昌吉回族自治州": {
+    "province": "新疆",
+    "areaCode": "994"
+  },
+  "博尔塔拉蒙古自治州": {
+    "province": "新疆",
+    "areaCode": "909"
+  },
+  "巴音郭楞蒙古自治州": {
+    "province": "新疆",
+    "areaCode": "996"
+  },
+  "阿克苏地区": {
+    "province": "新疆",
+    "areaCode": "997"
+  },
+  "克孜勒苏柯尔克孜自治州": {
+    "province": "新疆",
+    "areaCode": "908"
+  },
+  "喀什地区": {
+    "province": "新疆",
+    "areaCode": "998"
+  },
+  "和田地区": {
+    "province": "新疆",
+    "areaCode": "903"
+  },
+  "伊犁哈萨克自治州": {
+    "province": "新疆",
+    "areaCode": "999"
+  },
+  "塔城地区": {
+    "province": "新疆",
+    "areaCode": "901"
+  },
+  "阿勒泰地区": {
+    "province": "新疆",
+    "areaCode": "906"
+  },
+  "北京": {
+    "province": "北京",
+    "areaCode": "10"
+  },
+  "上海": {
+    "province": "上海",
+    "areaCode": "21"
+  },
+  "天津": {
+    "province": "天津",
+    "areaCode": "22"
+  },
+  "重庆": {
+    "province": "重庆",
+    "areaCode": "23"
+  }
+}

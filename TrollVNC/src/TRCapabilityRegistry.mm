@@ -825,6 +825,22 @@ static NSDictionary *TRSearchGatewaySync(void) {
             if (e) *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey: res[@"error"] ?: @"填充失败"}];
             return nil;
         }];
+    // data.clear：清空数据（contacts/calls/sms/all，设计 §7）——与 data.fill 对称，写库单一实现于 TRDataFiller
+    [self _registerControl:@"data.clear" title:@"清空数据" icon:@"🗑️" route:TRCapRouteNative
+        params:@[
+            @{@"name":@"db",@"type":@"string",@"required":@YES},
+        ]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            NSString *db = p[@"db"];
+            if (![db isKindOfClass:[NSString class]]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"db 缺失"}];
+                return nil;
+            }
+            NSDictionary *res = [TRDataFiller clearDatabase:db];
+            if ([res[@"ok"] boolValue]) return res;
+            if (e) *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey: res[@"error"] ?: @"清空失败"}];
+            return nil;
+        }];
 }
 
 /**
