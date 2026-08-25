@@ -1,7 +1,7 @@
 // TRCorpus.mm —— 构建产物（勿手改，改 corpus.js 后重跑 build-tr-corpus.mjs；构建于 2026-08-25）
 #import "TRCorpus.h"
 
-NSArray *kFamilyNames(void) {
+NSArray<NSString *> *kFamilyNames(void) {
     return @[
         @"王",
         @"李",
@@ -106,7 +106,7 @@ NSArray *kFamilyNames(void) {
     ];
 }
 
-NSArray *kGivenNames(void) {
+NSArray<NSString *> *kGivenNames(void) {
     return @[
         @"伟",
         @"芳",
@@ -529,7 +529,7 @@ NSArray *kGivenNames(void) {
     ];
 }
 
-NSArray *kNicknames(void) {
+NSArray<NSString *> *kNicknames(void) {
     return @[
         @"阿强",
         @"老李",
@@ -583,7 +583,7 @@ NSArray *kNicknames(void) {
     ];
 }
 
-NSArray *kFamilyWords(void) {
+NSArray<NSString *> *kFamilyWords(void) {
     return @[
         @"爸爸",
         @"妈妈",
@@ -712,7 +712,7 @@ NSArray *kFamilyWords(void) {
     ];
 }
 
-NSArray *kServiceWords(void) {
+NSArray<NSString *> *kServiceWords(void) {
     return @[
         @"师傅",
         @"律师",
@@ -826,7 +826,7 @@ NSArray *kServiceWords(void) {
     ];
 }
 
-NSArray *kBusinessWords(void) {
+NSArray<NSString *> *kBusinessWords(void) {
     return @[
         @"银行",
         @"客服",
@@ -883,7 +883,7 @@ NSArray *kBusinessWords(void) {
     ];
 }
 
-NSArray *kWorkWords(void) {
+NSArray<NSString *> *kWorkWords(void) {
     return @[
         @"公司",
         @"科技",
@@ -937,7 +937,7 @@ NSArray *kWorkWords(void) {
     ];
 }
 
-NSArray *kSmsCodeTexts(void) {
+NSArray<NSString *> *kSmsCodeTexts(void) {
     return @[
         @"[抖音] {code4} 是您的验证码，5 分钟内有效。如非本人操作请忽略。",
         @"【微信】验证码 {code4}，请勿泄露给他人。",
@@ -1022,7 +1022,7 @@ NSArray *kSmsCodeTexts(void) {
     ];
 }
 
-NSArray *kSmsExpressTexts(void) {
+NSArray<NSString *> *kSmsExpressTexts(void) {
     return @[
         @"您的包裹已到{station}驿站，取件码 {code4}，请及时取件。",
         @"【{company}】您的快件{trackno}已签收，感谢使用。",
@@ -1097,7 +1097,7 @@ NSArray *kSmsExpressTexts(void) {
     ];
 }
 
-NSArray *kSmsBankTexts(void) {
+NSArray<NSString *> *kSmsBankTexts(void) {
     return @[
         @"您尾号{last4}的账户{time}消费 {amount} 元。",
         @"您尾号{last4}的账户收到转账 {amount} 元，余额 {balance} 元。",
@@ -1172,7 +1172,7 @@ NSArray *kSmsBankTexts(void) {
     ];
 }
 
-NSArray *kSmsCarrierTexts(void) {
+NSArray<NSString *> *kSmsCarrierTexts(void) {
     return @[
         @"您本月已使用流量 {gb1} GB，剩余 {gb2} GB。",
         @"您的话费余额 {balance} 元，请及时充值。",
@@ -1247,7 +1247,7 @@ NSArray *kSmsCarrierTexts(void) {
     ];
 }
 
-NSArray *kSmsMarketingIndustries(void) {
+NSArray<NSString *> *kSmsMarketingIndustries(void) {
     return @[
     @{@"brands": @[@"淘宝", @"京东", @"拼多多", @"天猫", @"唯品会", @"苏宁易购", @"国美", @"网易严选", @"小红书", @"抖音商城", @"名创优品", @"优衣库", @"耐克", @"李宁"], @"templates": @[
         @"【{platform}】{product} 限时 5 折，立即抢购。",
@@ -1434,7 +1434,7 @@ NSArray *kSmsMarketingIndustries(void) {
     ];
 }
 
-NSArray *kSmsFamilyTexts(void) {
+NSArray<NSString *> *kSmsFamilyTexts(void) {
     return @[
         @"到家了，你那边怎么样？",
         @"好的，知道了",
@@ -1580,7 +1580,7 @@ NSArray *kSmsFamilyTexts(void) {
     ];
 }
 
-NSArray *kBanks(void) {
+NSArray<NSString *> *kBanks(void) {
     return @[
         @"招商银行",
         @"工商银行",
@@ -1605,7 +1605,7 @@ NSArray *kBanks(void) {
     ];
 }
 
-NSArray *kCouriers(void) {
+NSArray<NSString *> *kCouriers(void) {
     return @[
         @"顺丰",
         @"中通",
@@ -1625,7 +1625,7 @@ NSArray *kCouriers(void) {
     ];
 }
 
-NSArray *kPlatforms(void) {
+NSArray<NSString *> *kPlatforms(void) {
     return @[
         @"淘宝",
         @"京东",
@@ -1650,7 +1650,7 @@ NSArray *kPlatforms(void) {
     ];
 }
 
-NSArray *kStations(void) {
+NSArray<NSString *> *kStations(void) {
     return @[
         @"幸福",
         @"锦绣",
@@ -1675,7 +1675,7 @@ NSArray *kStations(void) {
     ];
 }
 
-NSArray *kEstates(void) {
+NSArray<NSString *> *kEstates(void) {
     return @[
         @"阳光城",
         @"翡翠湾",
@@ -1700,7 +1700,7 @@ NSArray *kEstates(void) {
     ];
 }
 
-NSArray *kOrgs(void) {
+NSArray<NSString *> *kOrgs(void) {
     return @[
         @"平安银行",
         @"中银消费",
@@ -1725,7 +1725,7 @@ NSArray *kOrgs(void) {
     ];
 }
 
-NSArray *kProducts(void) {
+NSArray<NSString *> *kProducts(void) {
     return @[
         @"蓝牙耳机",
         @"扫地机器人",
@@ -1760,7 +1760,7 @@ NSArray *kProducts(void) {
     ];
 }
 
-NSArray *kEcoms(void) {
+NSArray<NSString *> *kEcoms(void) {
     return @[
         @"淘宝",
         @"京东",
@@ -1780,7 +1780,7 @@ NSArray *kEcoms(void) {
     ];
 }
 
-NSArray *kBrands(void) {
+NSArray<NSString *> *kBrands(void) {
     return @[
         @"淘宝",
         @"京东",
@@ -1826,7 +1826,7 @@ NSArray *kBrands(void) {
     ];
 }
 
-NSArray *kPhoneSegments(void) {
+NSArray<NSString *> *kPhoneSegments(void) {
     return @[
         @"130",
         @"131",
