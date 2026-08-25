@@ -466,7 +466,7 @@
         picker.selectIndexs = @[[self provinceIndex], [self cityIndex]];
     }
     __weak typeof(self) ws = self;
-    picker.resultBlock = ^(NSArray *models, NSArray *indexs) {
+    picker.multiResultBlock = ^(NSArray *models, NSArray *indexs) {
         __strong typeof(ws) ss = ws;
         if (models.count >= 2) {
             BRTextModel *p = models[0];
