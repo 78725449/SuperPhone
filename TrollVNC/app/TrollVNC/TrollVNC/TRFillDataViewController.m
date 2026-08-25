@@ -46,10 +46,8 @@
 @property (nonatomic, strong) UILabel *localRatioLabel;
 @property (nonatomic, strong) UISlider *inRatioSlider;       // 我收占比（短信，默认 80%＝收8发2；生成换算 inRatio=100-我收）
 @property (nonatomic, strong) UILabel *inRatioLabel;
-@property (nonatomic, strong) UIButton *seedButton;
 @property (nonatomic, strong) UILabel *resultLabel;
 @property (nonatomic, strong) UIScrollView *scrollView;
-@property (nonatomic, assign) uint64_t seed;
 @end
 
 @implementation TRFillDataViewController {
@@ -60,7 +58,6 @@
     self = [super initWithNibName:nil bundle:nil];
     if (self) {
         _kind = [kind copy];
-        _seed = (uint64_t)[[NSDate date] timeIntervalSince1970];
         self.rows = [NSMutableArray array];
         self.groupSizes = [NSMutableArray array];
     }
@@ -136,21 +133,6 @@
     // 比例滑条组（合计 100% 联动）
     y = [self addRatioGroupsAtY:y];
     y += 8;
-
-    // 随机种子（标题与组件同行："随机种子" Label + 数字组件，点击随机；依赖提示删除后不丢失——生成失败时 fillDatabase 会返回"请先生成通讯录"）
-    UILabel *seedL = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, 96, 40)];
-    seedL.text = @"随机种子";
-    seedL.font = [UIFont systemFontOfSize:13];
-    [sv addSubview:seedL];
-    UIButton *seedBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    seedBtn.frame = CGRectMake(margin + 100, y, w - 100, 40);
-    [seedBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
-    seedBtn.backgroundColor = [UIColor secondarySystemBackgroundColor];
-    seedBtn.layer.cornerRadius = 8;
-    [seedBtn addTarget:self action:@selector(randomizeSeed:) forControlEvents:UIControlEventTouchUpInside];
-    [sv addSubview:seedBtn];
-    self.seedButton = seedBtn;
-    y += 48;
 
     // 短信专属：我收的（默认 80% = 收8发2，仅作用于家人朋友类；单行：标签+滑条+值；生成时换算 inRatio=100-我收）
     if ([_kind isEqualToString:@"sms"]) {
@@ -244,7 +226,6 @@
     sv.contentSize = CGSizeMake(self.view.bounds.size.width, y + 80);
     [self refreshCountLabel];
     [self refreshLocalRatioLabel];
-    [self refreshSeedButton];
 }
 
 - (NSInteger)defaultCount {
@@ -383,23 +364,25 @@
 #pragma mark - 联动与刷新
 
 - (void)ratioChanged:(UISlider *)sender {
-    // 找到所在组，把同组最后一个滑条设为 100 - 其余和（≥0 时）；若其余和 >100 钳制当前值
+    // 真互斥（2026-08-25 对齐）：拖动任一项 → 同组其余项按比例等比缩放，合计恒 100%（末项补余量消除取整误差）
     for (TRRatioRow *row in self.rows) {
         if (row.slider == sender) {
             NSInteger gi = row.groupIndex;
             NSArray *groupRows = [self rowsInGroup:gi];
-            NSInteger lastIdx = (NSInteger)groupRows.count - 1;
-            float otherSum = 0;
-            for (NSInteger i = 0; i < lastIdx; i++) {
-                TRRatioRow *r = groupRows[i];
-                if (r == row) otherSum += row.slider.value; else otherSum += r.slider.value;
+            float newVal = row.slider.value;
+            float restSum = 0;
+            for (TRRatioRow *r in groupRows) if (r != row) restSum += r.slider.value;
+            float scale = (restSum > 0) ? (100.0f - newVal) / restSum : 0.0f;
+            for (TRRatioRow *r in groupRows) {
+                if (r == row) continue;
+                r.slider.value = MAX(0, MIN(100, roundf(r.slider.value * scale)));
             }
-            if (otherSum > 100) {
-                row.slider.value = 100 - (otherSum - row.slider.value);
-            }
-            TRRatioRow *last = groupRows[lastIdx];
+            // 末项补余量：roundf 取整误差回补到同组最后一项，保证合计精确 100
+            TRRatioRow *last = groupRows[groupRows.count - 1];
             if (last != row) {
-                last.slider.value = MAX(0, 100 - otherSum);
+                float sum = 0;
+                for (TRRatioRow *r in groupRows) sum += r.slider.value;
+                last.slider.value = MAX(0, MIN(100, last.slider.value + (100.0f - sum)));
             }
             [self refreshRatioLabels];
             return;
@@ -443,16 +426,6 @@
 }
 - (void)refreshLocalRatioLabel {
     self.localRatioLabel.text = [NSString stringWithFormat:@"%ld%%", (long)(NSInteger)self.localRatioSlider.value];
-}
-
-- (void)randomizeSeed:(UIButton *)sender {
-    self.seed = (uint64_t)[[NSDate date] timeIntervalSince1970] ^ (uint64_t)(arc4random());
-    [self refreshSeedButton];
-    self.resultLabel.text = @"";
-}
-
-- (void)refreshSeedButton {
-    [self.seedButton setTitle:[NSString stringWithFormat:@"%llu", self.seed] forState:UIControlStateNormal]; // 标题独立 Label，"随机种子" + 数字组件
 }
 
 #pragma mark - 省市选择器 / 收发比 / 清空
@@ -572,7 +545,8 @@
 - (void)generate:(UIButton *)sender {
     NSInteger count = (NSInteger)self.countSlider.value;
     NSDictionary *ratios = [self collectRatios];
-    NSDictionary *req = [TRFillDataGenerator requestForKind:_kind count:count seed:self.seed ratios:ratios];
+    // seed=0：完全随机（设备端 fillDatabase 内部时间随机；前端种子组件已移除，每次生成不可复现——符合随机拟真目标）
+    NSDictionary *req = [TRFillDataGenerator requestForKind:_kind count:count seed:0 ratios:ratios];
     self.resultLabel.text = @"生成中…";
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSDictionary *res = [TRDataFiller fillDatabase:req[@"db"]

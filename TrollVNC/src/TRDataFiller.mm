@@ -273,7 +273,8 @@ static NSDictionary *trFillContacts(NSInteger count, NSDictionary *ratios) {
         CNSaveRequest *req = [[CNSaveRequest alloc] init];
         NSInteger end = MIN(count, i + batch);
         for (NSInteger j = i; j < end; j++) {
-            double r = trRand01();
+            double total = w[0] + w[1] + w[2] + w[3] + w[4];
+            double r = (total > 0) ? trRand01() * total : trRand01(); // 归一化（对齐 Node weightedIndex；合计≠100 时差额等比分配而非塞首项）
             double acc = 0;
             NSInteger ri = 0;
             for (NSInteger t = 0; t < 5; t++) { acc += w[t]; if (r < acc) { ri = t; break; } }
@@ -400,7 +401,9 @@ static NSDictionary *trFillCalls(NSInteger count, NSDictionary *ratios) {
             else { phone = trRandomPhone(); [strangerPool addObject:phone]; }
         }
         // 状态：missed 集中在陌生号（D2 §2.2）
-        double r3 = trRand01(); double acc = 0; NSInteger st = 0;
+        double totalSt = wSt[0] + wSt[1] + wSt[2];
+        double r3 = (totalSt > 0) ? trRand01() * totalSt : trRand01(); // 归一化（对齐 Node）
+        double acc = 0; NSInteger st = 0;
         for (NSInteger t = 0; t < 3; t++) { acc += wSt[t]; if (r3 < acc) { st = t; break; } }
         BOOL missed = (st == 2);
         BOOL answered = !missed;
@@ -471,7 +474,8 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
     }
 
     for (NSInteger i = 0; i < count; i++) {
-        double r = trRand01();
+        double totalT = wT[0] + wT[1] + wT[2] + wT[3] + wT[4] + wT[5];
+        double r = (totalT > 0) ? trRand01() * totalT : trRand01(); // 归一化（对齐 Node weightedIndex）
         double acc = 0;
         NSInteger type = 5;
         for (NSInteger t = 0; t < 6; t++) { acc += wT[t]; if (r < acc) { type = t; break; } }
