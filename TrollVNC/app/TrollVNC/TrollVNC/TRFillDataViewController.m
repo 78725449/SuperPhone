@@ -93,22 +93,6 @@
     CGFloat margin = 20;
     CGFloat w = self.view.bounds.size.width - margin * 2;
 
-    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, w, 24)];
-    title.text = [NSString stringWithFormat:@"生成%@", [self kindTitle]];
-    title.font = [UIFont boldSystemFontOfSize:17];
-    [sv addSubview:title];
-    y += 36;
-
-    // 通话/短信依赖提示（反差确认前提：联系人内选人依赖通讯录，D2 §3 UI 定稿）
-    if ([_kind isEqualToString:@"calls"] || [_kind isEqualToString:@"sms"]) {
-        UILabel *dep = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, w, 18)];
-        dep.text = @"基于通讯录生成，请先生成通讯录";
-        dep.font = [UIFont systemFontOfSize:12];
-        dep.textColor = [UIColor secondaryLabelColor];
-        [sv addSubview:dep];
-        y += 26;
-    }
-
     // 生成数量
     y = [self addRowLabel:@"生成数量" y:y] + 24;
     UISlider *cs = [[UISlider alloc] initWithFrame:CGRectMake(margin, y, w - 70, 30)];
@@ -199,8 +183,7 @@
         [self refreshInRatioLabel];
     }
 
-    // 随机种子
-    y = [self addRowLabel:@"随机种子（点击随机）" y:y] + 24;
+    // 随机种子（标题与种子同行显示，点击行随机；依赖提示删除后不丢失——生成失败时 fillDatabase 会返回"请先生成通讯录"）
     UIButton *seedBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     seedBtn.frame = CGRectMake(margin, y, w, 40);
     [seedBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
@@ -452,7 +435,7 @@
 }
 
 - (void)refreshSeedButton {
-    [self.seedButton setTitle:[NSString stringWithFormat:@"%llu", self.seed] forState:UIControlStateNormal];
+    [self.seedButton setTitle:[NSString stringWithFormat:@"随机种子  %llu", self.seed] forState:UIControlStateNormal];
 }
 
 #pragma mark - 省市选择器 / 收发比 / 清空
