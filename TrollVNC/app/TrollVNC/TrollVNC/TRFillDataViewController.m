@@ -93,22 +93,6 @@
     CGFloat margin = 20;
     CGFloat w = self.view.bounds.size.width - margin * 2;
 
-    // 生成数量
-    y = [self addRowLabel:@"生成数量" y:y] + 24;
-    UISlider *cs = [[UISlider alloc] initWithFrame:CGRectMake(margin, y, w - 70, 30)];
-    cs.minimumValue = 1;
-    cs.maximumValue = 500;
-    cs.value = [self defaultCount];
-    [cs addTarget:self action:@selector(countChanged:) forControlEvents:UIControlEventValueChanged];
-    [sv addSubview:cs];
-    self.countSlider = cs;
-    UILabel *cv = [[UILabel alloc] initWithFrame:CGRectMake(w + margin - 66, y + 3, 66, 24)];
-    cv.textAlignment = NSTextAlignmentRight;
-    cv.font = [UIFont systemFontOfSize:13];
-    [sv addSubview:cv];
-    self.countLabel = cv;
-    y += 34;
-
     // 联系人专属：常住地区（BRPickerView 省市选择）+ 本地占比
     if ([_kind isEqualToString:@"contacts"]) {
         y = [self addRowLabel:@"常住地区" y:y] + 24;
@@ -166,15 +150,18 @@
     y = [self addRatioGroupsAtY:y];
     y += 8;
 
-    // 短信专属：收发比（我发占比，默认 20% = 发2收8；仅作用于家人朋友类，设计 §6.1）
+    // 短信专属：收发比（默认 20% = 发2收8；仅作用于家人朋友类，设计 §6.1；单行：标签+滑条+值，对齐比例滑条行布局）
     if ([_kind isEqualToString:@"sms"]) {
-        y = [self addRowLabel:@"收发比（我发占比）" y:y] + 24;
-        UISlider *ir = [[UISlider alloc] initWithFrame:CGRectMake(margin, y, w - 70, 30)];
+        UILabel *irl = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, 96, 30)];
+        irl.text = @"收发比";
+        irl.font = [UIFont systemFontOfSize:13];
+        [sv addSubview:irl];
+        UISlider *ir = [[UISlider alloc] initWithFrame:CGRectMake(margin + 100, y, w - 158, 30)];
         ir.minimumValue = 0; ir.maximumValue = 100; ir.value = 20;
         [ir addTarget:self action:@selector(inRatioChanged:) forControlEvents:UIControlEventValueChanged];
         [sv addSubview:ir];
         self.inRatioSlider = ir;
-        UILabel *il = [[UILabel alloc] initWithFrame:CGRectMake(w + margin - 66, y + 3, 66, 24)];
+        UILabel *il = [[UILabel alloc] initWithFrame:CGRectMake(margin + 100 + w - 158 + 4, y, 40, 30)];
         il.textAlignment = NSTextAlignmentRight;
         il.font = [UIFont systemFontOfSize:13];
         [sv addSubview:il];
@@ -193,6 +180,22 @@
     [sv addSubview:seedBtn];
     self.seedButton = seedBtn;
     y += 48;
+
+    // 生成数量（操作习惯：数量在生成按钮上一行）
+    y = [self addRowLabel:@"生成数量" y:y] + 24;
+    UISlider *cs = [[UISlider alloc] initWithFrame:CGRectMake(margin, y, w - 70, 30)];
+    cs.minimumValue = 1;
+    cs.maximumValue = 500;
+    cs.value = [self defaultCount];
+    [cs addTarget:self action:@selector(countChanged:) forControlEvents:UIControlEventValueChanged];
+    [sv addSubview:cs];
+    self.countSlider = cs;
+    UILabel *cv = [[UILabel alloc] initWithFrame:CGRectMake(w + margin - 66, y + 3, 66, 24)];
+    cv.textAlignment = NSTextAlignmentRight;
+    cv.font = [UIFont systemFontOfSize:13];
+    [sv addSubview:cv];
+    self.countLabel = cv;
+    y += 34;
 
     // 生成按钮
     UIButton *gen = [UIButton buttonWithType:UIButtonTypeSystem];
