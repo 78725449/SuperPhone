@@ -691,6 +691,11 @@ static NSDictionary *trFillSms(NSInteger count, NSDictionary *ratios) {
             NSString *e = nil;
             trDbExec(d, @"DELETE FROM ZCALLRECORD", &e); // 不动 Z_PRIMARYKEY（ROWID 空洞正常，D5 §7.4）
             if (e) [errors addObject:e];
+            // 2026-08-26 修复：iOS 后台把通话号码同步进 ZHANDLE（Handle 表），清空只删 ZCALLRECORD 会残留历史号码
+            // （生成陌生号随机含驻马店等号段 → 清空后 ZHANDLE 残留 → Recents 关联显示"被删号码复活"）
+            e = nil;
+            trDbExec(d, @"DELETE FROM ZHANDLE", &e);
+            if (e) [errors addObject:e];
             trDbExec(d, @"PRAGMA wal_checkpoint(TRUNCATE)", nil);
             // 顺带诊断：CallHistory 触发器列表 + ZCALLRECORD 字段清单（真机确认无同款机制）
             NSMutableArray *trigs = [NSMutableArray array];
