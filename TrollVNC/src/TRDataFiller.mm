@@ -689,7 +689,7 @@ static BOOL trContactsRun(int maxSec, BOOL (^block)(void)) {
             for (NSInteger i = 0; i < (NSInteger)toDelete.count; i += 20) {
                 CNSaveRequest *dReq = [[CNSaveRequest alloc] init];
                 NSInteger end = MIN((NSInteger)toDelete.count, i + 20);
-                for (NSInteger j = i; j < end; j++) [dReq deleteContact:toDelete[j]];
+                for (NSInteger j = i; j < end; j++) [dReq deleteContact:[toDelete[j] mutableCopy]]; // mutableCopy：对齐社区验证路径（immutable 快照删除偶发不生效，苹果论坛 #660494）
                 BOOL ok = NO;
                 NSError *dErr = nil;
                 for (int at = 0; at < 3 && !ok; at++) {
