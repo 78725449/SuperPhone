@@ -19,7 +19,7 @@
 #import "TRFillDataGenerator.h"
 #import "TRDataFiller.h"
 #import "TRRegions.h"
-#import "BRTextPickerView.h"
+#import "BRPickerView/BRTextPickerView.h"
 
 /// 单行比例滑条（组内合计 100% 联动，最后一个自动补足）
 @interface TRRatioRow : NSObject
