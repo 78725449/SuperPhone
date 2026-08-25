@@ -121,7 +121,7 @@ static const double kSimAnchorRangeM = 20.0;
         _anchorSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
         dispatch_source_set_timer(_anchorSource, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSimAnchorTickInterval * NSEC_PER_SEC)),
                                   (uint64_t)(kSimAnchorTickInterval * NSEC_PER_SEC), 0);
-        __weak typeof(self) weakSelf = self;
+        __weak __typeof__(self) weakSelf = self; // 用 __typeof__（trollvncserver 的 -std=c++20 下 typeof 不可用，2026-08-25）
         dispatch_source_set_event_handler(_anchorSource, ^{
             [weakSelf _anchorTick];
         });
@@ -214,7 +214,7 @@ static const double kSimAnchorRangeM = 20.0;
     _trackSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
     dispatch_source_set_timer(_trackSource, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSimTrackTickInterval * NSEC_PER_SEC)),
                               (uint64_t)(kSimTrackTickInterval * NSEC_PER_SEC), 0);
-    __weak typeof(self) weakSelf = self;
+    __weak __typeof__(self) weakSelf = self; // 用 __typeof__（-std=c++20 下 typeof 不可用）
     dispatch_source_set_event_handler(_trackSource, ^{
         [weakSelf _trackTick];
     });
@@ -351,7 +351,7 @@ static const double kSimAnchorRangeM = 20.0;
     _patrolSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
     dispatch_source_set_timer(_patrolSource, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSimPatrolInterval * NSEC_PER_SEC)),
                               (uint64_t)(kSimPatrolInterval * NSEC_PER_SEC), 0);
-    __weak typeof(self) weakSelf = self;
+    __weak __typeof__(self) weakSelf = self; // 用 __typeof__（-std=c++20 下 typeof 不可用）
     dispatch_source_set_event_handler(_patrolSource, ^{
         [weakSelf reloadFromPrefs];
     });
