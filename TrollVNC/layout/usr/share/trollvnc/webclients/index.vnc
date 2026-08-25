@@ -208,36 +208,39 @@
   }
 
   /* ===== 定位模拟浮层（2026-08-24）：config.set 写 SimLocation*（预设城市/手动坐标/停止） ===== */
-  #locOverlay {
+  #locOverlay,
+  #fillOverlay {
     position: fixed; inset: 0; z-index: 30;
     background: rgba(0, 0, 0, .5);
     display: none; align-items: center; justify-content: center;
     padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   }
-  #locOverlay.show { display: flex; }
-  #locModal {
+  #locOverlay.show, #fillOverlay.show { display: flex; }
+  #locModal,
+  #fillModal {
     width: 100%; max-width: 340px;
     background: #fff; border-radius: 14px;
     padding: 16px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, .4);
   }
-  #locModal h3 { margin: 0 0 12px; font: 600 16px/24px system-ui, sans-serif; color: #1c1c1e; }
-  #locModal .row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  #locModal .lbl { width: 56px; flex: none; font: 13px/20px system-ui, sans-serif; color: #3a3a3c; }
-  #locModal input, #locModal select {
+  #locModal h3, #fillModal h3 { margin: 0 0 12px; font: 600 16px/24px system-ui, sans-serif; color: #1c1c1e; }
+  #locModal .row, #fillModal .row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  #locModal .lbl, #fillModal .lbl { width: 56px; flex: none; font: 13px/20px system-ui, sans-serif; color: #3a3a3c; }
+  #locModal input, #locModal select, #fillModal input, #fillModal select {
     flex: 1; min-width: 0;
     border: 1px solid rgba(0, 0, 0, .15); border-radius: 10px;
     font: 14px/20px system-ui, sans-serif; color: #1c1c1e;
     padding: 8px 10px; box-sizing: border-box; background: #f5f6f8;
   }
-  #locModal .btns { display: flex; gap: 8px; margin-top: 14px; }
-  #locModal .btns button {
+  #locModal .btns, #fillModal .btns { display: flex; gap: 8px; margin-top: 14px; }
+  #locModal .btns button, #fillModal .btns button {
     flex: 1; min-height: 40px;
     border: 1px solid rgba(0, 0, 0, .15); border-radius: 10px;
     font: 500 14px system-ui, sans-serif;
   }
-  #locModal .btns .ok { background: #2563eb; color: #fff; border-color: #2563eb; }
-  #locModal .btns .no { background: #f5f6f8; color: #1c1c1e; }
+  #locModal .btns .ok, #fillModal .btns .ok { background: #2563eb; color: #fff; border-color: #2563eb; }
+  #locModal .btns .no, #fillModal .btns .no { background: #f5f6f8; color: #1c1c1e; }
+  #fillModal .btns .danger { background: #ef4444; color: #fff; border-color: #ef4444; }
 
 </style>
 </head>
@@ -303,6 +306,26 @@
       <button class="no" id="locStop">停止</button>
       <button class="ok" id="locApply">应用定位</button>
       <button class="no" id="locClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 数据填充浮层（2026-08-25：data.fill 批量拟人生成 联系人/通话/短信；data.clear 清空对应库） -->
+<div id="fillOverlay">
+  <div id="fillModal">
+    <h3>📥 数据填充</h3>
+    <div class="row"><span class="lbl">库</span>
+      <select id="fillDb">
+        <option value="contacts">通讯录</option>
+        <option value="calls">通话记录</option>
+        <option value="sms">短信</option>
+      </select>
+    </div>
+    <div class="row"><span class="lbl">数量</span><input id="fillCount" type="number" min="1" max="1000" placeholder="1~1000 条"></div>
+    <div class="btns">
+      <button class="danger" id="fillClear">清空库</button>
+      <button class="ok" id="fillApply">生成</button>
+      <button class="no" id="fillClose">关闭</button>
     </div>
   </div>
 </div>
@@ -527,6 +550,8 @@ import RFB from './novnc/core/rfb.js';
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg>' },
     { op: 'loc',      label: '定位',   icon: '📍',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.2-5.4-6.2-10.2a6.2 6.2 0 1 1 12.4 0C18.2 15.6 12 21 12 21z"/><circle cx="12" cy="10.8" r="2.4"/></svg>' },
+    { op: 'fill',     label: '填充',   icon: '📥',
+      svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 17v3h16v-3"/></svg>' },
     { op: 'power',    label: '电源',   icon: '⏻',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v8"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>' },
     { op: 'disc',     label: '断开',   icon: '✕',
@@ -718,6 +743,10 @@ import RFB from './novnc/core/rfb.js';
       case 'loc':
         // 2026-08-24：定位模拟（config.set 写 SimLocation*，锚点模式/停止）
         openLocModal();
+        break;
+      case 'fill':
+        // 2026-08-25：数据填充（5802 data.fill 批量拟人生成 联系人/通话/短信；data.clear 清空）
+        openFillModal();
         break;
       case 'paste':
         // 2026-08-18：https 直读控制端剪贴板直贴；http 读不到 → 弹输入浮层（浮层内 Ctrl+V/回车自动注入）
@@ -1058,6 +1087,37 @@ import RFB from './novnc/core/rfb.js';
   document.getElementById('locApply').addEventListener('click', applyLoc);
   document.getElementById('locStop').addEventListener('click', stopLoc);
   document.getElementById('locClose').addEventListener('click', closeLocModal);
+
+  // ===== 数据填充（2026-08-25）：5802 data.fill 批量拟人生成（contacts/calls/sms）+ data.clear 清空 =====
+  var fillOverlay = document.getElementById('fillOverlay');
+  var FILL_NAMES = { contacts: '通讯录', calls: '通话记录', sms: '短信', all: '全部数据' };
+
+  function openFillModal() {
+    document.getElementById('fillCount').value = '';
+    fillOverlay.classList.add('show');
+  }
+  function closeFillModal() { fillOverlay.classList.remove('show'); }
+  function applyFill() {
+    var db = document.getElementById('fillDb').value;
+    var count = parseInt(document.getElementById('fillCount').value, 10);
+    if (isNaN(count) || count < 1 || count > 1000) { flashStatus('✗ 数量须为 1~1000', 'error'); return; }
+    // seed=0 随机种子；ratios 缺省走设备端内置拟人分布
+    mgmtRequest('data.fill', { db: db, count: count, seed: 0 }, function (resp) {
+      if (resp && resp.ok) { flashStatus('✓ 已生成 ' + count + ' 条' + FILL_NAMES[db], 'success'); closeFillModal(); }
+      else flashStatus('✗ 生成失败：' + ((resp && resp.error) || '未知'), 'error');
+    });
+  }
+  function clearFill() {
+    var db = document.getElementById('fillDb').value;
+    if (!window.confirm('确定清空' + (FILL_NAMES[db] || db) + '吗？此操作不可恢复。')) return;
+    mgmtRequest('data.clear', { db: db }, function (resp) {
+      if (resp && resp.ok) { flashStatus('✓ 已清空' + (FILL_NAMES[db] || db), 'success'); closeFillModal(); }
+      else flashStatus('✗ 清空失败：' + ((resp && resp.error) || '未知'), 'error');
+    });
+  }
+  document.getElementById('fillApply').addEventListener('click', applyFill);
+  document.getElementById('fillClear').addEventListener('click', clearFill);
+  document.getElementById('fillClose').addEventListener('click', closeFillModal);
 
   function copyTextToControl(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {

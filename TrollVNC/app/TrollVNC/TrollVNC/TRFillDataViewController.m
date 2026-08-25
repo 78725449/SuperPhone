@@ -18,6 +18,8 @@
 #import "TRFillDataViewController.h"
 #import "TRFillDataGenerator.h"
 #import "TRDataFiller.h"
+#import "TRRegions.h"
+#import "BRTextPickerView.h"
 
 /// 单行比例滑条（组内合计 100% 联动，最后一个自动补足）
 @interface TRRatioRow : NSObject
@@ -37,9 +39,13 @@
 @property (nonatomic, strong) UILabel *countLabel;
 @property (nonatomic, strong) UISegmentedControl *daysSeg;   // 时间范围（短信/通话）
 @property (nonatomic, strong) UISegmentedControl *carrierSeg;// 本人运营商（短信/通话）
-@property (nonatomic, strong) UISegmentedControl *citySeg;   // 常住地区（联系人）
+@property (nonatomic, strong) UILabel *cityProvinceLabel;    // 常住地区当前值（联系人；BRPickerView 省市选择）
+@property (nonatomic, strong) NSString *selectedProvince;    // 选中省（中文）
+@property (nonatomic, strong) NSString *selectedCity;        // 选中市（中文，区号表 key）
 @property (nonatomic, strong) UISlider *localRatioSlider;    // 本地占比（联系人）
 @property (nonatomic, strong) UILabel *localRatioLabel;
+@property (nonatomic, strong) UISlider *inRatioSlider;       // 收发比（短信，我发占比，默认 20%）
+@property (nonatomic, strong) UILabel *inRatioLabel;
 @property (nonatomic, strong) UIButton *seedButton;
 @property (nonatomic, strong) UILabel *resultLabel;
 @property (nonatomic, strong) UIScrollView *scrollView;
@@ -93,6 +99,16 @@
     [sv addSubview:title];
     y += 36;
 
+    // 通话/短信依赖提示（反差确认前提：联系人内选人依赖通讯录，D2 §3 UI 定稿）
+    if ([_kind isEqualToString:@"calls"] || [_kind isEqualToString:@"sms"]) {
+        UILabel *dep = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, w, 18)];
+        dep.text = @"基于通讯录生成，请先生成通讯录";
+        dep.font = [UIFont systemFontOfSize:12];
+        dep.textColor = [UIColor secondaryLabelColor];
+        [sv addSubview:dep];
+        y += 26;
+    }
+
     // 生成数量
     y = [self addRowLabel:@"生成数量" y:y] + 24;
     UISlider *cs = [[UISlider alloc] initWithFrame:CGRectMake(margin, y, w - 70, 30)];
@@ -109,15 +125,25 @@
     self.countLabel = cv;
     y += 34;
 
-    // 联系人专属：常住地区 + 本地占比
+    // 联系人专属：常住地区（BRPickerView 省市选择）+ 本地占比
     if ([_kind isEqualToString:@"contacts"]) {
         y = [self addRowLabel:@"常住地区" y:y] + 24;
-        UISegmentedControl *city = [[UISegmentedControl alloc] initWithItems:@[@"北京", @"上海", @"广州", @"深圳", @"成都"]];
-        city.selectedSegmentIndex = 0;
-        city.frame = CGRectMake(margin, y, w, 32);
-        [sv addSubview:city];
-        self.citySeg = city;
-        y += 40;
+        UIButton *cityBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        cityBtn.frame = CGRectMake(margin, y, w, 36);
+        [cityBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+        cityBtn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+        cityBtn.backgroundColor = [UIColor secondarySystemBackgroundColor];
+        cityBtn.layer.cornerRadius = 8;
+        [cityBtn addTarget:self action:@selector(showRegionPicker) forControlEvents:UIControlEventTouchUpInside];
+        [sv addSubview:cityBtn];
+        UILabel *cv = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, w - 24, 20)];
+        cv.text = @"北京";
+        cv.font = [UIFont systemFontOfSize:14];
+        [cityBtn addSubview:cv];
+        self.cityProvinceLabel = cv;
+        self.selectedProvince = @"北京";
+        self.selectedCity = @"北京";
+        y += 44;
 
         y = [self addRowLabel:@"本地占比" y:y] + 24;
         UISlider *lr = [[UISlider alloc] initWithFrame:CGRectMake(margin, y, w - 70, 30)];
@@ -156,6 +182,23 @@
     y = [self addRatioGroupsAtY:y];
     y += 8;
 
+    // 短信专属：收发比（我发占比，默认 20% = 发2收8；仅作用于家人朋友类，设计 §6.1）
+    if ([_kind isEqualToString:@"sms"]) {
+        y = [self addRowLabel:@"收发比（我发占比）" y:y] + 24;
+        UISlider *ir = [[UISlider alloc] initWithFrame:CGRectMake(margin, y, w - 70, 30)];
+        ir.minimumValue = 0; ir.maximumValue = 100; ir.value = 20;
+        [ir addTarget:self action:@selector(inRatioChanged:) forControlEvents:UIControlEventValueChanged];
+        [sv addSubview:ir];
+        self.inRatioSlider = ir;
+        UILabel *il = [[UILabel alloc] initWithFrame:CGRectMake(w + margin - 66, y + 3, 66, 24)];
+        il.textAlignment = NSTextAlignmentRight;
+        il.font = [UIFont systemFontOfSize:13];
+        [sv addSubview:il];
+        self.inRatioLabel = il;
+        y += 34;
+        [self refreshInRatioLabel];
+    }
+
     // 随机种子
     y = [self addRowLabel:@"随机种子（点击随机）" y:y] + 24;
     UIButton *seedBtn = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -179,6 +222,17 @@
     [gen addTarget:self action:@selector(generate:) forControlEvents:UIControlEventTouchUpInside];
     [sv addSubview:gen];
     y += 52;
+
+    // 清空按钮（设计 §7.3：确认弹窗，不可恢复）
+    UIButton *clearBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    clearBtn.frame = CGRectMake(margin, y, w, 40);
+    [clearBtn setTitle:[NSString stringWithFormat:@"清空全部%@", [self kindTitle]] forState:UIControlStateNormal];
+    [clearBtn setTitleColor:[UIColor systemRedColor] forState:UIControlStateNormal];
+    clearBtn.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    clearBtn.layer.cornerRadius = 8;
+    [clearBtn addTarget:self action:@selector(clearAll:) forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:clearBtn];
+    y += 48;
 
     UILabel *result = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, w, 60)];
     result.numberOfLines = 3;
@@ -281,7 +335,9 @@
         gi++;
     }
     if (self.localRatioSlider) self.localRatioSlider.value = 65;
+    if (self.inRatioSlider) self.inRatioSlider.value = 20;
     [self refreshRatioLabels];
+    [self refreshInRatioLabel];
     self.resultLabel.text = @"";
 }
 
@@ -399,32 +455,105 @@
     [self.seedButton setTitle:[NSString stringWithFormat:@"%llu", self.seed] forState:UIControlStateNormal];
 }
 
+#pragma mark - 省市选择器 / 收发比 / 清空
+
+/// 常住地区：BRPickerView 省市两列级联（数据源 = 构建产物 kRegions，民政部）
+- (void)showRegionPicker {
+    BRTextPickerView *picker = [[BRTextPickerView alloc] initWithPickerMode:BRTextPickerComponentCascade];
+    picker.dataSourceArr = [NSArray br_modelArrayWithJson:kRegions() mapper:nil];
+    picker.title = @"选择常住地区";
+    if (self.selectedProvince && self.selectedCity) {
+        picker.selectIndexs = @[[self provinceIndex], [self cityIndex]];
+    }
+    __weak typeof(self) ws = self;
+    picker.resultBlock = ^(NSArray *models, NSArray *indexs) {
+        __strong typeof(ws) ss = ws;
+        if (models.count >= 2) {
+            BRTextModel *p = models[0];
+            BRTextModel *c = models[1];
+            ss.selectedProvince = p.text;
+            ss.selectedCity = c.text;
+            ss.cityProvinceLabel.text = [NSString stringWithFormat:@"%@ · %@", p.text, c.text];
+        }
+    };
+    [picker show];
+}
+
+- (NSNumber *)provinceIndex {
+    NSArray *regions = kRegions();
+    for (NSUInteger i = 0; i < regions.count; i++) {
+        if ([[regions[i] valueForKey:@"text"] isEqualToString:self.selectedProvince]) return @(i);
+    }
+    return @(0);
+}
+- (NSNumber *)cityIndex {
+    for (NSDictionary *p in kRegions()) {
+        if ([[p valueForKey:@"text"] isEqualToString:self.selectedProvince]) {
+            NSArray *cities = [p valueForKey:@"children"];
+            for (NSUInteger i = 0; i < cities.count; i++) {
+                if ([[cities[i] valueForKey:@"text"] isEqualToString:self.selectedCity]) return @(i);
+            }
+            break;
+        }
+    }
+    return @(0);
+}
+
+- (void)inRatioChanged:(UISlider *)sender { [self refreshInRatioLabel]; self.resultLabel.text = @""; }
+- (void)refreshInRatioLabel {
+    if (self.inRatioLabel) self.inRatioLabel.text = [NSString stringWithFormat:@"%ld%%", (long)(NSInteger)self.inRatioSlider.value];
+}
+
+/// 清空本 Tab 数据（设计 §7.3：确认弹窗，不可恢复）
+- (void)clearAll:(UIButton *)sender {
+    UIAlertController *al = [UIAlertController alertControllerWithTitle:@"确认清空"
+        message:[NSString stringWithFormat:@"将清空全部%@，不可恢复", [self kindTitle]]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [al addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [al addAction:[UIAlertAction actionWithTitle:@"清空" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) {
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSDictionary *res = [TRDataFiller clearDatabase:_kind];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.resultLabel.text = [res[@"ok"] boolValue]
+                    ? [NSString stringWithFormat:@"已清空 %@ 条%@", res[@"cleared"], [self kindTitle]]
+                    : [NSString stringWithFormat:@"清空失败：%@", res[@"error"] ?: @"未知错误"];
+            });
+        });
+    }]];
+    [self presentViewController:al animated:YES completion:nil];
+}
+
 #pragma mark - 生成
 
-/// 汇总各比例组为 ratios 字典（键名对齐 TRDataFiller 契约）
+/// 汇总各比例组为 ratios 字典（键名对齐 TRDataFiller 契约，设计 §3）
 - (NSDictionary *)collectRatios {
     NSMutableDictionary *ratios = [NSMutableDictionary dictionary];
     if ([_kind isEqualToString:@"contacts"]) {
-        NSArray *keys = @[@"relFriends", @"relWork", @"relLife", @"relFamily", @"relBiz"];
+        NSArray *keys = @[@"friend", @"work", @"service", @"family", @"business"];
         NSArray *gr = [self rowsInGroup:0];
         for (NSUInteger i = 0; i < keys.count && i < gr.count; i++) {
             ratios[keys[i]] = @([(TRRatioRow *)gr[i] slider].value / 100.0);
         }
-        if (self.localRatioSlider) ratios[@"localRatio"] = @(self.localRatioSlider.value / 100.0);
-        if (self.citySeg) ratios[@"city"] = @[@"beijing", @"shanghai", @"guangzhou", @"shenzhen", @"chengdu"][self.citySeg.selectedSegmentIndex];
+        if (self.localRatioSlider) ratios[@"regionLocal"] = @(self.localRatioSlider.value / 100.0);
+        if (self.selectedCity) {
+            ratios[@"city"] = self.selectedCity;     // 中文城市名（区号表 key）
+            ratios[@"province"] = self.selectedProvince ?: @"";
+        }
     } else if ([_kind isEqualToString:@"sms"]) {
-        NSArray *keys = @[@"typeSms", @"typeExpress", @"typeBank", @"typeCarrier", @"typeMarketing", @"typePersonal"];
+        NSArray *keys = @[@"code", @"express", @"bank", @"carrierSms", @"marketing", @"family"];
         NSArray *gr = [self rowsInGroup:0];
         for (NSUInteger i = 0; i < keys.count && i < gr.count; i++) {
             ratios[keys[i]] = @([(TRRatioRow *)gr[i] slider].value / 100.0);
         }
+        if (self.inRatioSlider) ratios[@"inRatio"] = @(self.inRatioSlider.value / 100.0);
         ratios[@"days"] = @[@1, @3, @7, @30][self.daysSeg.selectedSegmentIndex];
         ratios[@"carrier"] = @[@"cmcc", @"cucc", @"ctcc"][self.carrierSeg.selectedSegmentIndex];
     } else { // calls
-        NSArray *knownKeys = @[@"knownRatio"];
         NSArray *g0 = [self rowsInGroup:0];
-        ratios[knownKeys[0]] = @([(TRRatioRow *)g0[0] slider].value / 100.0);
-        NSArray *statusKeys = @[@"statusIn", @"statusOut", @"statusMissed"];
+        double contact = [(TRRatioRow *)g0[0] slider].value / 100.0;
+        ratios[@"contact"] = @(contact);
+        ratios[@"stranger"] = @(1.0 - contact);
+        NSArray *statusKeys = @[@"incoming", @"outgoing", @"missed"];
         NSArray *g1 = [self rowsInGroup:1];
         for (NSUInteger i = 0; i < statusKeys.count && i < g1.count; i++) {
             ratios[statusKeys[i]] = @([(TRRatioRow *)g1[i] slider].value / 100.0);

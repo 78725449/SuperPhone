@@ -3709,6 +3709,8 @@ static rfbBool tvExtHandleMessage(rfbClientPtr cl, void *data,
         resp = tvExtHandleDataProbe(cl, params);
     } else if ([op isEqualToString:@"data.fill"]) {
         resp = tvExtHandleDataFill(cl, params);
+    } else if ([op isEqualToString:@"data.clear"]) {
+        resp = tvExtHandleDataClear(cl, params);
     } else if ([op isEqualToString:@"data.read"]) {
         resp = tvExtHandleDataRead(cl, params);
     } else {
@@ -4056,6 +4058,15 @@ static NSDictionary *tvExtHandleDataFill(rfbClientPtr cl, NSDictionary *params) 
     return [TRDataFiller fillDatabase:db count:count seed:seed ratios:ratios];
 }
 
+// data.clear 清空数据（2026-08-25）：与 data.fill 对称，5801 直连页「清空库」按钮走此入口。
+static NSDictionary *tvExtHandleDataClear(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    NSString *db = params[@"db"];
+    if (![db isKindOfClass:[NSString class]])
+        return tvExtErr(@"data.clear 缺少参数 db（contacts/calls/sms/all）");
+    return [TRDataFiller clearDatabase:db];
+}
+
 // ===== data.read 数据读取验证（2026-08-24）=====
 // 读取指定库现有数据（最近 N 条），验证「读取链路 + 系统数据格式」——写入前的先决验证。
 
@@ -4178,6 +4189,8 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         return tvExtHandleDataProbe(NULL, params);
     } else if ([op isEqualToString:@"data.fill"]) {
         return tvExtHandleDataFill(NULL, params);
+    } else if ([op isEqualToString:@"data.clear"]) {
+        return tvExtHandleDataClear(NULL, params);
     } else if ([op isEqualToString:@"data.read"]) {
         return tvExtHandleDataRead(NULL, params);
     }

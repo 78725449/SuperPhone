@@ -970,7 +970,7 @@ script app.js?v=170（type=module）
 | 2 | `tunnel-test.js` | 隧道通道复用（proto:2）：FakeDevice（register + openTunnel 握手 proto:2 + 帧解析 + CHAN_OPEN 自动 ack）；viewOnly 会话收 CHAN_OPEN + 收到 CHAN_DATA；viewOnly 上行→CHAN_DATA；ctrl 输入→CHAN_DATA；新 ctrl 顶掉旧 ctrl（4001）；broadcast 输入→目标设备会话通道 |
 | 3 | `register-test.js` | P0 注册/心跳/命令：WS /ws/register 已废弃（4000）；TCP 注册带 manifest，能力字段被网关剥离不入库；invoke ack 往返；不 ack 设备 invoke→504；configs set ack；断开→离线→离线 invoke 504；TCP hello 保活；batch 端点可达 |
 | 4 | `dedupe-test.js` | 去重/身份合并：同 deviceId 重复注册仍 1 条、旧连接被关；manual+register 同 host:port 合并为 deviceId；已注册设备不被 manual 降级 |
-| 5 | `caps-test.js` | caps.js 自包含定义契约：BATCH_CAPS=20 且每项含 id/title/icon/category/params、含 service.restart；CONFIG_DEFS=33（2026-08-23 定位 +5 SimLocation*，七板块 group 均非空、仅 FabAutoCollapse 为 null、不含 BonjourEnabled/ViewOnlyPassword）且不含 Port$ 项且每项含 reload；KEY_DEFS=10；groupByCategory=3 组；GESTURE_DEFS=3 |
+| 5 | `caps-test.js` | caps.js 自包含定义契约：BATCH_CAPS=22（2026-08-25 +data.fill/data.clear）且每项含 id/title/icon/category/params、含 service.restart；CONFIG_DEFS=33（2026-08-23 定位 +5 SimLocation*，七板块 group 均非空、仅 FabAutoCollapse 为 null、不含 BonjourEnabled/ViewOnlyPassword）且不含 Port$ 项且每项含 reload；KEY_DEFS=10；groupByCategory=3 组；GESTURE_DEFS=3 |
 | 6 | `gesture-test.js` | gesture.js 契约：GESTURE_DEFS 与 resolveGesture 三态覆盖一致；normalizePoint 中心/越界钳制/无 rect 兜底；pinch scale>1/<1/钳制 [0.5,2.0]/≈1 跳过 null；未知类型 null |
 | 7 | `pending-replay-test.js` | 回归（proto:2 通道隔离）：会话 A 建立收 CHAN_OPEN + 画面帧；A 关闭网关下发 CHAN_CLOSE；设备推旧通道残留帧 → 按 chanId 分发无订阅者丢弃；重进会话 B 新通道号 ≠ A；会话 B 600ms 窗口内不得收到旧残留数据 |
 | 8 | `press-test.js` | press.js 时序：volup 按下 down、抬起 up、不补 click；home 双击→home.double；单击窗口超时→click；按住 900ms→home.long；power 三击→power.triple |
@@ -1341,7 +1341,7 @@ node scripts/wait-ipa.mjs <runId>
 |---|---|---|---|
 | 测试套件数 | 8（AGENTS.md / 说明文档.md） | **11**（package.json 串行 11 个：…/events-test.js + `tunnel-thumb-test.js`，2026-08-22 改测缩略图 RFB 流） | ✅ 已修复：说明文档.md 已同步为 11 套件，套件列表补 `events`、`tunnel-thumb`。**AGENTS.md 需同步**（仍写 10 套件） |
 | CONFIG_DEFS 项数 | 38（2026-08-17 校准）/ 37 | **33 项**（caps.js 实际 33，`caps-test.js` 断言 `=== 33`；2026-08-20 配置治理 37→29；2026-08-21 采集架构升级 29→30；2026-08-22 统一到 RFB 30→28：-ThumbPushEnabled/ThumbInterval；**2026-08-23 定位 +5 SimLocation* 28→33**，设备端 `_registerConfigSchemas` 35 项） | ✅ 已修复：说明文档.md、CodeWiki 同步为 33。**AGENTS.md 需同步**（仍写 30 项相关描述） |
-| BATCH_CAPS | 20（两文档一致） | 20（一致） | — 无需修复 |
+| BATCH_CAPS | 22（两文档一致，2026-08-25 +data.fill/data.clear） | 22（一致） | ✅ 已修复：说明文档.md §4.1 同步为 22 |
 | KEY_DEFS | 10（两文档一致） | 10（一致） | — 无需修复 |
 | GESTURE_DEFS | 3（两文档一致） | 3（一致） | — 无需修复 |
 

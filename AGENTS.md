@@ -27,7 +27,7 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
 
 - 端口全固定：5901 RFB（画面+命令扩展消息 0x50/0x80）/ 5801 直连页 / 5802 直连页管理 API（HTTP，v3）/ 5902 远程日志端点（manager 常驻，GET /stderr|/stdout 返回崩溃日志尾部 64KB）/ 8080 控制台 / 18081 注册 / 18181 隧道；端口不可调。
 - **能力层唯一地基**：设备操作只走 RFB → IOHID 注入，禁止前端自造输入协议；无通用 `/command` 端点（已删，禁止回归）。
-- **前端契约两端对齐**：`trollvnc-farm/web/caps.js` 自包含定义（KEY_DEFS 10 / BATCH_CAPS 20 / CONFIG_DEFS 33），设备端 `TRCapabilityRegistry` 只存 executor；新增能力 = 两端各加一条，无上报、无元数据表、无运行时发现。
+- **前端契约两端对齐**：`trollvnc-farm/web/caps.js` 自包含定义（KEY_DEFS 10 / BATCH_CAPS 22 / CONFIG_DEFS 33），设备端 `TRCapabilityRegistry` 只存 executor；新增能力 = 两端各加一条，无上报、无元数据表、无运行时发现。
 - 单会话约束：设备仅 1 条隧道 + 1 个 5901 连接，同设备同时仅 1 个活跃 VNC 会话；纯隧道（无直连回退、无反向模式）。
 - 状态以网关为准：前端不持久化设备状态，刷新一律从网关拉取。
 - **剪贴板是显式双向搬运（2026-08-17 起，无自动同步）**：复制=拉（clipboard.get）、粘贴=推（type.paste）；**粘贴的 http 降级（2026-08-18 定稿）**：http 读不到控制端剪贴板 → 粘贴按钮与 Ctrl+V **一律弹输入浮层**（PC/触屏统一，浮层内 Ctrl+V 或回车自动注入），https 直读直贴——已废弃隐藏 textarea「第二次点击/Ctrl+V 提交」方案，禁止回归。
@@ -82,3 +82,5 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
 - **App 原生定位（2026-08-24）**：地图当前位置走 `showsUserLocation`（自定义 MKUserLocation 水滴）+ `MKUserTrackingModeFollow`（原生跟随，拖动自动退出）；真实定位用 `CLLocationManager`（`requestWhenInUseAuthorization`，Info.plist 需 `NSLocationWhenInUseUsageDescription`）。**必须显式 `#import <CoreLocation/CoreLocation.h>`**（MapKit 头不保证带 CLLocationManager 声明，bootstrap SDK 场景同 MKGeometry 教训）。当前位置数据源统一 locationd（模拟开启=注入位置/关闭=真实位置），无 plist 回退——改位置读取时勿加回"轮询 daemon 写回 plist"旧路径。
 - **定位坐标禁止硬编码（2026-08-24）**：全项目（App/网关 web/5801）已移除预设城市坐标与硬编码初始坐标（App 初始 `self.cur`=0,0 + 无效坐标守卫；网关 web 与 5801 定位面板仅**手动坐标输入**）。**新增定位 UI/逻辑禁止出现预设坐标或硬编码经纬度**（如 `39.9042,116.4074`），初始视野/聚焦一律以 locationd（真实）为准；测试脚本坐标除外。
 - **AutoLayout 约束视图的 layer 内容布局前 bounds 为 0（2026-08-25 实测）**：`translatesAutoresizingMaskIntoConstraints=NO` 的视图在约束布局前 `bounds` 为 (0,0)——直接 `layer.frame = view.bounds` 的 CAGradientLayer/CAShapeLayer 会变成 0×0 不显示（本次 FAB 渐变金底近乎透明根因）。**必须**：创建时用固定尺寸兜底（约束已知固定 56×56 就写死）+ `viewDidLayoutSubviews` 里同步 `layer.frame = view.bounds`。排查特征：子 layer 内容看不到、只露出 `backgroundColor`（或 clearColor 时近乎透明）。
+- **5801 直连页可用能力 ≠ 注册表能力（2026-08-25，data.clear 踩坑）**：`TRCapabilityRegistry` 注册（manager 进程）只保证网关 invoke 通道可用；5801 直连页 mgmtRequest 走设备 **5802 HTTP → trollvncserver 进程**，若只在注册表注册而 5802/0x50 分派（`tvHttpApiDispatch`/`tvExtHandleMessage`）没补分支，直连页会收「未知操作」。**新增数据/管理类能力三处补齐**：注册表 + 0x50 分派 + 5802 分派（handler 用 `tvExtHandle*` 纯函数，cl 传 NULL 复用）。
+- **caps.js 改动必须递增 `?v=N`（2026-08-25 补坑）**：阶段 2 改 `trollvnc-farm/web/caps.js`（+data.clear，BATCH_CAPS 21→22）漏递增 `app.js` 里 `caps.js?v=13` → 浏览器缓存旧 caps 不出现新能力。**凡改 caps.js/前端静态资源，同 commit 递增引用处 `?v=N`**（网关 app.js 的 caps.js/rfb.js 引用号、index.html 的 app.js/style.css 引用号）。
