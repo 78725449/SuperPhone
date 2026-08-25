@@ -1,7 +1,8 @@
 // TRRegions.mm —— 构建产物（勿手改，改 regions.json 后重跑 build-tr-regions.mjs；构建于 2026-08-25）
 #import "TRRegions.h"
 
-NSArray *kRegions(void) {
+// extern "C"：本函数被 ObjC（.m）侧 TRFillDataViewController 调用，需 C linkage（.mm 默认 C++ mangled，会链接不到 _kRegions）
+extern "C" NSArray *kRegions(void) {
     return @[
     @{@"text": @"安徽省", @"children": @[@{@"text": @"安庆市"}, @{@"text": @"蚌埠市"}, @{@"text": @"亳州市"}, @{@"text": @"池州市"}, @{@"text": @"滁州市"}, @{@"text": @"阜阳市"}, @{@"text": @"合肥市"}, @{@"text": @"淮北市"}, @{@"text": @"淮南市"}, @{@"text": @"黄山市"}, @{@"text": @"六安市"}, @{@"text": @"马鞍山市"}, @{@"text": @"宿州市"}, @{@"text": @"铜陵市"}, @{@"text": @"芜湖市"}, @{@"text": @"宣城市"}]},
     @{@"text": @"北京市", @"children": @[@{@"text": @"北京市"}]},
