@@ -54,6 +54,10 @@
     NSString *_kind;
 }
 
+// 常住地区持久化（NSUserDefaults 用户偏好：选择后长效保持，下次进 App 自动带出；清空数据不影响）
+static NSString *const kResidentProvinceKey = @"TRFillResidentProvince";
+static NSString *const kResidentCityKey = @"TRFillResidentCity";
+
 - (instancetype)initWithKind:(NSString *)kind {
     self = [super initWithNibName:nil bundle:nil];
     if (self) {
@@ -102,12 +106,23 @@
         [cityBtn addTarget:self action:@selector(showRegionPicker) forControlEvents:UIControlEventTouchUpInside];
         [sv addSubview:cityBtn];
         UILabel *cv = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, w - 24, 20)];
-        cv.text = @"北京";
         cv.font = [UIFont systemFontOfSize:14];
+        // 常住地区长效化（2026-08-26）：首次=「请选择」占位（未选禁止生成）；选择后 NSUserDefaults 持久化，
+        // 下次进 App 自动带出上次省市——未持久化前旧行为是硬编码默认「北京」
+        NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+        NSString *savedProvince = [ud stringForKey:kResidentProvinceKey];
+        NSString *savedCity = [ud stringForKey:kResidentCityKey];
+        if (savedProvince.length && savedCity.length) {
+            cv.text = [NSString stringWithFormat:@"%@ · %@", savedProvince, savedCity];
+            cv.textColor = [UIColor labelColor];
+            self.selectedProvince = savedProvince;
+            self.selectedCity = savedCity;
+        } else {
+            cv.text = @"请选择";
+            cv.textColor = [UIColor secondaryLabelColor];   // 灰色占位：未选则生成联系人被拦截
+        }
         [cityBtn addSubview:cv];
         self.cityProvinceLabel = cv;
-        self.selectedProvince = @"北京";
-        self.selectedCity = @"北京";
         y += 44;
     }
 
@@ -495,6 +510,12 @@
             ss.selectedProvince = p.text;
             ss.selectedCity = c.text;
             ss.cityProvinceLabel.text = [NSString stringWithFormat:@"%@ · %@", p.text, c.text];
+            ss.cityProvinceLabel.textColor = [UIColor labelColor];
+            // 长效化：写入 defaults，下次进 App 自动带出（用户偏好，清空数据不影响）
+            NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+            [ud setObject:p.text forKey:kResidentProvinceKey];
+            [ud setObject:c.text forKey:kResidentCityKey];
+            [ud synchronize];
         }
     };
     [picker show];
@@ -597,6 +618,12 @@
 }
 
 - (void)generate:(UIButton *)sender {
+    // 常住地区门禁（2026-08-26 定稿）：联系人本地号按常住城市 HLR 号段生成，未选地区不允许生成
+    if ([_kind isEqualToString:@"contacts"] && self.selectedCity.length == 0) {
+        [self showResultDialogWithIcon:@"!" color:[UIColor systemOrangeColor] title:@"请先选择常住地区"
+            detail:@"联系人本地号按常住地区号段生成，请先选择「常住地区」省市"];
+        return;
+    }
     NSInteger count = (NSInteger)self.countSlider.value;
     NSDictionary *ratios = [self collectRatios];
     // seed=0：完全随机（设备端 fillDatabase 内部时间随机；前端种子组件已移除，每次生成不可复现——符合随机拟真目标）
