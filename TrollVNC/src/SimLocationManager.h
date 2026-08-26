@@ -52,10 +52,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// 停止 wifi 扫描模拟：stopWifiSimulation + setSimulatedWifiPower:NO（恢复真实扫描源）
 - (void)stopWifiScanSimulation;
 
-/// 构建 setWifiScanResults: 的字典数组（初始猜想键名，待 XPC 取证校准）
-/// 输入：kWpsBssids 标准格式 BSSID 数组（见 WpsBssidData.h）
+/// 构建 setWifiScanResults: 的字典数组（NSString 版——规避 C 字符串生命周期，动态反查用）
+/// 输入：NSString BSSID 数组；每项含 bssid/ssid/rssi/channel/age/timestamp（键名待 XPC 取证校准）
 /// rssi 随机 -40~-85 dBm（决定 wifi 源精度 10-100m，与 GPS 源 5-30m 区分）
-+ (NSArray<NSDictionary *> *)buildScanResultsFromBssids:(const char **)bssids count:(NSUInteger)count;
++ (NSArray<NSDictionary *> *)buildScanResultsFromBssidStrings:(NSArray<NSString *> *)bssids;
 
 /// 当前 wifi 模拟是否开启
 @property(nonatomic, assign, readonly) BOOL isWifiSimulating;

@@ -21,7 +21,7 @@
 #import <CoreLocation/CoreLocation.h> // 真实定位（未模拟定位时显示系统蓝点并聚焦）
 #import <notify.h>
 #import "CoordTransform.h"
-#import "WpsBssidData.h" // kWpsBssids/kWpsBssidCount（模拟位置的 BSSID 集，与 A 层注入同源）
+#import "TRWpsTile.h" // 坐标→BSSID 动态反查（模拟分支按当前位置反查，与 daemon 注入同源；轨迹跟随）
 #import "RegionSimulator.h"
 #import "SimRouteCalculator.h"
 #import "TVNCHotspotManager.h"
@@ -438,30 +438,52 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 }
 
 /// 系统扫描回调到达 → 自动反查并更新地图 wifi 位置（无按钮，随扫描被动更新；自动模式不弹窗、不聚焦）
-/// 语义（用户拍板 2026-08-27）：模拟开启时显示模拟位置的 BSSID 反查（与 GPS 同源，全链路统一伪装观感）；
-/// 关闭时显示真实 wifi 位置（NEHotspotHelper 真实扫描结果）。
+/// 语义（用户拍板 2026-08-27）：模拟开启时按模拟当前位置动态反查 BSSID（TRWpsTile 瓦片反查与 daemon
+/// 注入同源，标注随模拟路径移动）；关闭时显示真实 wifi 位置（NEHotspotHelper 真实扫描结果）。
 - (void)handleWifiScanUpdate:(NSArray *)nets summary:(NSString *)summary {
     NSUInteger seq = ++self.wifiQuerySeq;
-    NSMutableArray *bssids = [NSMutableArray array];
     if (self.locating) {
-        // 模拟开启：用内置模拟位置 BSSID 集（与 A 层注入同源 kWpsBssids），显示模拟位置
-        for (NSUInteger i = 0; i < kWpsBssidCount; i++) {
-            [bssids addObject:[NSString stringWithUTF8String:kWpsBssids[i]]];
+        // 模拟开启：按模拟当前位置动态反查 BSSID（TRWpsTile，与 daemon 注入同源；轨迹跟随）
+        CLLocationCoordinate2D curW = [CoordTransform gcj02ToWgs84:self.cur];
+        if (curW.latitude != 0 || curW.longitude != 0) {
+            NSUInteger seqHere = ++self.wifiQuerySeq;
+            __weak typeof(self) wSelf = self;
+            [[TRWpsTile sharedClient] queryBssidsForCoordinate:curW force:NO completion:^(NSArray<TRWpsTileAP *> *aps, NSError *error) {
+                __strong typeof(self) sSelf = wSelf;
+                if (!sSelf) return;
+                if (seqHere != sSelf.wifiQuerySeq) return; // 过期回调丢弃（竞态防护，同机制）
+                if (error || aps.count == 0) {
+                    // 反查失败/空静默（TRWpsTile 负缓存已挡重试风暴；不打扰用户）
+                    return;
+                }
+                NSMutableArray *bssids = [NSMutableArray arrayWithCapacity:aps.count];
+                for (TRWpsTileAP *ap in aps) [bssids addObject:ap.bssid];
+                [sSelf _queryWifiAnnoWithBssids:bssids seq:seqHere]; // 复用反查+标注显示
+            }];
+            return; // 动态路径走完（不落固定 BSSID 集）
         }
-    } else {
-        // 模拟关闭：用真实扫描结果（NEHotspotHelper）
-        for (NEHotspotNetwork *net in nets) {
-            if (net.BSSID.length >= 17) [bssids addObject:net.BSSID.uppercaseString];
-        }
+        // cur 无效（未定位）：不显示模拟位置
+        return;
     }
+    // 模拟关闭：用真实扫描结果（NEHotspotHelper）
+    NSMutableArray *bssids = [NSMutableArray array];
+    for (NEHotspotNetwork *net in nets) {
+        if (net.BSSID.length >= 17) [bssids addObject:net.BSSID.uppercaseString];
+    }
+    [self _queryWifiAnnoWithBssids:bssids seq:seq]; // 空列表在方法内统一处理（清除残留）
+}
+
+/// 用给定 BSSID 集合反查并更新 wifi 标注（动态反查与真实扫描共用；seq 竞态防护，丢弃过期回调）
+- (void)_queryWifiAnnoWithBssids:(NSArray<NSString *> *)bssids seq:(NSUInteger)seq {
     if (bssids.count == 0) {
-        [self removeWifiAnnotationIfExists]; // 无真实扫描结果时清除残留 wifi 标注（模拟开启时 bssids 恒非空，不受影响）
+        [self removeWifiAnnotationIfExists]; // 无 BSSID 清除残留（同现有空列表分支语义）
         return;
     }
     __weak typeof(self) weakSelf = self;
     [[TRWpsClient sharedClient] queryCoordinatesForBssids:bssids completion:^(NSDictionary<NSString *,CLLocation *> *result,
         CLLocationCoordinate2D centroid, BOOL hasValid, NSError *error) {
         __strong typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
         if (seq != strongSelf.wifiQuerySeq) return; // 过期回调丢弃（模拟/真实切换竞态防护）
         if (error || !hasValid) {
             strongSelf.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: 反查失败%@ 注册%@ 回调%ld 列表%ld BSSID%ld",

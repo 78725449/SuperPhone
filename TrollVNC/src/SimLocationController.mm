@@ -11,7 +11,7 @@
 
 #import "SimLocationManager.h"
 #import "SimRouteCalculator.h" // haversineMeters（与 App 截断同度量，选最近续播点）
-#import "WpsBssidData.h" // kWpsBssids/kWpsBssidCount（统一目标位置源的 wifi BSSID 集）
+#import "TRWpsTile.h" // 坐标→BSSID 动态反查（daemon 注入 wifi 模拟源）
 #import "Logging.h"
 #import <math.h>
 
@@ -173,16 +173,41 @@ static const double kSimAnchorRangeM = 20.0;
                                               speed:speed];
 }
 
-/// 统一目标位置源：wifi 扫描模拟与 GPS 同源注入（用户拍板——锚点/轨迹点同时驱动两条管线）
-/// 当前阶段用内置 kWpsBssids（杭州数据）；跨区域 BSSID 集待 tile 动态反查（Phase 后续）
+/// 统一目标位置源：wifi 扫描模拟与 GPS 同源注入（动态反查——按当前坐标 tile 查 BSSID 注入）
+/// 设计文档 §坐标→SSID 反查：动态+预取混合；轨迹移动时随 _current 变化
 /// 真机验证点：
-/// 1. injectPoint: 的 clearSimulatedLocations 是否连带清 wifi 模拟（若会，GPS 每秒注入打断 wifi 管线，需调注入序列）
-/// 2. 总开关关闭后 GPS + wifi 是否都恢复真实（5902 日志确认 [locsim] wifi simulation stopped）
+/// 1. injectPoint: 的 clearSimulatedLocations 是否连带清 wifi 模拟（若会则需注入后兜底重注）
+/// 2. 总开关关闭后 GPS + wifi 是否都恢复真实（5902 日志确认）
 - (void)_injectWifiSimulationForCurrentLocation {
-    NSArray *scanResults = [SimLocationManager buildScanResultsFromBssids:kWpsBssids count:kWpsBssidCount];
-    if (scanResults.count) {
-        [[SimLocationManager sharedManager] injectWifiScanResults:scanResults];
+    CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
+    if (coord.latitude == 0 && coord.longitude == 0) return; // 无当前位置
+    __weak __typeof__(self) weakSelf = self;
+    [[TRWpsTile sharedClient] queryBssidsForCoordinate:coord force:NO completion:^(NSArray<TRWpsTileAP *> *aps, NSError *error) {
+        __strong __typeof__(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (error || aps.count == 0) {
+            // 反查失败/空：保持现状（负缓存已挡重试风暴；不打断已有 wifi 模拟）
+            TVLog(@"[locsim] tile query skipped: %@", error.localizedDescription ?: @"no APs");
+            return;
+        }
+        // 取前 100 个代表性 AP（避免注入请求过大，locationd 解算足够）
+        NSArray<NSString *> *sample = [strongSelf _sampleBssids:aps max:100];
+        NSArray *scanResults = [SimLocationManager buildScanResultsFromBssidStrings:sample];
+        if (scanResults.count) {
+            [[SimLocationManager sharedManager] injectWifiScanResults:scanResults];
+            TVLog(@"[locsim] wifi simulation inject, %lu APs (dynamic)", (unsigned long)scanResults.count);
+        }
+    }];
+}
+
+/// 取前 max 个 BSSID（动态反查结果采样，避免注入请求过大）
+- (NSArray<NSString *> *)_sampleBssids:(NSArray<TRWpsTileAP *> *)aps max:(NSUInteger)max {
+    NSMutableArray *bssids = [NSMutableArray arrayWithCapacity:MIN(max, aps.count)];
+    NSUInteger n = MIN(max, aps.count);
+    for (NSUInteger i = 0; i < n; i++) {
+        [bssids addObject:aps[i].bssid];
     }
+    return bssids;
 }
 
 - (void)_stopAnchor {
@@ -221,7 +246,7 @@ static const double kSimAnchorRangeM = 20.0;
         startIdx = best;
     }
     [self _injectPointDict:points[startIdx]];
-    [self _injectWifiSimulationForCurrentLocation]; // 轨迹在目标城市范围内共用同一 BSSID 集；跨区域动态反查属 Phase 后续
+    [self _injectWifiSimulationForCurrentLocation]; // 首点坐标反查（动态 tile 查 BSSID；跨瓦片时重新触发注入即自动换源，跟随 _current）
     _trackIndex = startIdx + 1;
     _trackFinished = NO;
     if (_trackSource) {

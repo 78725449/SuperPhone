@@ -10,7 +10,6 @@
 #import "SimLocationManager.h"
 
 #import <CoreLocation/CoreLocation.h>
-#import "WpsBssidData.h"
 
 /**
  * CLSimulationManager 私有接口声明（自写，参考逆向公开知识；不复制 GPL 源码）。
@@ -140,15 +139,12 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     NSLog(@"[locsim] wifi simulation stopped");
 }
 
-+ (NSArray<NSDictionary *> *)buildScanResultsFromBssids:(const char **)bssids count:(NSUInteger)count {
-    if (!bssids || count == 0) return @[];
-    NSMutableArray *results = [NSMutableArray arrayWithCapacity:count];
++ (NSArray<NSDictionary *> *)buildScanResultsFromBssidStrings:(NSArray<NSString *> *)bssids {
+    if (bssids.count == 0) return @[];
+    NSMutableArray *results = [NSMutableArray arrayWithCapacity:bssids.count];
     double now = [[NSDate date] timeIntervalSince1970];
-    for (NSUInteger i = 0; i < count; i++) {
-        const char *raw = bssids[i];
-        if (!raw) continue;                                   // NULL 兜底
-        NSString *bssid = [NSString stringWithUTF8String:raw];
-        if (!bssid) continue;                                 // 非法 UTF-8 兜底
+    for (NSString *bssid in bssids) {
+        if (bssid.length == 0) continue;                      // 空串兜底
         double rssi = -40.0 - (double)(arc4random_uniform(4500)) / 100.0; // -40 ~ -85 dBm
         [results addObject:@{
             @"bssid"     : bssid,
