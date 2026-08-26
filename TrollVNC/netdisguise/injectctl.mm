@@ -8,6 +8,8 @@
 #import <spawn.h>
 #import <sys/wait.h>
 #import <sys/stat.h>
+#import <sys/sysctl.h>
+#import <signal.h>
 #import <fcntl.h>
 #import <stdio.h>
 #import <errno.h>
@@ -89,6 +91,25 @@ static NSString *ndFindAppDir(NSString *bundleId) {
     return nil;
 }
 
+// 终止目标 app：sysctl 枚举进程 + kill（iOS /usr/bin 无 killall，不依赖外部二进制）
+static void ndKillApp(NSString *procName) {
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
+    size_t size = 0;
+    if (sysctl(mib, 4, NULL, &size, NULL, 0) != 0 || size == 0) return;
+    struct kinfo_proc *procs = (struct kinfo_proc *)malloc(size);
+    if (!procs) return;
+    if (sysctl(mib, 4, procs, &size, NULL, 0) == 0) {
+        size_t count = size / sizeof(struct kinfo_proc);
+        for (size_t i = 0; i < count; i++) {
+            char *comm = procs[i].kp_proc.p_comm;
+            if (comm && strcmp(comm, procName.UTF8String) == 0) {
+                kill(procs[i].kp_proc.p_pid, SIGKILL);
+            }
+        }
+    }
+    free(procs);
+}
+
 static int ndInject(NSString *bundleId, NSMutableString *log) {
     NSString *appDir = ndFindAppDir(bundleId);
     if (!appDir) {
@@ -102,12 +123,14 @@ static int ndInject(NSString *bundleId, NSMutableString *log) {
     if (!exeName) return -2;
 
     // 1. 终止目标 app
-    ndRun(@"/usr/bin/killall", @[@"-9", exeName], nil, log);
+    ndKillApp(exeName);
 
     // 2. 准备 Frameworks 目录并复制 dylib
     NSString *fwDir = [appDir stringByAppendingPathComponent:@"Frameworks"];
+    NSError *mkErr = nil;
     [[NSFileManager defaultManager] createDirectoryAtPath:fwDir
-                              withIntermediateDirectories:YES attributes:nil error:NULL];
+                              withIntermediateDirectories:YES attributes:nil error:&mkErr];
+    if (mkErr) [log appendFormat:@"mkdir Frameworks failed: %@\n", mkErr];
     NSString *dylibSrc = [gToolDir stringByAppendingPathComponent:@"netdisguise.dylib"];
     NSString *dylibDst = [fwDir stringByAppendingPathComponent:@"netdisguise.dylib"];
     if (![[NSFileManager defaultManager] fileExistsAtPath:dylibSrc]) {
@@ -115,8 +138,9 @@ static int ndInject(NSString *bundleId, NSMutableString *log) {
         return -3;
     }
     [[NSFileManager defaultManager] removeItemAtPath:dylibDst error:NULL];
-    if (![[NSFileManager defaultManager] copyItemAtPath:dylibSrc toPath:dylibDst error:NULL]) {
-        [log appendFormat:@"copy dylib failed\n"];
+    NSError *cpErr = nil;
+    if (![[NSFileManager defaultManager] copyItemAtPath:dylibSrc toPath:dylibDst error:&cpErr]) {
+        [log appendFormat:@"copy dylib failed: %@ (src=%@ dst=%@)\n", cpErr ?: @"unknown", dylibSrc, dylibDst];
         return -3;
     }
 
@@ -174,7 +198,7 @@ static int ndRemove(NSString *bundleId, NSMutableString *log) {
     NSString *exeName = info[@"CFBundleExecutable"];
     NSString *exe = [appDir stringByAppendingPathComponent:exeName];
 
-    ndRun(@"/usr/bin/killall", @[@"-9", exeName], nil, log);
+    ndKillApp(exeName);
 
     // 恢复备份
     NSString *bak = [exe stringByAppendingString:@".nd.bak"];
