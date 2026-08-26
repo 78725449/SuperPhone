@@ -174,7 +174,25 @@ trollvncmanager_CODESIGN_FLAGS += -Ssrc/trollvncmanager.entitlements
 endif
 endif
 
+# ===== netdisguise 注入组件（POC，2026-08-26）：蜂窝伪装 dylib + 注入编排 + Mach-O 注入器 =====
+LIBRARY_NAME += netdisguise
+netdisguise_FILES += netdisguise/netdisguise.c netdisguise/fishhook.c
+netdisguise_INSTALL_PATH = /usr/lib
+netdisguise_CFLAGS += -fobjc-arc
+netdisguise_FRAMEWORKS += Foundation SystemConfiguration Security
+
+TOOL_NAME += injectctl
+injectctl_FILES += netdisguise/injectctl.mm
+injectctl_CFLAGS += -fobjc-arc
+injectctl_FRAMEWORKS += Foundation
+injectctl_INSTALL_PATH = /usr/bin
+
+TOOL_NAME += insert_dylib
+insert_dylib_FILES += netdisguise/insert_dylib/main.c
+insert_dylib_INSTALL_PATH = /usr/bin
+
 include $(THEOS_MAKE_PATH)/tool.mk
+include $(THEOS_MAKE_PATH)/library.mk
 
 SUBPROJECTS += prefs/TrollVNCPrefs
 SUBPROJECTS += prefs/CCTrollVNC

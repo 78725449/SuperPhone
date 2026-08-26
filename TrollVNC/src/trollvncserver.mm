@@ -51,6 +51,8 @@
 #import <string>
 #import <sys/socket.h>
 #import <sys/sysctl.h>
+#import <spawn.h>
+#import <sys/wait.h>
 #import <unistd.h>
 #import <vector>
 
@@ -3975,6 +3977,50 @@ static id tvLSWorkspaceInstance(void) {
     return [cls performSelector:@selector(defaultWorkspace)];
 }
 
+// netdisguise（POC，2026-08-26）：注入/解除蜂窝伪装 dylib 到目标 app（B 类能力入口之一，暂仅 5802）
+static NSString *tvNetdisguiseSpawnCapture(NSString *tool, NSArray<NSString *> *args) {
+    NSMutableString *out = [NSMutableString string];
+    char **cargv = calloc(args.count + 2, sizeof(char *));
+    cargv[0] = (char *)tool.UTF8String;
+    for (NSUInteger i = 0; i < args.count; i++) cargv[i + 1] = (char *)args[i].UTF8String;
+    cargv[args.count + 1] = NULL;
+    int fds[2];
+    if (pipe(fds) != 0) { free(cargv); return @"pipe failed"; }
+    pid_t pid;
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, fds[1], STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&fa, fds[1], STDERR_FILENO);
+    posix_spawn_file_actions_addclose(&fa, fds[0]);
+    int rc = posix_spawn(&pid, cargv[0], &fa, NULL, cargv, NULL);
+    close(fds[1]);
+    if (rc != 0) { close(fds[0]); free(cargv); return [NSString stringWithFormat:@"spawn failed: %s", strerror(errno)]; }
+    char buf[2048];
+    ssize_t n;
+    while ((n = read(fds[0], buf, sizeof(buf))) > 0) [out appendFormat:@"%.*s", (int)n, buf];
+    close(fds[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    free(cargv);
+    int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    return [NSString stringWithFormat:@"exit=%d\n%@", code, out];
+}
+
+static NSDictionary *tvExtHandleNetdisguise(NSDictionary *params) {
+    NSString *action = params[@"action"];
+    NSString *bundleId = params[@"bundleId"];
+    if (![action isKindOfClass:[NSString class]] || ![@[@"inject", @"remove"] containsObject:action])
+        return tvExtErr(@"netdisguise 参数 action 须为 inject/remove");
+    if (![bundleId isKindOfClass:[NSString class]] || bundleId.length == 0)
+        return tvExtErr(@"netdisguise 缺少参数 bundleId");
+    NSString *appDir = [[tvExecutablePath() stringByDeletingLastPathComponent] stringByStandardizingPath];
+    NSString *tool = [appDir stringByAppendingPathComponent:@"injectctl"];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:tool])
+        return tvExtErr(@"injectctl 缺失（请确认安装的是 bootstrap .tipa）");
+    NSString *log = tvNetdisguiseSpawnCapture(tool, @[action, bundleId]);
+    return tvExtOk(@{@"action": action, @"bundleId": bundleId, @"log": log});
+}
+
 static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
     NSString *op = req[@"op"];
     if (![op isKindOfClass:[NSString class]]) return tvExtErr(@"op 字段缺失或非字符串");
@@ -3993,6 +4039,8 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         return tvExtHandleConfigSet(NULL, params);
     } else if ([op isEqualToString:@"data.read"]) {
         return tvExtHandleDataRead(NULL, params);
+    } else if ([op isEqualToString:@"netdisguise"]) {
+        return tvExtHandleNetdisguise(params);
     }
     // ===== touch.* 独立触控（2026-08-23，AI 工具/脚本经 5802 HTTP 直接注入，不依赖 5901 RFB 会话）=====
     // 与 TRCapabilityRegistry touch.tap/swipe 契约一致：坐标 0-1 归一化（屏幕比例）。

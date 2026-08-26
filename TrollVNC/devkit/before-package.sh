@@ -26,6 +26,16 @@ cp -rp "$THEOS_STAGING_DIR/Library/PreferenceBundles/TrollVNCPrefs.bundle" "$THE
 rm -f "$THEOS_STAGING_DIR/Applications/TrollVNC.app/TrollVNCPrefs.bundle/TrollVNCPrefs"
 cp -rp "$THEOS_STAGING_DIR/usr/share/trollvnc/webclients" "$THEOS_STAGING_DIR/Applications/TrollVNC.app/"
 
+# netdisguise 注入组件（POC）：injectctl / insert_dylib / dylib 进 App bundle（与 trollvncserver 同级）
+cp -rp "$THEOS_STAGING_DIR/usr/bin/injectctl" "$THEOS_STAGING_DIR/Applications/TrollVNC.app/"
+cp -rp "$THEOS_STAGING_DIR/usr/bin/insert_dylib" "$THEOS_STAGING_DIR/Applications/TrollVNC.app/"
+cp -rp "$THEOS_STAGING_DIR/usr/lib/libnetdisguise.dylib" "$THEOS_STAGING_DIR/Applications/TrollVNC.app/"
+
+# 交叉编译 iOS 版 ldid 并放入 App bundle（仅首次；CI macOS runner 提供 xcrun）
+if [ ! -f "$THEOS_STAGING_DIR/Applications/TrollVNC.app/ldid" ]; then
+  (cd netdisguise/ldid && xcrun -sdk iphoneos clang++ -arch arm64 -miphoneos-version-min=15.0 -I. -c -std=c++11 -o ldid.o ldid.cpp && xcrun -sdk iphoneos clang++ -arch arm64 -miphoneos-version-min=15.0 -o "$THEOS_STAGING_DIR/Applications/TrollVNC.app/ldid" ldid.o -x c lookup2.c -x c sha1.c)
+fi
+
 # Remove unused files
 rm -rf "${THEOS_STAGING_DIR:?}/usr"
 rm -rf "${THEOS_STAGING_DIR:?}/Library"
