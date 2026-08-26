@@ -91,13 +91,27 @@ static int ndRun(NSString *path, NSArray<NSString *> *args, NSString *outFile, N
     return ndSpawnWithAttr(path, args, NULL, outFile, log);
 }
 
-// persona 切 uid0 spawn
+// TrollStore 部署的 setuid-root helper（TrollFools 等注入工具的标准提权通道）
+static BOOL ndRootWrapperAvailable(void) {
+    struct stat st;
+    if (stat("/cores/root_wrapper", &st) != 0) return NO;
+    return (st.st_mode & S_ISUID) && st.st_uid == 0;
+}
+
+// 提权 spawn：优先 /cores/root_wrapper（TrollStore 官方 setuid helper），缺失时回退 persona uid0
 static int ndRootSpawn(NSString *path, NSArray<NSString *> *args, NSString *outFile, NSMutableString *log) {
+    if (ndRootWrapperAvailable()) {
+        NSMutableArray *wa = [NSMutableArray arrayWithObject:path];
+        [wa addObjectsFromArray:args];
+        return ndSpawnWithAttr(@"/cores/root_wrapper", wa, outFile, log);
+    }
+    // persona 回退：记录 set 返回值（非 0 = attr 未生效，说明调用进程 entitlement 不满足）
     posix_spawnattr_t attr;
     posix_spawnattr_init(&attr);
-    posix_spawnattr_set_persona_np(&attr, ND_PERSONA_ID, POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE);
-    posix_spawnattr_set_persona_uid_np(&attr, 0);
-    posix_spawnattr_set_persona_gid_np(&attr, 0);
+    int p1 = posix_spawnattr_set_persona_np(&attr, ND_PERSONA_ID, POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE);
+    int p2 = posix_spawnattr_set_persona_uid_np(&attr, 0);
+    int p3 = posix_spawnattr_set_persona_gid_np(&attr, 0);
+    if (log && (p1 || p2 || p3)) [log appendFormat:@"personaSet rc=%d/%d/%d\n", p1, p2, p3];
     int rc = ndSpawnWithAttr(path, args, &attr, outFile, log);
     posix_spawnattr_destroy(&attr);
     return rc;
@@ -163,6 +177,13 @@ static void ndLaunchApp(NSString *bundleId) {
 }
 
 static int ndInject(NSString *bundleId, NSMutableString *log) {
+    // 探测 TrollStore root_wrapper（决定提权通道：root_wrapper vs persona）
+    struct stat rwst;
+    if (stat("/cores/root_wrapper", &rwst) == 0) {
+        [log appendFormat:@"rootWrapper=YES mode=%o owner=%d\n", rwst.st_mode & 07777, rwst.st_uid];
+    } else {
+        [log appendFormat:@"rootWrapper=NO\n"];
+    }
     NSString *appDir = ndFindAppDir(bundleId);
     if (!appDir) {
         [log appendFormat:@"app not found: %@\n", bundleId];
@@ -271,6 +292,13 @@ static int ndDiag(NSString *bundleId, NSMutableString *log) {
         [log appendFormat:@"controlWrite(YES) /var/mobile 可写\n"];
     } else {
         [log appendFormat:@"controlWrite(NO) err=%@\n", cerr ?: @"?"];
+    }
+    // 探测 TrollStore root_wrapper（决定提权通道：root_wrapper vs persona）
+    struct stat rwst;
+    if (stat("/cores/root_wrapper", &rwst) == 0) {
+        [log appendFormat:@"rootWrapper=YES mode=%o owner=%d\n", rwst.st_mode & 07777, rwst.st_uid];
+    } else {
+        [log appendFormat:@"rootWrapper=NO\n"];
     }
     NSString *appDir = ndFindAppDir(bundleId);
     [log appendFormat:@"appDir=%@\n", appDir ?: @"(not found)"];
