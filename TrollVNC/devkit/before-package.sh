@@ -27,9 +27,10 @@ rm -f "$THEOS_STAGING_DIR/Applications/TrollVNC.app/TrollVNCPrefs.bundle/TrollVN
 cp -rp "$THEOS_STAGING_DIR/usr/share/trollvnc/webclients" "$THEOS_STAGING_DIR/Applications/TrollVNC.app/"
 
 # netdisguise 注入组件（POC）：injectctl / insert_dylib / dylib 进 App bundle（与 trollvncserver 同级）
+# 注：Theos LIBRARY 产物不进入 staging /usr/lib（装到 Theos 自身 lib 目录），dylib 从编译产物直接取
 cp -rp "$THEOS_STAGING_DIR/usr/bin/injectctl" "$THEOS_STAGING_DIR/Applications/TrollVNC.app/"
 cp -rp "$THEOS_STAGING_DIR/usr/bin/insert_dylib" "$THEOS_STAGING_DIR/Applications/TrollVNC.app/"
-cp -rp "$THEOS_STAGING_DIR/usr/lib/libnetdisguise.dylib" "$THEOS_STAGING_DIR/Applications/TrollVNC.app/"
+cp -rp "$THEOS_OBJ_DIR/netdisguise.dylib" "$THEOS_STAGING_DIR/Applications/TrollVNC.app/"
 
 # 交叉编译 iOS 版 ldid 并放入 App bundle（仅首次；CI macOS runner 提供 xcrun）
 if [ ! -f "$THEOS_STAGING_DIR/Applications/TrollVNC.app/ldid" ]; then
