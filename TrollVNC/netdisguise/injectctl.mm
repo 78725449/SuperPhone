@@ -195,6 +195,19 @@ static int ndInject(NSString *bundleId, NSMutableString *log) {
     } else {
         [log appendFormat:@"rootWrapper=NO\n"];
     }
+    // 探测 TrollStore 部署与越狱状态（决定 persona 是否可能生效的系统级先决条件）
+    for (NSString *p in @[@"/var/containers/Bundle/TrollStore",
+                          @"/var/containers/Bundle/Application/com.opa334.TrollStore",
+                          @"/Applications/TrollStore.app/trollstorehelper",
+                          @"/var/containers/Bundle/Application/com.centuryslink.TrollStore"]) {
+        BOOL isDir = NO;
+        BOOL ex = [[NSFileManager defaultManager] fileExistsAtPath:p isDirectory:&isDir];
+        [log appendFormat:@"exists %@ = %d\n", p, ex];
+    }
+    // 越狱嗅探（rootless jailbreak 标记，影响 persona 语义）
+    for (NSString *p in @[@"/var/jb", @"/.installed_unc0ver", @"/.bootstrapped_electra", @"/var/lib/dpkg"]) {
+        [log appendFormat:@"jbprobe %@ = %d\n", p, [[NSFileManager defaultManager] fileExistsAtPath:p]];
+    }
     NSString *appDir = ndFindAppDir(bundleId);
     if (!appDir) {
         [log appendFormat:@"app not found: %@\n", bundleId];
@@ -310,6 +323,18 @@ static int ndDiag(NSString *bundleId, NSMutableString *log) {
         [log appendFormat:@"rootWrapper=YES mode=%o owner=%d\n", rwst.st_mode & 07777, rwst.st_uid];
     } else {
         [log appendFormat:@"rootWrapper=NO\n"];
+    }
+    // 探测 TrollStore 部署与越狱状态（决定 persona 是否可能生效的系统级先决条件）
+    for (NSString *p in @[@"/var/containers/Bundle/TrollStore",
+                          @"/var/containers/Bundle/Application/com.opa334.TrollStore",
+                          @"/Applications/TrollStore.app/trollstorehelper",
+                          @"/var/containers/Bundle/Application/com.centuryslink.TrollStore"]) {
+        BOOL isDir = NO;
+        BOOL ex = [[NSFileManager defaultManager] fileExistsAtPath:p isDirectory:&isDir];
+        [log appendFormat:@"exists %@ = %d\n", p, ex];
+    }
+    for (NSString *p in @[@"/var/jb", @"/.installed_unc0ver", @"/.bootstrapped_electra", @"/var/lib/dpkg"]) {
+        [log appendFormat:@"jbprobe %@ = %d\n", p, [[NSFileManager defaultManager] fileExistsAtPath:p]];
     }
     // 自身运行时 entitlement（验证沙箱继承：父进程 trollvncserver 沙箱 → injectctl 是否继承）
     SecTaskRef stask = SecTaskCreateFromSelf(NULL);
