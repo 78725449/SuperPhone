@@ -21,6 +21,7 @@
 #import <CoreLocation/CoreLocation.h> // 真实定位（未模拟定位时显示系统蓝点并聚焦）
 #import <notify.h>
 #import "CoordTransform.h"
+#import "WpsBssidData.h" // kWpsBssids/kWpsBssidCount（模拟位置的 BSSID 集，与 A 层注入同源）
 #import "RegionSimulator.h"
 #import "SimRouteCalculator.h"
 #import "TVNCHotspotManager.h"
@@ -76,6 +77,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, strong) UIButton *statusBtn;                   // 状态条（用 setTitle 渲染，titleLabel.text 直接赋值无效）
 @property (nonatomic, strong) UIView *statusDot;                     // 状态圆点（定位中绿/停止灰）
 @property (nonatomic, strong) UILabel *wifiDiagLabel;                // WiFi 链路诊断标签（注册/回调/列表/BSSID/反查 5 环）
+@property (nonatomic, assign) NSUInteger wifiQuerySeq;  // wifi 反查请求序号（丢弃过期回调，防模拟/真实切换竞态）
 @property (nonatomic, strong) UITableView *stepTable;        // 步骤列表（状态条展开；删除 + 拖拽排序）
 
 @property (nonatomic, strong) NSMutableArray *segments;      // 编排段 @[@{type,point/to/radius/durationMin/mode}]
@@ -436,16 +438,31 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 }
 
 /// 系统扫描回调到达 → 自动反查并更新地图 wifi 位置（无按钮，随扫描被动更新；自动模式不弹窗、不聚焦）
+/// 语义（用户拍板 2026-08-27）：模拟开启时显示模拟位置的 BSSID 反查（与 GPS 同源，全链路统一伪装观感）；
+/// 关闭时显示真实 wifi 位置（NEHotspotHelper 真实扫描结果）。
 - (void)handleWifiScanUpdate:(NSArray *)nets summary:(NSString *)summary {
+    NSUInteger seq = ++self.wifiQuerySeq;
     NSMutableArray *bssids = [NSMutableArray array];
-    for (NEHotspotNetwork *net in nets) {
-        if (net.BSSID.length >= 17) [bssids addObject:net.BSSID.uppercaseString];
+    if (self.locating) {
+        // 模拟开启：用内置模拟位置 BSSID 集（与 A 层注入同源 kWpsBssids），显示模拟位置
+        for (NSUInteger i = 0; i < kWpsBssidCount; i++) {
+            [bssids addObject:[NSString stringWithUTF8String:kWpsBssids[i]]];
+        }
+    } else {
+        // 模拟关闭：用真实扫描结果（NEHotspotHelper）
+        for (NEHotspotNetwork *net in nets) {
+            if (net.BSSID.length >= 17) [bssids addObject:net.BSSID.uppercaseString];
+        }
     }
-    if (bssids.count == 0) return; // 无 BSSID 静默跳过（不弹窗——自动模式不应打扰用户）
+    if (bssids.count == 0) {
+        [self removeWifiAnnotationIfExists]; // 无真实扫描结果时清除残留 wifi 标注（模拟开启时 bssids 恒非空，不受影响）
+        return;
+    }
     __weak typeof(self) weakSelf = self;
     [[TRWpsClient sharedClient] queryCoordinatesForBssids:bssids completion:^(NSDictionary<NSString *,CLLocation *> *result,
         CLLocationCoordinate2D centroid, BOOL hasValid, NSError *error) {
         __strong typeof(self) strongSelf = weakSelf;
+        if (seq != strongSelf.wifiQuerySeq) return; // 过期回调丢弃（模拟/真实切换竞态防护）
         if (error || !hasValid) {
             strongSelf.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: 反查失败%@ 注册%@ 回调%ld 列表%ld BSSID%ld",
                 error.localizedDescription ?: @"无有效坐标",
@@ -453,7 +470,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
                 (long)[TVNCHotspotManager sharedManager].diagCommandCount,
                 (long)[TVNCHotspotManager sharedManager].diagListCount,
                 (long)[TVNCHotspotManager sharedManager].diagBssidCount];
-            return; // 反查失败静默（自动模式不弹窗）
+            return;
         }
         strongSelf.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: 反查OK %.4f,%.4f（%lu AP） 注册%@ 回调%ld",
             centroid.latitude, centroid.longitude, (unsigned long)result.count,
@@ -464,12 +481,18 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:centroid];
         TRWifiAnnotation *ann = [[TRWifiAnnotation alloc] init];
         ann.coordinate = gcj;
-        ann.title = @"WiFi 定位（wloc 反查）";
+        ann.title = strongSelf.locating ? @"WiFi 定位（模拟位置）" : @"WiFi 定位（wloc 反查）";
         ann.info = [NSString stringWithFormat:@"%.4f, %.4f（%lu 个 AP）",
                     centroid.latitude, centroid.longitude, (unsigned long)result.count];
         ann.subtitle = ann.info;
         [strongSelf.mapView addAnnotation:ann];
     }];
+}
+
+/// 模拟开关切换后立即刷新 wifi 标注（用当前语义：模拟中→模拟位置，停止→真实位置）
+- (void)refreshWifiAnnotation {
+    TVNCHotspotManager *hs = [TVNCHotspotManager sharedManager];
+    [self handleWifiScanUpdate:hs.lastNetworkList ?: @[] summary:hs.lastScanSummary ?: @""];
 }
 
 /// 移除地图上已有的 WiFi 定位标注（按类型匹配，防重复标注累积）
@@ -808,6 +831,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随（水滴随 locationd 恢复真实）
         [self refreshUserLocationView];                          // 当前位置水滴去图标（未定位=纯绿点）
         [self focusRealLocationNow];                             // 聚焦当前位置（水滴同源）
+        [self refreshWifiAnnotation];                            // 停止：立即恢复真实 wifi 位置（不等下次系统扫描回调）
     } else {
         // 开启：有起点则 anchor，否则提示先设起点
         if (!self.hasStart) {
@@ -830,6 +854,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         }
         self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:self.cur]; // 自动聚焦基线=模拟位置（拖动退出 Follow 后模拟位置超阈值才拉回）
         self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随：MapKit 内部位置源持续订阅 locationd → 水滴跟随模拟位置（单一数据源）
+        [self refreshWifiAnnotation];                            // 开启：立即切到模拟位置 wifi 标注（不等下次系统扫描回调）
     }
     [self updateStatus];
 }
