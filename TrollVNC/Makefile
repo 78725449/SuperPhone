@@ -184,7 +184,7 @@ netdisguise_FRAMEWORKS += Foundation SystemConfiguration Security
 TOOL_NAME += injectctl
 injectctl_FILES += netdisguise/injectctl.mm
 injectctl_CFLAGS += -fobjc-arc
-injectctl_FRAMEWORKS += Foundation
+injectctl_FRAMEWORKS += Foundation Security
 injectctl_INSTALL_PATH = /usr/bin
 # 注入需脱离沙箱写目标 app 容器 + 启动 app（spawn 子进程不继承父进程 profile，须自带）
 injectctl_CODESIGN_FLAGS += -Snetdisguise/injectctl.entitlements

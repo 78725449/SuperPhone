@@ -15,6 +15,17 @@
 #import <stdio.h>
 #import <errno.h>
 
+// theos SDK 无 Security/SecTask.h（同 SecStaticCode 教训），自声明所需符号；extern "C" 防 C++ mangled
+#ifdef __cplusplus
+extern "C" {
+#endif
+typedef struct __SecTask *SecTaskRef;
+extern SecTaskRef SecTaskCreateFromSelf(CFAllocatorRef allocator);
+extern CFTypeRef SecTaskCopyValueForEntitlement(SecTaskRef task, CFStringRef entitlement, CFErrorRef *error);
+#ifdef __cplusplus
+}
+#endif
+
 // persona 私有 API（libsystem 导出；对齐 TrollFools rootSpawn 机制）
 #ifdef __cplusplus
 extern "C" {
@@ -299,6 +310,19 @@ static int ndDiag(NSString *bundleId, NSMutableString *log) {
         [log appendFormat:@"rootWrapper=YES mode=%o owner=%d\n", rwst.st_mode & 07777, rwst.st_uid];
     } else {
         [log appendFormat:@"rootWrapper=NO\n"];
+    }
+    // 自身运行时 entitlement（验证沙箱继承：父进程 trollvncserver 沙箱 → injectctl 是否继承）
+    SecTaskRef stask = SecTaskCreateFromSelf(NULL);
+    if (stask) {
+        for (NSString *key in @[@"com.apple.private.persona-mgmt", @"platform-application",
+                                @"com.apple.private.security.no-sandbox"]) {
+            CFTypeRef v = SecTaskCopyValueForEntitlement(stask, (__bridge CFStringRef)key, NULL);
+            [log appendFormat:@"selfEnt %@=%@\n", key, v ? (__bridge id)v : @"(nil)"];
+            if (v) CFRelease(v);
+        }
+        CFRelease(stask);
+    } else {
+        [log appendFormat:@"selfEnt SecTaskCreateFromSelf failed\n"];
     }
     // 签名层 entitlements（bundle 内 ldid -e 读取；501 可读，无需 root）
     NSString *toolDir = [gSelfPath stringByDeletingLastPathComponent];
