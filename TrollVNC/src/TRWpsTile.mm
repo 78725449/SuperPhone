@@ -194,6 +194,9 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSDate *> *failCache;               // key=tileKey → 上次失败时间（30s TTL 负缓存）
 @end
 
+@implementation TRWpsTileAP
+@end
+
 @implementation TRWpsTile
 
 + (instancetype)sharedClient {
