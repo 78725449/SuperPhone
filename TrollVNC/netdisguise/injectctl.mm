@@ -23,7 +23,7 @@ static NSString *gToolDir;
 // 执行外部命令；outFile 非空则 stdout/stderr 重定向到该文件，否则经 log 收集
 static int ndRun(NSString *path, NSArray<NSString *> *args, NSString *outFile, NSMutableString *log) {
     if (log) [log appendFormat:@"$ %@ %@\n", path, [args componentsJoinedByString:@" "]];
-    char **cargv = calloc(args.count + 2, sizeof(char *));
+    char **cargv = (char **)calloc(args.count + 2, sizeof(char *));
     cargv[0] = (char *)path.UTF8String;
     for (NSUInteger i = 0; i < args.count; i++) cargv[i + 1] = (char *)args[i].UTF8String;
     cargv[args.count + 1] = NULL;

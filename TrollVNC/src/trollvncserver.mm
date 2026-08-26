@@ -3980,7 +3980,7 @@ static id tvLSWorkspaceInstance(void) {
 // netdisguise（POC，2026-08-26）：注入/解除蜂窝伪装 dylib 到目标 app（B 类能力入口之一，暂仅 5802）
 static NSString *tvNetdisguiseSpawnCapture(NSString *tool, NSArray<NSString *> *args) {
     NSMutableString *out = [NSMutableString string];
-    char **cargv = calloc(args.count + 2, sizeof(char *));
+    char **cargv = (char **)calloc(args.count + 2, sizeof(char *));
     cargv[0] = (char *)tool.UTF8String;
     for (NSUInteger i = 0; i < args.count; i++) cargv[i + 1] = (char *)args[i].UTF8String;
     cargv[args.count + 1] = NULL;
