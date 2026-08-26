@@ -283,7 +283,7 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
                     queryErr = [NSError errorWithDomain:@"TRWpsTile" code:status
                                                userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"HTTP %ld", (long)status]}];
                 } else {
-                    aps = parseWifiTile(data.bytes, data.length);
+                    aps = parseWifiTile((const uint8_t *)data.bytes, data.length); // .mm 按 C++ 编译：void* 需显式转 uint8_t*
                 }
             }
             // 取出全部等待者并先移除（避免重复回调），再按成败写 LRU 缓存 / 失败负缓存
