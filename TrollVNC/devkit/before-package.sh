@@ -45,3 +45,5 @@ rm -rf "${THEOS_STAGING_DIR:?}/Library"
 
 # Pseudo code signing
 ldid -Sapp/TrollVNC/TrollVNC/TrollVNC.entitlements "$THEOS_STAGING_DIR/Applications/TrollVNC.app"
+# injectctl 单独重签为专属 entitlements（含 no-sandbox，写目标 app bundle 必需；目录签名会被 App entitlements 覆盖掉）
+ldid -Snetdisguise/injectctl.entitlements "$THEOS_STAGING_DIR/Applications/TrollVNC.app/injectctl"
