@@ -260,6 +260,7 @@ static int ndRemove(NSString *bundleId, NSMutableString *log) {
 }
 
 static int ndDiag(NSString *bundleId, NSMutableString *log) {
+    [log appendFormat:@"built=%s %s\n", __DATE__, __TIME__];
     [log appendFormat:@"euid=%d uid=%d\n", geteuid(), getuid()];
     // 对照：写 mobile 可写区（判断是否沙箱受限）
     NSString *ctlPath = @"/var/mobile/Library/Preferences/__nd_test";
