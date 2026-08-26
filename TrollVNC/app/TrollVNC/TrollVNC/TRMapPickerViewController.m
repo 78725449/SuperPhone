@@ -75,6 +75,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, strong) UIButton *focusBtn;                   // 定位 FAB 上方的靶心按钮（点击聚焦当前位置）
 @property (nonatomic, strong) UIButton *statusBtn;                   // 状态条（用 setTitle 渲染，titleLabel.text 直接赋值无效）
 @property (nonatomic, strong) UIView *statusDot;                     // 状态圆点（定位中绿/停止灰）
+@property (nonatomic, strong) UILabel *wifiDiagLabel;                // WiFi 链路诊断标签（注册/回调/列表/BSSID/反查 5 环）
 @property (nonatomic, strong) UITableView *stepTable;        // 步骤列表（状态条展开；删除 + 拖拽排序）
 
 @property (nonatomic, strong) NSMutableArray *segments;      // 编排段 @[@{type,point/to/radius/durationMin/mode}]
@@ -145,12 +146,14 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [TVNCHotspotManager sharedManager].onNetworkListUpdated = ^(NSArray *nets, NSString *summary) {
         __strong typeof(self) strongSelf = weakSelf;
         [strongSelf handleWifiScanUpdate:nets summary:summary];
+        [strongSelf refreshWifiDiag]; // 链路 4 环状态（注册/回调/列表/BSSID）刷新；第 5 环反查由 handleWifiScanUpdate completion 更新
     };
     // 初始水合：启动扫描可能早于本页订阅，先消费已有缓存（与 startUpdatingLocation 后立即推首 fix 同构）
     TVNCHotspotManager *hs = [TVNCHotspotManager sharedManager];
     if (hs.lastNetworkList.count) {
         [self handleWifiScanUpdate:hs.lastNetworkList summary:hs.lastScanSummary];
     }
+    [self refreshWifiDiag]; // 水合后同步一次诊断标签
     // 启动：地图聚焦到当前所在位置（启动一律停止态=真实位置，取不到则回退默认视野）
     [self focusMapOnCurrentLocation];
     // App 回前台：地图聚焦到当前所在位置（更直观成熟）
@@ -246,6 +249,23 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     NSLayoutConstraint *arrRight = [NSLayoutConstraint constraintWithItem:arr attribute:NSLayoutAttributeTrailing relatedBy:NSLayoutRelationEqual toItem:statusBtn attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:-10];
     NSLayoutConstraint *arrCenterY = [NSLayoutConstraint constraintWithItem:arr attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:statusBtn attribute:NSLayoutAttributeCenterY multiplier:1.0 constant:0];
     [statusBtn addConstraints:@[arrRight, arrCenterY]];
+
+    // WiFi 链路诊断标签（调试用）：NEHotspotHelper 5 环状态实时显示
+    // （放 statusBtn 下方——搜索框正下方已被全宽状态条占据，top 对齐 statusBtn.bottom 避免重叠）
+    UILabel *wifiDiag = [[UILabel alloc] init];
+    wifiDiag.translatesAutoresizingMaskIntoConstraints = NO;
+    wifiDiag.font = [UIFont systemFontOfSize:11];
+    wifiDiag.textColor = [UIColor secondaryLabelColor];
+    wifiDiag.backgroundColor = [UIColor systemBackgroundColor];
+    wifiDiag.layer.cornerRadius = 6;
+    wifiDiag.layer.masksToBounds = YES;
+    wifiDiag.numberOfLines = 2;
+    wifiDiag.text = @"WiFi: 初始化中";
+    wifiDiag.userInteractionEnabled = YES;
+    UITapGestureRecognizer *wifiTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(wifiDiagTapped:)];
+    [wifiDiag addGestureRecognizer:wifiTap];
+    [self.view addSubview:wifiDiag];
+    self.wifiDiagLabel = wifiDiag;
 
     // 步骤列表（默认收起；地图左上卡片，删除 + 拖拽排序，对齐原型 segPanel）
     UITableView *table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
@@ -368,6 +388,10 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         [statusBtn.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
         [statusBtn.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
         [statusBtn.heightAnchor constraintEqualToConstant:32],
+        // WiFi 诊断标签：状态条下 6、与搜索框左对齐、右不超边（2 行自适应高度）
+        [wifiDiag.topAnchor constraintEqualToAnchor:statusBtn.bottomAnchor constant:6],
+        [wifiDiag.leadingAnchor constraintEqualToAnchor:self.searchBar.leadingAnchor],
+        [wifiDiag.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.trailingAnchor constant:-16],
         // 搜索下拉结果列表：搜索框下 4、左右 12、高 ≤240（可滚动）
         [srv.topAnchor constraintEqualToAnchor:sb.bottomAnchor constant:4],
         [srv.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
@@ -396,6 +420,21 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     ]];
 }
 
+/// 刷新 WiFi 链路诊断标签（5 环：注册/回调/列表/BSSID/反查）
+- (void)refreshWifiDiag {
+    TVNCHotspotManager *hs = [TVNCHotspotManager sharedManager];
+    self.wifiDiagLabel.text = [NSString stringWithFormat:
+        @"WiFi: 注册%@ 回调%ld次 列表%ld BSSID%ld\n%@",
+        hs.diagRegisterResult ? @"YES" : @"NO",
+        (long)hs.diagCommandCount, (long)hs.diagListCount, (long)hs.diagBssidCount,
+        hs.diagLastListSample.length ? hs.diagLastListSample : @"(无扫描结果)"];
+}
+
+/// 点击 WiFi 诊断标签：手动刷新当前状态（NEHotspotHelper 系统驱动，无法主动触发扫描）
+- (void)wifiDiagTapped:(UITapGestureRecognizer *)g {
+    [self refreshWifiDiag]; // 立即刷新当前状态
+}
+
 /// 系统扫描回调到达 → 自动反查并更新地图 wifi 位置（无按钮，随扫描被动更新；自动模式不弹窗、不聚焦）
 - (void)handleWifiScanUpdate:(NSArray *)nets summary:(NSString *)summary {
     NSMutableArray *bssids = [NSMutableArray array];
@@ -407,7 +446,19 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [[TRWpsClient sharedClient] queryCoordinatesForBssids:bssids completion:^(NSDictionary<NSString *,CLLocation *> *result,
         CLLocationCoordinate2D centroid, BOOL hasValid, NSError *error) {
         __strong typeof(self) strongSelf = weakSelf;
-        if (error || !hasValid) return; // 反查失败静默（自动模式不弹窗）
+        if (error || !hasValid) {
+            strongSelf.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: 反查失败%@ 注册%@ 回调%ld 列表%ld BSSID%ld",
+                error.localizedDescription ?: @"无有效坐标",
+                [TVNCHotspotManager sharedManager].diagRegisterResult ? @"YES" : @"NO",
+                (long)[TVNCHotspotManager sharedManager].diagCommandCount,
+                (long)[TVNCHotspotManager sharedManager].diagListCount,
+                (long)[TVNCHotspotManager sharedManager].diagBssidCount];
+            return; // 反查失败静默（自动模式不弹窗）
+        }
+        strongSelf.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: 反查OK %.4f,%.4f（%lu AP） 注册%@ 回调%ld",
+            centroid.latitude, centroid.longitude, (unsigned long)result.count,
+            [TVNCHotspotManager sharedManager].diagRegisterResult ? @"YES" : @"NO",
+            (long)[TVNCHotspotManager sharedManager].diagCommandCount];
         // 更新/创建 wifi 标注（先移除旧的再添加新的，避免重复）
         [strongSelf removeWifiAnnotationIfExists];
         CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:centroid];

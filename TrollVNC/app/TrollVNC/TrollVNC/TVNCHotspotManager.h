@@ -31,6 +31,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// 网络列表更新回调（主队列调用；networkList 非空时触发）
 @property (nonatomic, copy, nullable) void (^onNetworkListUpdated)(NSArray *networks, NSString *summary);
 
+/// 诊断：链路各环状态（App 进程内 wifi 链路可观测——5902 只收 daemon 日志，App 进程调试靠此）
+@property (nonatomic, assign, readonly) BOOL diagRegisterResult;      // NEHotspotHelper 注册结果
+@property (nonatomic, assign, readonly) NSInteger diagCommandCount;    // 收到系统命令总次数
+@property (nonatomic, assign, readonly) NSInteger diagListCount;       // 最近一次 networkList 数量
+@property (nonatomic, assign, readonly) NSInteger diagBssidCount;      // 最近一次提取的有效 BSSID 数（≥17 位）
+@property (nonatomic, copy, readonly) NSString *diagLastListSample;    // 最近一次 networkList 首条摘要（BSSID|SSID|信号%）
+
 @end
 
 NS_ASSUME_NONNULL_END
