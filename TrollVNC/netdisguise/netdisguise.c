@@ -99,7 +99,7 @@ static void nd_init(void) {
         SEL sel = sel_registerName("usesInterfaceType:");
         Method m = class_getInstanceMethod(nwPath, sel);
         if (m) {
-            nd_orig_usesInterfaceType = (BOOL (*)(id, SEL, NSInteger))method_setImplementation(m, (IMP)nd_usesInterfaceType);
+            nd_orig_usesInterfaceType = (BOOL (*)(id, SEL, long))method_setImplementation(m, (IMP)nd_usesInterfaceType);
         }
     }
 }
