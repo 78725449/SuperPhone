@@ -10,10 +10,15 @@
 #include <objc/runtime.h>
 #include <objc/objc.h>
 #include <SystemConfiguration/SystemConfiguration.h>
-#include <Security/SecStaticCode.h>
-#include <Security/SecCode.h>
+#include <CoreFoundation/CoreFoundation.h>
 #include <mach-o/dyld.h>
 #include "fishhook.h"
+
+// Security.framework 的 SecStaticCode 头未随 theos SDK 发布，自声明所需类型/函数
+typedef struct __SecStaticCode *SecStaticCodeRef;
+typedef uint32_t SecCSFlags;
+extern int32_t SecStaticCodeCheckValidity(SecStaticCodeRef code, SecCSFlags flags);
+extern int32_t SecStaticCodeCheckValidityWithErrors(SecStaticCodeRef code, SecCSFlags flags, CFErrorRef *errors);
 
 // ---------- 1. 蜂窝伪装：Reachability（C 函数，fishhook） ----------
 static int (*nd_orig_SCNetworkReachabilityGetFlags)(SCNetworkReachabilityRef, SCNetworkReachabilityFlags *);
@@ -51,16 +56,16 @@ static uint32_t nd__dyld_image_count(void) {
 }
 
 // ---------- 4. 痕迹隐藏：签名验证伪签（C 函数，fishhook） ----------
-static OSStatus (*nd_orig_SecStaticCodeCheckValidity)(SecStaticCodeRef, SecCSFlags);
-static OSStatus nd_SecStaticCodeCheckValidity(SecStaticCodeRef code, SecCSFlags flags) {
+static int32_t (*nd_orig_SecStaticCodeCheckValidity)(SecStaticCodeRef, SecCSFlags);
+static int32_t nd_SecStaticCodeCheckValidity(SecStaticCodeRef code, SecCSFlags flags) {
     (void)code; (void)flags;
-    return errSecSuccess;
+    return 0; // errSecSuccess
 }
-static OSStatus (*nd_orig_SecStaticCodeCheckValidityWithErrors)(SecStaticCodeRef, SecCSFlags, CFErrorRef *);
-static OSStatus nd_SecStaticCodeCheckValidityWithErrors(SecStaticCodeRef code, SecCSFlags flags, CFErrorRef *errors) {
+static int32_t (*nd_orig_SecStaticCodeCheckValidityWithErrors)(SecStaticCodeRef, SecCSFlags, CFErrorRef *);
+static int32_t nd_SecStaticCodeCheckValidityWithErrors(SecStaticCodeRef code, SecCSFlags flags, CFErrorRef *errors) {
     (void)code; (void)flags;
     if (errors) *errors = NULL;
-    return errSecSuccess;
+    return 0; // errSecSuccess
 }
 
 __attribute__((constructor))
