@@ -96,7 +96,7 @@ static int ndRootSpawn(NSString *path, NSArray<NSString *> *args, NSString *outF
 }
 
 // 以 root 身份执行本工具 __root 模式（文件操作）
-static int ndRootRun(NSArray<NSString> *rootArgs, NSString *outFile, NSMutableString *log) {
+static int ndRootRun(NSArray<NSString *> *rootArgs, NSString *outFile, NSMutableString *log) {
     NSMutableArray *full = [NSMutableArray arrayWithObject:@"__root"];
     [full addObjectsFromArray:rootArgs];
     return ndRootSpawn(gSelfPath, full, outFile, log);
