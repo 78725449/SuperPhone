@@ -150,6 +150,7 @@
 		AA01000000000000000000B2 /* TRWpsClient.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = TRWpsClient.mm; sourceTree = "<group>"; };
 		A10000000000000000000001 /* CoordTransform.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/CoordTransform.h; sourceTree = "<group>"; };
 		A10000000000000000000002 /* CoordTransform.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/CoordTransform.mm; sourceTree = "<group>"; };
+		AA01000000000000000000B5 /* WpsBssidData.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/WpsBssidData.h; sourceTree = "<group>"; };
 		A10000000000000000000004 /* TRDataFiller.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/TRDataFiller.h; sourceTree = "<group>"; };
 		A10000000000000000000005 /* TRDataFiller.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/TRDataFiller.mm; sourceTree = "<group>"; };
 		A1000000000000000000002B /* TRCorpus.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/TRCorpus.h; sourceTree = "<group>"; };
@@ -315,6 +316,7 @@
 				AA01000000000000000000B2 /* TRWpsClient.mm */,
 			A10000000000000000000001 /* CoordTransform.h */,
 			A10000000000000000000002 /* CoordTransform.mm */,
+			AA01000000000000000000B5 /* WpsBssidData.h */,
 			A10000000000000000000004 /* TRDataFiller.h */,
 			A10000000000000000000005 /* TRDataFiller.mm */,
 			A1000000000000000000002B /* TRCorpus.h */,
