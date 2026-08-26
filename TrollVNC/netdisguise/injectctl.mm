@@ -103,7 +103,7 @@ static int ndRootSpawn(NSString *path, NSArray<NSString *> *args, NSString *outF
     if (ndRootWrapperAvailable()) {
         NSMutableArray *wa = [NSMutableArray arrayWithObject:path];
         [wa addObjectsFromArray:args];
-        return ndSpawnWithAttr(@"/cores/root_wrapper", wa, outFile, log);
+        return ndSpawnWithAttr(@"/cores/root_wrapper", wa, NULL, outFile, log);
     }
     // persona 回退：记录 set 返回值（非 0 = attr 未生效，说明调用进程 entitlement 不满足）
     posix_spawnattr_t attr;
