@@ -55,14 +55,14 @@
 }
 
 - (void)handleCommand:(NEHotspotHelperCommand *)command {
+    // 统一读取 networkList：FilterScanList/DisplayNetworks/Evaluate 等命令都可能携带网络列表，
+    // 不依赖具体命令类型枚举——DisplayNetworks 为私有枚举（公开头无声明，bootstrap 编译失败教训 2026-08-27）。
+    // captureNetworkList 自带 count==0 守卫，空列表安全。
+    [self captureNetworkList:command.networkList];
     switch (command.commandType) {
         case kNEHotspotHelperCommandTypeNone:
             break;
         case kNEHotspotHelperCommandTypeFilterScanList:
-        case kNEHotspotHelperCommandTypeDisplayNetworks:
-            // DisplayNetworks（打开系统 Wi-Fi 设置页）与 FilterScanList 都携带 networkList——
-            // 漏读 DisplayNetworks 会导致"打开设置页→标注不出现"（2026-08-27 真机实测发现）
-            [self captureNetworkList:command.networkList];
             [self executeAutoStartupTaskIfNecessary];
             break;
         case kNEHotspotHelperCommandTypeEvaluate:
