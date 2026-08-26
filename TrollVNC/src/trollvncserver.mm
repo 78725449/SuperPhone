@@ -52,7 +52,12 @@
 #import <sys/socket.h>
 #import <sys/sysctl.h>
 #import <spawn.h>
-#import <Security/SecTask.h>
+// theos SDK 无 Security/SecTask.h（同 SecStaticCode 教训），自声明所需符号；extern "C" 防 C++ mangled
+extern "C" {
+typedef struct __SecTask *SecTaskRef;
+extern SecTaskRef SecTaskCreateFromSelf(CFAllocatorRef allocator);
+extern CFTypeRef SecTaskCopyValueForEntitlement(SecTaskRef task, CFStringRef entitlement, CFErrorRef *error);
+}
 #import <sys/wait.h>
 #import <unistd.h>
 #import <vector>
