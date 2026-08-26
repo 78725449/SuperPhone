@@ -221,7 +221,7 @@ static CLLocationCoordinate2D parseWifiDevice(const uint8_t *buf, NSUInteger len
         if (!outErr && data.length >= 10) {
             // 响应 = 10B 帧头 + protobuf（对齐 mjs）
             NSData *proto = [data subdataWithRange:NSMakeRange(10, data.length - 10)];
-            const uint8_t *bytes = proto.bytes;
+            const uint8_t *bytes = (const uint8_t *)proto.bytes; // .mm 按 C++ 编译：void* 需显式转 uint8_t*
             NSUInteger len = proto.length;
             NSUInteger i = 0;
             double latSum = 0, lonSum = 0;
