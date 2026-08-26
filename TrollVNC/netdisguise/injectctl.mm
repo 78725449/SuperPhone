@@ -16,9 +16,15 @@
 #import <errno.h>
 
 // persona 私有 API（libsystem 导出；对齐 TrollFools rootSpawn 机制）
+#ifdef __cplusplus
+extern "C" {
+#endif
 extern int posix_spawnattr_set_persona_np(const posix_spawnattr_t *, int, uint32_t);
 extern int posix_spawnattr_set_persona_uid_np(const posix_spawnattr_t *, uid_t);
 extern int posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t *, gid_t);
+#ifdef __cplusplus
+}
+#endif
 #ifndef POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE
 #define POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE 2
 #endif
