@@ -226,9 +226,23 @@ static int ndRemove(NSString *bundleId, NSMutableString *log) {
 
 static int ndDiag(NSString *bundleId, NSMutableString *log) {
     [log appendFormat:@"euid=%d uid=%d\n", geteuid(), getuid()];
+    // 对照：写 mobile 可写区（判断是否沙箱受限）
+    NSString *ctlPath = @"/var/mobile/Library/Preferences/__nd_test";
+    NSError *cerr = nil;
+    BOOL cw = [@"" writeToFile:ctlPath atomically:YES encoding:NSUTF8StringEncoding error:&cerr];
+    if (cw) {
+        [log appendFormat:@"controlWrite(YES) /var/mobile 可写\n"];
+        [[NSFileManager defaultManager] removeItemAtPath:ctlPath error:NULL];
+    } else {
+        [log appendFormat:@"controlWrite(NO) err=%@\n", cerr ?: @"?"];
+    }
     NSString *appDir = ndFindAppDir(bundleId);
     [log appendFormat:@"appDir=%@\n", appDir ?: @"(not found)"];
     if (appDir) {
+        struct stat st;
+        if (stat(appDir.UTF8String, &st) == 0) {
+            [log appendFormat:@"appBundle owner=%d mode=%o\n", st.st_uid, st.st_mode & 07777];
+        }
         NSString *test = [appDir stringByAppendingPathComponent:@"__nd_test"];
         NSError *werr = nil;
         BOOL w = [@"" writeToFile:test atomically:YES encoding:NSUTF8StringEncoding error:&werr];
@@ -240,8 +254,10 @@ static int ndDiag(NSString *bundleId, NSMutableString *log) {
         }
         NSString *fwDir = [appDir stringByAppendingPathComponent:@"Frameworks"];
         NSError *mkErr = nil;
-        [[NSFileManager defaultManager] createDirectoryAtPath:fwDir withIntermediateDirectories:YES attributes:nil error:&mkErr];
-        [log appendFormat:@"mkdir Frameworks=%@\n", mkErr ? [@"NO " stringByAppendingString:mkErr.description] : @"YES"];
+        BOOL mk = [[NSFileManager defaultManager] createDirectoryAtPath:fwDir withIntermediateDirectories:YES attributes:nil error:&mkErr];
+        [log appendFormat:@"mkdir Frameworks=%@ exists=%@\n",
+         mk ? @"YES" : [@"NO " stringByAppendingString:mkErr ? mkErr.description : @"?"],
+         [[NSFileManager defaultManager] fileExistsAtPath:fwDir] ? @"YES" : @"NO"];
     }
     return 0;
 }
