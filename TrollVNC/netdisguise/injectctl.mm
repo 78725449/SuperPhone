@@ -300,6 +300,24 @@ static int ndDiag(NSString *bundleId, NSMutableString *log) {
     } else {
         [log appendFormat:@"rootWrapper=NO\n"];
     }
+    // 签名层 entitlements（bundle 内 ldid -e 读取；501 可读，无需 root）
+    NSString *toolDir = [gSelfPath stringByDeletingLastPathComponent];
+    NSString *ldidPath = [toolDir stringByAppendingPathComponent:@"ldid"];
+    for (NSString *bin in @[gSelfPath, [toolDir stringByAppendingPathComponent:@"trollvncserver"]]) {
+        NSString *label = [NSString stringWithFormat:@"%@ ent:", bin.lastPathComponent];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:bin] &&
+            [[NSFileManager defaultManager] fileExistsAtPath:ldidPath]) {
+            NSMutableString *elog = [NSMutableString string];
+            int erc = ndSpawnWithAttr(ldidPath, @[@"-e", bin], NULL, nil, elog);
+            BOOL hasP = [elog containsString:@"com.apple.private.persona-mgmt"];
+            BOOL hasPlat = [elog containsString:@"platform-application"];
+            BOOL hasNS = [elog containsString:@"no-sandbox"];
+            [log appendFormat:@"%@ rc=%d personaMgmt=%d platformApp=%d noSandbox=%d\n",
+             label, erc, hasP, hasPlat, hasNS];
+        } else {
+            [log appendFormat:@"%@ (ldid or binary missing)\n", label];
+        }
+    }
     NSString *appDir = ndFindAppDir(bundleId);
     [log appendFormat:@"appDir=%@\n", appDir ?: @"(not found)"];
     if (appDir) {

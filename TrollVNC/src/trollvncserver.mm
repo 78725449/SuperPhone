@@ -52,6 +52,7 @@
 #import <sys/socket.h>
 #import <sys/sysctl.h>
 #import <spawn.h>
+#import <Security/SecTask.h>
 #import <sys/wait.h>
 #import <unistd.h>
 #import <vector>
@@ -4041,6 +4042,20 @@ static NSDictionary *tvExtHandleNetdisguise(NSDictionary *params) {
         // 诊断：测 trollvncserver 进程自身对目标 app 目录的写权限（不经 injectctl）
         NSMutableDictionary *info = [NSMutableDictionary dictionary];
         info[@"euid"] = @(geteuid());
+        // 运行时 entitlement（决定 persona spawn 是否生效的权威信息：TrollStore 环境 persona 提权
+        // 依赖调用进程的 persona-mgmt + platform-application 实际生效）
+        SecTaskRef stask = SecTaskCreateFromSelf(NULL);
+        if (stask) {
+            for (NSString *key in @[@"com.apple.private.persona-mgmt", @"platform-application",
+                                    @"com.apple.private.security.no-sandbox", @"get-task-allow"]) {
+                CFTypeRef v = SecTaskCopyValueForEntitlement(stask, (__bridge CFStringRef)key, NULL);
+                info[[@"ent." stringByAppendingString:key]] = v ? (__bridge id)v : @"(nil)";
+                if (v) CFRelease(v);
+            }
+            CFRelease(stask);
+        } else {
+            info[@"secTask"] = @"SecTaskCreateFromSelf failed";
+        }
         NSString *testPath = [bundleId stringByAppendingPathComponent:@"__nd_test"];
         NSString *target = [tvNetdisguiseFindAppDir(bundleId) stringByAppendingPathComponent:testPath];
         NSError *werr = nil;
