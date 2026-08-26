@@ -263,12 +263,12 @@ static int ndDiag(NSString *bundleId, NSMutableString *log) {
     [log appendFormat:@"built=%s %s\n", __DATE__, __TIME__];
     [log appendFormat:@"euid=%d uid=%d\n", geteuid(), getuid()];
     // 对照：写 mobile 可写区（判断是否沙箱受限）
+    // 源文件保留（不删），供下方 __root copy 测试作为源；结束后统一清理
     NSString *ctlPath = @"/var/mobile/Library/Preferences/__nd_test";
     NSError *cerr = nil;
     BOOL cw = [@"" writeToFile:ctlPath atomically:YES encoding:NSUTF8StringEncoding error:&cerr];
     if (cw) {
         [log appendFormat:@"controlWrite(YES) /var/mobile 可写\n"];
-        [[NSFileManager defaultManager] removeItemAtPath:ctlPath error:NULL];
     } else {
         [log appendFormat:@"controlWrite(NO) err=%@\n", cerr ?: @"?"];
     }
@@ -279,13 +279,15 @@ static int ndDiag(NSString *bundleId, NSMutableString *log) {
         if (stat(appDir.UTF8String, &st) == 0) {
             [log appendFormat:@"appBundle owner=%d mode=%o\n", st.st_uid, st.st_mode & 07777];
         }
-        // persona root 写测试
+        // persona root 写测试（源=上面保留的 ctlPath；成功后清理源与目标）
         NSString *test = [appDir stringByAppendingPathComponent:@"__nd_test"];
         if (ndRootRun(@[@"copy", ctlPath, test], nil, log) == 0) {
             [log appendFormat:@"rootWriteTest=YES (persona root 可写 app bundle)\n"];
             ndRootRun(@[@"rm", test], nil, log);
+            ndRootRun(@[@"rm", ctlPath], nil, log);
         } else {
             [log appendFormat:@"rootWriteTest=NO\n"];
+            ndRootRun(@[@"rm", ctlPath], nil, log);
         }
     }
     return 0;
@@ -300,13 +302,18 @@ int main(int argc, char *argv[]) {
         if (argc >= 3 && strcmp(argv[1], "__root") == 0) {
             NSString *op = [NSString stringWithUTF8String:argv[2]];
             NSMutableString *log = [NSMutableString string];
+            [log appendFormat:@"rootEuid=%d uid=%d\n", geteuid(), getuid()];
             int rc = 0;
             if ([op isEqualToString:@"copy"]) {
                 // __root copy <src> <dst>
                 NSString *src = [NSString stringWithUTF8String:argv[3]];
                 NSString *dst = [NSString stringWithUTF8String:argv[4]];
                 [[NSFileManager defaultManager] removeItemAtPath:dst error:NULL];
-                if (![[NSFileManager defaultManager] copyItemAtPath:src toPath:dst error:NULL]) rc = -3;
+                NSError *copyErr = nil;
+                if (![[NSFileManager defaultManager] copyItemAtPath:src toPath:dst error:&copyErr]) {
+                    rc = -3;
+                    [log appendFormat:@"copy error: %@\n", copyErr ? copyErr.description : @"?"];
+                }
                 chown(dst.UTF8String, 33, 33);
             } else if ([op isEqualToString:@"mkdir"]) {
                 NSString *p = [NSString stringWithUTF8String:argv[3]];
