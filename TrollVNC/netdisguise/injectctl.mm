@@ -224,6 +224,28 @@ static int ndRemove(NSString *bundleId, NSMutableString *log) {
     return 0;
 }
 
+static int ndDiag(NSString *bundleId, NSMutableString *log) {
+    [log appendFormat:@"euid=%d uid=%d\n", geteuid(), getuid()];
+    NSString *appDir = ndFindAppDir(bundleId);
+    [log appendFormat:@"appDir=%@\n", appDir ?: @"(not found)"];
+    if (appDir) {
+        NSString *test = [appDir stringByAppendingPathComponent:@"__nd_test"];
+        NSError *werr = nil;
+        BOOL w = [@"" writeToFile:test atomically:YES encoding:NSUTF8StringEncoding error:&werr];
+        if (w) {
+            [log appendFormat:@"writeTest=YES (root of app bundle)\n"];
+            [[NSFileManager defaultManager] removeItemAtPath:test error:NULL];
+        } else {
+            [log appendFormat:@"writeTest=NO err=%@\n", werr ?: @"?"];
+        }
+        NSString *fwDir = [appDir stringByAppendingPathComponent:@"Frameworks"];
+        NSError *mkErr = nil;
+        [[NSFileManager defaultManager] createDirectoryAtPath:fwDir withIntermediateDirectories:YES attributes:nil error:&mkErr];
+        [log appendFormat:@"mkdir Frameworks=%@\n", mkErr ? [@"NO " stringByAppendingString:mkErr.description] : @"YES"];
+    }
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
     @autoreleasepool {
         if (argc < 3) {
@@ -240,6 +262,8 @@ int main(int argc, char *argv[]) {
             rc = ndInject(bundleId, log);
         } else if ([action isEqualToString:@"remove"]) {
             rc = ndRemove(bundleId, log);
+        } else if ([action isEqualToString:@"diag"]) {
+            rc = ndDiag(bundleId, log);
         } else {
             fprintf(stderr, "unknown action: %s\n", argv[1]);
             return 1;

@@ -3978,6 +3978,26 @@ static id tvLSWorkspaceInstance(void) {
 }
 
 // netdisguise（POC，2026-08-26）：注入/解除蜂窝伪装 dylib 到目标 app（B 类能力入口之一，暂仅 5802）
+static NSString *tvNetdisguiseFindAppDir(NSString *bundleId) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *root in @[@"/var/containers/Bundle/Application",
+                             @"/private/var/containers/Bundle/Application"]) {
+        NSArray *subs = [fm contentsOfDirectoryAtPath:root error:NULL];
+        for (NSString *sub in subs) {
+            NSString *dir = [root stringByAppendingPathComponent:sub];
+            NSArray *apps = [fm contentsOfDirectoryAtPath:dir error:NULL];
+            for (NSString *app in apps) {
+                if (![app hasSuffix:@".app"]) continue;
+                NSString *appDir = [dir stringByAppendingPathComponent:app];
+                NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
+                                      [appDir stringByAppendingPathComponent:@"Info.plist"]];
+                if ([info[@"CFBundleIdentifier"] isEqualToString:bundleId]) return appDir;
+            }
+        }
+    }
+    return nil;
+}
+
 static NSString *tvNetdisguiseSpawnCapture(NSString *tool, NSArray<NSString *> *args) {
     NSMutableString *out = [NSMutableString string];
     char **cargv = (char **)calloc(args.count + 2, sizeof(char *));
@@ -4009,14 +4029,32 @@ static NSString *tvNetdisguiseSpawnCapture(NSString *tool, NSArray<NSString *> *
 static NSDictionary *tvExtHandleNetdisguise(NSDictionary *params) {
     NSString *action = params[@"action"];
     NSString *bundleId = params[@"bundleId"];
-    if (![action isKindOfClass:[NSString class]] || ![@[@"inject", @"remove"] containsObject:action])
-        return tvExtErr(@"netdisguise 参数 action 须为 inject/remove");
+    if (![action isKindOfClass:[NSString class]] || ![@[@"inject", @"remove", @"diag"] containsObject:action])
+        return tvExtErr(@"netdisguise 参数 action 须为 inject/remove/diag");
     if (![bundleId isKindOfClass:[NSString class]] || bundleId.length == 0)
         return tvExtErr(@"netdisguise 缺少参数 bundleId");
     NSString *appDir = [[tvExecutablePath() stringByDeletingLastPathComponent] stringByStandardizingPath];
     NSString *tool = [appDir stringByAppendingPathComponent:@"injectctl"];
     if (![[NSFileManager defaultManager] fileExistsAtPath:tool])
         return tvExtErr(@"injectctl 缺失（请确认安装的是 bootstrap .tipa）");
+    if ([action isEqualToString:@"diag"]) {
+        // 诊断：测 trollvncserver 进程自身对目标 app 目录的写权限（不经 injectctl）
+        NSMutableDictionary *info = [NSMutableDictionary dictionary];
+        info[@"euid"] = @(geteuid());
+        NSString *testPath = [bundleId stringByAppendingPathComponent:@"__nd_test"];
+        NSString *target = [tvNetdisguiseFindAppDir(bundleId) stringByAppendingPathComponent:testPath];
+        NSError *werr = nil;
+        BOOL w = NO;
+        if (target) {
+            w = [@"" writeToFile:target atomically:YES encoding:NSUTF8StringEncoding error:&werr];
+            if (w) [[NSFileManager defaultManager] removeItemAtPath:target error:NULL];
+        }
+        info[@"writeTest"] = @(w);
+        info[@"writeErr"] = werr ? werr.description : @"";
+        NSString *log = tvNetdisguiseSpawnCapture(tool, @[@"diag", bundleId]);
+        info[@"injectctlDiag"] = log;
+        return tvExtOk(info);
+    }
     NSString *log = tvNetdisguiseSpawnCapture(tool, @[action, bundleId]);
     return tvExtOk(@{@"action": action, @"bundleId": bundleId, @"log": log});
 }
