@@ -26,8 +26,10 @@ extern int posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t *, gid_t);
 }
 #endif
 #ifndef POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE
-#define POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE 2
+#define POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE 1
 #endif
+// persona id（对齐 TrollFools rootSpawn：set_persona_np(attrs, 99, FLAGS_OVERRIDE)）
+#define ND_PERSONA_ID 99
 
 // LSApplicationWorkspace（MobileCoreServices 私有类，动态取类避免头依赖）
 @interface LSApplicationWorkspace : NSObject
@@ -64,7 +66,7 @@ static int ndSpawnWithAttr(NSString *path, NSArray<NSString *> *args, posix_spaw
     int rc = posix_spawn(&pid, cargv[0], &fa, attr, cargv, NULL);
     if (target != -1) close(target);
     if (rc != 0) {
-        if (log) [log appendFormat:@"spawn failed: %s\n", strerror(errno)];
+        if (log) [log appendFormat:@"spawn failed: rc=%d\n", rc];
         free(cargv);
         return rc;
     }
@@ -93,7 +95,7 @@ static int ndRun(NSString *path, NSArray<NSString *> *args, NSString *outFile, N
 static int ndRootSpawn(NSString *path, NSArray<NSString *> *args, NSString *outFile, NSMutableString *log) {
     posix_spawnattr_t attr;
     posix_spawnattr_init(&attr);
-    posix_spawnattr_set_persona_np(&attr, POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE, 0);
+    posix_spawnattr_set_persona_np(&attr, ND_PERSONA_ID, POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE);
     posix_spawnattr_set_persona_uid_np(&attr, 0);
     posix_spawnattr_set_persona_gid_np(&attr, 0);
     int rc = ndSpawnWithAttr(path, args, &attr, outFile, log);
