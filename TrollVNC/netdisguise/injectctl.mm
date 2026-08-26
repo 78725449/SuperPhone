@@ -91,6 +91,19 @@ static NSString *ndFindAppDir(NSString *bundleId) {
     return nil;
 }
 
+// 提权到 root（platform-application + no-sandbox 允许，TrollFools/Filza 同款机制）；
+// 目标 app bundle 归 _mobile(33) 且 755，mobile(501) 无 POSIX 写权限，root 才能写
+static void ndElevate(void) {
+    if (seteuid(0) != 0) {
+        fprintf(stderr, "seteuid(0) failed: %s\n", strerror(errno));
+    }
+}
+
+// 注入文件归 root 后 chown 回 _mobile(33:33)，对齐 installd 所有权（TrollFools cmdChangeOwnerToInstalld）
+static void ndChownInstalld(NSString *path) {
+    chown(path.UTF8String, 33, 33);
+}
+
 // 终止目标 app：sysctl 枚举进程 + kill（iOS /usr/bin 无 killall，不依赖外部二进制）
 static void ndKillApp(NSString *procName) {
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
@@ -143,6 +156,7 @@ static int ndInject(NSString *bundleId, NSMutableString *log) {
         [log appendFormat:@"copy dylib failed: %@ (src=%@ dst=%@)\n", cpErr ?: @"unknown", dylibSrc, dylibDst];
         return -3;
     }
+    ndChownInstalld(dylibDst);
 
     // 3. 备份主二进制（仅首次）
     NSString *bak = [exe stringByAppendingString:@".nd.bak"];
@@ -174,6 +188,7 @@ static int ndInject(NSString *bundleId, NSMutableString *log) {
         [log appendFormat:@"resign dylib failed\n"];
         return -5;
     }
+    ndChownInstalld(exe);
 
     // 6. 启动
     id ws = [NSClassFromString(@"LSApplicationWorkspace") performSelector:NSSelectorFromString(@"defaultWorkspace")];
@@ -226,6 +241,10 @@ static int ndRemove(NSString *bundleId, NSMutableString *log) {
 
 static int ndDiag(NSString *bundleId, NSMutableString *log) {
     [log appendFormat:@"euid=%d uid=%d\n", geteuid(), getuid()];
+    // 提权测试
+    int elev = seteuid(0);
+    [log appendFormat:@"seteuid(0)=%@ euid_now=%d\n", elev == 0 ? @"YES" : [NSString stringWithFormat:@"NO(%s)", strerror(errno)], geteuid()];
+    if (elev == 0) seteuid(501);
     // 对照：写 mobile 可写区（判断是否沙箱受限）
     NSString *ctlPath = @"/var/mobile/Library/Preferences/__nd_test";
     NSError *cerr = nil;
@@ -243,14 +262,25 @@ static int ndDiag(NSString *bundleId, NSMutableString *log) {
         if (stat(appDir.UTF8String, &st) == 0) {
             [log appendFormat:@"appBundle owner=%d mode=%o\n", st.st_uid, st.st_mode & 07777];
         }
-        NSString *test = [appDir stringByAppendingPathComponent:@"__nd_test"];
-        NSError *werr = nil;
-        BOOL w = [@"" writeToFile:test atomically:YES encoding:NSUTF8StringEncoding error:&werr];
-        if (w) {
-            [log appendFormat:@"writeTest=YES (root of app bundle)\n"];
-            [[NSFileManager defaultManager] removeItemAtPath:test error:NULL];
+        // 提权后写测试
+        if (seteuid(0) == 0) {
+            NSString *test = [appDir stringByAppendingPathComponent:@"__nd_test"];
+            NSError *werr = nil;
+            BOOL w = [@"" writeToFile:test atomically:YES encoding:NSUTF8StringEncoding error:&werr];
+            [log appendFormat:@"rootWriteTest=%@ err=%@\n", w ? @"YES" : @"NO", w ? @"" : (werr ? werr.description : @"?")];
+            if (w) [[NSFileManager defaultManager] removeItemAtPath:test error:NULL];
+            seteuid(501);
         } else {
-            [log appendFormat:@"writeTest=NO err=%@\n", werr ?: @"?"];
+            [log appendFormat:@"rootWriteTest=SKIP(no root)\n"];
+        }
+        NSString *test2 = [appDir stringByAppendingPathComponent:@"__nd_test"];
+        NSError *werr2 = nil;
+        BOOL w2 = [@"" writeToFile:test2 atomically:YES encoding:NSUTF8StringEncoding error:&werr2];
+        if (w2) {
+            [log appendFormat:@"writeTest=YES (root of app bundle)\n"];
+            [[NSFileManager defaultManager] removeItemAtPath:test2 error:NULL];
+        } else {
+            [log appendFormat:@"writeTest=NO err=%@\n", werr2 ?: @"?"];
         }
         NSString *fwDir = [appDir stringByAppendingPathComponent:@"Frameworks"];
         NSError *mkErr = nil;
@@ -271,6 +301,8 @@ int main(int argc, char *argv[]) {
         NSString *action = [NSString stringWithUTF8String:argv[1]];
         NSString *bundleId = [NSString stringWithUTF8String:argv[2]];
         gToolDir = [[NSString stringWithUTF8String:argv[0]] stringByDeletingLastPathComponent];
+
+        ndElevate();
 
         NSMutableString *log = [NSMutableString string];
         int rc;
