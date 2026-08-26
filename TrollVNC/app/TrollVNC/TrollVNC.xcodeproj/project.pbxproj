@@ -58,6 +58,8 @@
 		AA01000000000000000000A2 /* TVNCAppStore.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A6 /* TVNCAppStore.m */; };
 		AA01000000000000000000A3 /* TVNCGatewayClient.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A8 /* TVNCGatewayClient.m */; };
 		AA01000000000000000000A4 /* TVNCGatewayClient.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A8 /* TVNCGatewayClient.m */; };
+		AA01000000000000000000B3 /* TRWpsClient.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000B2 /* TRWpsClient.mm */; };
+		AA01000000000000000000B4 /* TRWpsClient.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000B2 /* TRWpsClient.mm */; };
 		A10000000000000000000003 /* CoordTransform.mm in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* CoordTransform.mm */; };
 		A10000000000000000000006 /* TRDataFiller.mm in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* TRDataFiller.mm */; };
 		A1000000000000000000002F /* TRCorpus.mm in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000002C /* TRCorpus.mm */; };
@@ -144,6 +146,8 @@
 		AA01000000000000000000A6 /* TVNCAppStore.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCAppStore.m; sourceTree = "<group>"; };
 		AA01000000000000000000A7 /* TVNCGatewayClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCGatewayClient.h; sourceTree = "<group>"; };
 		AA01000000000000000000A8 /* TVNCGatewayClient.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCGatewayClient.m; sourceTree = "<group>"; };
+		AA01000000000000000000B1 /* TRWpsClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TRWpsClient.h; sourceTree = "<group>"; };
+		AA01000000000000000000B2 /* TRWpsClient.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = TRWpsClient.mm; sourceTree = "<group>"; };
 		A10000000000000000000001 /* CoordTransform.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/CoordTransform.h; sourceTree = "<group>"; };
 		A10000000000000000000002 /* CoordTransform.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/CoordTransform.mm; sourceTree = "<group>"; };
 		A10000000000000000000004 /* TRDataFiller.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/TRDataFiller.h; sourceTree = "<group>"; };
@@ -307,6 +311,8 @@
 				AA01000000000000000000A6 /* TVNCAppStore.m */,
 				AA01000000000000000000A7 /* TVNCGatewayClient.h */,
 			AA01000000000000000000A8 /* TVNCGatewayClient.m */,
+				AA01000000000000000000B1 /* TRWpsClient.h */,
+				AA01000000000000000000B2 /* TRWpsClient.mm */,
 			A10000000000000000000001 /* CoordTransform.h */,
 			A10000000000000000000002 /* CoordTransform.mm */,
 			A10000000000000000000004 /* TRDataFiller.h */,
@@ -509,6 +515,7 @@
 				7A1B2C3D4E5F60718293A4B7 /* TRMainTabBarController.m in Sources */,
 				AA01000000000000000000A1 /* TVNCAppStore.m in Sources */,
 				AA01000000000000000000A3 /* TVNCGatewayClient.m in Sources */,
+				AA01000000000000000000B3 /* TRWpsClient.mm in Sources */,
 				61B0DD092EB13BEF004CC42B /* TVNCSliderCell.m in Sources */,
 				D0B1B2C3D4E5F60718293A02 /* TVNCSegmentCell.m in Sources */,
 				D0B1B2C3D4E5F60718293A05 /* TVNCButtonCell.m in Sources */,
@@ -560,6 +567,7 @@
 				615401BC2EB1180C009FDD6F /* TVNCServiceCoordinator.m in Sources */,
 				AA01000000000000000000A2 /* TVNCAppStore.m in Sources */,
 				AA01000000000000000000A4 /* TVNCGatewayClient.m in Sources */,
+				AA01000000000000000000B4 /* TRWpsClient.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

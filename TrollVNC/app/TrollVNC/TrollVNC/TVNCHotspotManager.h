@@ -25,6 +25,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)registerWithName:(NSString *)name;
 - (void)executeAutoStartupTaskIfNecessary;
 
+@property (nonatomic, strong, readonly) NSArray *lastNetworkList;
+@property (nonatomic, copy, readonly) NSString *lastScanSummary;
+
+/// 网络列表更新回调（主队列调用；networkList 非空时触发）
+@property (nonatomic, copy, nullable) void (^onNetworkListUpdated)(NSArray *networks, NSString *summary);
+
 @end
 
 NS_ASSUME_NONNULL_END

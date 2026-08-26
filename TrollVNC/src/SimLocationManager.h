@@ -41,6 +41,25 @@ NS_ASSUME_NONNULL_BEGIN
 /// 停止注入：stop → clear → flush + 时区通知（恢复真实定位）
 - (void)stop;
 
+/// 总停止：GPS + wifi 模拟一并停止（总开关关闭时调用，恢复真实定位与真实扫描源）
+- (void)stopAll;
+
+/// WiFi 扫描模拟注入（输入层）：setWifiScanResults + setSimulatedWifiPower + startWifiSimulation
+/// @param scanResults  NSArray<NSDictionary *>，每项含 bssid/ssid/rssi/channel/age/timestamp（键名待 XPC 取证校准）
+/// 与 GPS 注入（injectPoint:）并发不互斥——GPS 喂结果层、wifi 喂输入层，叠加自洽
+- (void)injectWifiScanResults:(NSArray<NSDictionary *> *)scanResults;
+
+/// 停止 wifi 扫描模拟：stopWifiSimulation + setSimulatedWifiPower:NO（恢复真实扫描源）
+- (void)stopWifiScanSimulation;
+
+/// 构建 setWifiScanResults: 的字典数组（初始猜想键名，待 XPC 取证校准）
+/// 输入：kWpsBssids 标准格式 BSSID 数组（见 WpsBssidData.h）
+/// rssi 随机 -40~-85 dBm（决定 wifi 源精度 10-100m，与 GPS 源 5-30m 区分）
++ (NSArray<NSDictionary *> *)buildScanResultsFromBssids:(const char **)bssids count:(NSUInteger)count;
+
+/// 当前 wifi 模拟是否开启
+@property(nonatomic, assign, readonly) BOOL isWifiSimulating;
+
 /// 当前是否处于注入中（供后续失效巡检使用）
 @property(nonatomic, assign, readonly) BOOL isSimulating;
 

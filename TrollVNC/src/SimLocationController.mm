@@ -11,6 +11,7 @@
 
 #import "SimLocationManager.h"
 #import "SimRouteCalculator.h" // haversineMeters（与 App 截断同度量，选最近续播点）
+#import "WpsBssidData.h" // kWpsBssids/kWpsBssidCount（统一目标位置源的 wifi BSSID 集）
 #import "Logging.h"
 #import <math.h>
 
@@ -81,7 +82,7 @@ static const double kSimAnchorRangeM = 20.0;
         [self _stopAnchor];
         [self _stopTrack];
         _currentMode = @"off";
-        [[SimLocationManager sharedManager] stop];
+        [[SimLocationManager sharedManager] stopAll]; // 总停：GPS + wifi 一并恢复真实
     } else if ([mode isEqualToString:@"anchor"]) {
         // 位置基底：中心点 + 微动游走（拟人必需，完全静止坐标像假 GPS）
         [self _stopTrack];
@@ -95,7 +96,7 @@ static const double kSimAnchorRangeM = 20.0;
         [self _stopAnchor];
         [self _stopTrack];
         _currentMode = @"off";
-        [[SimLocationManager sharedManager] stop];
+        [[SimLocationManager sharedManager] stopAll]; // 总停：GPS + wifi 一并恢复真实
     }
 }
 
@@ -117,6 +118,7 @@ static const double kSimAnchorRangeM = 20.0;
     _currentCourse = 0.0;
     _currentMode = @"anchor";
     [self _injectAnchorPointWithSpeed:0.0 course:0.0];
+    [self _injectWifiSimulationForCurrentLocation]; // wifi 注入一次即可（anchor 微动 ±20m 内 AP 集不变）
     if (!_anchorSource) {
         _anchorSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
         dispatch_source_set_timer(_anchorSource, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSimAnchorTickInterval * NSEC_PER_SEC)),
@@ -171,6 +173,18 @@ static const double kSimAnchorRangeM = 20.0;
                                               speed:speed];
 }
 
+/// 统一目标位置源：wifi 扫描模拟与 GPS 同源注入（用户拍板——锚点/轨迹点同时驱动两条管线）
+/// 当前阶段用内置 kWpsBssids（杭州数据）；跨区域 BSSID 集待 tile 动态反查（Phase 后续）
+/// 真机验证点：
+/// 1. injectPoint: 的 clearSimulatedLocations 是否连带清 wifi 模拟（若会，GPS 每秒注入打断 wifi 管线，需调注入序列）
+/// 2. 总开关关闭后 GPS + wifi 是否都恢复真实（5902 日志确认 [locsim] wifi simulation stopped）
+- (void)_injectWifiSimulationForCurrentLocation {
+    NSArray *scanResults = [SimLocationManager buildScanResultsFromBssids:kWpsBssids count:kWpsBssidCount];
+    if (scanResults.count) {
+        [[SimLocationManager sharedManager] injectWifiScanResults:scanResults];
+    }
+}
+
 - (void)_stopAnchor {
     if (_anchorSource) {
         dispatch_source_cancel(_anchorSource);
@@ -184,6 +198,8 @@ static const double kSimAnchorRangeM = 20.0;
     NSArray *points = [self _loadTrackPoints];
     if (points.count == 0) {
         TVLog(@"[locsim] track file empty/missing: %@", kSimTrackFilePath);
+        [self _stopTrack];
+        [[SimLocationManager sharedManager] stopAll]; // 空轨迹全停（GPS+wifi 一并恢复真实，防残留）
         return;
     }
     _trackPoints = points;
@@ -205,6 +221,7 @@ static const double kSimAnchorRangeM = 20.0;
         startIdx = best;
     }
     [self _injectPointDict:points[startIdx]];
+    [self _injectWifiSimulationForCurrentLocation]; // 轨迹在目标城市范围内共用同一 BSSID 集；跨区域动态反查属 Phase 后续
     _trackIndex = startIdx + 1;
     _trackFinished = NO;
     if (_trackSource) {
@@ -367,12 +384,20 @@ static const double kSimAnchorRangeM = 20.0;
         if (![SimLocationManager sharedManager].isSimulating || !_anchorSource) {
             TVLog(@"[locsim] anchor lost, re-start");
             [self _startAnchor];
+        } else if ([SimLocationManager sharedManager].isSimulating && ![SimLocationManager sharedManager].isWifiSimulating) {
+            // GPS 注入正常但 wifi 模拟丢失（locationd 会话中断等）→ 兜底重注（幂等：内部完整重启）
+            TVLog(@"[locsim] anchor wifi lost, re-inject");
+            [self _injectWifiSimulationForCurrentLocation];
         }
     } else if ([mode isEqualToString:@"itinerary"]) {
         // 已完成（停在终点）不重播：仅播放中 timer 丢失才重启；进度不持久化，进程重启后从头播
         if (!_trackFinished && !_trackSource) {
             TVLog(@"[locsim] itinerary timer lost, restart");
             [self _startTrack];
+        } else if ([SimLocationManager sharedManager].isSimulating && ![SimLocationManager sharedManager].isWifiSimulating) {
+            // GPS 播放/停在终点但 wifi 模拟丢失 → 兜底重注（幂等：内部完整重启）
+            TVLog(@"[locsim] itinerary wifi lost, re-inject");
+            [self _injectWifiSimulationForCurrentLocation];
         }
     }
 }

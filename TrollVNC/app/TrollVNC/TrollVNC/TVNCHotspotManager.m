@@ -20,6 +20,13 @@
 
 #import <NetworkExtension/NetworkExtension.h>
 
+@interface TVNCHotspotManager ()
+
+@property (nonatomic, strong, readwrite) NSArray *lastNetworkList;
+@property (nonatomic, copy, readwrite) NSString *lastScanSummary;
+
+@end
+
 @implementation TVNCHotspotManager
 
 + (instancetype)sharedManager {
@@ -52,6 +59,9 @@
         case kNEHotspotHelperCommandTypeNone:
             break;
         case kNEHotspotHelperCommandTypeFilterScanList:
+            [self captureNetworkList:command.networkList];
+            [self executeAutoStartupTaskIfNecessary];
+            break;
         case kNEHotspotHelperCommandTypeEvaluate:
         case kNEHotspotHelperCommandTypeAuthenticate:
         case kNEHotspotHelperCommandTypePresentUI:
@@ -61,6 +71,27 @@
             break;
         default:
             break;
+    }
+}
+
+- (void)captureNetworkList:(NSArray *)networkList {
+    if (networkList.count == 0) {
+        return;
+    }
+    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithCapacity:networkList.count];
+    for (NEHotspotNetwork *network in networkList) {
+        [lines addObject:[NSString stringWithFormat:@"%@|%@|%ld",
+                          network.BSSID ?: @"",
+                          network.SSID ?: @"",
+                          (long)(network.signalStrength * 100)]];
+    }
+    self.lastNetworkList = networkList;
+    self.lastScanSummary = [lines componentsJoinedByString:@"\n"];
+    NSLog(@"[wifiscan] NEHotspotHelper networkList count=%lu\n%@",
+          (unsigned long)networkList.count, self.lastScanSummary);
+    // 主动通知观察者（captureNetworkList: 在主队列执行——registerWithName: 队列为 main，回调天然主队列）
+    if (self.onNetworkListUpdated) {
+        self.onNetworkListUpdated(self.lastNetworkList, self.lastScanSummary);
     }
 }
 

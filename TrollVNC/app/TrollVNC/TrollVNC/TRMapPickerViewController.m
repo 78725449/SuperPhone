@@ -23,6 +23,9 @@
 #import "CoordTransform.h"
 #import "RegionSimulator.h"
 #import "SimRouteCalculator.h"
+#import "TVNCHotspotManager.h"
+#import "TRWpsClient.h"
+#import <NetworkExtension/NetworkExtension.h> // NEHotspotNetwork 类型（必须显式导入，勿依赖间接）
 
 /// 轨迹文件路径（与 SimLocationController kSimTrackFilePath 一致，App 只当配置源、manager 注入执行）
 static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.simloc.json";
@@ -45,6 +48,13 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, copy) NSString *mode; // 该段出行方式（walk/drive；random 区域每段随机决定）
 @end
 @implementation TRWaypointAnnotation
+@end
+
+/// WiFi 定位标注（wloc 反查结果；自绘水滴显示，点击不触发 tap 加锚点）
+@interface TRWifiAnnotation : MKPointAnnotation
+@property (nonatomic, copy) NSString *info; // WiFi 定位信息（坐标 + AP 数），用于自绘水滴显示
+@end
+@implementation TRWifiAnnotation
 @end
 
 /// 生长轨迹线（对齐原型 growPath/addedPath：区域自生长逐段可视化 + 完成后常显；与预览虚线区分）
@@ -129,6 +139,17 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     } else if ([CLLocationManager authorizationStatus] == kCLAuthorizationStatusAuthorizedWhenInUse ||
                [CLLocationManager authorizationStatus] == kCLAuthorizationStatusAuthorizedAlways) {
         [self.locationManager startUpdatingLocation]; // 已授权直接建立活跃请求（不等授权回调）
+    }
+    // WiFi 位置自动显示：订阅 NEHotspotHelper 扫描结果（与真实 GPS 活跃订阅同构，无按钮，随系统扫描被动更新）
+    __weak typeof(self) weakSelf = self;
+    [TVNCHotspotManager sharedManager].onNetworkListUpdated = ^(NSArray *nets, NSString *summary) {
+        __strong typeof(self) strongSelf = weakSelf;
+        [strongSelf handleWifiScanUpdate:nets summary:summary];
+    };
+    // 初始水合：启动扫描可能早于本页订阅，先消费已有缓存（与 startUpdatingLocation 后立即推首 fix 同构）
+    TVNCHotspotManager *hs = [TVNCHotspotManager sharedManager];
+    if (hs.lastNetworkList.count) {
+        [self handleWifiScanUpdate:hs.lastNetworkList summary:hs.lastScanSummary];
     }
     // 启动：地图聚焦到当前所在位置（启动一律停止态=真实位置，取不到则回退默认视野）
     [self focusMapOnCurrentLocation];
@@ -373,6 +394,40 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         [focus.widthAnchor constraintEqualToConstant:44],
         [focus.heightAnchor constraintEqualToConstant:44],
     ]];
+}
+
+/// 系统扫描回调到达 → 自动反查并更新地图 wifi 位置（无按钮，随扫描被动更新；自动模式不弹窗、不聚焦）
+- (void)handleWifiScanUpdate:(NSArray *)nets summary:(NSString *)summary {
+    NSMutableArray *bssids = [NSMutableArray array];
+    for (NEHotspotNetwork *net in nets) {
+        if (net.BSSID.length >= 17) [bssids addObject:net.BSSID.uppercaseString];
+    }
+    if (bssids.count == 0) return; // 无 BSSID 静默跳过（不弹窗——自动模式不应打扰用户）
+    __weak typeof(self) weakSelf = self;
+    [[TRWpsClient sharedClient] queryCoordinatesForBssids:bssids completion:^(NSDictionary<NSString *,CLLocation *> *result,
+        CLLocationCoordinate2D centroid, BOOL hasValid, NSError *error) {
+        __strong typeof(self) strongSelf = weakSelf;
+        if (error || !hasValid) return; // 反查失败静默（自动模式不弹窗）
+        // 更新/创建 wifi 标注（先移除旧的再添加新的，避免重复）
+        [strongSelf removeWifiAnnotationIfExists];
+        CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:centroid];
+        TRWifiAnnotation *ann = [[TRWifiAnnotation alloc] init];
+        ann.coordinate = gcj;
+        ann.title = @"WiFi 定位（wloc 反查）";
+        ann.info = [NSString stringWithFormat:@"%.4f, %.4f（%lu 个 AP）",
+                    centroid.latitude, centroid.longitude, (unsigned long)result.count];
+        ann.subtitle = ann.info;
+        [strongSelf.mapView addAnnotation:ann];
+    }];
+}
+
+/// 移除地图上已有的 WiFi 定位标注（按类型匹配，防重复标注累积）
+- (void)removeWifiAnnotationIfExists {
+    NSMutableArray *toRemove = [NSMutableArray array];
+    for (id<MKAnnotation> ann in self.mapView.annotations) {
+        if ([ann isKindOfClass:[TRWifiAnnotation class]]) [toRemove addObject:ann];
+    }
+    [self.mapView removeAnnotations:toRemove];
 }
 
 /// 启动状态（2026-08-24 定：启动一律停止态）：
@@ -1770,6 +1825,22 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         v.frame = CGRectMake(0, 0, 18, 24);
         return v;
     }
+    if ([annotation isKindOfClass:[TRWifiAnnotation class]]) {
+        // WiFi 定位标注：蓝紫水滴 + 📶，canShowCallout=YES 气泡显示坐标+AP 数；
+        // userInteractionEnabled=YES 供 shouldReceiveTouch 拦截，防 tap 误加锚点
+        static NSString *rid = @"WifiPin";
+        MKAnnotationView *v = [mapView dequeueReusableAnnotationViewWithIdentifier:rid];
+        if (!v) {
+            v = [[MKAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:rid];
+            v.canShowCallout = YES;
+            v.userInteractionEnabled = YES; // 供 shouldReceiveTouch 拦截，防 tap 误加锚点
+        }
+        v.annotation = annotation;
+        v.image = [self waterdropImageWithColor:[UIColor colorWithRed:0.45 green:0.30 blue:0.85 alpha:1.0] size:22 emoji:@"📶"];
+        v.centerOffset = CGPointMake(0, -14); // 尖对准坐标点
+        v.frame = CGRectMake(0, 0, 22, 28);
+        return v;
+    }
     if ([annotation isKindOfClass:[MKUserLocation class]]) {
         // 当前位置（原生管线）：数据源头=locationd（模拟开启=模拟位置/关闭=真实位置）；绿色水滴+出行方式图标外观
         static NSString *rid = @"CurPin";
@@ -1817,6 +1888,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
                 MKAnnotationView *av = (MKAnnotationView *)v;
                 if ([av.annotation isKindOfClass:[TRAnchorAnnotation class]]) return NO;
                 if ([av.annotation isKindOfClass:[TRWaypointAnnotation class]]) return NO; // 途经点同锚点：不触发 tap 加锚点
+                if ([av.annotation isKindOfClass:[TRWifiAnnotation class]]) return NO; // WiFi 标注同锚点：不触发 tap 加锚点
             }
             v = v.superview;
         }

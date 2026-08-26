@@ -1,7 +1,7 @@
 // SuperPhone 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
 // rfb.js?v=2：noVNC 核心为 server 内存 patch，URL 带版本号强制浏览器重新拉取 patch 后的内容避免旧缓存
 import RFB from '/novnc/core/rfb.js?v=4';
-import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=14';
+import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=15';
 import { attachPress } from './press.js';
 import { attachFarmGesture, attachRightHome, resolveGesture } from './gesture.js';
 
@@ -884,8 +884,8 @@ async function showBatchConfigPanel(ids) {
     empty.textContent = '选中设备未上报可配置项';
     card.appendChild(empty);
   } else {
-    // 按能力板块分组渲染（2026-08-21 设计文档 7 章：与 App 设置页一致 连接/直连/画面/交互/保活/关于/定位；
-    // group 为 null 或缺失的项 UI 隐藏——FabAutoCollapse 等固定行为项）
+    // 按能力板块分组渲染（2026-08-21 设计文档 7 章：与 App 设置页一致 连接/直连/画面/交互/保活/关于；
+    // 定位组已去除——完全交 App 定位 UI（2026-08-25）；group 为 null 或缺失的项 UI 隐藏——FabAutoCollapse 等固定行为项）
     const GROUP_ORDER = [
       { key: 'connection',  title: '连接' },
       { key: 'direct',      title: '直连' },
@@ -893,7 +893,6 @@ async function showBatchConfigPanel(ids) {
       { key: 'interaction', title: '交互' },
       { key: 'keepalive',   title: '保活' },
       { key: 'about',       title: '关于' },
-      { key: 'locsim',      title: '定位模拟' },
     ];
     const inputs = {};
     for (const g of GROUP_ORDER) {
@@ -1322,8 +1321,6 @@ function renderCapOps(container, device) {
     frag.appendChild(buildClipboardBtn('copy'));
     frag.appendChild(buildClipboardBtn('paste'));
     frag.appendChild(buildUploadBtn());
-    frag.appendChild(buildActionBtn('loc', '定位', '修改定位（模拟 GPS 注入）',
-      '<path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7z"/><circle cx="12" cy="9" r="2.5"/>'));
     frag.appendChild(buildKeyBtn(byKey.get('snapshot')));
     frag.appendChild(buildKeyBtn(byKey.get('keyboard')));
     order.slice(1).forEach((key) => { const k = byKey.get(key); if (k) frag.appendChild(buildKeyBtn(k)); });
@@ -1343,8 +1340,6 @@ function renderCapOps(container, device) {
   frag.appendChild(buildClipboardBtn('copy'));
   frag.appendChild(buildClipboardBtn('paste'));
   frag.appendChild(buildUploadBtn());
-  frag.appendChild(buildActionBtn('loc', '定位', '修改定位（模拟 GPS 注入）',
-    '<path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7z"/><circle cx="12" cy="9" r="2.5"/>'));
   frag.appendChild(buildKeyBtn(byKey.get('snapshot')));
   frag.appendChild(buildKeyBtn(byKey.get('keyboard')));
   order.slice(1).forEach((key) => { const k = byKey.get(key); if (k) frag.appendChild(buildKeyBtn(k)); });
@@ -1410,68 +1405,6 @@ function bufToBase64(buf) {
     s += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
   }
   return btoa(s);
-}
-
-/** 定位模拟面板：锚点定位（手动坐标）→ setConfigs 单发聚焦设备 + 停止；数据填充（data.fill）。
- *  轨迹/区域/编排由 App 内原生编排完成（网关不保留生成逻辑，M5）；无硬编码预设坐标 */
-async function openLocPanel() {
-  if (!focus) { toast('请先进入设备控制', 'error'); return; }
-  const devId = focus.device.id; // focus 结构：{ device: { id, name }, ... }（同 uploadToDeviceAlbum）
-  const devName = (focus.device && focus.device.name) || devId;
-  const modal = document.createElement('div');
-  modal.className = 'modal';
-  const card = document.createElement('div');
-  card.className = 'modal-card';
-  card.innerHTML = `<h3>模拟定位 · ${escapeHtml(devName)}</h3>
-    <div class="cfg-row"><span class="cfg-row-label">纬度</span><input id="locLat" type="number" step="0.0001" placeholder="WGS-84 纬度（-90~90）"></div>
-    <div class="cfg-row"><span class="cfg-row-label">经度</span><input id="locLon" type="number" step="0.0001" placeholder="WGS-84 经度（-180~180）"></div>
-    <div class="cfg-row"><span class="cfg-row-label">精度（米）</span><input id="locAcc" type="number" min="3" max="15" value="5"></div>
-    <div class="modal-btns">
-      <button id="locApply" class="primary">应用定位</button>
-      <button id="locStop">停止定位</button>
-      <button id="locClose">取消</button>
-    </div>
-    <div class="cfg-sec-title">数据填充（联系人/通话/短信批量生成，设备端统一能力 data.fill）</div>
-    <div class="cfg-row"><span class="cfg-row-label">类型</span><select id="dfKind"><option value="contacts">联系人</option><option value="calls">通话记录</option><option value="sms">短信</option></select></div>
-    <div class="cfg-row"><span class="cfg-row-label">数量</span><input id="dfCount" type="number" min="1" max="1000" value="50"></div>
-    <div class="cfg-row"><span class="cfg-row-label">种子</span><input id="dfSeed" type="number" value="0" title="0=随机，同 seed 可复现"></div>
-    <div class="modal-btns"><button id="dfStart" class="primary">生成</button></div>`;
-  const latInp = card.querySelector('#locLat');
-  const lonInp = card.querySelector('#locLon');
-  const accInp = card.querySelector('#locAcc');
-  card.querySelector('#locApply').onclick = async () => {
-    const lat = parseFloat(latInp.value);
-    const lon = parseFloat(lonInp.value);
-    if (!isFinite(lat) || lat < -90 || lat > 90) { toast('✗ 纬度非法（-90~90）', 'error'); return; }
-    if (!isFinite(lon) || lon < -180 || lon > 180) { toast('✗ 经度非法（-180~180）', 'error'); return; }
-    const acc = Math.min(15, Math.max(3, parseFloat(accInp.value) || 5));
-    try {
-      await setConfigs('', devId, { SimLocationMode: 'anchor', SimLocationLat: lat, SimLocationLon: lon, SimLocationAccuracy: acc });
-      toast('✓ 已锚点定位（原地微动，拟人）', 'success');
-    } catch (e) { toast('✗ 应用失败 ' + e.message, 'error'); }
-  };
-  card.querySelector('#locStop').onclick = async () => {
-    try {
-      await setConfigs('', devId, { SimLocationMode: 'off' });
-      toast('✓ 已恢复真实定位', 'success');
-    } catch (e) { toast('✗ 停止失败 ' + e.message, 'error'); }
-  };
-  card.querySelector('#locClose').onclick = () => modal.remove();
-  // 数据填充：invoke data.fill（设备端统一能力，App/注册表/0x50+5802 三入口同一实现）
-  card.querySelector('#dfStart').onclick = async () => {
-    const kind = card.querySelector('#dfKind').value;
-    const count = parseInt(card.querySelector('#dfCount').value, 10);
-    const seed = parseInt(card.querySelector('#dfSeed').value, 10) || 0;
-    if (!count || count < 1 || count > 1000) { toast('✗ 数量非法（1~1000）', 'error'); return; }
-    const names = { contacts: '联系人', calls: '通话记录', sms: '短信' };
-    try {
-      await invokeCap('', devId, 'data.fill', { db: kind, count, seed });
-      toast(`✓ 已生成 ${count} 条${names[kind]}（设备端写库 + 刷新 daemon 生效）`, 'success');
-    } catch (e) { toast('✗ 生成失败 ' + e.message, 'error'); }
-  };
-  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
-  modal.appendChild(card);
-  document.body.appendChild(modal);
 }
 
 /**
@@ -2489,14 +2422,13 @@ function currentRfb() { return focus ? focus.rfb : null; }
  */
 function doOp(op) {
   const rfb = currentRfb();
-  if (!rfb && op !== 'disc' && op !== 'loc') return;
+  if (!rfb && op !== 'disc') return;
   switch (op) {
     case 'full':
       if (document.fullscreenElement) document.exitFullscreen();
       else document.documentElement.requestFullscreen().catch(() => {});
       break;
     case 'disc': exitFocus(); break; // 2026-08-22：不再先 rfb.disconnect()——exitFocus 内先截图再 closeRfb，先 disconnect 会移除 canvas 导致截图失败（canvas= false）
-    case 'loc': openLocPanel(); break; // 模拟定位面板（手动坐标锚点定位/停止 + 数据填充；轨迹/区域/编排由 App 内原生编排）
   }
 }
 

@@ -10,6 +10,7 @@
 #import "SimLocationManager.h"
 
 #import <CoreLocation/CoreLocation.h>
+#import "WpsBssidData.h"
 
 /**
  * CLSimulationManager 私有接口声明（自写，参考逆向公开知识；不复制 GPL 源码）。
@@ -28,6 +29,7 @@
 - (void)appendSimulatedLocation:(id)location;
 - (void)flush;
 - (void)loadScenarioFromURL:(id)url;
+- (void)setWifiScanResults:(id)scanResults;
 - (void)setSimulatedWifiPower:(BOOL)p;
 - (void)startWifiSimulation;
 - (void)stopWifiSimulation;
@@ -41,6 +43,7 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
 @implementation SimLocationManager {
     CLSimulationManager *_sim;
     BOOL _simulating;
+    BOOL _wifiSimulating;
 }
 
 + (instancetype)sharedManager {
@@ -57,6 +60,7 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     if (self) {
         _sim = [[CLSimulationManager alloc] init];
         _simulating = NO;
+        _wifiSimulating = NO;
     }
     return self;
 }
@@ -101,6 +105,61 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     [_sim flush];
     _simulating = NO;
     [SimLocationManager postTimezoneUpdate];
+}
+
+- (void)stopAll {
+    [self stop];                    // GPS：stopLocationSimulation + clear + flush
+    [self stopWifiScanSimulation]; // wifi：stopWifiSimulation + power NO
+}
+
+- (BOOL)isWifiSimulating {
+    return _wifiSimulating;
+}
+
+- (void)injectWifiScanResults:(NSArray<NSDictionary *> *)scanResults {
+    if (!_sim) return;
+    if (scanResults.count == 0) {
+        NSLog(@"[locsim] wifi simulation inject skipped: empty scan results");
+        return;
+    }
+    // 每次注入完整重启（对齐 GPS 注入语义）：先停旧的再起新的，保证新数据被 locationd 消费
+    [_sim stopWifiSimulation];
+    [_sim setSimulatedWifiPower:NO];
+    [_sim setWifiScanResults:scanResults];
+    [_sim setSimulatedWifiPower:YES];
+    [_sim startWifiSimulation];
+    _wifiSimulating = YES;
+    NSLog(@"[locsim] wifi simulation start, %lu APs", (unsigned long)scanResults.count);
+}
+
+- (void)stopWifiScanSimulation {
+    if (!_sim) return;
+    [_sim stopWifiSimulation];
+    [_sim setSimulatedWifiPower:NO];
+    _wifiSimulating = NO;
+    NSLog(@"[locsim] wifi simulation stopped");
+}
+
++ (NSArray<NSDictionary *> *)buildScanResultsFromBssids:(const char **)bssids count:(NSUInteger)count {
+    if (!bssids || count == 0) return @[];
+    NSMutableArray *results = [NSMutableArray arrayWithCapacity:count];
+    double now = [[NSDate date] timeIntervalSince1970];
+    for (NSUInteger i = 0; i < count; i++) {
+        const char *raw = bssids[i];
+        if (!raw) continue;                                   // NULL 兜底
+        NSString *bssid = [NSString stringWithUTF8String:raw];
+        if (!bssid) continue;                                 // 非法 UTF-8 兜底
+        double rssi = -40.0 - (double)(arc4random_uniform(4500)) / 100.0; // -40 ~ -85 dBm
+        [results addObject:@{
+            @"bssid"     : bssid,
+            @"ssid"      : @"",
+            @"rssi"      : @(rssi),
+            @"channel"   : @(1 + arc4random_uniform(13)),
+            @"age"       : @(0.5),
+            @"timestamp" : @(now),
+        }];
+    }
+    return results;
 }
 
 /// 通知系统刷新时区显示（模拟跨时区后地图/时间跟随）。

@@ -9,18 +9,16 @@ function check(name, cond, extra = '') {
   if (!cond) failures++;
 }
 
-// ---- BATCH_CAPS：批量能力自包含（精简后 22 项：17 硬件键 + 重启 + 生成证书 + 搜索网关 + data.fill + data.clear） ----
+// ---- BATCH_CAPS：批量能力自包含（精简后 20 项：17 硬件键 + 重启 + 生成证书 + 搜索网关；data.fill/clear 已去除——伪装页能力全交 App UI 直控，2026-08-25） ----
 check('BATCH_CAPS 非空且自包含（含 category）',
-  BATCH_CAPS.length === 22 && BATCH_CAPS.every((d) => d.id && d.title && d.icon && d.category && Array.isArray(d.params)));
-check('BATCH_CAPS 含重启、data.fill、data.clear、不含客户端/系统/网关批量项',
+  BATCH_CAPS.length === 20 && BATCH_CAPS.every((d) => d.id && d.title && d.icon && d.category && Array.isArray(d.params)));
+check('BATCH_CAPS 含重启、不含 data.fill/data.clear/客户端/系统/网关批量项',
   BATCH_CAPS.some((d) => d.id === 'service.restart')
-  && BATCH_CAPS.some((d) => d.id === 'data.fill')
-  && BATCH_CAPS.some((d) => d.id === 'data.clear')
-  && !BATCH_CAPS.some((d) => /clients\.|sys\.|gateway\.|touch|stylus|screenshot|clipboard|type\./i.test(d.id)));
+  && !BATCH_CAPS.some((d) => /clients\.|sys\.|gateway\.|touch|stylus|screenshot|clipboard|type\.|data\./i.test(d.id)));
 
-// ---- CONFIG_DEFS：配置表单定义契约（2026-08-21 按能力板块 group 分组：连接/直连/画面/交互/保活/关于/定位） ----
-const GROUPS = ['connection', 'direct', 'display', 'interaction', 'keepalive', 'about', 'locsim'];
-check('CONFIG_DEFS 含 33 项', CONFIG_DEFS.length === 33);
+// ---- CONFIG_DEFS：配置表单定义契约（2026-08-21 按能力板块 group 分组：连接/直连/画面/交互/保活/关于；定位组已去除——完全交 App 定位 UI，2026-08-25） ----
+const GROUPS = ['connection', 'direct', 'display', 'interaction', 'keepalive', 'about'];
+check('CONFIG_DEFS 含 28 项', CONFIG_DEFS.length === 28);
 check('CONFIG_DEFS 不含端口项（端口固定不可调）', !CONFIG_DEFS.some((s) => /Port$/i.test(s.key)));
 check('CONFIG_DEFS 每项含 reload 与字段', CONFIG_DEFS.every((s) => s.key && s.title && s.type && s.reload));
 check('CONFIG_DEFS 每项含 group 板块字段（null=UI 隐藏）', CONFIG_DEFS.every((s) => s.group === null || GROUPS.includes(s.group)));

@@ -64,17 +64,6 @@ export const BATCH_CAPS = [
     svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>' },
   { id: 'settings.generateKeys', title: '生成证书', icon: '🔐', category: 'native', params: [] },
   { id: 'settings.searchGateway', title: '搜索网关', icon: '🔍', category: 'native', params: [] },
-  { id: 'data.fill', title: '数据填充', icon: '📥', category: 'native',
-    params: [
-      { name: 'db', title: '库（contacts/calls/sms）', type: 'string', required: true },
-      { name: 'count', title: '数量（1~1000）', type: 'number', required: true },
-      { name: 'seed', title: '种子', type: 'number', required: false },
-      { name: 'ratios', title: '比例', type: 'object', required: false },
-    ] },
-  { id: 'data.clear', title: '清空数据', icon: '🗑️', category: 'native',
-    params: [
-      { name: 'db', title: '库（contacts/calls/sms/all）', type: 'string', required: true },
-    ] },
 ];
 
 /** 聚焦画布多点手势定义（2026-08-16：画布多指识别 → touch.* invoke）。
@@ -119,12 +108,6 @@ export const CONFIG_DEFS = [
   { key: 'WatchdogExitTimeout', title: '退出超时', type: 'number', min: 1, max: 60, step: 1, reload: 'hot', group: 'about' },
   { key: 'CaptureFps', title: '采集帧率', type: 'number', min: 1, max: 30, step: 1, reload: 'hot', group: 'display' },
   { key: 'HeartbeatIntervalSec', title: '网关心跳间隔', type: 'number', min: 5, max: 300, step: 5, reload: 'gateway', group: 'keepalive' },
-  // 定位模拟（改定位自治参数，group:locsim 独立板块；设备端 SimLocationController 巡检感知，instant 语义）
-  { key: 'SimLocationMode', title: '定位模拟模式', type: 'enum', enumValues: ['off', 'anchor', 'itinerary'], enumTitles: ['关闭', '锚点', '轨迹'], reload: 'instant', group: 'locsim' },
-  { key: 'SimLocationLat', title: '目标纬度', type: 'number', min: -90, max: 90, step: 0.0001, reload: 'instant', group: 'locsim' },
-  { key: 'SimLocationLon', title: '目标经度', type: 'number', min: -180, max: 180, step: 0.0001, reload: 'instant', group: 'locsim' },
-  { key: 'SimLocationAccuracy', title: '定位精度', type: 'number', min: 3, max: 15, step: 1, reload: 'instant', group: 'locsim' },
-  { key: 'SimLocationSpeed', title: '轨迹速度档', type: 'enum', enumValues: ['walk', 'cycle', 'drive'], enumTitles: ['步行', '骑行', '驾车'], reload: 'instant', group: 'locsim' },
 ];
 export const CONFIG_BY_KEY = new Map(CONFIG_DEFS.map((s) => [s.key, s]));
 
