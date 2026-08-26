@@ -44,7 +44,8 @@ static void TVNCUncaughtExceptionHandler(NSException *exception) {
     NSSetUncaughtExceptionHandler(&TVNCUncaughtExceptionHandler);
     // Override point for customization after application launch.
     [[TVNCServiceCoordinator sharedCoordinator] registerServiceMonitor];
-    [[TVNCHotspotManager sharedManager] registerWithName:@"SuperPhone"];
+    BOOL hsOK = [[TVNCHotspotManager sharedManager] registerWithName:@"SuperPhone"];
+    NSLog(@"[wifiscan] NEHotspotHelper register result: %@", hsOK ? @"YES" : @"NO");
 
 
     return YES;

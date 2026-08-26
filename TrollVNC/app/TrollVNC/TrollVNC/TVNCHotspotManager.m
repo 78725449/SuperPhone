@@ -59,6 +59,9 @@
         case kNEHotspotHelperCommandTypeNone:
             break;
         case kNEHotspotHelperCommandTypeFilterScanList:
+        case kNEHotspotHelperCommandTypeDisplayNetworks:
+            // DisplayNetworks（打开系统 Wi-Fi 设置页）与 FilterScanList 都携带 networkList——
+            // 漏读 DisplayNetworks 会导致"打开设置页→标注不出现"（2026-08-27 真机实测发现）
             [self captureNetworkList:command.networkList];
             [self executeAutoStartupTaskIfNecessary];
             break;
