@@ -18,7 +18,14 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <notify.h>
-#import "../../../src/TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28；相对路径——bootstrap 的 theos xcodeproj 阶段跑 xcodebuild 且 HEADER_SEARCH_PATHS 被覆盖为 TrollVNC/include 不含 src/，裸名 import 会报 file not found，见 AGENTS.md bootstrap 红线）
+// kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）。双路径 __has_include：
+// bootstrap 的 App target 走 xcodebuild 且 HEADER_SEARCH_PATHS 被覆盖为 TrollVNC/include（不含 src/）→ 用相对路径；
+// prefs bundle 走 theos gmake 且 -I../../src（相对深度与 App target 不同）→ 回退裸名。勿改回单一路径（曾单裸名砸 bootstrap、单相对砸 roothide）
+#if __has_include("../../../src/TRAppDomain.h")
+#import "../../../src/TRAppDomain.h"
+#else
+#import "TRAppDomain.h"
+#endif
 
 #define TVNC_NOTIFY_PREFS_CHANGED "com.82flex.trollvnc.prefs-changed"
 #define TVNC_NOTIFY_RESTART_SERVICE "com.82flex.trollvnc.restart-service"
