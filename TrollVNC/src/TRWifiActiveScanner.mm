@@ -235,7 +235,7 @@ static void TRWifiScanCallback(WiFiDeviceClientRef device, CFArrayRef results, i
     notify_post(kTRWifiScanUpdatedNotification.UTF8String);
 }
 
-/// 原子写共享 JSON（tmp + rename，对齐 SimLocationController kSimTrackFilePath 同款模式）
+/// 原子写共享 JSON（tmp + rename，对齐 SimLocationController kTRSimTrackFilePath 同款模式）
 - (void)_writeSnapshot:(TRWifiScanSnapshot *)snap {
     NSDictionary *obj = @{
         @"ts"     : @(snap.ts),

@@ -57,9 +57,7 @@
 		AA01000000000000000000A3 /* TVNCGatewayClient.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A8 /* TVNCGatewayClient.m */; };
 		AA01000000000000000000A4 /* TVNCGatewayClient.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A8 /* TVNCGatewayClient.m */; };
 		AA01000000000000000000B3 /* TRWpsClient.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000B2 /* TRWpsClient.mm */; };
-		AA01000000000000000000B4 /* TRWpsClient.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000B2 /* TRWpsClient.mm */; };
 		AA01000000000000000000B8 /* TRWpsTile.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000B7 /* TRWpsTile.mm */; };
-		AA01000000000000000000B9 /* TRWpsTile.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000B7 /* TRWpsTile.mm */; };
 		AA01000000000000000000D1 /* TRWifiScanContract.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000D2 /* TRWifiScanContract.mm */; };
 		AA01000000000000000000D4 /* TRWpsProto.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000D5 /* TRWpsProto.mm */; };
 		AA01000000000000000000E1 /* TRSimContract.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000E2 /* TRSimContract.mm */; };
@@ -584,9 +582,6 @@
 				615401BC2EB1180C009FDD6F /* TVNCServiceCoordinator.m in Sources */,
 				AA01000000000000000000A2 /* TVNCAppStore.m in Sources */,
 				AA01000000000000000000A4 /* TVNCGatewayClient.m in Sources */,
-				AA01000000000000000000B4 /* TRWpsClient.mm in Sources */,
-				AA01000000000000000000B9 /* TRWpsTile.mm in Sources */,
-				AA01000000000000000000D4 /* TRWpsProto.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
