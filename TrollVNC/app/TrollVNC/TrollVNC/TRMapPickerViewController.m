@@ -518,7 +518,11 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
                 if (!sSelf) return;
                 if (seqHere != sSelf.wifiQuerySeq) return; // 过期回调丢弃（竞态防护，同机制）
                 if (error || aps.count == 0) {
-                    // 反查失败/空静默（TRWpsTile 负缓存已挡重试风暴；不打扰用户）
+                    // 反查失败/空：更新诊断标签（不再完全静默——TRWpsTile 有 30s 负缓存，
+                    // 失败不显示会导致"wifi 标注永远不出现且看不出原因"的排查盲区）
+                    sSelf.wifiDiagLabel.text = error
+                        ? [NSString stringWithFormat:@"WiFi: 瓦片反查失败 %@", error.localizedDescription]
+                        : @"WiFi: 瓦片反查无结果（该位置无 BSSID）";
                     return;
                 }
                 NSMutableArray *bssids = [NSMutableArray arrayWithCapacity:aps.count];
