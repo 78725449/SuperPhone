@@ -46,6 +46,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// 停止扫描（bridge 模式自退 / 进程退出时调用；清 timer）
 - (void)stop;
 
+/// 立即触发一次主动扫描（不等周期 timer；供"关模拟立刻重扫"请求通道调用，
+/// 内部经 WiFiDeviceClientScanAsync 异步，_scanInFlight 防并发堆积）
+- (void)requestScanNow;
+
 /// 异步扫描回调处理（供静态 C 回调 TRWifiScanCallback 调用；results 每项 WiFiNetworkRef）
 - (void)handleScanResults:(CFArrayRef)results error:(int)error;
 

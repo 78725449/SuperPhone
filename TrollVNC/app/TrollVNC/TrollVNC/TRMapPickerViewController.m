@@ -572,7 +572,10 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 模拟开关切换后立即刷新 wifi 标注（用当前语义：模拟中→模拟位置，停止→真实位置）
 - (void)refreshWifiAnnotation {
     if (!self.locating) {
-        // 停止态：消费 daemon 主动扫描真实 BSSID → wloc 反查标注（回到真实 wifi 位置）。
+        // 停止态：请求 daemon 立即重扫（不等 8s 周期，关模拟瞬间拿到最新真实 BSSID）+
+        // 先消费当前缓存立即显示（wloc 反查），随后新扫描 notify 到达再刷新
+        notify_post("com.82flex.trollvnc.wifiscan-request");
+        // 消费 daemon 主动扫描真实 BSSID → wloc 反查标注（回到真实 wifi 位置）。
         // 唯一数据源 = 主动扫描 JSON（不做 NEHotspotHelper 回退——用户定案：唯一实现可靠工作）。
         // JSON 缺失/空：清除残留标注，待主动扫描下一次产出数据（notify 回调）恢复。
         NSData *data = [NSData dataWithContentsOfFile:kTRWifiScanJsonPath];

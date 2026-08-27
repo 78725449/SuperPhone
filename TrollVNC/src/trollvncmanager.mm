@@ -671,6 +671,17 @@ int main(int argc, const char *argv[]) {
                 }
             });
     }
+    {
+        // WiFi 立即扫描请求（2026-08-27）：App 关闭模拟定位时 notify_post →
+        // daemon 立即触发一次主动扫描（不等 8s 周期），关模拟瞬间拿到最新真实 BSSID 反查标注。
+        int wifiScanReqToken = 0;
+        notify_register_dispatch("com.82flex.trollvnc.wifiscan-request", &wifiScanReqToken,
+            dispatch_get_main_queue(), ^(int token) {
+                (void)token;
+                [[TRWifiActiveScanner sharedScanner] requestScanNow];
+                fprintf(stderr, "[manager] wifiscan-request notified -> immediate scan\n");
+            });
+    }
 
     // 启动守卫：coordinator 的 spawn 决策（relay）与本订阅建立之间若切到 bridge
     //（该次 notify 已丢），此处二次检查兜底——跳过 runloop 直接走清理路径退出，不留孤儿进程

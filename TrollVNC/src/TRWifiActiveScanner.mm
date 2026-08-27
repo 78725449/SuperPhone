@@ -157,6 +157,15 @@ static void TRWifiScanCallback(WiFiDeviceClientRef device, CFArrayRef results, i
     if (_manager) { CFRelease(_manager); _manager = NULL; }
 }
 
+/// 立即触发一次主动扫描（供"关模拟立刻重扫"请求通道；异步结果经 handleScanResults 回调）。
+/// 主队列执行（WiFiManagerClientScheduleWithRunLoop 需主 runloop；_scanInFlight 防堆积）。
+- (void)requestScanNow {
+    if (!_scanning) return; // 未启动周期扫描时忽略（需先 start 初始化符号）
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self _triggerScan];
+    });
+}
+
 /// 触发一次异步主动扫描（locationd 同款 WiFiDeviceClientScanAsync；结果经 TRWifiScanCallback 回调）。
 /// manager/device 首次复用（ScheduleWithRunLoop 一次），device 扫描需在 runloop 驱动的线程。
 - (void)_triggerScan {
