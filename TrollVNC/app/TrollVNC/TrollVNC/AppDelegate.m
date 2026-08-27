@@ -16,7 +16,6 @@
 */
 
 #import "AppDelegate.h"
-#import "TVNCHotspotManager.h"
 #import "TVNCServiceCoordinator.h"
 
 /// 崩溃现场捕获：未捕获 NSException 时写入日志文件（Documents/crash.log + /tmp/trollvnc-crash.log）。
@@ -44,9 +43,8 @@ static void TVNCUncaughtExceptionHandler(NSException *exception) {
     NSSetUncaughtExceptionHandler(&TVNCUncaughtExceptionHandler);
     // Override point for customization after application launch.
     [[TVNCServiceCoordinator sharedCoordinator] registerServiceMonitor];
-    BOOL hsOK = [[TVNCHotspotManager sharedManager] registerWithName:@"SuperPhone"];
-    NSLog(@"[wifiscan] NEHotspotHelper register result: %@", hsOK ? @"YES" : @"NO");
-
+    // 2026-08-27：NEHotspotHelper 注册已移除——wifi 位置唯一实现 = daemon 主动扫描（Apple80211），
+    // 无被动回调兜底（用户定案：不做回退，保证主动扫描唯一数据源可靠工作）。
 
     return YES;
 }

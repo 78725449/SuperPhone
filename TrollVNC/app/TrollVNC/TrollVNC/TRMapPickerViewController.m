@@ -24,9 +24,7 @@
 #import "TRWpsTile.h" // 坐标→BSSID 动态反查（模拟分支按当前位置反查，与 daemon 注入同源；轨迹跟随）
 #import "RegionSimulator.h"
 #import "SimRouteCalculator.h"
-#import "TVNCHotspotManager.h"
 #import "TRWpsClient.h"
-#import <NetworkExtension/NetworkExtension.h> // NEHotspotNetwork 类型（必须显式导入，勿依赖间接）
 
 /// 轨迹文件路径（与 SimLocationController kSimTrackFilePath 一致，App 只当配置源、manager 注入执行）
 static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.simloc.json";
@@ -88,6 +86,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, strong) UILabel *wifiDiagLabel;                // WiFi 链路诊断标签（注册/回调/列表/BSSID/反查 5 环）
 @property (nonatomic, assign) NSUInteger wifiQuerySeq;  // wifi 反查请求序号（丢弃过期回调，防模拟/真实切换竞态）
 @property (nonatomic, assign) uint64_t wifiLastTileKey;        // 模拟态 wifi 标注瓦片 key（对齐 daemon _checkWifiTileChangedAndReinject：跨瓦片才重新反查标注，同瓦片跳过）
+@property (nonatomic, assign) CLLocationCoordinate2D wifiCurWGS; // 最近一次 wifi 反查质心（WGS；真实 wifi 位置，供启动聚焦兜底/状态显示——GPS 优先、无 GPS 用 wifi 聚焦）
 @property (nonatomic, strong) UITableView *stepTable;        // 步骤列表（状态条展开；删除 + 拖拽排序）
 
 @property (nonatomic, strong) NSMutableArray *segments;      // 编排段 @[@{type,point/to/radius/durationMin/mode}]
@@ -157,22 +156,11 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
                [CLLocationManager authorizationStatus] == kCLAuthorizationStatusAuthorizedAlways) {
         [self.locationManager startUpdatingLocation]; // 已授权直接建立活跃请求（不等授权回调）
     }
-    // WiFi 位置自动显示：订阅 NEHotspotHelper 扫描结果（与真实 GPS 活跃订阅同构，无按钮，随系统扫描被动更新）
+    // WiFi 位置自动显示（唯一实现 = daemon 主动扫描，2026-08-27 定案）：订阅 Apple80211 扫描通知。
+    // 已移除 NEHotspotHelper 被动订阅/水合——不做回退，保证主动扫描唯一数据源可靠工作。
     __weak typeof(self) weakSelf = self;
-    [TVNCHotspotManager sharedManager].onNetworkListUpdated = ^(NSArray *nets, NSString *summary) {
-        __strong typeof(self) strongSelf = weakSelf;
-        [strongSelf handleWifiScanUpdate:nets summary:summary];
-        [strongSelf refreshWifiDiag]; // 链路 4 环状态（注册/回调/列表/BSSID）刷新；第 5 环反查由 handleWifiScanUpdate completion 更新
-    };
-    // 初始水合：启动扫描可能早于本页订阅，先消费已有缓存（与 startUpdatingLocation 后立即推首 fix 同构）
-    TVNCHotspotManager *hs = [TVNCHotspotManager sharedManager];
-    if (hs.lastNetworkList.count) {
-        [self handleWifiScanUpdate:hs.lastNetworkList summary:hs.lastScanSummary];
-    }
-    [self refreshWifiDiag]; // 水合后同步一次诊断标签
-    // 主动扫描订阅（2026-08-27）：daemon（root）周期扫周边 BSSID → 写共享 JSON + Darwin 通知。
-    // 语义对齐「启动即自动获取 + 活跃订阅」：模拟关闭→真实 BSSID 反查标注（不再依赖系统 Wi-Fi 设置页）；
-    // 模拟开启→忽略（模拟链路由 TRWpsTile 动态反查独立驱动，主动扫描结果不参与，防双轨串扰）。
+    // 主动扫描订阅：daemon（root）周期扫周边 BSSID → 写共享 JSON + Darwin 通知。
+    // 模拟关闭→真实 BSSID 反查标注；模拟开启→瓦片检测驱动模拟位置反查（同 handleWifiScanUpdate 模拟分支）。
     int wifiScanToken = 0;
     notify_register_dispatch(kTRWifiScanUpdatedNotification.UTF8String, &wifiScanToken,
         dispatch_get_main_queue(), ^(int token) {
@@ -461,30 +449,36 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     ]];
 }
 
-/// 刷新 WiFi 链路诊断标签（5 环：注册/回调/列表/BSSID/反查）
+/// 刷新 WiFi 链路诊断标签（唯一实现=主动扫描：JSON 时间戳 + BSSID 数 + 最近反查状态）
 - (void)refreshWifiDiag {
-    TVNCHotspotManager *hs = [TVNCHotspotManager sharedManager];
-    self.wifiDiagLabel.text = [NSString stringWithFormat:
-        @"WiFi: 注册%@ 回调%ld次 列表%ld BSSID%ld\n%@",
-        hs.diagRegisterResult ? @"YES" : @"NO",
-        (long)hs.diagCommandCount, (long)hs.diagListCount, (long)hs.diagBssidCount,
-        hs.diagLastListSample.length ? hs.diagLastListSample : @"(无扫描结果)"];
+    NSData *data = [NSData dataWithContentsOfFile:kTRWifiScanJsonPath];
+    if (data) {
+        NSDictionary *obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+        if ([obj isKindOfClass:[NSDictionary class]]) {
+            NSArray *bssids = obj[@"bssids"];
+            NSNumber *ts = obj[@"ts"];
+            self.wifiDiagLabel.text = [NSString stringWithFormat:
+                @"WiFi: 主动扫描 %lu BSSID @%@",
+                (unsigned long)([bssids isKindOfClass:[NSArray class]] ? bssids.count : 0),
+                ts ? [NSDate dateWithTimeIntervalSince1970:[ts doubleValue]] : (id)@"—"];
+            return;
+        }
+    }
+    self.wifiDiagLabel.text = @"WiFi: 主动扫描未产出数据";
 }
 
-/// 点击 WiFi 诊断标签：手动刷新当前状态（NEHotspotHelper 系统驱动，无法主动触发扫描）
+/// 点击 WiFi 诊断标签：手动刷新当前状态（读 daemon 主动扫描 JSON）
 - (void)wifiDiagTapped:(UITapGestureRecognizer *)g {
     [self refreshWifiDiag]; // 立即刷新当前状态
 }
 
-/// 系统扫描回调到达 → 自动反查并更新地图 wifi 位置（无按钮，随扫描被动更新；自动模式不弹窗、不聚焦）
-/// 语义（用户拍板 2026-08-27）：模拟开启时按模拟当前位置动态反查 BSSID（TRWpsTile 瓦片反查与 daemon
-/// 注入同源，标注随模拟路径移动）；关闭时显示真实 wifi 位置（NEHotspotHelper 真实扫描结果）。
-/// 主动扫描结果消费（2026-08-27）：daemon Apple80211 周期扫周边 BSSID → 共享 JSON → 本方法标注。
-/// 语义：模拟关闭→真实 BSSID wloc 反查标注（不再依赖「打开系统 Wi-Fi 设置页触发被动扫描」）；
-/// 模拟开启→标注已由 fix 驱动（handleLocationUpdate 瓦片检测），此处仅兜底触发同款检测（跨瓦片才重反查）。
+/// 主动扫描结果消费（唯一实现 = daemon Apple80211 周期扫周边 BSSID → 共享 JSON → 本方法标注）。
+/// 语义（用户拍板 2026-08-27）：模拟关闭→真实 BSSID wloc 反查标注（不再依赖「打开系统 Wi-Fi 设置页
+/// 触发被动扫描」，也无 NEHotspotHelper 回退）；模拟开启→标注由 fix 驱动（handleLocationUpdate 瓦片
+/// 检测），此处触发同款检测（跨瓦片才重反查）。
 - (void)handleActiveWifiBssids:(NSArray<NSString *> *)bssids {
     if (self.locating) {
-        [self _refreshWifiAnnoIfTileChanged]; // 模拟态：fix 驱动为主，扫描回调兜底（同瓦片跳过零成本）
+        [self _refreshWifiAnnoIfTileChanged]; // 模拟态：fix 驱动为主，扫描回调触发同款检测（同瓦片跳过零成本）
         return;
     }
     NSUInteger seq = ++self.wifiQuerySeq;
@@ -504,42 +498,36 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [self handleWifiScanUpdate:@[] summary:@""]; // 跨瓦片：按模拟当前位置反查标注（模拟分支不依赖 nets）
 }
 
-/// NEHotspotHelper 被动扫描结果消费（原有链路保留，作为兜底与主动扫描共存）
+/// 模拟态 wifi 标注反查（唯一调用方 = _refreshWifiAnnoIfTileChanged / 停止态清除残留）：
+/// 按模拟当前位置动态反查 BSSID（TRWpsTile，与 daemon 注入同源；轨迹跟随）。
+/// 真实位置标注统一走 handleActiveWifiBssids（主动扫描唯一数据源），本方法不再消费 NEHotspotHelper。
 - (void)handleWifiScanUpdate:(NSArray *)nets summary:(NSString *)summary {
-    NSUInteger seq = ++self.wifiQuerySeq;
-    if (self.locating) {
-        // 模拟开启：按模拟当前位置动态反查 BSSID（TRWpsTile，与 daemon 注入同源；轨迹跟随）
-        CLLocationCoordinate2D curW = [CoordTransform gcj02ToWgs84:self.cur];
-        if (curW.latitude != 0 || curW.longitude != 0) {
-            NSUInteger seqHere = ++self.wifiQuerySeq;
-            __weak typeof(self) wSelf = self;
-            [[TRWpsTile sharedClient] queryBssidsForCoordinate:curW force:NO completion:^(NSArray<TRWpsTileAP *> *aps, NSError *error) {
-                __strong typeof(self) sSelf = wSelf;
-                if (!sSelf) return;
-                if (seqHere != sSelf.wifiQuerySeq) return; // 过期回调丢弃（竞态防护，同机制）
-                if (error || aps.count == 0) {
-                    // 反查失败/空：更新诊断标签（不再完全静默——TRWpsTile 有 30s 负缓存，
-                    // 失败不显示会导致"wifi 标注永远不出现且看不出原因"的排查盲区）
-                    sSelf.wifiDiagLabel.text = error
-                        ? [NSString stringWithFormat:@"WiFi: 瓦片反查失败 %@", error.localizedDescription]
-                        : @"WiFi: 瓦片反查无结果（该位置无 BSSID）";
-                    return;
-                }
-                NSMutableArray *bssids = [NSMutableArray arrayWithCapacity:aps.count];
-                for (TRWpsTileAP *ap in aps) [bssids addObject:ap.bssid];
-                [sSelf _queryWifiAnnoWithBssids:bssids seq:seqHere]; // 复用反查+标注显示
-            }];
-            return; // 动态路径走完（不落固定 BSSID 集）
-        }
-        // cur 无效（未定位）：不显示模拟位置
-        return;
+    (void)nets; (void)summary; // 兼容既有调用签名；真实分支已移除（唯一实现=主动扫描，2026-08-27）
+    if (!self.locating) return; // 仅模拟态使用；停止态由 handleActiveWifiBssids 驱动
+    // 模拟开启：按模拟当前位置动态反查 BSSID（TRWpsTile，与 daemon 注入同源；轨迹跟随）
+    CLLocationCoordinate2D curW = [CoordTransform gcj02ToWgs84:self.cur];
+    if (curW.latitude != 0 || curW.longitude != 0) {
+        NSUInteger seqHere = ++self.wifiQuerySeq;
+        __weak typeof(self) wSelf = self;
+        [[TRWpsTile sharedClient] queryBssidsForCoordinate:curW force:NO completion:^(NSArray<TRWpsTileAP *> *aps, NSError *error) {
+            __strong typeof(self) sSelf = wSelf;
+            if (!sSelf) return;
+            if (seqHere != sSelf.wifiQuerySeq) return; // 过期回调丢弃（竞态防护，同机制）
+            if (error || aps.count == 0) {
+                // 反查失败/空：更新诊断标签（不再完全静默——TRWpsTile 有 30s 负缓存，
+                // 失败不显示会导致"wifi 标注永远不出现且看不出原因"的排查盲区）
+                sSelf.wifiDiagLabel.text = error
+                    ? [NSString stringWithFormat:@"WiFi: 瓦片反查失败 %@", error.localizedDescription]
+                    : @"WiFi: 瓦片反查无结果（该位置无 BSSID）";
+                return;
+            }
+            NSMutableArray *bssids = [NSMutableArray arrayWithCapacity:aps.count];
+            for (TRWpsTileAP *ap in aps) [bssids addObject:ap.bssid];
+            [sSelf _queryWifiAnnoWithBssids:bssids seq:seqHere]; // 复用反查+标注显示
+        }];
+        return; // 动态路径走完（不落固定 BSSID 集）
     }
-    // 模拟关闭：用真实扫描结果（NEHotspotHelper）
-    NSMutableArray *bssids = [NSMutableArray array];
-    for (NEHotspotNetwork *net in nets) {
-        if (net.BSSID.length >= 17) [bssids addObject:net.BSSID.uppercaseString];
-    }
-    [self _queryWifiAnnoWithBssids:bssids seq:seq]; // 空列表在方法内统一处理（清除残留）
+    // cur 无效（未定位）：不显示模拟位置
 }
 
 /// 用给定 BSSID 集合反查并更新 wifi 标注（动态反查与真实扫描共用；seq 竞态防护，丢弃过期回调）
@@ -555,18 +543,19 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         if (!strongSelf) return;
         if (seq != strongSelf.wifiQuerySeq) return; // 过期回调丢弃（模拟/真实切换竞态防护）
         if (error || !hasValid) {
-            strongSelf.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: 反查失败%@ 注册%@ 回调%ld 列表%ld BSSID%ld",
-                error.localizedDescription ?: @"无有效坐标",
-                [TVNCHotspotManager sharedManager].diagRegisterResult ? @"YES" : @"NO",
-                (long)[TVNCHotspotManager sharedManager].diagCommandCount,
-                (long)[TVNCHotspotManager sharedManager].diagListCount,
-                (long)[TVNCHotspotManager sharedManager].diagBssidCount];
+            strongSelf.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: 反查失败 %@",
+                error.localizedDescription ?: @"无有效坐标"];
             return;
         }
-        strongSelf.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: 反查OK %.4f,%.4f（%lu AP） 注册%@ 回调%ld",
-            centroid.latitude, centroid.longitude, (unsigned long)result.count,
-            [TVNCHotspotManager sharedManager].diagRegisterResult ? @"YES" : @"NO",
-            (long)[TVNCHotspotManager sharedManager].diagCommandCount];
+        strongSelf.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: 反查OK %.4f,%.4f（%lu AP）",
+            centroid.latitude, centroid.longitude, (unsigned long)result.count];
+        // 缓存 wifi 真实位置（WGS）：启动聚焦兜底（无 GPS fix 时用 wifi 位置聚焦）
+        strongSelf.wifiCurWGS = centroid;
+        // 启动聚焦兜底：viewDidLoad 时 GPS/wifi 均未就绪 → 未聚焦过，wifi 位置到位后补聚焦一次
+        if (!strongSelf.hasFocusedMapOnce && ![strongSelf _systemLocationAvailable]) {
+            strongSelf.hasFocusedMapOnce = YES;
+            [strongSelf focusMapOnCurrentLocation];
+        }
         // 更新/创建 wifi 标注（先移除旧的再添加新的，避免重复）
         [strongSelf removeWifiAnnotationIfExists];
         CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:centroid];
@@ -583,8 +572,9 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 模拟开关切换后立即刷新 wifi 标注（用当前语义：模拟中→模拟位置，停止→真实位置）
 - (void)refreshWifiAnnotation {
     if (!self.locating) {
-        // 停止态：立即消费主动扫描最新真实 BSSID（不等 8s 周期/NEHotspotHelper 回调）——
-        // 避免切换瞬间残留模拟位置标注；JSON 缺失/空则走 handleWifiScanUpdate 清残留
+        // 停止态：消费 daemon 主动扫描真实 BSSID → wloc 反查标注（回到真实 wifi 位置）。
+        // 唯一数据源 = 主动扫描 JSON（不做 NEHotspotHelper 回退——用户定案：唯一实现可靠工作）。
+        // JSON 缺失/空：清除残留标注，待主动扫描下一次产出数据（notify 回调）恢复。
         NSData *data = [NSData dataWithContentsOfFile:kTRWifiScanJsonPath];
         NSArray *bssids = nil;
         if (data) {
@@ -595,9 +585,9 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         }
         if (bssids.count) {
             NSUInteger seq = ++self.wifiQuerySeq;
-            [self _queryWifiAnnoWithBssids:bssids seq:seq]; // 真实 BSSID wloc 反查标注
+            [self _queryWifiAnnoWithBssids:bssids seq:seq]; // 真实 BSSID wloc 反查标注（回到真实位置）
         } else {
-            [self handleWifiScanUpdate:@[] summary:@""]; // 无数据：清除残留标注
+            [self handleWifiScanUpdate:@[] summary:@""]; // 主动扫描未产出：清除残留标注（等 notify 恢复）
         }
         self.wifiLastTileKey = 0; // 重置瓦片 key：下次开启模拟强制重新反查
         return;
@@ -1293,11 +1283,15 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 }
 
 /// 地图立即聚焦到当前位置（首锚点/启动定位/停止/回前台时调用）
-/// 定位中=聚焦 self.cur（模拟位置，App 已知锚点）；未定位=聚焦活跃订阅真实位置
+/// 定位中=聚焦 self.cur（模拟位置，App 已知锚点）；未定位=GPS 活跃订阅真实位置优先，无 GPS 用 wifi 真实位置兜底
 - (void)focusMapOnCurrentLocation {
     CLLocationCoordinate2D center = self.locating ? self.cur
                                                    : [CoordTransform wgs84ToGcj02:[self currentSimPosition]];
-    // 守卫：位置无效（从未设过且 locationd 未就绪）→ 不聚焦，保持当前视野
+    // GPS 无 fix（locationd 未就绪）→ wifi 位置兜底（wifiCurWGS，真实 wifi 反查质心）
+    if (center.latitude == 0 && center.longitude == 0) {
+        center = [CoordTransform wgs84ToGcj02:self.wifiCurWGS];
+    }
+    // 守卫：位置无效（从未设过且 locationd/wifi 均未就绪）→ 不聚焦，保持当前视野
     if (center.latitude == 0 && center.longitude == 0) return;
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(center, 3000, 3000) animated:YES];
 }
