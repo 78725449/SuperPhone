@@ -46,6 +46,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 停止扫描（bridge 模式自退 / 进程退出时调用；清 timer）
 - (void)stop;
 
+/// 异步扫描回调处理（供静态 C 回调 TRWifiScanCallback 调用；results 每项 WiFiNetworkRef）
+- (void)handleScanResults:(CFArrayRef)results error:(int)error;
+
 @end
 
 /// 共享扫描结果 JSON 路径（App 侧同此路径读取；mobile 用户可读）
