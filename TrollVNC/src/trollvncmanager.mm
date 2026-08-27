@@ -585,7 +585,8 @@ int main(int argc, const char *argv[]) {
         [TRGatewayClient sharedClient].watchdog = gWatchDog;
         [[TRGatewayClient sharedClient] start];
 
-        // 改定位自治控制器：读 SimLocation* 参数恢复上次模式 + 启动 10s 巡检（离线自治，C3）
+        // 改定位自治控制器：启动一律停止态（残留模式强制 off，对齐 App readCurrentStatus 契约，
+        // 防设备重启后自动恢复模拟注入——2026-08-28）+ 10s 巡检（离线自治，C3）
         [[SimLocationController sharedController] start];
 
         // 每日轨迹（2026-08-26）：每日通话/短信/未接 + 每周新增联系人（真人行为模拟，默认开启）

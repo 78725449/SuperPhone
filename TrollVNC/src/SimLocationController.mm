@@ -63,8 +63,25 @@ static const double kSimAnchorRangeM = 20.0;
 #pragma mark - 公共入口
 
 - (void)start {
+    // 启动一律停止态（2026-08-28 对齐 App readCurrentStatus 契约）：残留 anchor/itinerary 强制写 off——
+    // manager（launchd 常驻，设备重启/崩溃即拉起）启动时若直接 reloadFromPrefs 会恢复上次模拟模式，
+    // 设备重启后用户未打开 App 期间 locationd 自动注入模拟位置（系统其他 App 全部受影响）。
+    // 宁可停止不自动模拟：模拟由用户显式开启（App 定位 UI），manager 重启（watchdog 拉起）同理不恢复。
+    [self _forceStopOnStartup];
     [self reloadFromPrefs];
     [self _startPatrol];
+}
+
+/// 残留模拟模式强制 off（写 mobile 域 plist=配置源，对齐 App readCurrentStatus 语义）。
+/// 幂等：仅当残留为 anchor/itinerary 时写 off；off 已是不变式。
+- (void)_forceStopOnStartup {
+    NSString *mode = [self _readPref:@"SimLocationMode"];
+    if ([mode isEqualToString:@"anchor"] || [mode isEqualToString:@"itinerary"]) {
+        NSMutableDictionary *mp = [NSMutableDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath] ?: [NSMutableDictionary dictionary];
+        mp[@"SimLocationMode"] = @"off";
+        [mp writeToFile:kSimMobilePrefsPath atomically:YES];
+        TVLog(@"[locsim] startup: residual mode %@ forced -> off (startup-stop contract)", mode);
+    }
 }
 
 - (void)reloadFromPrefs {
