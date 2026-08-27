@@ -81,7 +81,7 @@ typedef int (*Apple80211ScanFunc)(void *handle, CFArrayRef *results, CFDictionar
 /// TrollStore daemon 以 root 运行，无需额外 entitlement（越狱社区标准做法）。
 /// 框架缺失/符号缺失 → 全部置空，扫描静默跳过（不崩溃、不阻塞 manager 启动）。
 - (BOOL)_loadMobileWiFi {
-    if (_openFn && _bindFn && _scanFn) return YES;
+    if (_openFn && _scanFn) return YES;
     const char *fwPath = "/System/Library/PrivateFrameworks/MobileWiFi.framework/MobileWiFi";
     void *h = dlopen(fwPath, RTLD_NOW);
     if (!h) {
@@ -89,12 +89,12 @@ typedef int (*Apple80211ScanFunc)(void *handle, CFArrayRef *results, CFDictionar
         return NO;
     }
     _openFn  = (Apple80211OpenFunc)dlsym(h, "Apple80211Open");
-    _bindFn  = (Apple80211BindFunc)dlsym(h, "Apple80211Bind");
+    _bindFn  = (Apple80211BindFunc)dlsym(h, "Apple80211Bind");   // 可选：部分 iOS 版本无此符号，缺省仍可 scan
     _closeFn = (Apple80211CloseFunc)dlsym(h, "Apple80211Close");
     _scanFn  = (Apple80211ScanFunc)dlsym(h, "Apple80211Scan");
-    if (!_openFn || !_bindFn || !_scanFn) {
-        fprintf(stderr, "[wifiscan] dlsym Apple80211* incomplete (open=%p bind=%p scan=%p)\n",
-                _openFn, _bindFn, _scanFn);
+    if (!_openFn || !_scanFn) {
+        fprintf(stderr, "[wifiscan] dlsym Apple80211* incomplete (open=%p bind=%p close=%p scan=%p)\n",
+                _openFn, _bindFn, _closeFn, _scanFn);
         return NO;
     }
     _wifiHandle = h;
@@ -145,7 +145,7 @@ typedef int (*Apple80211ScanFunc)(void *handle, CFArrayRef *results, CFDictionar
         fprintf(stderr, "[wifiscan] Apple80211Open failed\n");
         return nil;
     }
-    _bindFn(h, CFSTR("en0"));
+    if (_bindFn) _bindFn(h, CFSTR("en0")); // 可选：部分 iOS 版本无 Apple80211Bind 符号，缺省跳过（open+scan 已可扫描）
     CFArrayRef results = NULL;
     // parameters 传 NULL = 扫描全部周边 AP（社区标准用法）
     if (_scanFn(h, &results, NULL) != 0 || !results) {
