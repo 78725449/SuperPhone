@@ -184,7 +184,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 - (void)_mirrorDeviceIdToMobileDomain:(NSString *)uuid {
     if (!uuid.length) return;
     // 主通道：经 cfprefsd 写 mobile 用户域
-    CFStringRef appID = CFSTR(kTRAppPrefsSuiteName);
+    CFStringRef appID = (__bridge CFStringRef)kTRAppPrefsSuiteName;
     CFPreferencesSetValue(CFSTR("DeviceUUID"), (__bridge CFStringRef)uuid,
                           appID, CFSTR("mobile"), kCFPreferencesCurrentHost);
     CFPreferencesSynchronize(appID, CFSTR("mobile"), kCFPreferencesCurrentHost);

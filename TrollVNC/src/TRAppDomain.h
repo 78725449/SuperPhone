@@ -14,7 +14,10 @@
 /// 全部进程（App / trollvncserver / trollvncmanager / prefs bundle）读写同一配置域
 /// （SimLocation*、网关地址、设备 ID、开关等），必须用本宏引用 suite 名，
 /// 禁止重写字面量（曾 19 文件 47 处裸字符串/本地 static 各持一份，2026-08-28 收敛）。
-/// 用宏而非 extern 常量：三域（src theos / App xcode / prefs bundle）include 即用，无 .mm 链接依赖。
-#define kTRAppPrefsSuiteName "com.82flex.trollvnc"
+/// 用 ObjC 字面量宏而非 extern 常量：三域（src theos / App xcode / prefs bundle）include 即用，
+/// 无 .mm 链接依赖；NSUserDefaults 方法（initWithSuiteName: 等）参数为 NSString *，
+/// 裸 C 字符串字面量会报 "string literal must be prefixed by '@'"（2026-08-28 CI 实测），
+/// 必须用 @"..." 形式；需 CFStringRef 的消费点用 (__bridge CFStringRef)kTRAppPrefsSuiteName。
+#define kTRAppPrefsSuiteName @"com.82flex.trollvnc"
 
 #endif /* TRAppDomain_h */

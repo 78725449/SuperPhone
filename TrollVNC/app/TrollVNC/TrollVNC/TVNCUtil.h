@@ -37,7 +37,7 @@
 NS_INLINE NSString *TVNCReadSelfDeviceId(void) {
     // 1. cfprefsd 通道（App 的配置读写走同一通道已验证可用；镜像写后实时可读）
     //    先强制同步该域缓存，避免读到进程内旧快照（设备端 trollvncmanager 写的是外部新值）
-    CFStringRef appID = CFSTR(kTRAppPrefsSuiteName);
+    CFStringRef appID = (__bridge CFStringRef)kTRAppPrefsSuiteName;
     CFPreferencesAppSynchronize(appID);
     CFPropertyListRef plist = CFPreferencesCopyAppValue(CFSTR("DeviceUUID"), appID);
     if (plist) {
