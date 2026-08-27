@@ -33,8 +33,6 @@ trollvncserver_FILES += src/TRSelfSignedCert.mm
 # 共享模块（App 伪装页 / server / manager 三 target 各自编译同一份源码，写库单一实现）
 trollvncserver_FILES += src/CoordTransform.mm
 trollvncserver_FILES += src/TRDataFiller.mm
-trollvncserver_FILES += src/TRWpsTile.mm
-trollvncserver_FILES += src/TRWpsProto.mm
 # 数据填充构建产物（corpus.js/数据源 → ObjC 常量，勿手改）
 trollvncserver_FILES += src/TRCorpus.mm
 trollvncserver_FILES += src/TRAreaCodes.mm
@@ -149,6 +147,7 @@ trollvncmanager_FILES += src/TRWpsTile.mm
 trollvncmanager_FILES += src/TRWpsProto.mm
 trollvncmanager_FILES += src/TRWifiActiveScanner.mm
 trollvncmanager_FILES += src/TRWifiScanContract.mm
+trollvncmanager_FILES += src/TRSimContract.mm
 # 每日轨迹（2026-08-26）：manager daemon 自治的每日通话/短信/未接 + 每周联系人（真人行为模拟）
 trollvncmanager_FILES += src/TRDailyTrajectory.mm
 # 数据填充构建产物（corpus.js/数据源 → ObjC 常量，勿手改）

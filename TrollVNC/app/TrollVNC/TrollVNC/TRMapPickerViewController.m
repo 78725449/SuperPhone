@@ -23,12 +23,13 @@
 #import "CoordTransform.h"
 #import "TRWpsTile.h" // 坐标→BSSID 动态反查（模拟分支按当前位置反查，与 daemon 注入同源；轨迹跟随）
 #import "../../../src/TRWifiScanContract.h" // 跨端扫描契约常量（单一真相源，2026-08-28）
+#import "../../../src/TRSimContract.h" // 跨端定位契约（轨迹文件路径单一真相源，2026-08-28）
 #import "RegionSimulator.h"
 #import "SimRouteCalculator.h"
 #import "TRWpsClient.h"
+#import "TVNCUtil.h" // TVNC_NOTIFY_PREFS_CHANGED（prefs-changed 通知名宏，2026-08-28 收敛）
 
-/// 轨迹文件路径（与 SimLocationController kSimTrackFilePath 一致，App 只当配置源、manager 注入执行）
-static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.simloc.json";
+/// 轨迹文件路径 → kTRSimTrackFilePath（TRSimContract.h 跨端单一真相源，2026-08-28）
 static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
 // WiFi 主动扫描契约常量 → TRWifiScanContract.h（共享模块单一真相源，2026-08-28 收敛；不再本地 static 字面量）
 static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：fix 距上次聚焦点 ≥500m 才拉回（GPS 抖动 <50m 不打扰）
@@ -612,7 +613,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     if ([mode isEqualToString:@"anchor"] || [mode isEqualToString:@"itinerary"]) {
         [d setObject:@"off" forKey:@"SimLocationMode"];
         [d synchronize];
-        notify_post("com.82flex.trollvnc.prefs-changed");
+        notify_post(TVNC_NOTIFY_PREFS_CHANGED);
     }
     self.locating = NO;   // 不恢复定位中；self.cur 保持 0,0，初始视野/聚焦以 locationd（真实）为准
     [self updateStatus];
@@ -1608,14 +1609,14 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [d setDouble:wgs.latitude forKey:@"SimLocationLat"];
     [d setDouble:wgs.longitude forKey:@"SimLocationLon"];
     [d synchronize];
-    notify_post("com.82flex.trollvnc.prefs-changed");
+    notify_post(TVNC_NOTIFY_PREFS_CHANGED);
 }
 
 - (void)commitStop {
     NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite];
     [d setObject:@"off" forKey:@"SimLocationMode"];
     [d synchronize];
-    notify_post("com.82flex.trollvnc.prefs-changed");
+    notify_post(TVNC_NOTIFY_PREFS_CHANGED);
 }
 
 /// 重算期间让 daemon 驻留在当前位置（anchor 微动）：编辑（删除/重排）重算耗时期间，
@@ -1628,7 +1629,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [d setDouble:curW.latitude forKey:@"SimLocationLat"];
     [d setDouble:curW.longitude forKey:@"SimLocationLon"];
     [d synchronize];
-    notify_post("com.82flex.trollvnc.prefs-changed");
+    notify_post(TVNC_NOTIFY_PREFS_CHANGED);
 }
 
 /// 编辑动作统一入口（联动性：编辑不丢）——生成中挂起（最后一次生效），否则立即执行
@@ -1919,17 +1920,17 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         NSDictionary *payload = @{ @"version": @1, @"points": snapshot };
         NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
         if (!json) return;
-        NSString *tmp = [kSimTrackFilePath stringByAppendingString:@".tmp"];
+        NSString *tmp = [kTRSimTrackFilePath stringByAppendingString:@".tmp"];
         if (![json writeToFile:tmp options:NSDataWritingAtomic error:nil]) return;
-        if ([[NSFileManager defaultManager] fileExistsAtPath:kSimTrackFilePath]) {
-            [[NSFileManager defaultManager] removeItemAtPath:kSimTrackFilePath error:nil];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:kTRSimTrackFilePath]) {
+            [[NSFileManager defaultManager] removeItemAtPath:kTRSimTrackFilePath error:nil];
         }
-        if (![[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kSimTrackFilePath error:nil]) return;
+        if (![[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kTRSimTrackFilePath error:nil]) return;
         if (locating) {
             NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite];
             [d setObject:@"itinerary" forKey:@"SimLocationMode"];
             [d synchronize];
-            notify_post("com.82flex.trollvnc.prefs-changed");
+            notify_post(TVNC_NOTIFY_PREFS_CHANGED);
         }
     });
 }

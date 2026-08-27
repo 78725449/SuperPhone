@@ -12,11 +12,11 @@
 #import "SimLocationManager.h"
 #import "SimRouteCalculator.h" // haversineMeters（与 App 截断同度量，选最近续播点）
 #import "TRWpsTile.h" // 坐标→BSSID 动态反查（daemon 注入 wifi 模拟源）
+#import "TRSimContract.h" // 跨端定位契约（轨迹文件路径单一真相源，2026-08-28）
 #import "Logging.h"
 #import <math.h>
 
-// 轨迹点序列文件（大 payload 走文件，对齐 manager pid 平铺命名）
-static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.simloc.json";
+// 轨迹点序列文件路径 → kTRSimTrackFilePath（TRSimContract.h 跨端单一真相源，2026-08-28）
 // 配置 plist（mobile 域=配置源：App 写 mobile、uploadTrackPoints 也写 mobile；root 域仅兜底）
 static NSString *const kSimMobilePrefsPath = @"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist";
 // 巡检间隔：失效检测 + 参数变更感知合一
@@ -263,7 +263,7 @@ static const double kSimAnchorRangeM = 20.0;
 - (void)_startTrack {
     NSArray *points = [self _loadTrackPoints];
     if (points.count == 0) {
-        TVLog(@"[locsim] track file empty/missing: %@", kSimTrackFilePath);
+        TVLog(@"[locsim] track file empty/missing: %@", kTRSimTrackFilePath);
         [self _stopTrack];
         [[SimLocationManager sharedManager] stopAll]; // 空轨迹全停（GPS+wifi 一并恢复真实，防残留）
         return;
@@ -360,7 +360,7 @@ static const double kSimAnchorRangeM = 20.0;
 }
 
 - (NSArray *)_loadTrackPoints {
-    NSData *data = [NSData dataWithContentsOfFile:kSimTrackFilePath];
+    NSData *data = [NSData dataWithContentsOfFile:kTRSimTrackFilePath];
     if (!data.length) return @[];
     id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
     if ([json isKindOfClass:[NSDictionary class]] && [json[@"points"] isKindOfClass:[NSArray class]]) {
@@ -402,16 +402,16 @@ static const double kSimAnchorRangeM = 20.0;
         if (error) *error = jerr ?: [NSError errorWithDomain:@"SimLoc" code:4 userInfo:@{NSLocalizedDescriptionKey:@"轨迹序列化失败"}];
         return NO;
     }
-    NSString *tmp = [kSimTrackFilePath stringByAppendingString:@".tmp"];
+    NSString *tmp = [kTRSimTrackFilePath stringByAppendingString:@".tmp"];
     NSError *werr = nil;
     if (![json writeToFile:tmp options:NSDataWritingAtomic error:&werr]) {
         if (error) *error = werr ?: [NSError errorWithDomain:@"SimLoc" code:5 userInfo:@{NSLocalizedDescriptionKey:@"轨迹临时文件写入失败"}];
         return NO;
     }
-    if ([[NSFileManager defaultManager] fileExistsAtPath:kSimTrackFilePath]) {
-        [[NSFileManager defaultManager] removeItemAtPath:kSimTrackFilePath error:NULL];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:kTRSimTrackFilePath]) {
+        [[NSFileManager defaultManager] removeItemAtPath:kTRSimTrackFilePath error:NULL];
     }
-    if (![[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kSimTrackFilePath error:&werr]) {
+    if (![[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kTRSimTrackFilePath error:&werr]) {
         if (error) *error = werr ?: [NSError errorWithDomain:@"SimLoc" code:6 userInfo:@{NSLocalizedDescriptionKey:@"轨迹文件替换失败"}];
         return NO;
     }
@@ -508,7 +508,7 @@ static const double kSimAnchorRangeM = 20.0;
     NSString *mode = [self _readPref:@"SimLocationMode"] ?: @"off";
     long long trackStamp = 0;
     if ([mode isEqualToString:@"itinerary"]) {
-        NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:kSimTrackFilePath error:NULL];
+        NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:kTRSimTrackFilePath error:NULL];
         NSDate *mtime = attrs[NSFileModificationDate];
         trackStamp = (long long)(mtime.timeIntervalSince1970 * 1000);
     }
