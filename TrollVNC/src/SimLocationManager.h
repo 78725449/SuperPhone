@@ -45,7 +45,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)stopAll;
 
 /// WiFi 扫描模拟注入（输入层）：setWifiScanResults + setSimulatedWifiPower + startWifiSimulation
-/// @param scanResults  NSArray<NSDictionary *>，每项含 bssid/ssid/rssi/channel/age/timestamp（键名待 XPC 取证校准）
+/// @param scanResults  NSArray<NSDictionary *>，每项含 bssid/ssid/rssi/channel/age/timestamp
+/// 键名按初始猜想 + XPC 载荷取证校准；已真机投产（buildScanResultsFromBssidStrings 生成方与此消费方同构）
 /// 与 GPS 注入（injectPoint:）并发不互斥——GPS 喂结果层、wifi 喂输入层，叠加自洽
 - (void)injectWifiScanResults:(NSArray<NSDictionary *> *)scanResults;
 

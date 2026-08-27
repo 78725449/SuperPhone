@@ -42,6 +42,7 @@
 #import "SimLocationController.h"
 #import "TRDailyTrajectory.h"
 #import "TRWifiActiveScanner.h" // WiFi 主动扫描（2026-08-27 root daemon Apple80211，见 start 区挂载）
+#import "TRWifiScanContract.h" // 跨端扫描契约常量（wifiscan-request 等）
 #import "libproc.h"
 
 #define SINGLETON_MARKER_PATH "/var/mobile/Library/Caches/com.82flex.trollvnc.manager.pid"
@@ -676,7 +677,7 @@ int main(int argc, const char *argv[]) {
         // WiFi 立即扫描请求（2026-08-27）：App 关闭模拟定位时 notify_post →
         // daemon 立即触发一次主动扫描（不等 8s 周期），关模拟瞬间拿到最新真实 BSSID 反查标注。
         int wifiScanReqToken = 0;
-        notify_register_dispatch("com.82flex.trollvnc.wifiscan-request", &wifiScanReqToken,
+        notify_register_dispatch(kTRWifiScanRequestNotification.UTF8String, &wifiScanReqToken,
             dispatch_get_main_queue(), ^(int token) {
                 (void)token;
                 [[TRWifiActiveScanner sharedScanner] requestScanNow];

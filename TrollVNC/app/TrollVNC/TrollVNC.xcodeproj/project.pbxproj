@@ -60,6 +60,8 @@
 		AA01000000000000000000B4 /* TRWpsClient.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000B2 /* TRWpsClient.mm */; };
 		AA01000000000000000000B8 /* TRWpsTile.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000B7 /* TRWpsTile.mm */; };
 		AA01000000000000000000B9 /* TRWpsTile.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000B7 /* TRWpsTile.mm */; };
+		AA01000000000000000000D1 /* TRWifiScanContract.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000D2 /* TRWifiScanContract.mm */; };
+		AA01000000000000000000D4 /* TRWpsProto.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000D5 /* TRWpsProto.mm */; };
 		A10000000000000000000003 /* CoordTransform.mm in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* CoordTransform.mm */; };
 		A10000000000000000000006 /* TRDataFiller.mm in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* TRDataFiller.mm */; };
 		A1000000000000000000002F /* TRCorpus.mm in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000002C /* TRCorpus.mm */; };
@@ -150,6 +152,10 @@
 		A10000000000000000000002 /* CoordTransform.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/CoordTransform.mm; sourceTree = "<group>"; };
 		AA01000000000000000000B6 /* TRWpsTile.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/TRWpsTile.h; sourceTree = "<group>"; };
 		AA01000000000000000000B7 /* TRWpsTile.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/TRWpsTile.mm; sourceTree = "<group>"; };
+		AA01000000000000000000D2 /* TRWifiScanContract.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/TRWifiScanContract.mm; sourceTree = "<group>"; };
+		AA01000000000000000000D3 /* TRWifiScanContract.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/TRWifiScanContract.h; sourceTree = "<group>"; };
+		AA01000000000000000000D5 /* TRWpsProto.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/TRWpsProto.mm; sourceTree = "<group>"; };
+		AA01000000000000000000D6 /* TRWpsProto.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/TRWpsProto.h; sourceTree = "<group>"; };
 		A10000000000000000000004 /* TRDataFiller.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/TRDataFiller.h; sourceTree = "<group>"; };
 		A10000000000000000000005 /* TRDataFiller.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objcpp; path = ../../../src/TRDataFiller.mm; sourceTree = "<group>"; };
 		A1000000000000000000002B /* TRCorpus.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ../../../src/TRCorpus.h; sourceTree = "<group>"; };
@@ -313,6 +319,10 @@
 				AA01000000000000000000B2 /* TRWpsClient.mm */,
 				AA01000000000000000000B6 /* TRWpsTile.h */,
 				AA01000000000000000000B7 /* TRWpsTile.mm */,
+				AA01000000000000000000D2 /* TRWifiScanContract.mm */,
+				AA01000000000000000000D3 /* TRWifiScanContract.h */,
+				AA01000000000000000000D5 /* TRWpsProto.mm */,
+				AA01000000000000000000D6 /* TRWpsProto.h */,
 			A10000000000000000000001 /* CoordTransform.h */,
 			A10000000000000000000002 /* CoordTransform.mm */,
 			A10000000000000000000004 /* TRDataFiller.h */,
@@ -516,6 +526,8 @@
 				AA01000000000000000000A3 /* TVNCGatewayClient.m in Sources */,
 				AA01000000000000000000B3 /* TRWpsClient.mm in Sources */,
 				AA01000000000000000000B8 /* TRWpsTile.mm in Sources */,
+				AA01000000000000000000D1 /* TRWifiScanContract.mm in Sources */,
+				AA01000000000000000000D4 /* TRWpsProto.mm in Sources */,
 				61B0DD092EB13BEF004CC42B /* TVNCSliderCell.m in Sources */,
 				D0B1B2C3D4E5F60718293A02 /* TVNCSegmentCell.m in Sources */,
 				D0B1B2C3D4E5F60718293A05 /* TVNCButtonCell.m in Sources */,
@@ -568,6 +580,7 @@
 				AA01000000000000000000A4 /* TVNCGatewayClient.m in Sources */,
 				AA01000000000000000000B4 /* TRWpsClient.mm in Sources */,
 				AA01000000000000000000B9 /* TRWpsTile.mm in Sources */,
+				AA01000000000000000000D4 /* TRWpsProto.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

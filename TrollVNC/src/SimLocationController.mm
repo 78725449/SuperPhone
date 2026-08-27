@@ -240,7 +240,7 @@ static const double kSimAnchorRangeM = 20.0;
             return;
         }
         // 取前 100 个代表性 AP（避免注入请求过大，locationd 解算足够）
-        NSArray<NSString *> *sample = [strongSelf _sampleBssids:aps max:100];
+        NSArray<NSString *> *sample = [TRWpsTile sampleBssidsFromAPs:aps max:100]; // 共享原语（原 _sampleBssids 上移，2026-08-28）
         NSArray *scanResults = [SimLocationManager buildScanResultsFromBssidStrings:sample];
         if (scanResults.count) {
             [[SimLocationManager sharedManager] injectWifiScanResults:scanResults];
@@ -249,15 +249,7 @@ static const double kSimAnchorRangeM = 20.0;
     }];
 }
 
-/// 取前 max 个 BSSID（动态反查结果采样，避免注入请求过大）
-- (NSArray<NSString *> *)_sampleBssids:(NSArray<TRWpsTileAP *> *)aps max:(NSUInteger)max {
-    NSMutableArray *bssids = [NSMutableArray arrayWithCapacity:MIN(max, aps.count)];
-    NSUInteger n = MIN(max, aps.count);
-    for (NSUInteger i = 0; i < n; i++) {
-        [bssids addObject:aps[i].bssid];
-    }
-    return bssids;
-}
+/// BSSID 采样已上移 TRWpsTile sampleBssidsFromAPs:（共享原语，2026-08-28）
 
 - (void)_stopAnchor {
     if (_anchorSource) {
@@ -326,12 +318,13 @@ static const double kSimAnchorRangeM = 20.0;
 }
 
 /// 检测当前坐标瓦片是否变化，跨瓦片则重新 wifi 动态反查注入（轨迹跟随）
+/// 共享原语 TRWpsTile tileChangedForCoordinate:（App/daemon 同源，2026-08-28）
 - (void)_checkWifiTileChangedAndReinject {
     CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
     if (coord.latitude == 0 && coord.longitude == 0) return; // 无当前位置
-    uint64_t key = [TRWpsTile tileKeyForCoordinate:coord];
-    if (key == _lastWifiTileKey) return; // 同瓦片：不重反查（LRU 已覆盖）
-    _lastWifiTileKey = key;
+    uint64_t newKey = 0;
+    if (![TRWpsTile tileChangedForCoordinate:coord previous:_lastWifiTileKey newKey:&newKey]) return; // 同瓦片：不重反查（LRU 已覆盖）
+    _lastWifiTileKey = newKey;
     [self _injectWifiSimulationForCurrentLocation];
 }
 

@@ -1,4 +1,5 @@
 #import "TRWpsClient.h"
+#import "../../../src/TRWpsProto.h" // protobuf 读取原语（readVarint/skipField 曾本地复制，2026-08-28 上移共享模块）
 #import <CoreFoundation/CoreFoundation.h>
 
 @interface TRWpsClient ()
@@ -96,54 +97,25 @@ static NSData *buildArpcRequest(NSData *payload) {
     return head;
 }
 
-// ---------- protobuf 解析原语（对齐 mjs readVarint） ----------
-static BOOL readVarint(const uint8_t *buf, NSUInteger len, NSUInteger *off, uint64_t *out) {
-    uint64_t result = 0;
-    int shift = 0;
-    while (*off < len && shift < 64) {
-        uint8_t b = buf[*off];
-        (*off)++;
-        result |= (uint64_t)(b & 0x7f) << shift;
-        if (!(b & 0x80)) { *out = result; return YES; }
-        shift += 7;
-    }
-    return NO;
-}
-
-static BOOL skipField(const uint8_t *buf, NSUInteger len, NSUInteger *off, int wireType) {
-    uint64_t v;
-    switch (wireType) {
-        case 0: return readVarint(buf, len, off, &v);
-        case 1: if (*off + 8 > len) return NO; *off += 8; return YES;
-        case 2: {
-            uint64_t sl;
-            if (!readVarint(buf, len, off, &sl)) return NO;
-            if (sl > len - *off) return NO;
-            *off += (NSUInteger)sl;
-            return YES;
-        }
-        case 5: if (*off + 4 > len) return NO; *off += 4; return YES;
-        default: return NO;
-    }
-}
+// protobuf 读取原语已上移 TRWpsProto.h/.mm（TRWpsReadVarint/TRWpsSkipField，2026-08-28）
 
 // ---------- 响应解析（对齐 mjs parseWifiDevices/parseWifiDevice/parseLocation） ----------
 static BOOL parseLocationField(const uint8_t *buf, NSUInteger len, int fieldNum, double *out) {
     NSUInteger i = 0;
     while (i < len) {
         uint64_t tag;
-        if (!readVarint(buf, len, &i, &tag)) return NO;
+        if (!TRWpsReadVarint(buf, len, &i, &tag)) return NO;
         int fn = (int)(tag >> 3);
         int wt = (int)(tag & 7);
         if (wt == 0) {
             uint64_t value;
-            if (!readVarint(buf, len, &i, &value)) return NO;
+            if (!TRWpsReadVarint(buf, len, &i, &value)) return NO;
             // int64 负数 = 64 位补码（对齐 mjs 符号修正）
             int64_t signedV = (int64_t)value;
             if (fn == 1 && fieldNum == 1) { *out = (double)signedV / 1e8; return YES; }
             if (fn == 2 && fieldNum == 2) { *out = (double)signedV / 1e8; return YES; }
         } else {
-            if (!skipField(buf, len, &i, wt)) return NO;
+            if (!TRWpsSkipField(buf, len, &i, wt)) return NO;
         }
     }
     return NO;
@@ -155,18 +127,18 @@ static CLLocationCoordinate2D parseWifiDevice(const uint8_t *buf, NSUInteger len
     NSUInteger i = 0;
     while (i < len) {
         uint64_t tag;
-        if (!readVarint(buf, len, &i, &tag)) break;
+        if (!TRWpsReadVarint(buf, len, &i, &tag)) break;
         int fn = (int)(tag >> 3);
         int wt = (int)(tag & 7);
         if (fn == 1 && wt == 2) {
             uint64_t sl;
-            if (!readVarint(buf, len, &i, &sl)) break;
+            if (!TRWpsReadVarint(buf, len, &i, &sl)) break;
             if (sl > len - i) break;
             *bssidOut = [[NSString alloc] initWithBytes:buf + i length:(NSUInteger)sl encoding:NSUTF8StringEncoding];
             i += (NSUInteger)sl;
         } else if (fn == 2 && wt == 2) {
             uint64_t sl;
-            if (!readVarint(buf, len, &i, &sl)) break;
+            if (!TRWpsReadVarint(buf, len, &i, &sl)) break;
             if (sl > len - i) break;
             double lat = 0, lon = 0;
             BOOL hasLat = parseLocationField(buf + i, (NSUInteger)sl, 1, &lat);
@@ -177,7 +149,7 @@ static CLLocationCoordinate2D parseWifiDevice(const uint8_t *buf, NSUInteger len
             }
             i += (NSUInteger)sl;
         } else {
-            if (!skipField(buf, len, &i, wt)) break;
+            if (!TRWpsSkipField(buf, len, &i, wt)) break;
         }
     }
     return coord;
@@ -228,12 +200,12 @@ static CLLocationCoordinate2D parseWifiDevice(const uint8_t *buf, NSUInteger len
             int validCount = 0;
             while (i < len) {
                 uint64_t tag;
-                if (!readVarint(bytes, len, &i, &tag)) break;
+                if (!TRWpsReadVarint(bytes, len, &i, &tag)) break;
                 int fn = (int)(tag >> 3);
                 int wt = (int)(tag & 7);
                 if (fn == 2 && wt == 2) {
                     uint64_t sl;
-                    if (!readVarint(bytes, len, &i, &sl)) break;
+                    if (!TRWpsReadVarint(bytes, len, &i, &sl)) break;
                     if (sl > len - i) break;
                     NSString *bssid = nil;
                     CLLocationCoordinate2D coord = parseWifiDevice(bytes + i, (NSUInteger)sl, &bssid);
@@ -253,7 +225,7 @@ static CLLocationCoordinate2D parseWifiDevice(const uint8_t *buf, NSUInteger len
                         hasValid = YES;
                     }
                 } else {
-                    if (!skipField(bytes, len, &i, wt)) break;
+                    if (!TRWpsSkipField(bytes, len, &i, wt)) break;
                 }
             }
             if (validCount > 0) {

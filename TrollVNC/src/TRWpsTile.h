@@ -11,6 +11,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// 坐标→BSSID 动态反查（共享模块：App 标注 + daemon 注入双消费方）
 /// 协议：GET gspe85-cn-ssl.ls.apple.com/wifi_request_tile + X-tilekey(morton)，响应纯 protobuf
+/// URL 已追加 ?tk=<tilekey> 作 CDN cache-buster（金山云 CDN 缓存键只含 URL、不含 X-tilekey header，
+/// 曾致所有瓦片命中同一份陈旧缓存固定响应；origin 按 header 取数、忽略 query，2026-08-27 实测）
 /// 设计文档 §坐标→SSID 反查：动态+预取混合，本类提供动态查询 + LRU 瓦片缓存
 @interface TRWpsTile : NSObject
 
@@ -29,6 +31,16 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// 计算坐标所属瓦片 key（level 13，morton；供跨瓦片变更检测——轨迹移动跨瓦片才重反查）
 + (uint64_t)tileKeyForCoordinate:(CLLocationCoordinate2D)coord;
+
+/// 跨瓦片判定共享原语（App/daemon 双消费，语义一致）：
+/// 计算 coord 所属瓦片 key 并与 previous 比较。返回 YES = 已跨瓦片（*newKey 输出新 key，
+/// 消费方应重新反查并记录）；返回 NO = 同瓦片（*newKey 保持 previous 值，消费方跳过）。
++ (BOOL)tileChangedForCoordinate:(CLLocationCoordinate2D)coord
+                        previous:(uint64_t)previous
+                          newKey:(uint64_t *)newKey;
+
+/// BSSID 采样共享原语（cap 上限；daemon 注入与 App 标注同源，消除"注入 100/标注全量"不对称）
++ (NSArray<NSString *> *)sampleBssidsFromAPs:(NSArray<TRWpsTileAP *> *)aps max:(NSUInteger)max;
 
 @end
 

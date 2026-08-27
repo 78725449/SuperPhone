@@ -55,10 +55,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
-/// 共享扫描结果 JSON 路径（App 侧同此路径读取；mobile 用户可读）
-extern NSString *const kTRWifiScanJsonPath;
-/// 扫描更新 Darwin 通知名（daemon notify_post → App notify_register_dispatch 订阅）
-extern NSString *const kTRWifiScanUpdatedNotification;
+/// 共享扫描结果 JSON 路径/更新通知/请求通知 → TRWifiScanContract.h（跨端契约单一真相源，2026-08-28）
+/// 本头仅保留 daemon 内部默认扫描周期
 /// 默认扫描周期（秒）
 extern const NSTimeInterval kTRWifiScanIntervalSec;
 

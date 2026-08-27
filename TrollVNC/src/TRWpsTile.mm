@@ -8,6 +8,7 @@
 */
 
 #import "TRWpsTile.h"
+#import "TRWpsProto.h" // protobuf 读取原语（readVarint/skipField 曾本地复制，2026-08-28 上移共享模块）
 
 #import <math.h>
 
@@ -23,36 +24,7 @@ static const double kTRWpsMaxLon = 180.0;
 static NSString *const kTRWpsTileHostIntl = @"https://gspe85-ssl.ls.apple.com";
 static NSString *const kTRWpsTileHostCN = @"https://gspe85-cn-ssl.ls.apple.com";
 
-// ---------- protobuf 原语（静态函数无法跨文件复用，复制自 TRWpsClient.mm，语义对齐 mjs readVarint/skipField） ----------
-static BOOL readVarint(const uint8_t *buf, NSUInteger len, NSUInteger *off, uint64_t *out) {
-    uint64_t result = 0;
-    int shift = 0;
-    while (*off < len && shift < 64) {
-        uint8_t b = buf[*off];
-        (*off)++;
-        result |= (uint64_t)(b & 0x7f) << shift;
-        if (!(b & 0x80)) { *out = result; return YES; }
-        shift += 7;
-    }
-    return NO;
-}
-
-static BOOL skipField(const uint8_t *buf, NSUInteger len, NSUInteger *off, int wireType) {
-    uint64_t v;
-    switch (wireType) {
-        case 0: return readVarint(buf, len, off, &v);
-        case 1: if (*off + 8 > len) return NO; *off += 8; return YES;
-        case 2: {
-            uint64_t sl;
-            if (!readVarint(buf, len, off, &sl)) return NO;
-            if (sl > len - *off) return NO;
-            *off += (NSUInteger)sl;
-            return YES;
-        }
-        case 5: if (*off + 4 > len) return NO; *off += 4; return YES;
-        default: return NO;
-    }
-}
+// protobuf 读取原语已上移 TRWpsProto.h/.mm（TRWpsReadVarint/TRWpsSkipField，2026-08-28）
 
 // sfixed32 = 小端 4 字节 → int32（对齐 mjs readInt32LE；逐字节组装无端序依赖）
 static int32_t readInt32LE(const uint8_t *p) {
@@ -114,22 +86,22 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
     NSUInteger i = 0;
     while (i < len) {
         uint64_t tag;
-        if (!readVarint(buf, len, &i, &tag)) break;
+        if (!TRWpsReadVarint(buf, len, &i, &tag)) break;
         int fieldNum = (int)(tag >> 3);
         int wireType = (int)(tag & 7);
         if (fieldNum == 3 && wireType == 2) {
             uint64_t lenV;
-            if (!readVarint(buf, len, &i, &lenV)) break;
+            if (!TRWpsReadVarint(buf, len, &i, &lenV)) break;
             if (lenV > len - i) break;
             NSUInteger regionEnd = i + (NSUInteger)lenV;
             while (i < regionEnd) {
                 uint64_t rtag;
-                if (!readVarint(buf, len, &i, &rtag)) break;
+                if (!TRWpsReadVarint(buf, len, &i, &rtag)) break;
                 int rf = (int)(rtag >> 3);
                 int rw = (int)(rtag & 7);
                 if (rf == 2 && rw == 2) {
                     uint64_t dlen;
-                    if (!readVarint(buf, len, &i, &dlen)) break;
+                    if (!TRWpsReadVarint(buf, len, &i, &dlen)) break;
                     if (dlen > len - i) break;
                     NSUInteger devEnd = i + (NSUInteger)dlen;
                     NSString *bssid = nil;
@@ -137,21 +109,21 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
                     BOOL hasLat = NO, hasLon = NO;
                     while (i < devEnd) {
                         uint64_t dtag;
-                        if (!readVarint(buf, len, &i, &dtag)) break;
+                        if (!TRWpsReadVarint(buf, len, &i, &dtag)) break;
                         int df = (int)(dtag >> 3);
                         int dw = (int)(dtag & 7);
                         if (df == 5 && dw == 0) {
                             uint64_t value;
-                            if (!readVarint(buf, len, &i, &value)) break;
+                            if (!TRWpsReadVarint(buf, len, &i, &value)) break;
                             bssid = macFromInt64(value);
                         } else if (df == 6 && dw == 2) {
                             uint64_t elen;
-                            if (!readVarint(buf, len, &i, &elen)) break;
+                            if (!TRWpsReadVarint(buf, len, &i, &elen)) break;
                             if (elen > len - i) break;
                             NSUInteger entryEnd = i + (NSUInteger)elen;
                             while (i < entryEnd) {
                                 uint64_t etag;
-                                if (!readVarint(buf, len, &i, &etag)) break;
+                                if (!TRWpsReadVarint(buf, len, &i, &etag)) break;
                                 int ef = (int)(etag >> 3);
                                 int ew = (int)(etag & 7);
                                 if (ew == 5) {
@@ -161,11 +133,11 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
                                     if (ef == 1) { lat = (double)raw / 1e7; hasLat = YES; }
                                     else if (ef == 2) { lon = (double)raw / 1e7; hasLon = YES; }
                                 } else {
-                                    if (!skipField(buf, len, &i, ew)) break;
+                                    if (!TRWpsSkipField(buf, len, &i, ew)) break;
                                 }
                             }
                         } else {
-                            if (!skipField(buf, len, &i, dw)) break;
+                            if (!TRWpsSkipField(buf, len, &i, dw)) break;
                         }
                     }
                     if (bssid && hasLat && hasLon) {
@@ -175,11 +147,11 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
                         [aps addObject:ap];
                     }
                 } else {
-                    if (!skipField(buf, len, &i, rw)) break;
+                    if (!TRWpsSkipField(buf, len, &i, rw)) break;
                 }
             }
         } else {
-            if (!skipField(buf, len, &i, wireType)) break;
+            if (!TRWpsSkipField(buf, len, &i, wireType)) break;
         }
     }
     return aps;
@@ -341,6 +313,23 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
     int32_t tx = 0, ty = 0;
     latLonToTile(coord.latitude, coord.longitude, kTRWpsTileLevel, &tx, &ty);
     return packTileKey((uint32_t)ty, (uint32_t)tx, kTRWpsTileLevel);
+}
+
++ (BOOL)tileChangedForCoordinate:(CLLocationCoordinate2D)coord
+                        previous:(uint64_t)previous
+                          newKey:(uint64_t *)newKey {
+    int32_t tx = 0, ty = 0;
+    latLonToTile(coord.latitude, coord.longitude, kTRWpsTileLevel, &tx, &ty);
+    uint64_t key = packTileKey((uint32_t)ty, (uint32_t)tx, kTRWpsTileLevel);
+    if (newKey) *newKey = key;
+    return (key != previous);
+}
+
++ (NSArray<NSString *> *)sampleBssidsFromAPs:(NSArray<TRWpsTileAP *> *)aps max:(NSUInteger)max {
+    NSMutableArray *bssids = [NSMutableArray arrayWithCapacity:MIN(max, aps.count)];
+    NSUInteger n = MIN(max, aps.count);
+    for (NSUInteger i = 0; i < n; i++) [bssids addObject:aps[i].bssid];
+    return bssids;
 }
 
 @end

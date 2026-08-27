@@ -16,14 +16,11 @@
 */
 
 #import "TRWifiActiveScanner.h"
+#import "TRWifiScanContract.h"
 #import <notify.h>
 #import <dlfcn.h>
 
-/// 共享扫描结果 JSON 路径（root daemon 写；mobile 用户 App 可读——/var/mobile 权限宽松）
-NSString *const kTRWifiScanJsonPath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.wifiscan.json";
-/// 扫描更新 Darwin 通知名（daemon notify_post → App notify_register_dispatch 订阅）
-NSString *const kTRWifiScanUpdatedNotification = @"com.82flex.trollvnc.wifiscan-updated";
-/// 默认扫描周期（秒；对齐「启动即自动获取 + 活跃订阅」语义，8s 低频省电）
+/// 默认扫描周期（秒；「启动即自动获取 + 活跃订阅」8s 低频省电）
 const NSTimeInterval kTRWifiScanIntervalSec = 8.0;
 
 /// 私有框架符号声明（MobileWiFi —— WiFiManagerClient* 异步 API，iOS 13+ IO80211FamilyV2 重构后的
