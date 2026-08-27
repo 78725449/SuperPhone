@@ -27,3 +27,12 @@ TrollVNC/.git.bak/
 
 # 外部开源项目参考代码（拉取深研用，不入库）
 _research/
+
+# CI 取包本地解压残留（_tipa_extract/_zip_extract/_tmp-insp 等，一次性产物不入库）
+_tipa_extract/
+_zip_extract/
+_tmp-insp/
+packages-bootstrap.zip
+packages-rootless.zip
+packages-default.zip
+packages-roothide.zip

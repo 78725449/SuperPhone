@@ -31,6 +31,9 @@
 /// 轨迹文件路径（与 SimLocationController kSimTrackFilePath 一致，App 只当配置源、manager 注入执行）
 static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.simloc.json";
 static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
+// WiFi 主动扫描共享契约（App 侧 static 同字面量，与 daemon TRWifiActiveScanner.mm 常量一致——跨端契约靠字符串对齐，不跨进程链接符号）
+static NSString *const kTRWifiScanJsonPath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.wifiscan.json";
+static NSString *const kTRWifiScanUpdatedNotification = @"com.82flex.trollvnc.wifiscan-updated";
 static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：fix 距上次聚焦点 ≥500m 才拉回（GPS 抖动 <50m 不打扰）
 
 /// 锚点标注（关联编排段索引，点击删除该段；水滴图钉状态分类：未经过=蓝/已经过=红，当前位置=绿；
@@ -166,6 +169,30 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         [self handleWifiScanUpdate:hs.lastNetworkList summary:hs.lastScanSummary];
     }
     [self refreshWifiDiag]; // 水合后同步一次诊断标签
+    // 主动扫描订阅（2026-08-27）：daemon（root）周期扫周边 BSSID → 写共享 JSON + Darwin 通知。
+    // 语义对齐「启动即自动获取 + 活跃订阅」：模拟关闭→真实 BSSID 反查标注（不再依赖系统 Wi-Fi 设置页）；
+    // 模拟开启→忽略（模拟链路由 TRWpsTile 动态反查独立驱动，主动扫描结果不参与，防双轨串扰）。
+    int wifiScanToken = 0;
+    notify_register_dispatch(kTRWifiScanUpdatedNotification.UTF8String, &wifiScanToken,
+        dispatch_get_main_queue(), ^(int token) {
+            __strong typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSData *data = [NSData dataWithContentsOfFile:kTRWifiScanJsonPath];
+            if (!data) return;
+            NSDictionary *obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+            if (![obj isKindOfClass:[NSDictionary class]]) return;
+            NSArray *bssids = obj[@"bssids"];
+            if (![bssids isKindOfClass:[NSArray class]]) return;
+            [strongSelf handleActiveWifiBssids:bssids];
+        });
+    // 启动水合：daemon 常驻可能在 App 启动前已扫过，直接读一次（与 NEHotspotHelper 水合同构）
+    NSData *seedData = [NSData dataWithContentsOfFile:kTRWifiScanJsonPath];
+    if (seedData) {
+        NSDictionary *seedObj = [NSJSONSerialization JSONObjectWithData:seedData options:0 error:NULL];
+        if ([seedObj isKindOfClass:[NSDictionary class]] && [seedObj[@"bssids"] isKindOfClass:[NSArray class]]) {
+            [self handleActiveWifiBssids:seedObj[@"bssids"]];
+        }
+    }
     [self _updateDropletMode]; // 水滴模式统一切换（系统定位开=MKUserLocation / 关=自驱水滴跟编排位置）
     // 启动：地图聚焦到当前所在位置（启动一律停止态=真实位置，取不到则回退默认视野）
     [self focusMapOnCurrentLocation];
@@ -451,6 +478,16 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 系统扫描回调到达 → 自动反查并更新地图 wifi 位置（无按钮，随扫描被动更新；自动模式不弹窗、不聚焦）
 /// 语义（用户拍板 2026-08-27）：模拟开启时按模拟当前位置动态反查 BSSID（TRWpsTile 瓦片反查与 daemon
 /// 注入同源，标注随模拟路径移动）；关闭时显示真实 wifi 位置（NEHotspotHelper 真实扫描结果）。
+/// 主动扫描结果消费（2026-08-27）：daemon Apple80211 周期扫周边 BSSID → 共享 JSON → 本方法标注。
+/// 语义：模拟关闭→真实 BSSID wloc 反查标注（不再依赖「打开系统 Wi-Fi 设置页触发被动扫描」）；
+/// 模拟开启→忽略（模拟链路走 TRWpsTile 动态反查，独立闭环，主动扫描不参与，防双轨串扰）。
+- (void)handleActiveWifiBssids:(NSArray<NSString *> *)bssids {
+    if (self.locating) return; // 模拟开启：主动扫描结果不参与（动态反查链路独立）
+    NSUInteger seq = ++self.wifiQuerySeq;
+    [self _queryWifiAnnoWithBssids:bssids seq:seq]; // 空列表在方法内统一处理（清除残留标注）
+}
+
+/// NEHotspotHelper 被动扫描结果消费（原有链路保留，作为兜底与主动扫描共存）
 - (void)handleWifiScanUpdate:(NSArray *)nets summary:(NSString *)summary {
     NSUInteger seq = ++self.wifiQuerySeq;
     if (self.locating) {
