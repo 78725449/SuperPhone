@@ -87,6 +87,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, strong) UIView *statusDot;                     // 状态圆点（定位中绿/停止灰）
 @property (nonatomic, strong) UILabel *wifiDiagLabel;                // WiFi 链路诊断标签（注册/回调/列表/BSSID/反查 5 环）
 @property (nonatomic, assign) NSUInteger wifiQuerySeq;  // wifi 反查请求序号（丢弃过期回调，防模拟/真实切换竞态）
+@property (nonatomic, assign) uint64_t wifiLastTileKey;        // 模拟态 wifi 标注瓦片 key（对齐 daemon _checkWifiTileChangedAndReinject：跨瓦片才重新反查标注，同瓦片跳过）
 @property (nonatomic, strong) UITableView *stepTable;        // 步骤列表（状态条展开；删除 + 拖拽排序）
 
 @property (nonatomic, strong) NSMutableArray *segments;      // 编排段 @[@{type,point/to/radius/durationMin/mode}]
@@ -480,16 +481,27 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 注入同源，标注随模拟路径移动）；关闭时显示真实 wifi 位置（NEHotspotHelper 真实扫描结果）。
 /// 主动扫描结果消费（2026-08-27）：daemon Apple80211 周期扫周边 BSSID → 共享 JSON → 本方法标注。
 /// 语义：模拟关闭→真实 BSSID wloc 反查标注（不再依赖「打开系统 Wi-Fi 设置页触发被动扫描」）；
-/// 模拟开启→主动扫描作为"驱动源"触发模拟位置反查标注（复用 handleWifiScanUpdate 模拟分支，
-/// 传空 net 数组即可——模拟分支不依赖 nets，只按 self.cur 动态反查 TRWpsTile），
-/// 这样 wifi 标注每 8s 自动跟随模拟位置，不依赖 NEHotspotHelper 被动回调。
+/// 模拟开启→标注已由 fix 驱动（handleLocationUpdate 瓦片检测），此处仅兜底触发同款检测（跨瓦片才重反查）。
 - (void)handleActiveWifiBssids:(NSArray<NSString *> *)bssids {
     if (self.locating) {
-        [self handleWifiScanUpdate:@[] summary:@""]; // 模拟开启：走模拟位置反查标注（nets 忽略）
+        [self _refreshWifiAnnoIfTileChanged]; // 模拟态：fix 驱动为主，扫描回调兜底（同瓦片跳过零成本）
         return;
     }
     NSUInteger seq = ++self.wifiQuerySeq;
     [self _queryWifiAnnoWithBssids:bssids seq:seq]; // 空列表在方法内统一处理（清除残留标注）
+}
+
+/// 模拟态 wifi 标注瓦片检测刷新（对齐 daemon SimLocationController _checkWifiTileChangedAndReinject）：
+/// 计算当前模拟位置（self.cur）所属瓦片 key，跨瓦片才重新反查标注（同瓦片跳过，LRU 命中零成本）。
+/// 驱动源 = handleLocationUpdate（fix 每 tick 调）——与当前位置水滴同源同步，不再依赖 8s 扫描周期。
+- (void)_refreshWifiAnnoIfTileChanged {
+    if (!self.locating) return;
+    CLLocationCoordinate2D curW = [CoordTransform gcj02ToWgs84:self.cur];
+    if (curW.latitude == 0 && curW.longitude == 0) return; // 无当前位置
+    uint64_t key = [TRWpsTile tileKeyForCoordinate:curW];
+    if (key == self.wifiLastTileKey) return; // 同瓦片：标注已最新，跳过（零成本）
+    self.wifiLastTileKey = key;
+    [self handleWifiScanUpdate:@[] summary:@""]; // 跨瓦片：按模拟当前位置反查标注（模拟分支不依赖 nets）
 }
 
 /// NEHotspotHelper 被动扫描结果消费（原有链路保留，作为兜底与主动扫描共存）
@@ -566,8 +578,27 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 
 /// 模拟开关切换后立即刷新 wifi 标注（用当前语义：模拟中→模拟位置，停止→真实位置）
 - (void)refreshWifiAnnotation {
-    TVNCHotspotManager *hs = [TVNCHotspotManager sharedManager];
-    [self handleWifiScanUpdate:hs.lastNetworkList ?: @[] summary:hs.lastScanSummary ?: @""];
+    if (!self.locating) {
+        // 停止态：立即消费主动扫描最新真实 BSSID（不等 8s 周期/NEHotspotHelper 回调）——
+        // 避免切换瞬间残留模拟位置标注；JSON 缺失/空则走 handleWifiScanUpdate 清残留
+        NSData *data = [NSData dataWithContentsOfFile:kTRWifiScanJsonPath];
+        NSArray *bssids = nil;
+        if (data) {
+            NSDictionary *obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+            if ([obj isKindOfClass:[NSDictionary class]] && [obj[@"bssids"] isKindOfClass:[NSArray class]]) {
+                bssids = obj[@"bssids"];
+            }
+        }
+        if (bssids.count) {
+            NSUInteger seq = ++self.wifiQuerySeq;
+            [self _queryWifiAnnoWithBssids:bssids seq:seq]; // 真实 BSSID wloc 反查标注
+        } else {
+            [self handleWifiScanUpdate:@[] summary:@""]; // 无数据：清除残留标注
+        }
+        self.wifiLastTileKey = 0; // 重置瓦片 key：下次开启模拟强制重新反查
+        return;
+    }
+    [self _refreshWifiAnnoIfTileChanged]; // 模拟态：瓦片检测（跨瓦片才反查，对齐 fix 驱动语义）
 }
 
 /// 移除地图上已有的 WiFi 定位标注（按类型匹配，防重复标注累积）
@@ -1367,6 +1398,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.lastFix = loc; // 记录回调 fix（坐标/速度真相源，不读属性缓存）
         self.cur = [CoordTransform wgs84ToGcj02:loc.coordinate];
         [self _syncSelfDrivenDroplet]; // 定位关时自驱水滴跟编排推进（定位开时不显示自驱水滴，无影响）
+        [self _refreshWifiAnnoIfTileChanged]; // wifi 标注同源驱动：跨瓦片才重新反查标注（对齐水滴跟随，不再依赖 8s 扫描周期）
         [self updateAnchorPassStateWithLiveWGS:loc.coordinate]; // 先更新段速度/经过态，状态栏立即反映
         [self updateStatus];
         // 自动聚焦：Follow 原生已跟随无需重复；用户拖动退出 Follow 后模拟位置距上次聚焦点超阈值则拉回
