@@ -142,15 +142,16 @@ typedef int (*Apple80211ScanFunc)(void *handle, CFArrayRef *results, CFDictionar
 - (TRWifiScanSnapshot *)_performScan {
     if (!_openFn || !_bindFn || !_scanFn) return nil;
     void *h = NULL;
-    if (_openFn(&h) != 0 || !h) {
-        fprintf(stderr, "[wifiscan] Apple80211Open failed\n");
+    int rc = _openFn(&h);
+    if (rc != 0 || !h) {
+        fprintf(stderr, "[wifiscan] Apple80211Open failed rc=%d\n", rc);
         return nil;
     }
-    _bindFn(h, CFSTR("en0")); // 绑定接口（Apple80211BindToInterface，符号已由 _loadMobileWiFi 校验非空）
+    int brc = _bindFn(h, CFSTR("en0")); // 绑定接口（Apple80211BindToInterface）
     CFArrayRef results = NULL;
-    // parameters 传 NULL = 扫描全部周边 AP（社区标准用法）
-    if (_scanFn(h, &results, NULL) != 0 || !results) {
-        fprintf(stderr, "[wifiscan] Apple80211Scan failed\n");
+    int src = _scanFn(h, &results, NULL); // parameters 传 NULL = 扫描全部周边 AP
+    if (src != 0 || !results) {
+        fprintf(stderr, "[wifiscan] Apple80211Scan failed rc=%d bindRc=%d\n", src, brc);
         if (_closeFn) _closeFn(h);
         return nil;
     }
