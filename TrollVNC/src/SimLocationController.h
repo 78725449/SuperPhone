@@ -35,6 +35,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// prefs-changed 通知后调用：重读参数并应用（加速生效，巡检仍是兜底）
 - (void)reloadFromPrefs;
 
+/// prefs-changed 通知入口（合并窗口 500ms）：App 一次编辑链连发多次通知时合并为一次重载
+/// （防热重载风暴，2026-08-27；manager 订阅回调请调此方法而非 reloadFromPrefs）
+- (void)scheduleReloadFromPrefs;
+
 /// 上传轨迹点序列（App 定位 UI/算路模块直调；2026-08-26 起注册表 sim.location.track 已移除）：
 /// 校验坐标范围 → 原子写轨迹文件（临时文件 rename）→ 写 SimLocationMode=itinerary
 /// @return YES 成功；NO 失败并置 error

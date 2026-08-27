@@ -21,6 +21,9 @@ static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82fl
 static NSString *const kSimMobilePrefsPath = @"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist";
 // 巡检间隔：失效检测 + 参数变更感知合一
 static const NSTimeInterval kSimPatrolInterval = 10.0;
+// prefs-changed 重载合并窗口：App 一次编辑链（holdAtCurrentPosition → 重算 → writeTrackFile）
+// 连发多次通知，窗口内合并为一次重载（防热重载风暴，2026-08-27）
+static const NSTimeInterval kSimReloadMergeInterval = 0.5;
 // track 逐点注入间隔（itinerary：1s/点）
 static const NSTimeInterval kSimTrackTickInterval = 1.0;
 // anchor 微动游走间隔（1s/步）
@@ -32,6 +35,7 @@ static const double kSimAnchorRangeM = 20.0;
     dispatch_source_t _patrolSource;   // 10s 巡检
     dispatch_source_t _trackSource;    // itinerary 逐点注入
     dispatch_source_t _anchorSource;   // anchor 微动游走
+    dispatch_source_t _reloadDebounce; // prefs-changed 重载合并（500ms 窗口）
     NSArray<NSDictionary *> *_trackPoints; // 轨迹点序列（内存缓存）
     NSUInteger _trackIndex;
     NSString *_lastParamsSig;          // 参数指纹（变更检测）
@@ -73,6 +77,24 @@ static const double kSimAnchorRangeM = 20.0;
     [self applyFromPrefs];
 }
 
+/// prefs-changed 通知入口（合并窗口）：App 一次编辑链连发多次通知（hold → 重算 → writeTrack），
+/// 每次立即全量重载造成热重载风暴（曾每 1-2s 一波 stop+start+wifi 重注）——
+/// 500ms 窗口内合并为一次 reload；重算耗时 > 窗口时 hold 先生效、轨迹后生效（语义不变）
+- (void)scheduleReloadFromPrefs {
+    if (_reloadDebounce) {
+        dispatch_source_cancel(_reloadDebounce);
+    }
+    _reloadDebounce = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(_reloadDebounce,
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSimReloadMergeInterval * NSEC_PER_SEC)),
+                              DISPATCH_TIME_FOREVER, 0);
+    __weak __typeof__(self) weakSelf = self;
+    dispatch_source_set_event_handler(_reloadDebounce, ^{
+        [weakSelf reloadFromPrefs];
+    });
+    dispatch_resume(_reloadDebounce);
+}
+
 #pragma mark - 状态机
 
 - (void)applyFromPrefs {
@@ -86,9 +108,29 @@ static const double kSimAnchorRangeM = 20.0;
         _lastWifiTileKey = 0; // 防残留：off 后重启时首点必重新触发反查
         [[SimLocationManager sharedManager] stopAll]; // 总停：GPS + wifi 一并恢复真实
     } else if ([mode isEqualToString:@"anchor"]) {
-        // 位置基底：中心点 + 微动游走（拟人必需，完全静止坐标像假 GPS）
-        [self _stopTrack];
-        [self _startAnchor];
+        double lat = [self _readDouble:@"SimLocationLat" def:0.0];
+        double lon = [self _readDouble:@"SimLocationLon" def:0.0];
+        double acc = [self _readDouble:@"SimLocationAccuracy" def:5.0];
+        if (acc < 3.0) acc = 3.0;
+        if (acc > 15.0) acc = 15.0;
+        if ([_currentMode isEqualToString:@"anchor"] && _anchorSource) {
+            // anchor→anchor 坐标更新（编辑 hold 微差/挪锚点）：平移游走中心，不重启——
+            // 全量重启会重置游走状态回中闪跳 + wifi 完整重注，是编辑热重载风暴主因（2026-08-27）
+            if (lat != _anchorLat || lon != _anchorLon || acc != _anchorAcc) {
+                _anchorLat = lat;
+                _anchorLon = lon;
+                _anchorAcc = acc;
+                // 平移后当前位置立即跟随（下一 tick 前注入一次，防空窗）
+                _currentLat = _anchorLat + _currentMy / 111320.0;
+                _currentLon = _anchorLon + _currentMx / (111320.0 * cos(_anchorLat * M_PI / 180.0));
+                [self _injectAnchorPointWithSpeed:0.0 course:_currentCourse];
+                TVLog(@"[locsim] anchor shift (%.5f, %.5f)", lat, lon);
+            }
+        } else {
+            // 位置基底：中心点 + 微动游走（拟人必需，完全静止坐标像假 GPS）
+            [self _stopTrack];
+            [self _startAnchor];
+        }
     } else if ([mode isEqualToString:@"itinerary"]) {
         // 动作序列：轨迹文件逐秒推进（重载后从当前注入位置最近点续播，不从头重放）
         [self _stopAnchor];
@@ -165,6 +207,9 @@ static const double kSimAnchorRangeM = 20.0;
     _currentCourse = course;
     _currentMode = @"anchor";
     [self _injectAnchorPointWithSpeed:step course:course];
+    // anchor 跨瓦片 wifi 跟随（对齐 itinerary _trackTick 语义）：
+    // anchor 中心平移（挪锚点/编辑 hold）跨瓦片时自动重反查 BSSID 注入；同瓦片零成本（key 比较）
+    [self _checkWifiTileChangedAndReinject];
 }
 
 - (void)_injectAnchorPointWithSpeed:(double)speed course:(double)course {
@@ -465,12 +510,17 @@ static const double kSimAnchorRangeM = 20.0;
 }
 
 - (NSString *)_paramsSignature {
-    // 轨迹文件 mtime 纳入指纹：App 新增/删除/重排锚点重写轨迹文件后，签名必变 → 巡检触发重载
-    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:kSimTrackFilePath error:NULL];
-    NSDate *mtime = attrs[NSFileModificationDate];
-    long long trackStamp = (long long)(mtime.timeIntervalSince1970 * 1000);
+    // 轨迹 mtime 仅 itinerary 纳入指纹（它才消费轨迹文件）——anchor/off 态下轨迹重写
+    // （编辑重算期间）不触发 anchor 无谓重启（热重载风暴成因之一，2026-08-27）
+    NSString *mode = [self _readPref:@"SimLocationMode"] ?: @"off";
+    long long trackStamp = 0;
+    if ([mode isEqualToString:@"itinerary"]) {
+        NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:kSimTrackFilePath error:NULL];
+        NSDate *mtime = attrs[NSFileModificationDate];
+        trackStamp = (long long)(mtime.timeIntervalSince1970 * 1000);
+    }
     return [NSString stringWithFormat:@"%@|%.6f|%.6f|%.2f|%@|%lld",
-            [self _readPref:@"SimLocationMode"] ?: @"off",
+            mode,
             [self _readDouble:@"SimLocationLat" def:0.0],
             [self _readDouble:@"SimLocationLon" def:0.0],
             [self _readDouble:@"SimLocationAccuracy" def:5.0],

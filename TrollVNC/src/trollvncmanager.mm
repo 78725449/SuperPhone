@@ -647,8 +647,9 @@ int main(int argc, const char *argv[]) {
                 }
                 // 网关地址/令牌/设备名变更 → 标记重发 register（host 变更由 worker 断开重连）
                 [[TRGatewayClient sharedClient] noteExternalPrefsChanged];
-                // 定位参数变更（App/5801 写 mobile 域后通知）→ 控制器立即重读生效（巡检仍是兜底）
-                [[SimLocationController sharedController] reloadFromPrefs];
+                // 定位参数变更（App/5801 写 mobile 域后通知）→ 控制器合并窗口重读生效
+                //（一次编辑链连发多次通知合并为一次重载，防热重载风暴；巡检仍是兜底）
+                [[SimLocationController sharedController] scheduleReloadFromPrefs];
                 // watchdog 节流/退出超时：TRWatchDog 属性可热调，即时生效
                 //（2026-08-20 前为 manager 重启级；双域读取保证 mobile 域设置页写入可见）
                 NSUserDefaults *wd = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
