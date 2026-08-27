@@ -20,6 +20,8 @@ else
 TrollVNC_CODESIGN_FLAGS += -STrollVNC/TrollVNC.entitlements
 endif
 
-TrollVNC_XCODEFLAGS += HEADER_SEARCH_PATHS="$(CURDIR)/../../include"
+# 覆盖 pbxproj 的 HEADER_SEARCH_PATHS（xcodeproj.mk 以命令行传参）；跨端契约头（TRAppDomain.h 等）在 src/，
+# 必须显式加入（TVNC* 与 TVNCUtil.h 不带路径 import，2026-08-28）
+TrollVNC_XCODEFLAGS += HEADER_SEARCH_PATHS="$(CURDIR)/../../include $(CURDIR)/../../src"
 
 include $(THEOS_MAKE_PATH)/xcodeproj.mk

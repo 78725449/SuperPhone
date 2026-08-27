@@ -10,6 +10,8 @@ CCTrollVNC_BUNDLE_EXTENSION += bundle
 
 CCTrollVNC_FILES += CCTrollVNC.mm
 CCTrollVNC_CFLAGS += -fobjc-arc
+# 跨端契约头（TRAppDomain.h 等）：prefs 域经 -I 引用 src/（经 TVNCUtil.h 不带路径 import，2026-08-28）
+CCTrollVNC_CFLAGS += -I../../src
 CCTrollVNC_FRAMEWORKS += UIKit
 CCTrollVNC_PRIVATE_FRAMEWORKS += ControlCenterUIKit
 CCTrollVNC_INSTALL_PATH += /Library/ControlCenter/Bundles

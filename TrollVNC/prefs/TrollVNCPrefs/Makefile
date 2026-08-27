@@ -25,6 +25,8 @@ TrollVNCPrefs_FILES += TVNCGatewayClient.m
 TrollVNCPrefs_CFLAGS += -fobjc-arc
 TrollVNCPrefs_CFLAGS += -DPACKAGE_VERSION=\"$(PACKAGE_VERSION)\"
 TrollVNCPrefs_CFLAGS += -DTHEOS_PACKAGE_SCHEME=\"$(THEOS_PACKAGE_SCHEME)\"
+# 跨端契约头（TRAppDomain.h 等）：prefs 域经 -I 引用 src/（TVNC* 与 TVNCUtil.h 不带路径 import，2026-08-28）
+TrollVNCPrefs_CFLAGS += -I../../src
 
 ifeq ($(THEOS_DEVICE_SIMULATOR),1)
 TrollVNCPrefs_CODESIGN_FLAGS += -f -s -

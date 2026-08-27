@@ -8,7 +8,7 @@
 */
 
 #import "TVNCGatewayClient.h"
-#import "../../../src/TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
+#import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28；不带路径——prefs bundle 经 -I../../src 找到）
 
 #import <Security/Security.h>
 
