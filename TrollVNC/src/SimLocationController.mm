@@ -43,6 +43,7 @@ static const double kSimAnchorRangeM = 20.0;
     NSString *_currentMode;
     // anchor 微动游走状态：相对中心偏移（米，局部平面近似）
     double _currentMx, _currentMy;
+    uint64_t _lastWifiTileKey;   // 上次 wifi 反查的瓦片 key（跨瓦片才重反查，轨迹跟随）
 }
 
 + (instancetype)sharedController {
@@ -82,6 +83,7 @@ static const double kSimAnchorRangeM = 20.0;
         [self _stopAnchor];
         [self _stopTrack];
         _currentMode = @"off";
+        _lastWifiTileKey = 0; // 防残留：off 后重启时首点必重新触发反查
         [[SimLocationManager sharedManager] stopAll]; // 总停：GPS + wifi 一并恢复真实
     } else if ([mode isEqualToString:@"anchor"]) {
         // 位置基底：中心点 + 微动游走（拟人必需，完全静止坐标像假 GPS）
@@ -96,6 +98,7 @@ static const double kSimAnchorRangeM = 20.0;
         [self _stopAnchor];
         [self _stopTrack];
         _currentMode = @"off";
+        _lastWifiTileKey = 0; // 防残留：off 后重启时首点必重新触发反查
         [[SimLocationManager sharedManager] stopAll]; // 总停：GPS + wifi 一并恢复真实
     }
 }
@@ -247,6 +250,7 @@ static const double kSimAnchorRangeM = 20.0;
     }
     [self _injectPointDict:points[startIdx]];
     [self _injectWifiSimulationForCurrentLocation]; // 首点坐标反查（动态 tile 查 BSSID；跨瓦片时重新触发注入即自动换源，跟随 _current）
+    _lastWifiTileKey = [TRWpsTile tileKeyForCoordinate:CLLocationCoordinate2DMake(_currentLat, _currentLon)]; // 记录首点瓦片 key（首点已反查，同瓦片不重复触发）
     _trackIndex = startIdx + 1;
     _trackFinished = NO;
     if (_trackSource) {
@@ -271,6 +275,18 @@ static const double kSimAnchorRangeM = 20.0;
         return;
     }
     [self _injectPointDict:_trackPoints[_trackIndex++]];
+    // 轨迹 wifi 跟随（用户拍板 2026-08-27）：跨瓦片才重新反查注入（同瓦片 LRU 命中零成本）
+    [self _checkWifiTileChangedAndReinject];
+}
+
+/// 检测当前坐标瓦片是否变化，跨瓦片则重新 wifi 动态反查注入（轨迹跟随）
+- (void)_checkWifiTileChangedAndReinject {
+    CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
+    if (coord.latitude == 0 && coord.longitude == 0) return; // 无当前位置
+    uint64_t key = [TRWpsTile tileKeyForCoordinate:coord];
+    if (key == _lastWifiTileKey) return; // 同瓦片：不重反查（LRU 已覆盖）
+    _lastWifiTileKey = key;
+    [self _injectWifiSimulationForCurrentLocation];
 }
 
 - (void)_injectPointDict:(NSDictionary *)p {

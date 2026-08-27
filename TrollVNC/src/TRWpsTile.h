@@ -27,6 +27,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 清理缓存（瓦片失效/城市切换时）
 - (void)clearCache;
 
+/// 计算坐标所属瓦片 key（level 13，morton；供跨瓦片变更检测——轨迹移动跨瓦片才重反查）
++ (uint64_t)tileKeyForCoordinate:(CLLocationCoordinate2D)coord;
+
 @end
 
 NS_ASSUME_NONNULL_END

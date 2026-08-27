@@ -339,4 +339,10 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
     }
 }
 
++ (uint64_t)tileKeyForCoordinate:(CLLocationCoordinate2D)coord {
+    int32_t tx = 0, ty = 0;
+    latLonToTile(coord.latitude, coord.longitude, kTRWpsTileLevel, &tx, &ty);
+    return packTileKey((uint32_t)ty, (uint32_t)tx, kTRWpsTileLevel);
+}
+
 @end

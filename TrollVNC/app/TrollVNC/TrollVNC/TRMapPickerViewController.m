@@ -58,6 +58,12 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @implementation TRWifiAnnotation
 @end
 
+/// 自驱当前位置水滴（定位关闭时替代 MKUserLocation——跟编排位置 self.cur，无 locationd 广播时的当前位置观感）
+@interface TRSelfDrivenDroplet : MKPointAnnotation
+@end
+@implementation TRSelfDrivenDroplet
+@end
+
 /// 生长轨迹线（对齐原型 growPath/addedPath：区域自生长逐段可视化 + 完成后常显；与预览虚线区分）
 /// 分段式渲染：每个覆盖层挂所属编排段索引，增删/重算只动受影响段
 @interface TRGrowPolyline : MKPolyline
@@ -113,6 +119,10 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, assign) CGPoint regionTouchOffset; // 手势起点-中心（像素偏移，拖移用）
 @property (nonatomic, strong) UIView *regionPanel;               // 区域配置菜单（底部卡片，对齐原型 param）
 @property (nonatomic, strong) MKCircle *regionOverlay;
+@property (nonatomic, weak) TRSelfDrivenDroplet *selfDrivenDroplet;               // 定位关闭时的自驱当前位置水滴（weak：生命周期由 mapView annotations 持有）
+- (BOOL)_systemLocationAvailable;
+- (void)_updateDropletMode;
+- (void)_syncSelfDrivenDroplet;
 @end
 
 @implementation TRMapPickerViewController
@@ -156,6 +166,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         [self handleWifiScanUpdate:hs.lastNetworkList summary:hs.lastScanSummary];
     }
     [self refreshWifiDiag]; // 水合后同步一次诊断标签
+    [self _updateDropletMode]; // 水滴模式统一切换（系统定位开=MKUserLocation / 关=自驱水滴跟编排位置）
     // 启动：地图聚焦到当前所在位置（启动一律停止态=真实位置，取不到则回退默认视野）
     [self focusMapOnCurrentLocation];
     // App 回前台：地图聚焦到当前所在位置（更直观成熟）
@@ -558,6 +569,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.hasStart = YES;
         self.cur = gcj;
         self.locating = YES;
+        [self _syncSelfDrivenDroplet]; // 定位关时自驱水滴跟随新首锚点（cur+locating 已就绪）
         self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻（同 toggleLocate）
         self.startupLockedToAnchor = YES; // 注入落地前锁定锚点显示（防"真实→锚点"横跳，同 toggleLocate）
         [self commitAnchor];
@@ -878,6 +890,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随：MapKit 内部位置源持续订阅 locationd → 水滴跟随模拟位置（单一数据源）
         [self refreshWifiAnnotation];                            // 开启：立即切到模拟位置 wifi 标注（不等下次系统扫描回调）
     }
+    [self _updateDropletMode]; // 水滴模式统一切换（定位开关变更后：系统定位开=MKUserLocation / 关=自驱水滴）
     [self updateStatus];
 }
 
@@ -934,6 +947,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.hasStart = YES;
         self.cur = gcj;
         self.locating = YES;
+        [self _syncSelfDrivenDroplet]; // 定位关时自驱水滴跟随新首锚点（cur+locating 已就绪）
         self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻（同 toggleLocate）
         self.startupLockedToAnchor = YES; // 注入落地前锁定锚点显示（防"真实→锚点"横跳，同 toggleLocate）
         [self commitAnchor];
@@ -1219,6 +1233,45 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     uv.image = [self waterdropImageWithColor:green size:24 emoji:(self.locating ? [self emojiForMode:mode] : @"")];
 }
 
+/// 系统定位服务是否可用（决定水滴消费方式：开=MKUserLocation 走 locationd GPS 层，关=自驱水滴跟编排位置 self.cur）
+- (BOOL)_systemLocationAvailable {
+    CLAuthorizationStatus st = [CLLocationManager authorizationStatus];
+    return (st == kCLAuthorizationStatusAuthorizedWhenInUse || st == kCLAuthorizationStatusAuthorizedAlways);
+}
+
+/// 水滴模式统一切换（viewDidLoad/toggleLocate/locationManagerDidChangeAuthorization 调用）：
+/// 系统定位开 → showsUserLocation=YES（MKUserLocation 跟 locationd，模拟/真实同源）+ 移除自驱水滴；
+/// 系统定位关 → showsUserLocation=NO（locationd 无广播）+ 自驱水滴跟编排位置 self.cur
+- (void)_updateDropletMode {
+    if ([self _systemLocationAvailable]) {
+        self.mapView.showsUserLocation = YES; // 系统定位开：MKUserLocation 走 locationd（模拟/真实同源）
+    } else {
+        self.mapView.showsUserLocation = NO; // 系统定位关：locationd 无广播，由自驱水滴替代
+    }
+    [self _syncSelfDrivenDroplet];
+}
+
+/// 自驱当前位置水滴维护（幂等）：系统定位关且定位开关开启且 self.cur 有效 → 创建/跟随 self.cur（编排位置真相源）；
+/// 否则移除（定位开时不显示自驱水滴，避免与 MKUserLocation 双层重复）。self.cur 全部赋值点与定位开关切换后调用
+- (void)_syncSelfDrivenDroplet {
+    TRSelfDrivenDroplet *drop = self.selfDrivenDroplet;
+    if (![self _systemLocationAvailable] && self.locating
+        && (self.cur.latitude != 0 || self.cur.longitude != 0)) {
+        if (!drop) {
+            drop = [[TRSelfDrivenDroplet alloc] init];
+            drop.title = @"当前位置";
+            [self.mapView addAnnotation:drop];
+            self.selfDrivenDroplet = drop;
+        }
+        drop.coordinate = self.cur; // GCJ-02 地图坐标，MKAnnotationView coordinate 直接使用（KVO 自动移动视图）
+    } else {
+        if (drop) {
+            [self.mapView removeAnnotation:drop];
+            self.selfDrivenDroplet = nil;
+        }
+    }
+}
+
 #pragma mark - CLLocationManagerDelegate（真实定位）
 
 - (void)locationManagerDidChangeAuthorization:(CLLocationManager *)manager {
@@ -1243,6 +1296,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
         [self presentViewController:ac animated:YES completion:nil];
     }
+    [self _updateDropletMode]; // 授权变化：水滴模式统一切换（开→MKUserLocation / 拒绝→自驱水滴跟编排位置）
 }
 
 /// 定位失败回调（原生能力利用）：定位错误（权限拒绝/无定位源/模拟注入异常）不再静默——
@@ -1269,6 +1323,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         }
         self.lastFix = loc; // 记录回调 fix（坐标/速度真相源，不读属性缓存）
         self.cur = [CoordTransform wgs84ToGcj02:loc.coordinate];
+        [self _syncSelfDrivenDroplet]; // 定位关时自驱水滴跟编排推进（定位开时不显示自驱水滴，无影响）
         [self updateAnchorPassStateWithLiveWGS:loc.coordinate]; // 先更新段速度/经过态，状态栏立即反映
         [self updateStatus];
         // 自动聚焦：Follow 原生已跟随无需重复；用户拖动退出 Follow 后模拟位置距上次聚焦点超阈值则拉回
@@ -1939,6 +1994,27 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         v.frame = CGRectMake(0, 0, 22, 28);
         return v;
     }
+    if ([annotation isKindOfClass:[TRSelfDrivenDroplet class]]) {
+        // 自驱当前位置水滴（定位关闭时替代 MKUserLocation）：绿色水滴+出行图标，外观/光晕对齐原生 MKUserLocation
+        static NSString *rid = @"SelfDrivenCurPin";
+        MKAnnotationView *v = [mapView dequeueReusableAnnotationViewWithIdentifier:rid];
+        if (!v) {
+            v = [[MKAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:rid];
+            v.canShowCallout = NO;
+            v.userInteractionEnabled = YES; // 供 shouldReceiveTouch 拦截，防 tap 误加锚点
+        }
+        v.annotation = annotation;
+        NSString *mode = self.currentLegMode ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
+        UIColor *green = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0];
+        v.image = [self waterdropImageWithColor:green size:24 emoji:[self emojiForMode:mode]];
+        v.centerOffset = CGPointMake(0, -15); // 尖对准坐标点
+        v.frame = CGRectMake(0, 0, 24, 30);
+        v.layer.shadowColor = green.CGColor; // 光晕（对齐原生 MKUserLocation）
+        v.layer.shadowOpacity = 0.6;
+        v.layer.shadowRadius = 6;
+        v.layer.shadowOffset = CGSizeMake(0, 0);
+        return v;
+    }
     if ([annotation isKindOfClass:[MKUserLocation class]]) {
         // 当前位置（原生管线）：数据源头=locationd（模拟开启=模拟位置/关闭=真实位置）；绿色水滴+出行方式图标外观
         static NSString *rid = @"CurPin";
@@ -1987,6 +2063,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
                 if ([av.annotation isKindOfClass:[TRAnchorAnnotation class]]) return NO;
                 if ([av.annotation isKindOfClass:[TRWaypointAnnotation class]]) return NO; // 途经点同锚点：不触发 tap 加锚点
                 if ([av.annotation isKindOfClass:[TRWifiAnnotation class]]) return NO; // WiFi 标注同锚点：不触发 tap 加锚点
+                if ([av.annotation isKindOfClass:[TRSelfDrivenDroplet class]]) return NO; // 自驱当前位置水滴：不触发 tap 加锚点
             }
             v = v.superview;
         }
