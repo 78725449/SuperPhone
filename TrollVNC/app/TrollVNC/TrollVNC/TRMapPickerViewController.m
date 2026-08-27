@@ -22,6 +22,7 @@
 #import <notify.h>
 #import "CoordTransform.h"
 #import "TRWpsTile.h" // 坐标→BSSID 动态反查（模拟分支按当前位置反查，与 daemon 注入同源；轨迹跟随）
+#import "../../../src/TRWifiScanContract.h" // 跨端扫描契约常量（单一真相源，2026-08-28）
 #import "RegionSimulator.h"
 #import "SimRouteCalculator.h"
 #import "TRWpsClient.h"
@@ -29,9 +30,7 @@
 /// 轨迹文件路径（与 SimLocationController kSimTrackFilePath 一致，App 只当配置源、manager 注入执行）
 static NSString *const kSimTrackFilePath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.simloc.json";
 static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
-// WiFi 主动扫描共享契约（App 侧 static 同字面量，与 daemon TRWifiActiveScanner.mm 常量一致——跨端契约靠字符串对齐，不跨进程链接符号）
-static NSString *const kTRWifiScanJsonPath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.wifiscan.json";
-static NSString *const kTRWifiScanUpdatedNotification = @"com.82flex.trollvnc.wifiscan-updated";
+// WiFi 主动扫描契约常量 → TRWifiScanContract.h（共享模块单一真相源，2026-08-28 收敛；不再本地 static 字面量）
 static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：fix 距上次聚焦点 ≥500m 才拉回（GPS 抖动 <50m 不打扰）
 
 /// 锚点标注（关联编排段索引，点击删除该段；水滴图钉状态分类：未经过=蓝/已经过=红，当前位置=绿；
@@ -501,7 +500,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [self requeryAnnotationForSimLocation]; // 跨瓦片：按模拟当前位置反查标注
 }
 
-/// 模拟态 wifi 标注反查（唯一调用方 = _refreshWifiAnnoIfTileChanged / 停止态清除残留）：
+/// 模拟态 wifi 标注反查（唯一调用方 = _refreshWifiAnnoIfTileChanged；停止态调用为 no-op——
+/// 方法首行 locating=NO 即 return，停止态残留清除由 handleActiveWifiBssids 空列表分支负责）：
 /// 按模拟当前位置动态反查 BSSID（TRWpsTile，与 daemon 注入同源；轨迹跟随）。
 /// 真实位置标注统一走 handleActiveWifiBssids（主动扫描唯一数据源）。
 - (void)requeryAnnotationForSimLocation {
@@ -577,7 +577,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     if (!self.locating) {
         // 停止态：请求 daemon 立即重扫（不等 8s 周期，关模拟瞬间拿到最新真实 BSSID）+
         // 先消费当前缓存立即显示（wloc 反查），随后新扫描 notify 到达再刷新
-        notify_post("com.82flex.trollvnc.wifiscan-request");
+        notify_post(kTRWifiScanRequestNotification.UTF8String);
         // 消费 daemon 主动扫描真实 BSSID → wloc 反查标注（回到真实 wifi 位置）。
         // 唯一数据源 = 主动扫描 JSON（不做 NEHotspotHelper 回退——用户定案：唯一实现可靠工作）。
         // JSON 缺失/空：清除残留标注，待主动扫描下一次产出数据（notify 回调）恢复。

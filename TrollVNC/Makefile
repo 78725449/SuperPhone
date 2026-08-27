@@ -35,7 +35,6 @@ trollvncserver_FILES += src/CoordTransform.mm
 trollvncserver_FILES += src/TRDataFiller.mm
 trollvncserver_FILES += src/TRWpsTile.mm
 trollvncserver_FILES += src/TRWpsProto.mm
-trollvncserver_FILES += src/TRWifiScanContract.mm
 # 数据填充构建产物（corpus.js/数据源 → ObjC 常量，勿手改）
 trollvncserver_FILES += src/TRCorpus.mm
 trollvncserver_FILES += src/TRAreaCodes.mm
