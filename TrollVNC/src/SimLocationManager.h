@@ -61,6 +61,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// 当前 wifi 模拟是否开启
 @property(nonatomic, assign, readonly) BOOL isWifiSimulating;
 
+/// 最近一次成功注入的 wifi 扫描结果（injectWifiScanResults 时保存）——
+/// 空洞瓦片保活重注用：曾注入过但当前瓦片反查失败（空洞）时，用它重注保活，
+/// 避免 locationd 的 wifi 源回落为设备本地真实扫描（2026-08-28 定案）
+@property(nonatomic, strong, readonly) NSArray *lastScanResults;
+
 /// wifi 模拟是否"曾成功注入过"（单调不回退；供巡检区分"曾成功但丢失→重注" vs
 /// "从未成功（空洞瓦片）→安静等待跨瓦片换源"——2026-08-27 定案，防自我锁死循环）
 @property(nonatomic, assign, readonly) BOOL wasWifiSimulatingOnce;

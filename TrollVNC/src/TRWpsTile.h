@@ -42,6 +42,17 @@ NS_ASSUME_NONNULL_BEGIN
 /// BSSID 采样共享原语（cap 上限；daemon 注入与 App 标注同源，消除"注入 100/标注全量"不对称）
 + (NSArray<NSString *> *)sampleBssidsFromAPs:(NSArray<TRWpsTileAP *> *)aps max:(NSUInteger)max;
 
+/// 空洞瓦片回退（远程伪装起点即空洞，2026-08-28 定案）：从 coord 所在瓦片出发按 Ulam 螺旋
+/// 搜索最近的有效瓦片并返回其 BSSID——Apple 数据空洞区（404）注入邻近瓦片指纹，
+/// 避免 locationd 暴露设备本地真实 wifi（对比"不注入=GPS(模拟) vs wifi(本地)"数百公里级不自洽，
+/// 邻近瓦片偏差 1-10km 为次优但最优解；社区 acheong08 demo-api 同款 spiral 策略）。
+/// @param coord WGS-84 坐标（空洞瓦片内的模拟位置）
+/// @param maxAttempts 最多尝试候选瓦片数（防轰炸 gspe 端点；建议 24，对应半径约 3-4 瓦片）
+/// completion 主队列；aps 非空 = 最近有效瓦片 BSSID；空 = 周边 maxAttempts 内全空洞（保持不注入）
++ (void)queryNearestBssidsForCoordinate:(CLLocationCoordinate2D)coord
+                            maxAttempts:(NSUInteger)maxAttempts
+                             completion:(void (^)(NSArray<TRWpsTileAP *> *aps, NSError *_Nullable error))completion;
+
 @end
 
 NS_ASSUME_NONNULL_END

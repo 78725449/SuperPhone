@@ -44,6 +44,7 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     BOOL _simulating;
     BOOL _wifiSimulating;
     BOOL _wifiSimulatingOnce; // 曾成功注入过 wifi（单调不回退，供巡检区分"曾成功 vs 从未成功"）
+    NSArray *_lastScanResults; // 最近一次成功注入的 wifi 扫描结果（空洞瓦片保活重注用，2026-08-28）
 }
 
 + (instancetype)sharedManager {
@@ -134,6 +135,7 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     [_sim startWifiSimulation];
     _wifiSimulating = YES;
     _wifiSimulatingOnce = YES; // 曾成功注入过（单调不回退，供巡检区分曾成功/从未成功）
+    _lastScanResults = scanResults; // 空洞瓦片保活重注用（2026-08-28）
     NSLog(@"[locsim] wifi simulation start, %lu APs", (unsigned long)scanResults.count);
 }
 

@@ -195,7 +195,15 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
     if (!completion) return;
     int32_t tx = 0, ty = 0;
     latLonToTile(coord.latitude, coord.longitude, kTRWpsTileLevel, &tx, &ty);
-    uint64_t key = packTileKey((uint32_t)ty, (uint32_t)tx, kTRWpsTileLevel);
+    [self _queryTileKey:packTileKey((uint32_t)ty, (uint32_t)tx, kTRWpsTileLevel) force:force completion:completion];
+}
+
+/// 按瓦片 key 直接查询（queryBssidsForCoordinate 与螺旋搜索共用）：
+/// LRU 缓存 + inflight 并发合并 + 无失败负缓存（失败重试节奏由调用方控制）
+- (void)_queryTileKey:(uint64_t)key
+                force:(BOOL)force
+           completion:(void (^)(NSArray<TRWpsTileAP *> *aps, NSError *_Nullable error))completion {
+    if (!completion) return;
     NSNumber *keyNum = @(key);
 
     if (!force) {
@@ -330,6 +338,64 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
     NSUInteger n = MIN(max, aps.count);
     for (NSUInteger i = 0; i < n; i++) [bssids addObject:aps[i].bssid];
     return bssids;
+}
+
+// ---------- 空洞瓦片螺旋回退（远程伪装起点即空洞，2026-08-28 定案；社区 acheong08 demo-api 同款） ----------
+// 场景：模拟坐标所在瓦片为 Apple 数据空洞（404）且从未注入成功——不注入会让 locationd 的 wifi 源
+// 回落为设备本地真实扫描（GPS=模拟 vs wifi=本地，数百公里级不自洽）。从空洞瓦片出发按 Ulam 螺旋
+// 搜索最近的有效瓦片，注入其 BSSID（偏差 1-10km，次优但最优解）；全部空洞则保持不注入（真实设备行为）。
+
++ (void)queryNearestBssidsForCoordinate:(CLLocationCoordinate2D)coord
+                            maxAttempts:(NSUInteger)maxAttempts
+                             completion:(void (^)(NSArray<TRWpsTileAP *> *aps, NSError *_Nullable error))completion {
+    if (!completion) return;
+    int32_t tx0 = 0, ty0 = 0;
+    latLonToTile(coord.latitude, coord.longitude, kTRWpsTileLevel, &tx0, &ty0);
+    // Ulam spiral 候选序列：从自身出发，步长 1,1,2,2,3,3...，方向 右/上/左/下（距离近→远）
+    NSMutableArray<NSNumber *> *candidates = [NSMutableArray array];
+    NSMutableSet<NSNumber *> *seen = [NSMutableSet set];
+    int dx = 0, dy = 0, step = 1, dir = 0, dirCount = 0;
+    NSUInteger cap = MAX(maxAttempts, (NSUInteger)1);
+    for (NSUInteger i = 0; i < cap; i++) {
+        int32_t tx = tx0 + dx, ty = ty0 + dy;
+        if (!(tx == tx0 && ty == ty0)) { // 跳过自身（发起方已对该瓦片失败）
+            NSNumber *k = @(packTileKey((uint32_t)ty, (uint32_t)tx, kTRWpsTileLevel));
+            if (![seen containsObject:k]) { [seen addObject:k]; [candidates addObject:k]; }
+        }
+        switch (dir) {
+            case 0: dx++; break;  // 右
+            case 1: dy--; break;  // 上（ty 北小）
+            case 2: dx--; break;  // 左
+            default: dy++; break; // 下
+        }
+        if (++dirCount >= step) {
+            dir = (dir + 1) % 4;
+            dirCount = 0;
+            if (dir == 0 || dir == 2) step++; // 每完成两个方向步长 +1
+        }
+    }
+    if (candidates.count == 0) {
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(@[], nil); });
+        return;
+    }
+    [[self sharedClient] _trySpiral:candidates index:0 completion:completion];
+}
+
+/// 串行尝试候选瓦片：找到第一个有效即停；全部空洞回调空
+- (void)_trySpiral:(NSArray<NSNumber *> *)keys
+             index:(NSUInteger)idx
+        completion:(void (^)(NSArray<TRWpsTileAP *> *aps, NSError *_Nullable error))completion {
+    if (idx >= keys.count) {
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(@[], nil); });
+        return;
+    }
+    __weak __typeof__(self) weakSelf = self;
+    [self _queryTileKey:keys[idx].unsignedLongLongValue force:NO completion:^(NSArray<TRWpsTileAP *> *aps, NSError *error) {
+        __strong __typeof__(self) strongSelf = weakSelf;
+        if (aps.count > 0) { completion(aps, nil); return; } // 最近有效瓦片
+        if (strongSelf) [strongSelf _trySpiral:keys index:idx + 1 completion:completion];
+        else completion(@[], error);
+    }];
 }
 
 @end

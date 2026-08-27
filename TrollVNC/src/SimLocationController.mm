@@ -255,6 +255,35 @@ static const double kSimAnchorRangeM = 20.0;
             // 反查失败/空（空洞瓦片 404 等）：保持现状不打断已有 wifi 模拟；
             // 无负缓存——失败重试节奏由巡检区分"曾成功/从未成功"控制（2026-08-27 定案）
             TVLog(@"[locsim] tile query skipped: %@", error.localizedDescription ?: @"no APs");
+            // 从未成功（起点即空洞，远程伪装场景）：不注入会让 locationd 的 wifi 源回落为
+            // 设备本地真实扫描（GPS=模拟 vs wifi=本地，数百公里级不自洽）——螺旋找最近有效瓦片
+            // 注入邻近指纹（偏差 1-10km，次优但最优解，2026-08-28 定案）
+            if (![SimLocationManager sharedManager].wasWifiSimulatingOnce) {
+                TVLog(@"[locsim] start in empty tile, spiral to nearest valid tile");
+                [TRWpsTile queryNearestBssidsForCoordinate:coord maxAttempts:24 completion:^(NSArray<TRWpsTileAP *> *nearAps, NSError *nearErr) {
+                    __strong __typeof__(self) sSelf = weakSelf;
+                    if (!sSelf) return;
+                    if (nearErr || nearAps.count == 0) {
+                        // 周边 24 瓦片全空洞：保持不注入（真实设备在此同样查不到 wloc 指纹）
+                        TVLog(@"[locsim] spiral fallback also empty, keep no wifi (real-device behavior)");
+                        return;
+                    }
+                    NSArray<NSString *> *nearSample = [TRWpsTile sampleBssidsFromAPs:nearAps max:100];
+                    NSArray *nearScan = [SimLocationManager buildScanResultsFromBssidStrings:nearSample];
+                    if (nearScan.count) {
+                        [[SimLocationManager sharedManager] injectWifiScanResults:nearScan];
+                        TVLog(@"[locsim] wifi spiral inject, %lu APs (nearest valid tile)", (unsigned long)nearScan.count);
+                    }
+                }];
+            } else {
+                // 曾成功但当前反查失败（空洞瓦片/网络）：用上次成功注入的指纹重注保活——
+                // 防 locationd 的 wifi 源回落为设备本地真实扫描（GPS=模拟 vs wifi=本地不自洽，2026-08-28）
+                NSArray *lastScan = [SimLocationManager sharedManager].lastScanResults;
+                if (lastScan.count) {
+                    [[SimLocationManager sharedManager] injectWifiScanResults:lastScan];
+                    TVLog(@"[locsim] wifi re-inject last scan (empty-tile keep-alive), %lu APs", (unsigned long)lastScan.count);
+                }
+            }
             return;
         }
         // 取前 100 个代表性 AP（避免注入请求过大，locationd 解算足够）
