@@ -43,6 +43,7 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     CLSimulationManager *_sim;
     BOOL _simulating;
     BOOL _wifiSimulating;
+    BOOL _wifiSimulatingOnce; // 曾成功注入过 wifi（单调不回退，供巡检区分"曾成功 vs 从未成功"）
 }
 
 + (instancetype)sharedManager {
@@ -115,6 +116,10 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     return _wifiSimulating;
 }
 
+- (BOOL)wasWifiSimulatingOnce {
+    return _wifiSimulatingOnce;
+}
+
 - (void)injectWifiScanResults:(NSArray<NSDictionary *> *)scanResults {
     if (!_sim) return;
     if (scanResults.count == 0) {
@@ -128,6 +133,7 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     [_sim setSimulatedWifiPower:YES];
     [_sim startWifiSimulation];
     _wifiSimulating = YES;
+    _wifiSimulatingOnce = YES; // 曾成功注入过（单调不回退，供巡检区分曾成功/从未成功）
     NSLog(@"[locsim] wifi simulation start, %lu APs", (unsigned long)scanResults.count);
 }
 

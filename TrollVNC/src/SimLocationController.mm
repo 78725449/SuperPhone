@@ -425,8 +425,10 @@ static const double kSimAnchorRangeM = 20.0;
         if (![SimLocationManager sharedManager].isSimulating || !_anchorSource) {
             TVLog(@"[locsim] anchor lost, re-start");
             [self _startAnchor];
-        } else if ([SimLocationManager sharedManager].isSimulating && ![SimLocationManager sharedManager].isWifiSimulating) {
-            // GPS 注入正常但 wifi 模拟丢失（locationd 会话中断等）→ 兜底重注（幂等：内部完整重启）
+        } else if ([SimLocationManager sharedManager].isSimulating && [SimLocationManager sharedManager].wasWifiSimulatingOnce) {
+            // wifi 曾成功但当前丢失（locationd 会话中断）→ 兜底重注（幂等：内部完整重启）。
+            // 从未成功（空洞瓦片反查失败）不重试——重注无意义且造成"自我锁死循环"；
+            // 等轨迹跨瓦片（_lastWifiTileKey 变化）自然换源反查（2026-08-27 定案）
             TVLog(@"[locsim] anchor wifi lost, re-inject");
             [self _injectWifiSimulationForCurrentLocation];
         }
@@ -435,8 +437,8 @@ static const double kSimAnchorRangeM = 20.0;
         if (!_trackFinished && !_trackSource) {
             TVLog(@"[locsim] itinerary timer lost, restart");
             [self _startTrack];
-        } else if ([SimLocationManager sharedManager].isSimulating && ![SimLocationManager sharedManager].isWifiSimulating) {
-            // GPS 播放/停在终点但 wifi 模拟丢失 → 兜底重注（幂等：内部完整重启）
+        } else if ([SimLocationManager sharedManager].isSimulating && [SimLocationManager sharedManager].wasWifiSimulatingOnce) {
+            // 同上：仅"曾成功但丢失"重注；"从未成功"（空洞瓦片）安静等待跨瓦片换源
             TVLog(@"[locsim] itinerary wifi lost, re-inject");
             [self _injectWifiSimulationForCurrentLocation];
         }

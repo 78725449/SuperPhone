@@ -14,7 +14,6 @@
 // ---------- 常量（对齐 scripts/apple-wps.mjs TILE_HOSTS/TILE_HEADERS/latLonToTile/packTileKey/macFromInt64/parseWifiTile） ----------
 static const int kTRWpsTileLevel = 13;
 static const NSUInteger kTRWpsTileCacheLimit = 32;
-static const NSTimeInterval kTRWpsTileFailCacheTTL = 30.0;   // 失败负缓存 TTL（秒），TTL 内同瓦片不再重发
 
 static const double kTRWpsMinLat = -85.05112878;
 static const double kTRWpsMaxLat = 85.05112878;
@@ -191,7 +190,6 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSArray<TRWpsTileAP *> *> *cache;   // key=tileKey
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *cacheOrder;                             // LRU 顺序（末尾最新）
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSMutableArray *> *inflight;        // key=tileKey → 在途请求等待回调数组（并发去重）
-@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSDate *> *failCache;               // key=tileKey → 上次失败时间（30s TTL 负缓存）
 @end
 
 @implementation TRWpsTileAP
@@ -215,7 +213,6 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
         _cache = [NSMutableDictionary dictionary];
         _cacheOrder = [NSMutableArray array];
         _inflight = [NSMutableDictionary dictionary];
-        _failCache = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -238,17 +235,8 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
                 dispatch_async(dispatch_get_main_queue(), ^{ completion(cached, nil); });
                 return;
             }
-            // 失败负缓存（30s TTL）：失败后短期内同瓦片直接回调空结果，防失败重试风暴。
-            // 回调语义 = error nil + 空数组（与消费方 aps.count==0 即跳过一致，不额外区分失败分支）。
-            NSDate *failedAt = _failCache[keyNum];
-            if (failedAt && [[NSDate date] timeIntervalSinceDate:failedAt] < kTRWpsTileFailCacheTTL) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    fprintf(stderr, "[wps] tile FAILCACHE hit key=%llu (%.0fs ago)\n", key,
-                            [[NSDate date] timeIntervalSinceDate:failedAt]);
-                    completion(@[], nil);
-                });
-                return;
-            }
+            // 无失败负缓存：失败重试节奏由调用方（SimLocationController 10s 巡检 + 跨瓦片检测）天然控制，
+            // 不做 30s 锁死——避免空洞瓦片"自我锁死循环"（用户定案 2026-08-27）
         }
     }
 
@@ -299,7 +287,7 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
                     host.UTF8String, key, (long)status,
                     error ? error.localizedDescription.UTF8String : (queryErr ? queryErr.localizedDescription.UTF8String : "none"),
                     (unsigned long)(data ? data.length : 0));
-            // 取出全部等待者并先移除（避免重复回调），再按成败写 LRU 缓存 / 失败负缓存
+            // 取出全部等待者并先移除（避免重复回调），成功写 LRU 缓存
             NSMutableArray *waiters = nil;
             @synchronized (self) {
                 waiters = _inflight[keyNum];
@@ -313,9 +301,6 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
                         [_cache removeObjectForKey:oldest];
                         [_cacheOrder removeObjectAtIndex:0];
                     }
-                    [_failCache removeObjectForKey:keyNum];
-                } else {
-                    _failCache[keyNum] = [NSDate date];
                 }
             }
             // 统一回调全部等待者（含首个请求者）：成功=aps、失败=空数组+error
@@ -333,13 +318,12 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
     @synchronized (self) {
         [_cache removeAllObjects];
         [_cacheOrder removeAllObjects];
-        [_failCache removeAllObjects];
         [_inflight enumerateKeysAndObjectsUsingBlock:^(NSNumber *k, NSMutableArray *waiters, BOOL *stop) {
             [abandoned addObjectsFromArray:waiters];
         }];
         [_inflight removeAllObjects];
     }
-    // 与失败负缓存同语义回调和弃（error nil + 空数组，消费方 aps.count==0 即跳过）；在途请求本身仍会完成并写回 cache
+    // 在途请求本身仍会完成并写回 cache
     if (abandoned.count) {
         dispatch_async(dispatch_get_main_queue(), ^{
             for (void (^run)(NSArray<TRWpsTileAP *> *, NSError *) in abandoned) {

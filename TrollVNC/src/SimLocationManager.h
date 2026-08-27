@@ -60,6 +60,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// 当前 wifi 模拟是否开启
 @property(nonatomic, assign, readonly) BOOL isWifiSimulating;
 
+/// wifi 模拟是否"曾成功注入过"（单调不回退；供巡检区分"曾成功但丢失→重注" vs
+/// "从未成功（空洞瓦片）→安静等待跨瓦片换源"——2026-08-27 定案，防自我锁死循环）
+@property(nonatomic, assign, readonly) BOOL wasWifiSimulatingOnce;
+
 /// 当前是否处于注入中（供后续失效巡检使用）
 @property(nonatomic, assign, readonly) BOOL isSimulating;
 
