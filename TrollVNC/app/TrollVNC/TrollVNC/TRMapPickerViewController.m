@@ -480,9 +480,14 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 注入同源，标注随模拟路径移动）；关闭时显示真实 wifi 位置（NEHotspotHelper 真实扫描结果）。
 /// 主动扫描结果消费（2026-08-27）：daemon Apple80211 周期扫周边 BSSID → 共享 JSON → 本方法标注。
 /// 语义：模拟关闭→真实 BSSID wloc 反查标注（不再依赖「打开系统 Wi-Fi 设置页触发被动扫描」）；
-/// 模拟开启→忽略（模拟链路走 TRWpsTile 动态反查，独立闭环，主动扫描不参与，防双轨串扰）。
+/// 模拟开启→主动扫描作为"驱动源"触发模拟位置反查标注（复用 handleWifiScanUpdate 模拟分支，
+/// 传空 net 数组即可——模拟分支不依赖 nets，只按 self.cur 动态反查 TRWpsTile），
+/// 这样 wifi 标注每 8s 自动跟随模拟位置，不依赖 NEHotspotHelper 被动回调。
 - (void)handleActiveWifiBssids:(NSArray<NSString *> *)bssids {
-    if (self.locating) return; // 模拟开启：主动扫描结果不参与（动态反查链路独立）
+    if (self.locating) {
+        [self handleWifiScanUpdate:@[] summary:@""]; // 模拟开启：走模拟位置反查标注（nets 忽略）
+        return;
+    }
     NSUInteger seq = ++self.wifiQuerySeq;
     [self _queryWifiAnnoWithBssids:bssids seq:seq]; // 空列表在方法内统一处理（清除残留标注）
 }
@@ -613,6 +618,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES]; // 立即聚焦锚点
         self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:gcj]; // 自动聚焦基线（同 toggleLocate）
         self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（水滴跟随 locationd）
+        [self refreshWifiAnnotation];                            // 首锚点=进入模拟：立即把 wifi 标注切到锚点位置（不等主动扫描 8s 周期/NEHotspotHelper 回调）
         [self setHint:@"已设定位点 · 继续点击添加锚点生长路线"];
     } else {
         // 后续锚点：点击点只是目标锚点——当前位置图标保持当前实际位置，不随点击瞬移
