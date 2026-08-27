@@ -1617,8 +1617,13 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             [self applySearchResult:obj];       // 已有坐标：直接加锚点
             return;
         }
-        // completer 候选无坐标：补一次 MKLocalSearch 解析成 MKMapItem 再落锚点（2026-08-28）
-        MKLocalSearch *ls = [[MKLocalSearch alloc] initWithCompletion:(MKLocalSearchCompletion *)obj];
+        // completer 候选无坐标：补一次 MKLocalSearch 解析成 MKMapItem 再落锚点（2026-08-28）。
+        // 注：initWithCompletion: 是 iOS 18 SDK 才有的初始化器，bootstrap 用 16.5 SDK 编译 App target
+        // 报 no visible @interface——用 request + title/subtitle 自然语言查询兜底（16.5 SDK 兼容）
+        MKLocalSearchCompletion *cc = (MKLocalSearchCompletion *)obj;
+        MKLocalSearchRequest *req = [[MKLocalSearchRequest alloc] init];
+        req.naturalLanguageQuery = [NSString stringWithFormat:@"%@ %@", cc.title, cc.subtitle];
+        MKLocalSearch *ls = [[MKLocalSearch alloc] initWithRequest:req];
         [ls startWithCompletionHandler:^(MKLocalSearchResponse *response, NSError *error) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (error || !response.mapItems.count) {
