@@ -665,6 +665,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 第一个锚点无前驱（前方没有任何锚点）→ 仅当前定位（anchor 注入）；
 /// 后续锚点前方都有上一个锚点 → 从上一锚点生长路线到本锚点（增量生长）
 - (void)handleTap:(UIGestureRecognizer *)g {
+    if ([self.searchBar isFirstResponder]) [self.searchBar resignFirstResponder]; // 点击地图收起搜索键盘（2026-08-28：此前点搜索框后不输入键盘无法收起）
     CGPoint pt = [g locationInView:self.mapView];
     // 点击锚点水滴的拦截由 shouldReceiveTouch 在 touch 阶段完成（早于 didSelect 删除时序，无竞态）。
     // 此处不再做 ended 检测兜底——删除重建后 annotations 已变，兜底检测本身会产生竞态误判（单机制原则）
@@ -944,13 +945,30 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         @"center": @{@"lat": @(self.regionCenter.latitude), @"lon": @(self.regionCenter.longitude)},
     } mutableCopy];
     if (walkRatio) seg[@"walkRatio"] = walkRatio;
+    // 链首 region 段（无前驱锚点）：在区域内自生成入口锚点（2026-08-28 用户定案：
+    // 区域漫游独立成环，不从当前位置/0,0 起链）——随机取半径内 0.3~0.8 因子一点（避开边缘/圆心），
+    // 插为链首后区域段成为 index 1 正常生成；cur 一并设为入口（供 commitAnchor/currentSimPosition/水滴）
+    if (self.segments.count == 0) {
+        CLLocationCoordinate2D centerW = [CoordTransform gcj02ToWgs84:self.regionCenter];
+        double ang = (double)(arc4random_uniform(62832)) / 10000.0; // 0~2π
+        double distM = self.regionRadiusM * (0.3 + (double)(arc4random_uniform(50)) / 100.0);
+        double cosLat = cos(centerW.latitude * M_PI / 180.0);
+        CLLocationCoordinate2D entryW = CLLocationCoordinate2DMake(
+            centerW.latitude + distM * sin(ang) / 111320.0,
+            centerW.longitude + distM * cos(ang) / (111320.0 * cosLat));
+        CLLocationCoordinate2D entryG = [CoordTransform wgs84ToGcj02:entryW];
+        [self.segments addObject:@{@"type": @"anchor",
+            @"lat": @(entryG.latitude), @"lon": @(entryG.longitude),
+            @"mode": (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk"}];
+        self.hasStart = YES;
+        self.cur = entryG;
+    }
     [self.segments addObject:seg];
     [self.regionPanel removeFromSuperview];
     self.regionPanel = nil;
     if (self.regionOverlay) { [self.mapView removeOverlay:self.regionOverlay]; self.regionOverlay = nil; }
-    // 区域漫游可从当前位置进入（无前置 anchor 起点）——链首为 region 段即视为已设起点，允许开启定位
     if (!self.hasStart) self.hasStart = YES;
-    // 区域中心只是目标，不是当前位置——当前位置图标保持当前实际位置（不瞬移）
+    // 区域中心只是目标；当前位置图标：链首无前驱时 cur=区域内入口锚点（随上方插入设定），有前驱时不瞬移保持原位置
     [self updateStatus];
     [self syncSegmentsUI];
     [self runEdit:^{ [self commitItinerary]; }]; // 生成中挂起，完成后再生长，编辑不丢
