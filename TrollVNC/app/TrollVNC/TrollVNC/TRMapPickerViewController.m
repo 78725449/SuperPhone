@@ -74,11 +74,12 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @implementation TRGrowPolyline
 @end
 
-@interface TRMapPickerViewController () <MKMapViewDelegate, UISearchBarDelegate, UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate, CLLocationManagerDelegate, UITableViewDragDelegate, UITableViewDropDelegate>
+@interface TRMapPickerViewController () <MKMapViewDelegate, UISearchBarDelegate, MKLocalSearchCompleterDelegate, UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate, CLLocationManagerDelegate, UITableViewDragDelegate, UITableViewDropDelegate>
 @property (nonatomic, strong) MKMapView *mapView;
 @property (nonatomic, strong) UISearchBar *searchBar;
 @property (nonatomic, strong) UITableView *searchResultsView;       // 搜索下拉结果列表（搜索框内向下展开）
-@property (nonatomic, strong) NSArray *searchResults;               // MKMapItem 数组
+@property (nonatomic, strong) NSArray *searchResults;               // MKLocalSearchCompletion / MKMapItem 数组（2026-08-28 关联候选）
+@property (nonatomic, strong) MKLocalSearchCompleter *searchCompleter; // 关键词→关联候选（点搜索时一次性触发，非逐字联想，2026-08-28）
 @property (nonatomic, strong) UISegmentedControl *modeSeg;   // 步行/驾车（左下胶囊）
 @property (nonatomic, strong) UIButton *locateFab;           // 右下角圆形定位开关
 @property (nonatomic, strong) UIButton *focusBtn;                   // 定位 FAB 上方的靶心按钮（点击聚焦当前位置）
@@ -1033,25 +1034,34 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [searchBar resignFirstResponder];
     NSString *q = [searchBar.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     if (!q.length) return;
-    MKLocalSearchRequest *req = [[MKLocalSearchRequest alloc] init];
-    req.naturalLanguageQuery = q;
-    MKLocalSearch *ls = [[MKLocalSearch alloc] initWithRequest:req];
-    [ls startWithCompletionHandler:^(MKLocalSearchResponse *response, NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (error || !response.mapItems.count) {
-                self.searchResults = @[];
-                [self.searchResultsView reloadData];
-                self.searchResultsView.hidden = YES;
-                [self setHint:@"未找到地点"];
-                return;
-            }
-            // 结果依次排开（下拉列表，可向下滑动查看；最多 10 条）
-            NSRange rng = NSMakeRange(0, MIN(10, (NSInteger)response.mapItems.count));
-            self.searchResults = [response.mapItems subarrayWithRange:rng];
-            [self.searchResultsView reloadData];
-            self.searchResultsView.hidden = NO;
-        });
-    }];
+    // 关键词 → 关联候选：走 MKLocalSearchCompleter 一次性拉取（2026-08-28 用户定案，
+    // 替代 MKLocalSearch 直接搜索——地区名精确匹配只有 1~2 条；补全引擎出行政区/区县/POI 关联候选）；
+    // 仅在点搜索时触发，不做输入逐字联想（区别于地图 App 的边输入边弹）
+    self.searchCompleter.queryFragment = q;
+}
+
+/// 关联候选就绪（点搜索触发 completer 后的回调）
+- (void)completerDidUpdateResults:(MKLocalSearchCompleter *)completer {
+    NSArray *results = completer.results;
+    if (!results.count) {
+        self.searchResults = @[];
+        [self.searchResultsView reloadData];
+        self.searchResultsView.hidden = YES;
+        [self setHint:@"未找到匹配地点"];
+        return;
+    }
+    // 候选依次排开（下拉列表可滑动；最多 10 条）
+    NSRange rng = NSMakeRange(0, MIN(10, (NSInteger)results.count));
+    self.searchResults = [results subarrayWithRange:rng];
+    [self.searchResultsView reloadData];
+    self.searchResultsView.hidden = NO;
+}
+
+- (void)completer:(MKLocalSearchCompleter *)completer didFailWithError:(NSError *)error {
+    self.searchResults = @[];
+    [self.searchResultsView reloadData];
+    self.searchResultsView.hidden = YES;
+    [self setHint:@"搜索失败，请重试"];
 }
 
 /// 搜索框文本清空 → 收起结果列表
@@ -1538,9 +1548,15 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             cell.textLabel.font = [UIFont systemFontOfSize:14];
             cell.detailTextLabel.font = [UIFont systemFontOfSize:11];
         }
-        MKMapItem *item = self.searchResults[indexPath.row];
-        cell.textLabel.text = item.name ?: @"地点";
-        cell.detailTextLabel.text = item.placemark.title ?: @"";
+        id obj = self.searchResults[indexPath.row];
+        if ([obj isKindOfClass:[MKMapItem class]]) {
+            cell.textLabel.text = ((MKMapItem *)obj).name ?: @"地点";
+            cell.detailTextLabel.text = ((MKMapItem *)obj).placemark.title ?: @"";
+        } else {
+            MKLocalSearchCompletion *c = obj;
+            cell.textLabel.text = c.title;
+            cell.detailTextLabel.text = c.subtitle;
+        }
         cell.accessoryType = UITableViewCellAccessoryNone;
         return cell;
     }
@@ -1593,11 +1609,25 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (tableView == self.searchResultsView) {
-        MKMapItem *item = self.searchResults[indexPath.row];
-        [self applySearchResult:item];
+        id obj = self.searchResults[indexPath.row];
         self.searchBar.text = @"";              // 清空搜索输入框
         [self.searchBar resignFirstResponder];
         self.searchResultsView.hidden = YES;
+        if ([obj isKindOfClass:[MKMapItem class]]) {
+            [self applySearchResult:obj];       // 已有坐标：直接加锚点
+            return;
+        }
+        // completer 候选无坐标：补一次 MKLocalSearch 解析成 MKMapItem 再落锚点（2026-08-28）
+        MKLocalSearch *ls = [[MKLocalSearch alloc] initWithCompletion:(MKLocalSearchCompletion *)obj];
+        [ls startWithCompletionHandler:^(MKLocalSearchResponse *response, NSError *error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (error || !response.mapItems.count) {
+                    [self setHint:@"无法定位该地点"];
+                    return;
+                }
+                [self applySearchResult:response.mapItems.firstObject];
+            });
+        }];
         return;
     }
     // 状态栏行程列表：点击聚焦到该行锚点（anchor=锚点坐标，region=区域中心）
