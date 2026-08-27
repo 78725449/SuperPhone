@@ -31,6 +31,8 @@ static const NSTimeInterval kSimTrackTickInterval = 1.0;
 static const NSTimeInterval kSimAnchorTickInterval = 1.0;
 // anchor 微动范围（米）：人在原地附近小幅活动（5~50m 随机取，这里取中位）
 static const double kSimAnchorRangeM = 20.0;
+// wifi 窗口重排节奏（tick 数）：每 4s 重排注入一次（对齐 iOS 后台扫描节奏，防每 tick 全量 wifi 重启）
+static const NSUInteger kSimWifiWindowTicks = 4;
 
 @implementation SimLocationController {
     dispatch_source_t _patrolSource;   // 10s 巡检
@@ -49,6 +51,8 @@ static const double kSimAnchorRangeM = 20.0;
     // anchor 微动游走状态：相对中心偏移（米，局部平面近似）
     double _currentMx, _currentMy;
     uint64_t _lastWifiTileKey;   // 上次 wifi 反查的瓦片 key（跨瓦片才重反查，轨迹跟随）
+    NSArray<TRWpsTileAP *> *_wifiTileAps; // 当前瓦片 AP 池（窗口重排源；跨瓦片/首点反查时刷新，2026-08-28）
+    NSUInteger _wifiTickCounter; // wifi 窗口重排节奏计数（每 kSimWifiWindowTicks 次 tick 重排注入一次）
 }
 
 + (instancetype)sharedController {
@@ -225,6 +229,11 @@ static const double kSimAnchorRangeM = 20.0;
     _currentCourse = course;
     _currentMode = @"anchor";
     [self _injectAnchorPointWithSpeed:step course:course];
+    // wifi 可见窗口重排（anchor 微动也模拟可见 AP 渐变；跨瓦片由 check 换池）
+    if (++_wifiTickCounter >= kSimWifiWindowTicks) {
+        _wifiTickCounter = 0;
+        [self _injectWifiWindowForCurrentLocation];
+    }
     // anchor 跨瓦片 wifi 跟随（对齐 itinerary _trackTick 语义）：
     // anchor 中心平移（挪锚点/编辑 hold）跨瓦片时自动重反查 BSSID 注入；同瓦片零成本（key 比较）
     [self _checkWifiTileChangedAndReinject];
@@ -268,12 +277,9 @@ static const double kSimAnchorRangeM = 20.0;
                         TVLog(@"[locsim] spiral fallback also empty, keep no wifi (real-device behavior)");
                         return;
                     }
-                    NSArray<NSString *> *nearSample = [TRWpsTile sampleBssidsFromAPs:nearAps max:100];
-                    NSArray *nearScan = [SimLocationManager buildScanResultsFromBssidStrings:nearSample];
-                    if (nearScan.count) {
-                        [[SimLocationManager sharedManager] injectWifiScanResults:nearScan];
-                        TVLog(@"[locsim] wifi spiral inject, %lu APs (nearest valid tile)", (unsigned long)nearScan.count);
-                    }
+                    // 螺旋找到邻近有效瓦片：缓存为窗口池 + 按当前坐标窗口注入（统一路径，2026-08-28）
+                    sSelf->_wifiTileAps = nearAps;
+                    [sSelf _injectWifiWindowForCurrentLocation];
                 }];
             } else {
                 // 曾成功但当前反查失败（空洞瓦片/网络）：用上次成功注入的指纹重注保活——
@@ -286,14 +292,27 @@ static const double kSimAnchorRangeM = 20.0;
             }
             return;
         }
-        // 取前 100 个代表性 AP（避免注入请求过大，locationd 解算足够）
-        NSArray<NSString *> *sample = [TRWpsTile sampleBssidsFromAPs:aps max:100]; // 共享原语（原 _sampleBssids 上移，2026-08-28）
-        NSArray *scanResults = [SimLocationManager buildScanResultsFromBssidStrings:sample];
-        if (scanResults.count) {
-            [[SimLocationManager sharedManager] injectWifiScanResults:scanResults];
-            TVLog(@"[locsim] wifi simulation inject, %lu APs (dynamic)", (unsigned long)scanResults.count);
-        }
+        // 缓存瓦片 AP 池（窗口重排源）并立即按当前坐标做距离窗口注入——可见 AP=位置附近，
+        // 模拟真实设备移动时可见集渐变（不再"前 100 一批播到跨瓦片"，2026-08-28）
+        strongSelf->_wifiTileAps = aps;
+        [strongSelf _injectWifiWindowForCurrentLocation];
     }];
+}
+
+/// 按当前模拟位置对缓存瓦片 AP 池做距离窗口注入（可见 AP 渐变；不重新反查）
+/// 节奏：跨瓦片/首点立即 + tick 每 kSimWifiWindowTicks 次重排（对齐 iOS 扫描节奏，防每 tick 全量 wifi 重启）
+- (void)_injectWifiWindowForCurrentLocation {
+    if (_wifiTileAps.count == 0) return;
+    CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
+    if (coord.latitude == 0 && coord.longitude == 0) return; // 无当前位置
+    NSArray<TRWpsTileAP *> *winAps = [TRWpsTile windowApsByDistance:_wifiTileAps center:coord window:kTRWpsWindowSize];
+    if (winAps.count == 0) return;
+    NSArray<NSString *> *bssids = [TRWpsTile sampleBssidsFromAPs:winAps max:100];
+    NSArray *scanResults = [SimLocationManager buildScanResultsFromBssidStrings:bssids];
+    if (scanResults.count) {
+        [[SimLocationManager sharedManager] injectWifiScanResults:scanResults];
+        TVLog(@"[locsim] wifi window inject, %lu APs (visible)", (unsigned long)scanResults.count);
+    }
 }
 
 /// BSSID 采样已上移 TRWpsTile sampleBssidsFromAPs:（共享原语，2026-08-28）
@@ -360,6 +379,11 @@ static const double kSimAnchorRangeM = 20.0;
         return;
     }
     [self _injectPointDict:_trackPoints[_trackIndex++]];
+    // wifi 可见窗口重排（每 kSimWifiWindowTicks tick 一次，模拟扫描节奏；跨瓦片由 check 换池）
+    if (++_wifiTickCounter >= kSimWifiWindowTicks) {
+        _wifiTickCounter = 0;
+        [self _injectWifiWindowForCurrentLocation];
+    }
     // 轨迹 wifi 跟随（用户拍板 2026-08-27）：跨瓦片才重新反查注入（同瓦片 LRU 命中零成本）
     [self _checkWifiTileChangedAndReinject];
 }
