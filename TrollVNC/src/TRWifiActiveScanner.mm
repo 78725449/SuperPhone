@@ -158,11 +158,11 @@ typedef int (*Apple80211ScanFunc)(void *handle, CFArrayRef *results, CFDictionar
     NSMutableArray<NSNumber *> *rssis = [NSMutableArray array];
     CFIndex count = CFArrayGetCount(results);
     for (CFIndex i = 0; i < count; i++) {
-        CFDictionaryRef ap = CFArrayGetValueAtIndex(results, i);
+        CFDictionaryRef ap = (CFDictionaryRef)CFArrayGetValueAtIndex(results, i);
         if (!ap) continue;
-        CFStringRef bssid = CFDictionaryGetValue(ap, CFSTR("BSSID"));
-        CFStringRef ssid  = CFDictionaryGetValue(ap, CFSTR("SSID"));
-        CFNumberRef rssi  = CFDictionaryGetValue(ap, CFSTR("RSSI"));
+        CFStringRef bssid = (CFStringRef)CFDictionaryGetValue(ap, CFSTR("BSSID"));
+        CFStringRef ssid  = (CFStringRef)CFDictionaryGetValue(ap, CFSTR("SSID"));
+        CFNumberRef rssi  = (CFNumberRef)CFDictionaryGetValue(ap, CFSTR("RSSI"));
         if (bssid && CFStringGetLength(bssid) >= 17) {
             [bssids addObject:(__bridge NSString *)bssid];
         }
