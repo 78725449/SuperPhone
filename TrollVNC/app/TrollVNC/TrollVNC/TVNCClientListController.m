@@ -17,7 +17,12 @@
 
 #import "TVNCClientListController.h"
 #import "TVNCClientCell.h"
-#import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28；不带路径——prefs bundle 经 -I../../src 找到）
+// kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）。双路径 __has_include（对齐 TVNCUtil.h）：
+#if __has_include("../../../src/TRAppDomain.h")
+#import "../../../src/TRAppDomain.h"
+#else
+#import "TRAppDomain.h"
+#endif
 
 #import <UIKit/UIKit.h>
 #import <arpa/inet.h>

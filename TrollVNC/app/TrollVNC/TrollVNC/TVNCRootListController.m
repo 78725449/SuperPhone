@@ -45,7 +45,12 @@
 #import "TVNCUtil.h"
 #import "TVNCButtonCell.h"
 #import "ZTSelfSignedCertificate.h"
-#import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28；不带路径——prefs bundle 经 -I../../src 找到）
+// kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）。双路径 __has_include（对齐 TVNCUtil.h）：
+#if __has_include("../../../src/TRAppDomain.h")
+#import "../../../src/TRAppDomain.h"
+#else
+#import "TRAppDomain.h"
+#endif
 
 // PSSpecifier 的 name/setName: 为私有属性，bootstrap 方案（xcodebuild + iPhoneOS16.5.sdk）头未声明，
 // 本地补声明使折叠组头标题重建可见（运行时真实存在，2026-08-19）
