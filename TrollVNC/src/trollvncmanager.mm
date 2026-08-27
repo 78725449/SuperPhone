@@ -43,6 +43,7 @@
 #import "TRDailyTrajectory.h"
 #import "TRWifiActiveScanner.h" // WiFi 主动扫描（2026-08-27 root daemon Apple80211，见 start 区挂载）
 #import "TRWifiScanContract.h" // 跨端扫描契约常量（wifiscan-request 等）
+#import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 #import "libproc.h"
 
 #define SINGLETON_MARKER_PATH "/var/mobile/Library/Caches/com.82flex.trollvnc.manager.pid"
@@ -155,7 +156,7 @@ static id tvManagerReadPref(NSUserDefaults *defaults, NSString *key) {
 /// 当前是否桥接控制模式（ConnectionMode=bridge：本机仅控制端，不注册/不开隧道）。
 /// 默认 relay（未设置/非 bridge 均按中继处理）。
 static BOOL tvManagerIsBridgeMode(void) {
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     id mode = tvManagerReadPref(defaults, @"ConnectionMode");
     return [mode isKindOfClass:[NSString class]] && [mode isEqualToString:@"bridge"];
 }
@@ -547,7 +548,7 @@ int main(int argc, const char *argv[]) {
 
         // 2026-08-20：设置页补齐 Watchdog 配置——启动时从 defaults 读取覆盖默认值（与 CONFIG_DEFS 对齐）
         // 双域读取（tvManagerReadPref）：设置页写 mobile 域，root defaults 直读恒空导致从未生效
-        NSUserDefaults *wdDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+        NSUserDefaults *wdDefaults = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
         NSNumber *exitTimeoutN = tvManagerReadPref(wdDefaults, @"WatchdogExitTimeout");
         if ([exitTimeoutN isKindOfClass:[NSNumber class]]) {
             [gWatchDog setExitTimeOut:exitTimeoutN.doubleValue];
@@ -653,7 +654,7 @@ int main(int argc, const char *argv[]) {
                 [[SimLocationController sharedController] scheduleReloadFromPrefs];
                 // watchdog 节流/退出超时：TRWatchDog 属性可热调，即时生效
                 //（2026-08-20 前为 manager 重启级；双域读取保证 mobile 域设置页写入可见）
-                NSUserDefaults *wd = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+                NSUserDefaults *wd = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
                 NSNumber *exitN = tvManagerReadPref(wd, @"WatchdogExitTimeout");
                 if ([exitN isKindOfClass:[NSNumber class]]) [gWatchDog setExitTimeOut:exitN.doubleValue];
                 NSNumber *thrN = tvManagerReadPref(wd, @"WatchdogThrottleInterval");

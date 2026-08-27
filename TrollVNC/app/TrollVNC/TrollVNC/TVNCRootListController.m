@@ -45,6 +45,7 @@
 #import "TVNCUtil.h"
 #import "TVNCButtonCell.h"
 #import "ZTSelfSignedCertificate.h"
+#import "../../../src/TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 
 // PSSpecifier 的 name/setName: 为私有属性，bootstrap 方案（xcodebuild + iPhoneOS16.5.sdk）头未声明，
 // 本地补声明使折叠组头标题重建可见（运行时真实存在，2026-08-19）
@@ -205,7 +206,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     // 2026-08-20：设置写入域为 com.82flex.trollvnc（PSSpecifier defaults），
     // 必须用同一 suite 读取——standardUserDefaults 对应 App bundle（com.82flex.TrollVNCApp）读不到，
     // 导致 ConnectionMode/AccessMode/PerformanceMode 显隐判断恒为默认值（模式切换菜单不变化）。
-    NSUserDefaults *ud = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSUserDefaults *ud = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     NSString *pm = [ud stringForKey:@"PerformanceMode"] ?: @"balanced";
     NSString *connMode = [ud stringForKey:@"ConnectionMode"] ?: @"relay";
     NSString *accessMode = [ud stringForKey:@"AccessMode"] ?: @"full";
@@ -304,7 +305,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
             };
             NSDictionary *preset = presets[mode];
             if (preset) {
-                NSUserDefaults *defs = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+                NSUserDefaults *defs = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
                 for (NSString *k in preset) {
                     [defs setObject:preset[k] forKey:k];
                 }
@@ -316,7 +317,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     } else if ([key isEqualToString:@"Notifications"]) {
         // 通知模式枚举 → 映射底层开关（trollvncserver 启动/热重载时读底层开关生效）
         NSString *mode = [value isKindOfClass:[NSString class]] ? value : @"all";
-        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
         if ([mode isEqualToString:@"connectOnly"]) {
             [defaults setObject:@NO forKey:@"SingleNotifEnabled"];
             [defaults setObject:@YES forKey:@"ClientNotifsEnabled"];
@@ -342,7 +343,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     // cfprefsd 懒落盘会让 root 侧读到旧值——relay→bridge 切换读到 relay 不自退，
     // bridge 下残留注册/隧道（UI 已显示桥接但服务仍按中继跑，模式分叉）。synchronize
     // 强制 flush 后再 notify，消除「通知先于落盘」的读写竞态。
-    NSUserDefaults *syncDefs = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSUserDefaults *syncDefs = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     [syncDefs synchronize];
     notify_post(TVNC_NOTIFY_PREFS_CHANGED);
 }
@@ -784,16 +785,16 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     // 2026-08-20 根因修复：仅删空域会把网关地址/令牌/DeviceUUID/watchdog 配置一并清空，
     // 导致设备失联（manager 无网关地址不注册）+ watchdog 回退 0 节流（重启风暴）。
     // 重置只恢复"功能默认"，保留设备身份与网络连接信息，并写回关键安全默认。
-    NSUserDefaults *keep = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSUserDefaults *keep = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     NSString *deviceUUID = [keep stringForKey:@"DeviceUUID"];
     NSString *gatewayHost = [keep stringForKey:@"GatewayHost"];
     NSString *gatewayToken = [keep stringForKey:@"GatewayToken"];
 
-    [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:@"com.82flex.trollvnc"];
+    [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:kTRAppPrefsSuiteName];
     [[NSUserDefaults standardUserDefaults] synchronize];
 
     // 写回保留项 + 关键安全默认（watchdog 节流/退出超时不可为 0，否则服务重启风暴）
-    NSUserDefaults *defs = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSUserDefaults *defs = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     if (deviceUUID.length) [defs setObject:deviceUUID forKey:@"DeviceUUID"];
     if (gatewayHost.length) [defs setObject:gatewayHost forKey:@"GatewayHost"];
     if (gatewayToken.length) [defs setObject:gatewayToken forKey:@"GatewayToken"];
@@ -865,7 +866,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 /// relay 且已注册 → 「已连接」；bridge 且桥接已连 → 「已桥接」；其余 → 默认（按模式）。
 /// prefs bundle（Preferences.app 进程）无 App 状态层（TVNCAppStore 仅 App 编译），恒默认文字。
 - (NSString *)_gatewayButtonTitle {
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     NSString *connMode = [defaults stringForKey:@"ConnectionMode"] ?: @"relay";
 #ifdef THEBOOTSTRAP
     TVNCGatewayState state = [TVNCAppStore sharedStore].gatewayState;
@@ -910,7 +911,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 /// - 网关中继（prefs bundle/越狱设置页）：无 spawn root 能力，manager 由 launchd 常驻自治，
 ///   按钮退化为验证网关可达（与桥接分支同款反馈，两端行为对齐）
 - (void)connectGateway {
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     NSString *host = [defaults stringForKey:@"GatewayHost"];
     if (!host.length) {
         // 2026-08-21 多态按钮（relay「连接网关」/ bridge「桥接网关」共用入口）：
@@ -1036,7 +1037,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 - (void)saveGateway:(NSString *)host port:(NSInteger)port {
     // 端口固定不可调（18081 = 网关注册端口），忽略搜索到的 port，统一写 18081
     (void)port;
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     [defaults setObject:host forKey:@"GatewayHost"];
     [defaults setInteger:18081 forKey:@"GatewayPort"];
     [defaults synchronize];

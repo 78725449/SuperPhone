@@ -74,6 +74,7 @@ extern CFTypeRef SecTaskCopyValueForEntitlement(SecTaskRef task, CFStringRef ent
 #import "TRScreenHasher.h"
 #import "TRSelfSignedCert.h"
 #import "TRDataFiller.h"
+#import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 #import <openssl/ssl.h>
 #import <openssl/err.h>
 #import <fcntl.h>
@@ -583,7 +584,7 @@ static void parseDaemonOptions(void) {
     }
 
     if (!prefs) {
-        prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.82flex.trollvnc"];
+        prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:kTRAppPrefsSuiteName];
     }
 
 #if TARGET_IPHONE_SIMULATOR
@@ -602,7 +603,7 @@ static void parseDaemonOptions(void) {
 #endif
 
     if (!prefs) {
-        TVLog(@"-daemon: no preferences found for domain com.82flex.trollvnc");
+        TVLog(@"-daemon: no preferences found for domain " kTRAppPrefsSuiteName);
         return;
     }
 
@@ -3308,7 +3309,7 @@ int tvReloadConfigForKey(const char *key) {
     NSString *k = [NSString stringWithUTF8String:key];
     // 2026-08-20 修复：设置页/网关写入 com.82flex.trollvnc suite 域，
     // standardUserDefaults（无 bundle 进程 = 自身域）读不到 → 改按 suite 读取，否则热重载取到空值。
-    NSUserDefaults *p = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSUserDefaults *p = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
 
     if ([k isEqualToString:@"FrameRateSpec"]) {
         // 复用 parseFrameRateSpec（支持 min:pref:max / min-max / 单值三种格式 + 校验）；
@@ -3366,7 +3367,7 @@ static BOOL gIsCaptureStarted = NO;
  */
 static void tvApplyPrefsChanged(void) {
     @autoreleasepool {
-        NSUserDefaults *p = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+        NSUserDefaults *p = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
         // Notifications（instant）：重读枚举并映射底层开关（与启动逻辑一致）
         NSString *notifMode = [p objectForKey:@"Notifications"];
         if ([notifMode isKindOfClass:[NSString class]] && notifMode.length > 0) {
@@ -3844,7 +3845,7 @@ static NSDictionary *tvExtHandleConfigGet(rfbClientPtr cl, NSDictionary *params)
     if (![keys isKindOfClass:[NSArray class]] || keys.count == 0) {
         return tvExtErr(@"缺少参数 keys（字符串数组）");
     }
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     NSMutableDictionary *values = [NSMutableDictionary dictionary];
     for (id k in keys) {
         if (![k isKindOfClass:[NSString class]]) continue;
@@ -3881,7 +3882,7 @@ static NSDictionary *tvExtHandleConfigSet(rfbClientPtr cl, NSDictionary *params)
             @"SimLocationMode", @"SimLocationLat", @"SimLocationLon", @"SimLocationAccuracy", @"SimLocationSpeed",
         ]];
     }
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     NSMutableDictionary *written = [NSMutableDictionary dictionary];
     NSMutableArray *denied = [NSMutableArray array];
     for (NSString *key in configs) {

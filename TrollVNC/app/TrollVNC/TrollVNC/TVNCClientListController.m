@@ -17,6 +17,7 @@
 
 #import "TVNCClientListController.h"
 #import "TVNCClientCell.h"
+#import "../../../src/TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 
 #import <UIKit/UIKit.h>
 #import <arpa/inet.h>
@@ -31,7 +32,7 @@
 // Placeholder item id used when there are no clients
 static NSString *const kTVNCEmptyItemId = @"__empty__";
 static NSString *const kTVNCFrozenHostsKey = @"TVNCFrozenHosts";
-static NSString *const kTVNCDefaultsSuite = @"com.82flex.trollvnc";
+// prefs suite 名 → kTRAppPrefsSuiteName（TRAppDomain.h 跨端单一真相源，2026-08-28）
 
 static inline BOOL TVNCIsEmptyItemId(NSString *_Nullable itemId) {
     return itemId != nil && [itemId isEqualToString:kTVNCEmptyItemId];
@@ -356,7 +357,7 @@ static NSDictionary *TVNCControlInvoke(NSString *op, NSDictionary *params) {
 #pragma mark - 冻结 / 解冻
 
 - (NSUserDefaults *)frozenDefaults {
-    return [[NSUserDefaults alloc] initWithSuiteName:kTVNCDefaultsSuite];
+    return [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
 }
 
 - (NSMutableSet<NSString *> *)frozenHosts {

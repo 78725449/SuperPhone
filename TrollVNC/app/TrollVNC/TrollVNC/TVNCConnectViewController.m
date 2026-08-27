@@ -10,6 +10,7 @@
 #import "Control.h"
 #import "TVNCUtil.h"
 #import "TVNCClientListController.h"
+#import "../../../src/TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 #import <sys/socket.h>
 
 #import <CoreImage/CoreImage.h>
@@ -21,7 +22,7 @@
 #import <string.h>
 #import <UIKit/UIKit.h>
 
-static NSString *const kDefaultsSuite = @"com.82flex.trollvnc";
+// prefs suite 名 → kTRAppPrefsSuiteName（TRAppDomain.h 跨端单一真相源，2026-08-28）
 
 #pragma mark - 工具
 
@@ -122,7 +123,7 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _defaults = [[NSUserDefaults alloc] initWithSuiteName:kDefaultsSuite];
+        _defaults = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     }
     return self;
 }

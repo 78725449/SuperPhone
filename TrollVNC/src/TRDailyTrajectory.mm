@@ -10,6 +10,7 @@
 
 #import "TRDailyTrajectory.h"
 #import "TRDataFiller.h"
+#import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 
 @implementation TRDailyTrajectory
 
@@ -57,7 +58,7 @@ static double hourWeight(NSCalendar *cal, NSDate *now) {
 
 + (void)tick {
     @autoreleasepool {
-        NSUserDefaults *ud = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+        NSUserDefaults *ud = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
         NSCalendar *cal = [NSCalendar currentCalendar];
         NSDate *now = [NSDate date];
 

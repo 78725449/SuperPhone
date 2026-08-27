@@ -24,13 +24,14 @@
 #import "TRWpsTile.h" // 坐标→BSSID 动态反查（模拟分支按当前位置反查，与 daemon 注入同源；轨迹跟随）
 #import "../../../src/TRWifiScanContract.h" // 跨端扫描契约常量（单一真相源，2026-08-28）
 #import "../../../src/TRSimContract.h" // 跨端定位契约（轨迹文件路径单一真相源，2026-08-28）
+#import "../../../src/TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 #import "RegionSimulator.h"
 #import "SimRouteCalculator.h"
 #import "TRWpsClient.h"
 #import "TVNCUtil.h" // TVNC_NOTIFY_PREFS_CHANGED（prefs-changed 通知名宏，2026-08-28 收敛）
 
 /// 轨迹文件路径 → kTRSimTrackFilePath（TRSimContract.h 跨端单一真相源，2026-08-28）
-static NSString *const kPrefsSuite = @"com.82flex.trollvnc";
+// prefs suite 名 → kTRAppPrefsSuiteName（TRAppDomain.h 跨端单一真相源，2026-08-28）
 // WiFi 主动扫描契约常量 → TRWifiScanContract.h（共享模块单一真相源，2026-08-28 收敛；不再本地 static 字面量）
 static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：fix 距上次聚焦点 ≥500m 才拉回（GPS 抖动 <50m 不打扰）
 
@@ -608,7 +609,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 残留的 anchor/itinerary 模式强制写 off（App 启动态=停止=执行契约，daemon 强制对齐停止、locationd 恢复真实），
 /// 避免"启动即自动开启模拟 / 真实位置被当模拟位置 / 恢复态 Follow 干扰搜索聚焦"
 - (void)readCurrentStatus {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     NSString *mode = [d stringForKey:@"SimLocationMode"];
     if ([mode isEqualToString:@"anchor"] || [mode isEqualToString:@"itinerary"]) {
         [d setObject:@"off" forKey:@"SimLocationMode"];
@@ -1604,7 +1605,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 
 - (void)commitAnchor {
     CLLocationCoordinate2D wgs = [CoordTransform gcj02ToWgs84:self.cur];
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     [d setObject:@"anchor" forKey:@"SimLocationMode"];
     [d setDouble:wgs.latitude forKey:@"SimLocationLat"];
     [d setDouble:wgs.longitude forKey:@"SimLocationLon"];
@@ -1613,7 +1614,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 }
 
 - (void)commitStop {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     [d setObject:@"off" forKey:@"SimLocationMode"];
     [d synchronize];
     notify_post(TVNC_NOTIFY_PREFS_CHANGED);
@@ -1624,7 +1625,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// "只要不是停止定位，编辑时底层保持当前位置不乱跳"（仅定位中生效；停止态编辑不动 daemon）
 - (void)holdAtCurrentPosition:(CLLocationCoordinate2D)curW {
     if (!self.locating) return;
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     [d setObject:@"anchor" forKey:@"SimLocationMode"];
     [d setDouble:curW.latitude forKey:@"SimLocationLat"];
     [d setDouble:curW.longitude forKey:@"SimLocationLon"];
@@ -1927,7 +1928,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         }
         if (![[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kTRSimTrackFilePath error:nil]) return;
         if (locating) {
-            NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite];
+            NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
             [d setObject:@"itinerary" forKey:@"SimLocationMode"];
             [d synchronize];
             notify_post(TVNC_NOTIFY_PREFS_CHANGED);

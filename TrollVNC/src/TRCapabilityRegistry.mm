@@ -25,11 +25,11 @@
 #import <netdb.h>
 #import <unistd.h>
 #import <dlfcn.h>
+#import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 
 // trollvncserver 配置热重载入口（hot 级别 key 更新 C 全局变量 + 副作用，setConfig 使用）
 extern int tvReloadConfigForKey(const char *key);
 
-static NSString *const kDefaultsSuite = @"com.82flex.trollvnc";
 // Phase 2：RFB 端口（原 46752 控制端口已收敛，能力经 5901 RFB 扩展消息 type 0x50/0x80 承载）
 static const int kRfbPort = 5901;
 // RFB 扩展消息超时常量（毫秒，统一管理）
@@ -203,7 +203,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _defaults = [[NSUserDefaults alloc] initWithSuiteName:kDefaultsSuite];
+        _defaults = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
         _controlCaps = [NSMutableDictionary dictionary];
         _configCaps = [NSMutableDictionary dictionary];
         [self _registerAllCapabilities];
@@ -714,7 +714,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
             return nil;
         }
         // 2) 同步桌面名 → NSUserDefaultsDidChangeNotification → TRGatewayClient 清 _deviceName 缓存并重注册（上报新名）
-        NSUserDefaults *defs = [[NSUserDefaults alloc] initWithSuiteName:kDefaultsSuite];
+        NSUserDefaults *defs = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
         [defs setObject:name forKey:@"DesktopName"];
         [defs synchronize];
         return @{@"ok":@YES, @"name":name};

@@ -18,6 +18,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <notify.h>
+#import "../../../src/TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 
 #define TVNC_NOTIFY_PREFS_CHANGED "com.82flex.trollvnc.prefs-changed"
 #define TVNC_NOTIFY_RESTART_SERVICE "com.82flex.trollvnc.restart-service"
@@ -36,7 +37,7 @@
 NS_INLINE NSString *TVNCReadSelfDeviceId(void) {
     // 1. cfprefsd 通道（App 的配置读写走同一通道已验证可用；镜像写后实时可读）
     //    先强制同步该域缓存，避免读到进程内旧快照（设备端 trollvncmanager 写的是外部新值）
-    CFStringRef appID = CFSTR("com.82flex.trollvnc");
+    CFStringRef appID = CFSTR(kTRAppPrefsSuiteName);
     CFPreferencesAppSynchronize(appID);
     CFPropertyListRef plist = CFPreferencesCopyAppValue(CFSTR("DeviceUUID"), appID);
     if (plist) {
@@ -58,7 +59,7 @@ NS_INLINE NSString *TVNCReadSelfDeviceId(void) {
     did = [mobilePrefs[@"DeviceUUID"] isKindOfClass:[NSString class]] ? mobilePrefs[@"DeviceUUID"] : nil;
     if (did.length) return did;
     // 4. 当前用户域 NSUserDefaults（兼容模拟器/旧版 mobile 运行）
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     return [d stringForKey:@"DeviceUUID"];
 }
 

@@ -10,6 +10,7 @@
 #import "TVNCAppStore.h"
 #import "TVNCGatewayClient.h"
 #import "TVNCUtil.h"
+#import "../../../src/TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 
 NSNotificationName const TVNCGatewayStateDidChangeNotification = @"TVNCGatewayStateDidChangeNotification";
 NSNotificationName const TVNCDeviceDirectoryDidUpdateNotification = @"TVNCDeviceDirectoryDidUpdateNotification";
@@ -69,7 +70,7 @@ static const NSInteger kRetryMaxCount = 8;
 
 - (BOOL)isBridgeMode {
     // App（mobile 用户）直接读 mobile 域——设置页写入处，无需跨域兜底
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     NSString *mode = [d stringForKey:@"ConnectionMode"];
     return [mode isEqualToString:@"bridge"];
 }

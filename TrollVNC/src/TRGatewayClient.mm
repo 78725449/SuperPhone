@@ -23,8 +23,8 @@
 #import <stdlib.h>
 #import <time.h>
 #import <unistd.h>
+#import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 
-static NSString *const kDefaultsSuite = @"com.82flex.trollvnc";
 static NSString *const kDeviceUUIDKey = @"DeviceUUID";
 static NSString *const kGatewayHostKey = @"GatewayHost";
 static NSString *const kDesktopNameKey = @"DesktopName";
@@ -102,7 +102,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _defaults = [[NSUserDefaults alloc] initWithSuiteName:kDefaultsSuite];
+        _defaults = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
         _retryDelay = kMinRetryDelay;
         // 设置变化（app 内设置页 / Managed.plist）→ 标记重发 register
         [[NSNotificationCenter defaultCenter] addObserver:self
@@ -184,7 +184,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 - (void)_mirrorDeviceIdToMobileDomain:(NSString *)uuid {
     if (!uuid.length) return;
     // 主通道：经 cfprefsd 写 mobile 用户域
-    CFStringRef appID = CFSTR("com.82flex.trollvnc");
+    CFStringRef appID = CFSTR(kTRAppPrefsSuiteName);
     CFPreferencesSetValue(CFSTR("DeviceUUID"), (__bridge CFStringRef)uuid,
                           appID, CFSTR("mobile"), kCFPreferencesCurrentHost);
     CFPreferencesSynchronize(appID, CFSTR("mobile"), kCFPreferencesCurrentHost);

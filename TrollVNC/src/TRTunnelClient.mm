@@ -16,6 +16,7 @@
 */
 #import "TRTunnelClient.h"
 #import "Logging.h"
+#import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 
 #import <stdio.h>
 #import <stdarg.h>
@@ -177,7 +178,7 @@ static void TRTunnelLog(const char *fmt, ...) {
     _token = [token copy];
     _retryDelay = kTunnelMinRetryDelay;
     // HeartbeatIntervalSec（gateway 级，5-300s 默认 30）：与 TRGatewayClient 同域读取心跳间隔
-    NSUserDefaults *ud = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSUserDefaults *ud = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     NSNumber *hb = [ud objectForKey:@"HeartbeatIntervalSec"];
     NSTimeInterval v = hb ? hb.doubleValue : kTunnelPingInterval;
     if (v < 5) v = 5;

@@ -8,13 +8,13 @@
 */
 
 #import "TVNCGatewayClient.h"
+#import "../../../src/TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 
 #import <Security/Security.h>
 
 /// 网关 HTTP 控制台端口（固定 8080 不可调，trollvnc-farm FARM_PORT）
 static const NSInteger kGatewayDefaultConsolePort = 8080;
-/// 配置 Suite（与全项目一致）
-static NSString *const kGatewayDefaultsSuite = @"com.82flex.trollvnc";
+/// 配置 Suite 名 → kTRAppPrefsSuiteName（TRAppDomain.h 跨端单一真相源，2026-08-28）
 /// 网关地址配置键
 static NSString *const kGatewayHostKey = @"GatewayHost";
 /// 网关 Token 配置键
@@ -38,7 +38,7 @@ static NSString *const kGatewayTokenKey = @"GatewayToken";
 
 /// 读取当前网关地址（未配置返回 nil）。
 - (nullable NSString *)gatewayHost {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kGatewayDefaultsSuite];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     return [d stringForKey:kGatewayHostKey];
 }
 
@@ -49,7 +49,7 @@ static NSString *const kGatewayTokenKey = @"GatewayToken";
 
 /// 读取当前网关 Token（可为空字符串）。
 - (nullable NSString *)gatewayToken {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kGatewayDefaultsSuite];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     return [d stringForKey:kGatewayTokenKey];
 }
 

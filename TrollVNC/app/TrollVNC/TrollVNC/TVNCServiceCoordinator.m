@@ -18,6 +18,7 @@
 #import "TVNCServiceCoordinator.h"
 #import "TRTask.h"
 #import "TVNCUtil.h"
+#import "../../../src/TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -60,7 +61,7 @@ NSString *TVNCDeviceUDID(void) {
             }
         }
         if (!sUDID.length) {
-            NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+            NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
             sUDID = [d stringForKey:@"DeviceUUID"] ?: @"";
         }
     });
@@ -111,7 +112,7 @@ NSString *TVNCDeviceUDID(void) {
 - (void)commonInit {
     _checkTimer = nil;
     _serviceRunning = NO;
-    _userDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    _userDefaults = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
 
     NSBundle *prefsBundle = [NSBundle bundleWithPath:[[NSBundle mainBundle] pathForResource:@"TrollVNCPrefs"
                                                                                      ofType:@"bundle"]];

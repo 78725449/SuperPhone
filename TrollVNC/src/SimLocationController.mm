@@ -13,6 +13,7 @@
 #import "SimRouteCalculator.h" // haversineMeters（与 App 截断同度量，选最近续播点）
 #import "TRWpsTile.h" // 坐标→BSSID 动态反查（daemon 注入 wifi 模拟源）
 #import "TRSimContract.h" // 跨端定位契约（轨迹文件路径单一真相源，2026-08-28）
+#import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 #import "Logging.h"
 #import <math.h>
 
@@ -492,7 +493,7 @@ static const double kSimAnchorRangeM = 20.0;
     NSDictionary *mobilePrefs = [NSDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath];
     id v = mobilePrefs[key];
     if (v) return v;
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     return [d objectForKey:key];
 }
 
