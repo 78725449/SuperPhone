@@ -242,7 +242,11 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
             // 回调语义 = error nil + 空数组（与消费方 aps.count==0 即跳过一致，不额外区分失败分支）。
             NSDate *failedAt = _failCache[keyNum];
             if (failedAt && [[NSDate date] timeIntervalSinceDate:failedAt] < kTRWpsTileFailCacheTTL) {
-                dispatch_async(dispatch_get_main_queue(), ^{ completion(@[], nil); });
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    fprintf(stderr, "[wps] tile FAILCACHE hit key=%llu (%.0fs ago)\n", key,
+                            [[NSDate date] timeIntervalSinceDate:failedAt]);
+                    completion(@[], nil);
+                });
                 return;
             }
         }
@@ -277,11 +281,12 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
         dispatch_async(dispatch_get_main_queue(), ^{
             NSArray<TRWpsTileAP *> *aps = nil;
             NSError *queryErr = nil;
+            NSInteger status = 0;
             if (error) {
                 queryErr = error;
             } else {
                 NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
-                NSInteger status = http.statusCode;
+                status = http.statusCode;
                 if (status < 200 || status >= 300) {
                     queryErr = [NSError errorWithDomain:@"TRWpsTile" code:status
                                                userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"HTTP %ld", (long)status]}];
@@ -289,6 +294,11 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
                     aps = parseWifiTile((const uint8_t *)data.bytes, data.length); // .mm 按 C++ 编译：void* 需显式转 uint8_t*
                 }
             }
+            // 诊断：每次请求的 host/key/status/耗时全打印（定位设备端 404 vs PC 通 的服务节点差异）
+            fprintf(stderr, "[wps] tile req host=%s key=%llu status=%ld err=%s len=%lu\n",
+                    host.UTF8String, key, (long)status,
+                    error ? error.localizedDescription.UTF8String : (queryErr ? queryErr.localizedDescription.UTF8String : "none"),
+                    (unsigned long)(data ? data.length : 0));
             // 取出全部等待者并先移除（避免重复回调），再按成败写 LRU 缓存 / 失败负缓存
             NSMutableArray *waiters = nil;
             @synchronized (self) {
