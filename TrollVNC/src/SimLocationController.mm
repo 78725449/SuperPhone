@@ -189,7 +189,8 @@ static const double kSimAnchorRangeM = 20.0;
         __strong __typeof__(self) strongSelf = weakSelf;
         if (!strongSelf) return;
         if (error || aps.count == 0) {
-            // 反查失败/空：保持现状（负缓存已挡重试风暴；不打断已有 wifi 模拟）
+            // 反查失败/空（空洞瓦片 404 等）：保持现状不打断已有 wifi 模拟；
+            // 无负缓存——失败重试节奏由巡检区分"曾成功/从未成功"控制（2026-08-27 定案）
             TVLog(@"[locsim] tile query skipped: %@", error.localizedDescription ?: @"no APs");
             return;
         }

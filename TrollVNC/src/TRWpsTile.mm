@@ -253,7 +253,11 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
     }
 
     NSString *host = pickTileHost(coord.latitude, coord.longitude);
-    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@/wifi_request_tile", host]];
+    // URL 追加 ?tk=<tileKey> 作 CDN cache-buster：国内 gspe85-cn-ssl 解析到金山云 CDN，
+    // 其缓存键只含 URL、不含 X-tilekey header——曾致所有瓦片命中同一份陈旧缓存（固定 1051B/33AP），
+    // 注入的 BSSID 与模拟坐标完全不自洽（2026-08-27 实测：北京瓦片真身 3520B，设备却拿 1051B）。
+    // origin 按 X-tilekey header 取数、忽略 query 参数（已实测验证），故 query 仅用于分离 CDN 缓存键。
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@/wifi_request_tile?tk=%llu", host, key]];
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.timeoutInterval = 15;
     // 对齐 mjs TILE_HEADERS + X-tilekey
