@@ -61,6 +61,32 @@ static uint64_t packTileKey(uint32_t row, uint32_t column, int level) {
     return result;
 }
 
+// ---------- morton 解码（对齐 mjs unpackTileKey；按 key 反解瓦片行列，供按 key 请求选 host） ----------
+static void unpackTileKey(uint64_t key, uint32_t *rowOut, uint32_t *colOut) {
+    uint32_t row = 0, column = 0;
+    int level = 0;
+    uint64_t k = key;
+    while (k > 1) {
+        column |= (uint32_t)((k & 1ULL) << level);
+        k >>= 1;
+        row |= (uint32_t)((k & 1ULL) << level);
+        k >>= 1;
+        level++;
+    }
+    if (rowOut) *rowOut = row;
+    if (colOut) *colOut = column;
+}
+
+// ---------- 瓦片中心经纬度（Web Mercator 逆投影；供按 key 请求选 host） ----------
+static CLLocationCoordinate2D tileCenterFromTile(int32_t tx, int32_t ty, int level) {
+    double size = 256.0 * (double)(1 << level);
+    double px = (double)tx * 256.0 + 128.0;
+    double py = (double)ty * 256.0 + 128.0;
+    double lon = px / size * 360.0 - 180.0;
+    double lat = atan(sinh(M_PI * (1.0 - 2.0 * py / size))) * 180.0 / M_PI;
+    return CLLocationCoordinate2DMake(lat, lon);
+}
+
 // ---------- int64→MAC（对齐 mjs macFromInt64：大端 8 字节取低 6 字节 → XX:XX:XX:XX:XX:XX） ----------
 static NSString *macFromInt64(uint64_t v) {
     uint8_t bytes[8];
@@ -232,7 +258,11 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
         [waiters addObject:[completion copy]];
     }
 
-    NSString *host = pickTileHost(coord.latitude, coord.longitude);
+    // 按 key 反解瓦片中心选 host（_queryTileKey 无 coord 参数；空洞/邻近瓦片同区域判定不受影响）
+    uint32_t urow = 0, ucol = 0;
+    unpackTileKey(key, &urow, &ucol);
+    CLLocationCoordinate2D center = tileCenterFromTile((int32_t)ucol, (int32_t)urow, kTRWpsTileLevel);
+    NSString *host = pickTileHost(center.latitude, center.longitude);
     // URL 追加 ?tk=<tileKey> 作 CDN cache-buster：国内 gspe85-cn-ssl 解析到金山云 CDN，
     // 其缓存键只含 URL、不含 X-tilekey header——曾致所有瓦片命中同一份陈旧缓存（固定 1051B/33AP），
     // 注入的 BSSID 与模拟坐标完全不自洽（2026-08-27 实测：北京瓦片真身 3520B，设备却拿 1051B）。
