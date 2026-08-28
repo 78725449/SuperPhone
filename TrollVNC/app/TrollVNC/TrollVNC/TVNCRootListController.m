@@ -848,7 +848,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
         completion(nil, @"请求序列化失败");
         return;
     }
-    [[NSURLSession sharedSession] dataTaskWithRequest:req
+    [[[NSURLSession sharedSession] dataTaskWithRequest:req
         completionHandler:^(NSData *data, NSURLResponse *response, NSError *err) {
             if (err) {
                 completion(nil, err.localizedDescription ?: @"服务未运行");

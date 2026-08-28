@@ -24,7 +24,7 @@ NSString * const kTRIdentityKeychainDbPath = @"/var/private/var/keychains/keycha
     if (![bundleId isKindOfClass:[NSString class]]) return NO;
     if (bundleId.length < 3 || bundleId.length > 128) return NO;
     if (![bundleId containsString:@"."]) return NO;
-    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"^[A-Za-z0-9\-\.]+$"
+    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"^[-A-Za-z0-9.]+"
                                                                         options:0 error:nil];
     return [re numberOfMatchesInString:bundleId options:0 range:NSMakeRange(0, bundleId.length)] == 1;
 }
@@ -86,7 +86,7 @@ NSString * const kTRIdentityKeychainDbPath = @"/var/private/var/keychains/keycha
     return sqlite3_changes(db);
 }
 
-/** 定位目标 App 数据容器（扫 /var/mobile/Containers/Data/Application/*，读 MCM 元数据） */
+/** 定位目标 App 数据容器（扫描 /var/mobile/Containers/Data/Application 下各容器目录，读 MCM 元数据） */
 + (nullable NSString *)findDataContainerForBundleId:(NSString *)bundleId {
     NSString *root = @"/var/mobile/Containers/Data/Application";
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -190,7 +190,7 @@ NSString * const kTRIdentityKeychainDbPath = @"/var/private/var/keychains/keycha
                     if (d2 >= 0) deleted += d2; else kc[@"error"] = err;
                     kc[@"deleted"] = @(deleted);
                     sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE);", NULL, NULL, NULL);
-                    if (deleted > 0 && tier == @"none") tier = @"keychain-db";
+                    if (deleted > 0 && [tier isEqualToString:@"none"]) tier = @"keychain-db";
                 } else {
                     kc[@"error"] = [NSString stringWithFormat:@"备份失败（已中止删除）: %@",
                                     cpErr.localizedDescription ?: @""];
@@ -220,7 +220,7 @@ NSString * const kTRIdentityKeychainDbPath = @"/var/private/var/keychains/keycha
             NSError *rmErr = nil;
             if ([fm removeItemAtPath:prefsPlist error:&rmErr]) {
                 [cleared addObject:prefsPlist];
-                if (tier == @"none") tier = @"container";
+                if ([tier isEqualToString:@"none"]) tier = @"container";
             } else {
                 container[@"error"] = rmErr.localizedDescription ?: @"删除失败";
             }
