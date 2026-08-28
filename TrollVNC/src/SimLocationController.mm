@@ -84,6 +84,9 @@ static const double kSimAnchorRangeM = 20.0;
         [mp writeToFile:kSimMobilePrefsPath atomically:YES];
         TVLog(@"[locsim] startup: residual mode %@ forced -> off (startup-stop contract)", mode);
     }
+    // 定位对抗编排：启动即关闭系统定位（宁停不漏）——off 期间真实坐标不得裸奔；
+    // 模拟由用户在 App 显式开启（开启链路会先注入再重开开关）
+    [SimLocationManager setSystemLocationServices:NO];
 }
 
 - (void)reloadFromPrefs {
@@ -122,6 +125,8 @@ static const double kSimAnchorRangeM = 20.0;
     if (![mode isKindOfClass:[NSString class]] || mode.length == 0) mode = @"off";
     TVLog(@"[locsim] apply mode=%@", mode);
     if ([mode isEqualToString:@"off"]) {
+        // 定位对抗编排（2026-08-28）：关模拟=先关系统定位（宁无位置不漏真实）→ 再停注入
+        [SimLocationManager setSystemLocationServices:NO];
         [self _stopAnchor];
         [self _stopTrack];
         _currentMode = @"off";
@@ -158,6 +163,7 @@ static const double kSimAnchorRangeM = 20.0;
         [self _startTrack];
     } else {
         TVLog(@"[locsim] unknown mode=%@ -> off", mode);
+        [SimLocationManager setSystemLocationServices:NO];
         [self _stopAnchor];
         [self _stopTrack];
         _currentMode = @"off";
@@ -197,6 +203,9 @@ static const double kSimAnchorRangeM = 20.0;
         });
         dispatch_resume(_anchorSource);
     }
+    // 定位对抗编排：注入已生效（首点已进 locationd 会话）后才开系统定位——
+    // 定位开启的第一秒就是模拟值，无真实坐标空窗（2026-08-28）
+    [SimLocationManager setSystemLocationServices:YES];
     TVLog(@"[locsim] anchor start (%.5f, %.5f) acc=%.1f", lat, lon, acc);
 }
 
@@ -386,6 +395,8 @@ static const double kSimAnchorRangeM = 20.0;
         [weakSelf _trackTick];
     });
     dispatch_resume(_trackSource);
+    // 定位对抗编排：同 anchor——注入生效后再开系统定位（2026-08-28）
+    [SimLocationManager setSystemLocationServices:YES];
     TVLog(@"[locsim] itinerary start, %lu points (from idx %lu)", (unsigned long)points.count, (unsigned long)startIdx);
 }
 
@@ -544,6 +555,8 @@ static const double kSimAnchorRangeM = 20.0;
     if ([mode isEqualToString:@"anchor"]) {
         // anchor 注入失效（locationd 会话中断）或游走 timer 丢失则重启
         if (![SimLocationManager sharedManager].isSimulating || !_anchorSource) {
+            // 定位对抗编排：异常期间先关系统定位（无真实值可出）→ 重注入生效后再开
+            [SimLocationManager setSystemLocationServices:NO];
             TVLog(@"[locsim] anchor lost, re-start");
             [self _startAnchor];
         } else if (![SimLocationManager sharedManager].isWifiSimulating && [SimLocationManager sharedManager].wasWifiSimulatingOnce) {

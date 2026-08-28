@@ -68,6 +68,12 @@ NS_ASSUME_NONNULL_BEGIN
 /// 当前是否处于注入中（供后续失效巡检使用）
 @property(nonatomic, assign, readonly) BOOL isSimulating;
 
+/// 系统定位服务总开关（私有 CLLocationManager setLocationServicesEnabled:，TrollStore root 可用；
+/// LocationServicesSwitcher 开源先例。2026-08-28 定位对抗编排核心：
+/// 开模拟=注入确认后开开关；关模拟/失效=先关开关再停注入——宁无位置不漏真实）
++ (BOOL)setSystemLocationServices:(BOOL)on;
++ (BOOL)systemLocationServicesEnabled;
+
 @end
 
 NS_ASSUME_NONNULL_END

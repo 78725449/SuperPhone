@@ -11,6 +11,12 @@
 
 #import <CoreLocation/CoreLocation.h>
 
+// 私有类方法（classdump 实证，iOS 15/17 均在；LocationServicesSwitcher 同款用法）：
+// 系统定位总开关——定位对抗编排的防御位（关模拟/失效时关开关，宁无位置不漏真实）
+@interface CLLocationManager (TrollVNCLocationSwitch)
++ (void)setLocationServicesEnabled:(BOOL)enabled;
+@end
+
 /**
  * CLSimulationManager 私有接口声明（自写，参考逆向公开知识；不复制 GPL 源码）。
  * 接口事实来源：Geranium/Andromeda/TrollBox 均使用同一声明（udevs 头文件）。
@@ -118,6 +124,27 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
 
 - (BOOL)wasWifiSimulatingOnce {
     return _wifiSimulatingOnce;
+}
+
+#pragma mark - 系统定位服务总开关（定位对抗编排防御位）
+
++ (BOOL)setSystemLocationServices:(BOOL)on {
+    @try {
+        if (![CLLocationManager respondsToSelector:@selector(setLocationServicesEnabled:)]) {
+            return NO;
+        }
+        BOOL before = [CLLocationManager locationServicesEnabled];
+        if (before == on) return YES;   // 幂等
+        [CLLocationManager setLocationServicesEnabled:on];
+        BOOL after = [CLLocationManager locationServicesEnabled];
+        return after == on;             // 回读确认（失败向上报告）
+    } @catch (NSException *ex) {
+        return NO;                      // 私有 API 异常不外泄
+    }
+}
+
++ (BOOL)systemLocationServicesEnabled {
+    return [CLLocationManager locationServicesEnabled];
 }
 
 - (void)injectWifiScanResults:(NSArray<NSDictionary *> *)scanResults {
