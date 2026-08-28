@@ -147,7 +147,7 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     return [CLLocationManager locationServicesEnabled];
 }
 
-+ (BOOL)loadPersistedScenario:(double)lat lon:(double)lon error:(NSError *__autoreleasing *)error {
+- (BOOL)loadPersistedScenario:(double)lat lon:(double)lon error:(NSError *__autoreleasing *)error {
     @try {
         NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"locsim_scenario.gpx"];
         NSString *gpx = [NSString stringWithFormat:

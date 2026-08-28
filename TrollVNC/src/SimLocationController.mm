@@ -209,7 +209,7 @@ static const double kSimAnchorRangeM = 20.0;
     // L3 场景持久化（实验）：模拟状态写入 locationd 场景文件，目标=脱离 manager 生命周期
     // （client 崩溃后 locationd 仍投递最后模拟坐标，覆盖崩溃→拉起窗口）；失败仅日志不影响主链路
     NSError *scErr = nil;
-    BOOL scOk = [SimLocationManager loadPersistedScenario:lat lon:lon error:&scErr];
+    BOOL scOk = [[SimLocationManager sharedManager] loadPersistedScenario:lat lon:lon error:&scErr];
     TVLog(@"[locsim] scenario persist: %@ %@", scOk ? @"OK" : @"FAIL", scErr.localizedDescription ?: @"");
 }
 
