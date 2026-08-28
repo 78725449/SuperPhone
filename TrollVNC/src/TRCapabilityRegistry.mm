@@ -26,6 +26,7 @@
 #import <unistd.h>
 #import <dlfcn.h>
 #import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
+#import "TRIdentityReset.h" // identity.reset 底层模块（Native executor 直调，2026-08-28）
 
 // trollvncserver 配置热重载入口（hot 级别 key 更新 C 全局变量 + 副作用，setConfig 使用）
 extern int tvReloadConfigForKey(const char *key);
@@ -223,6 +224,8 @@ static NSDictionary *TRSearchGatewaySync(void) {
     [self _registerSystemQueryCapabilities];
     [self _registerGatewayCapabilities];
     [self _registerScreenHashCapabilities];
+    [self _registerVisionCapabilities];
+    [self _registerIdentityCapabilities];
     [self _registerConfigSchemas];
 }
 
@@ -366,6 +369,9 @@ static NSDictionary *TRSearchGatewaySync(void) {
  */
 - (void)_registerTouchCapabilities {
     STHIDEventGenerator *hid = [STHIDEventGenerator sharedGenerator];
+    // HumanizeTouch（2026-08-28 风控对抗）：注册表 invoke 通道=自动化入口，开启行为整形
+    // （画布手势消费方 twoFingerTap/threeFingerTap/pinch 在注入类内部豁免，真人画布操作不受影响）
+    [hid setHumanizeEnabled:YES];
     // ===== touch.* 多点触控/手势/捏合/事件流（2026-08-16 恢复，18 项）=====
     // —— 命令式手势（异步注入）——
     [self _registerControl:@"touch.tap" title:@"轻点" icon:@"👆" route:TRCapRouteTouch
@@ -993,6 +999,78 @@ static NSDictionary *TRSearchGatewaySync(void) {
 }
 
 /**
+ * 注册换号身份锚清理能力（2026-08-28 风控对抗扩展：identity.reset）
+ * manager 为 root 进程——Native 路由进程内直调 TRIdentityReset（与 0x50/5802 同一底层模块）。
+ * 分层降级：SecItem → keychain-2.db 直删（先备份/agrp 白名单）→ 容器 NSUserDefaults → SOP；
+ * 绝不越界清理（bundleId 为唯一边界），绝不 kill securityd（安全缓存以 warning 返回）。
+ */
+- (void)_registerIdentityCapabilities {
+    [self _registerControl:@"identity.reset" title:@"换号身份清理" icon:@"🧹" route:TRCapRouteNative
+        params:@[@{@"name":@"bundleId",@"type":@"string",@"required":@YES},
+                 @{@"name":@"mode",@"type":@"string",@"required":@NO}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            NSString *bundleId = p[@"bundleId"];
+            NSString *mode = p[@"mode"] ?: @"dryrun";
+            if (![TRIdentityReset isValidBundleId:bundleId]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:1
+                            userInfo:@{NSLocalizedDescriptionKey:@"bundleId 非法（反向域名）"}];
+                return nil;
+            }
+            return [TRIdentityReset resetForBundleId:bundleId mode:mode];
+        }];
+}
+
+/** 注册 Vision 屏幕感知能力（2026-08-28 风控对抗扩展：vision.ocr / vision.find_text / vision.find_image）
+ * 机械匹配原语：传文字/锚点小图→回坐标，语义判断在云端编排侧（script.exec 未来的 find_and_click 内部调它）。
+ * OCR/模板匹配在 trollvncserver 进程执行（TRVisionEngine 与 ScreenCapturer 同进程取帧），注册表 LocalCmd 桥接；
+ * .accurate 全屏 0.5~2s、模板匹配 <1s——timeout 显式 12s（kRfbDefaultTimeoutMs=3s 不够），网关 invoke 需传 timeout ≥15s。
+ */
+- (void)_registerVisionCapabilities {
+    const NSTimeInterval visionTimeoutMs = 12000;
+    // vision.ocr：当前屏幕中文 OCR → 全部文本行（0-1 归一化左上原点，cx/cy=中心）
+    [self _registerControl:@"vision.ocr" title:@"屏幕文字识别" icon:@"🔍" route:TRCapRouteLocalCmd
+        params:@[@{@"name":@"region",@"type":@"object",@"required":@NO}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            NSDictionary *resp = [self _rfbCommand:@"vision.ocr" params:p timeoutMs:visionTimeoutMs error:e];
+            if (!resp) return nil;
+            if (![resp[@"ok"] boolValue]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"vision.ocr 失败"}];
+                return nil;
+            }
+            return resp;   // 透传 {ok,count,texts,width,height,durationMs}
+        }];
+    // vision.find_text：OCR 后按文本匹配（exact=全等/默认包含；自动去空白比对）→ 命中行坐标
+    [self _registerControl:@"vision.find_text" title:@"查找屏幕文字" icon:@"🎯" route:TRCapRouteLocalCmd
+        params:@[@{@"name":@"text",@"type":@"string",@"required":@YES},
+                 @{@"name":@"exact",@"type":@"bool",@"required":@NO},
+                 @{@"name":@"region",@"type":@"object",@"required":@NO}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            NSDictionary *resp = [self _rfbCommand:@"vision.find_text" params:p timeoutMs:visionTimeoutMs error:e];
+            if (!resp) return nil;
+            if (![resp[@"ok"] boolValue]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"vision.find_text 失败"}];
+                return nil;
+            }
+            return resp;   // 透传 {ok,found,count,matches,durationMs,width,height}
+        }];
+    // vision.find_image：锚点小图匹配 → 模板中心/矩形坐标（image base64 in，0-1 坐标 out；scale 多尺度归一，2026-08-28）
+    [self _registerControl:@"vision.find_image" title:@"屏幕锚点匹配" icon:@"🖼️" route:TRCapRouteLocalCmd
+        params:@[@{@"name":@"image",@"type":@"string",@"required":@YES},
+                 @{@"name":@"threshold",@"type":@"number",@"required":@NO},
+                 @{@"name":@"region",@"type":@"object",@"required":@NO},
+                 @{@"name":@"scale",@"type":@"number",@"required":@NO}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            NSDictionary *resp = [self _rfbCommand:@"vision.find_image" params:p timeoutMs:visionTimeoutMs error:e];
+            if (!resp) return nil;
+            if (![resp[@"ok"] boolValue]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"vision.find_image 失败"}];
+                return nil;
+            }
+            return resp;   // 透传 {ok,found,score,x,y,w,h,threshold,durationMs}
+        }];
+}
+
+/**
  * 注册控制型能力表项（内部辅助）
  * 功能：创建 TRControlCap 表项并存入注册表；若未显式指定 category，按 capId 前缀 + route 类型自动推断。
  * 参数：capId    - 能力 ID
@@ -1287,9 +1365,10 @@ static NSDictionary *TRSearchGatewaySync(void) {
 /** 配置默认值回退（与 Root.plist 默认对齐） */
 - (id)_defaultForKey:(NSString *)key cap:(TRConfigCap *)cap {
     if ([cap.type isEqualToString:@"bool"]) {
-        // 与 Root.plist 默认值对齐
+        // 与 Root.plist 默认值对齐；BonjourEnabled 2026-08-28 默认 YES→NO（风控收敛：mDNS publish
+        // 即广播，默认不发布不可见；显式开启走配置/CLI -B，见 trollvncserver.mm gBonjourEnabled）
         NSDictionary *defs = @{
-            @"Enabled": @YES, @"BonjourEnabled": @YES, @"OrientationSync": @YES,
+            @"Enabled": @YES, @"BonjourEnabled": @NO, @"OrientationSync": @YES,
             @"NaturalScroll": @YES,
             @"ViewOnly": @NO, @"AsyncSwap": @NO, @"AutoAssistEnabled": @NO,
             @"SingleNotifEnabled": @YES, @"ClientNotifsEnabled": @YES, @"KeyLogging": @NO,

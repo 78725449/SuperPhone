@@ -179,23 +179,23 @@ New project/
 #### 4.1.1 trollvncserver.mm — VNC 服务主进程
 
 **文件**：`TrollVNC/src/trollvncserver.mm`（~4873 行，无 ObjC 类，全 C 函数）
-**入口**：`main(argc, argv)` (L4826)
+**入口**：`main(argc, argv)` (L5951)
 
-**核心职责**：基于 libvncserver 暴露 5901 RFB + 5801 HTTP + Bonjour mDNS；通过 RFB 扩展消息 0x50/0x80 暴露设备能力通道；**采集惰性启动（2026-08-22，隧道握手成功 tunnel-connected 通知触发，CaptureFps 低频驱动；客户端连接只升降频 FrameRateSpec，不再启停采集）**；管理客户端连接/黑名单；接收命令注入 IOHID 触控/键盘事件；提供配置热重载入口 `tvReloadConfigForKey`。
+**核心职责**：基于 libvncserver 暴露 5901 RFB + 5801 HTTP + Bonjour mDNS（**2026-08-28 起 mDNS 默认关闭**——`gBonjourEnabled` 默认 NO 不广播，风控收敛；CLI `-B on` 或配置显式开启）；通过 RFB 扩展消息 0x50/0x80 暴露设备能力通道；**采集惰性启动（2026-08-22，隧道握手成功 tunnel-connected 通知触发，CaptureFps 低频驱动；客户端连接只升降频 FrameRateSpec，不再启停采集）**；管理客户端连接/黑名单；接收命令注入 IOHID 触控/键盘事件；提供配置热重载入口 `tvReloadConfigForKey`。
 
 **关键函数**：
 
 | 函数 | 行号 | 作用 |
 |---|---|---|
-| `main(argc, argv)` | L4826 | 进程入口：dropPrivileges → parseCLI → setupGeometry → setupRfbScreen → initializeAndRunRfbServer → installSignalHandlers |
-| `tvExtHandleMessage(cl, data, message)` | L3354 | RFB 扩展消息分发入口；拦截 `message->type == 0x50`，按 op 路由到 14 个子 handler |
-| `tvExtReadMessage(cl)` | L3295 | 从 rfbClientPtr 读 7B 剩余帧头 + 4B BE payloadLen + JSON payload，反序列化为 NSDictionary |
-| `tvExtWriteResponse(cl, resp)` | L3313 | 构造 0x80 响应帧（8B 头 + JSON），在 `cl->sendMutex` 锁内整帧写出（防与 FBU 帧交错） |
-| `tvExtHandleCapHello(cl, params)` | L3448 | 管理客户端豁免：`mgmt=YES` 时 `isMgmtClient=YES`、`gClientCount--`、`viewOnly=TRUE` |
-| `tvExtHandleTypePaste(cl, params)` | L3484 | 剪贴板写入 + Cmd+V 注入：setStringForPasteInput → releaseEveryKeys → COMMAND↓ → v↓ → v↑ → COMMAND↑ |
-| `tvReloadConfigForKey(key)` | L3247 | 配置热重载：支持 Scale/FrameRateSpec/OrientationSync/DeferWindowSec/MaxInflight/KeepAliveSec/WheelStepPx/ModifierMap/FullscreenThresholdPercent；**2026-08-20 改按 suite `com.82flex.trollvnc` 读取**（原 standardUserDefaults 无 bundle 进程读不到设置页值）；返回 0=成功 / -1=未知 / -2=无效 |
-| `tvApplyPrefsChanged` / `tvInstallPrefsChangedListener` | L3310 / L3341 | **设置页热重载通道（2026-08-20）**：notify 监听 `com.82flex.trollvnc.prefs-changed` → 重读 suite 热重载 hot/instant 配置（含 Notifications 映射底层开关、OrientationPadFix 重建 framebuffer、NaturalScroll/AutoAssistEnabled/KeyLogging 全局变量） |
-| `tvGetInflightStats(void)` / `tvGetBonjourTXT(void)` | L3103 / L3108 | 公开统计访问，供 sys.* 能力调用 |
+| `main(argc, argv)` | L5951 | 进程入口：dropPrivileges → parseCLI → setupGeometry → setupRfbScreen → initializeAndRunRfbServer → installSignalHandlers |
+| `tvExtHandleMessage(cl, data, message)` | L3666 | RFB 扩展消息分发入口；拦截 `message->type == 0x50`，按 op 路由到 14 个子 handler |
+| `tvExtReadMessage(cl)` | L3607 | 从 rfbClientPtr 读 7B 剩余帧头 + 4B BE payloadLen + JSON payload，反序列化为 NSDictionary |
+| `tvExtWriteResponse(cl, resp)` | L3625 | 构造 0x80 响应帧（8B 头 + JSON），在 `cl->sendMutex` 锁内整帧写出（防与 FBU 帧交错） |
+| `tvExtHandleCapHello(cl, params)` | L3764 | 管理客户端豁免：`mgmt=YES` 时 `isMgmtClient=YES`、`gClientCount--`、`viewOnly=TRUE` |
+| `tvExtHandleTypePaste(cl, params)` | L3819 | 剪贴板写入 + Cmd+V 注入：setStringForPasteInput → releaseEveryKeys → COMMAND↓ → v↓ → v↑ → COMMAND↑ |
+| `tvReloadConfigForKey(key)` | L3310 | 配置热重载：支持 Scale/FrameRateSpec/OrientationSync/DeferWindowSec/MaxInflight/KeepAliveSec/WheelStepPx/ModifierMap/FullscreenThresholdPercent；**2026-08-20 改按 suite `com.82flex.trollvnc` 读取**（原 standardUserDefaults 无 bundle 进程读不到设置页值）；返回 0=成功 / -1=未知 / -2=无效 |
+| `tvApplyPrefsChanged` / `tvInstallPrefsChangedListener` | L3371 / L3423 | **设置页热重载通道（2026-08-20）**：notify 监听 `com.82flex.trollvnc.prefs-changed` → 重读 suite 热重载 hot/instant 配置（含 Notifications 映射底层开关、OrientationPadFix 重建 framebuffer、NaturalScroll/AutoAssistEnabled/KeyLogging 全局变量） |
+| `tvGetInflightStats(void)` / `tvGetBonjourTXT(void)` | L3289 / L3294 | 公开统计访问，供 sys.* 能力调用 |
 
 **0x50/0x80 扩展操作（14 个 op）**：`cap.hello` / `cap.list` / `screen.hash` / `screen.diff` / `screen.waitStable` / `clients.count` / `clients.list` / `clients.disconnect` / `clients.block` / `clients.unblock` / `clients.blocked.list` / `clipboard.get` / `type.paste` / `config.get`
 
@@ -241,9 +241,9 @@ New project/
 | `- invoke:params:error:` | 查 `_controlCaps[capId]` → 调 `cap.executor(params, error)`；route 类型仅作元数据标记 |
 | `- setConfig:value:error:` | 类型/范围校验 → 写 NSUserDefaults → 按 reload 分发（hot: tvReloadConfigForKey / restart: wd restart / gateway/instant: NSUserDefaultsDidChangeNotification） |
 | `- allControlMetadata` / `- allConfigSchema` / `- currentConfigs` | 供 query 命令返回能力清单/配置 schema/当前值（含 hasPassword 标记） |
-| `- _registerAllCapabilities` | 注册 8 大类：HID/Touch/Native/SettingsActions/LocalCmd/SystemQuery/Gateway/ScreenHash + ConfigSchemas（`_registerConfigSchemas` **35 项**——前端 CONFIG_DEFS 33 项 + BonjourEnabled/ViewOnlyPassword 保留注册不暴露 UI，2026-08-23 定位 +5 SimLocation*） |
-| `- _rfbCommand:params:timeoutMs:error:` (L1682) | 以 JSON {op, params} 封装为 0x50 帧发送到 127.0.0.1:5901，读 0x80 响应 |
-| `static tvRfbConnect(NSError **)` (L1590) | RFB 3.8 握手 + 发送 `cap.hello {mgmt:YES}` 标记管理客户端 |
+| `- _registerAllCapabilities` | 注册 9 大类：HID/Touch/Native/SettingsActions/LocalCmd/SystemQuery/Gateway/ScreenHash/**Vision** + ConfigSchemas（`_registerConfigSchemas` **35 项**——前端 CONFIG_DEFS 33 项 + BonjourEnabled/ViewOnlyPassword 保留注册不暴露 UI，2026-08-23 定位 +5 SimLocation*）；Vision 类（2026-08-28 +vision.ocr/vision.find_text/vision.find_image，LocalCmd 桥接 timeout 12s）+ identity.reset（2026-08-28，Native 直调 TRIdentityReset） |
+| `- _rfbCommand:params:timeoutMs:error:` (L1615) | 以 JSON {op, params} 封装为 0x50 帧发送到 127.0.0.1:5901，读 0x80 响应 |
+| `static tvRfbConnect(NSError **)` (L1523) | RFB 3.8 握手 + 发送 `cap.hello {mgmt:YES}` 标记管理客户端 |
 | `static TRGenerateSelfSignedCert(...)` (L123) | RSA2048 自签 CA 证书（pathLen=0、keyUsage/EKU 齐全） |
 
 **能力分类与路由**：
@@ -321,7 +321,7 @@ New project/
 
 #### 4.1.6 STHIDEventGenerator — IOHID 事件注入器
 
-**文件**：`TrollVNC/src/STHIDEventGenerator.h`（305 行）+ `.mm`（1686 行）
+**文件**：`TrollVNC/src/STHIDEventGenerator.h` + `.mm`
 **类名**：`STHIDEventGenerator`（单例）
 
 **核心职责**：通过 IOKit 私有 API（IOHIDEventCreateKeyboardEvent / IOHIDEventCreateDigitizerEvent 等）注入键盘、触摸、按键、滚轮事件至系统 BackBoard，使所有事件具有真实硬件来源（绕过沙盒限制）；提供触摸/手势/按键的高级 API + 底层事件流；keepAlive 定时器防休眠；管理活动按键/触点状态。
@@ -335,9 +335,11 @@ New project/
 | `- touchDownAtPoints:touchCount:` | 多指异点按下（C 数组，长度≥touchCount） |
 | `- dispatchHandResetEvent` | 发送 HandReset 事件清除所有触点（touch.reset 能力） |
 | `- dispatchEventWithInfo:` | 透传 eventInfo 字典构造任意 IOHIDEvent（touch.event） |
-| `- sendEventStream:` | 按时间轴播放事件流（touch.eventStream，异步线程，支持插值/时间步进） |
-| `- tap/doubleTap/twoFingerTap/threeFingerTap/longPress` | 手势方法 |
-| `- dragLinearWithStartPoint:endPoint:duration:` / `- dragCurveWithStartPoint:endPoint:duration:` | 线性/曲线拖拽 |
+| `- sendEventStream:` | 按时间轴播放事件流（touch.eventStream，异步线程，支持插值/时间步进；humanize 时整流一致性偏移+微噪声） |
+| `- tap/doubleTap/twoFingerTap/threeFingerTap/longPress` | 手势方法（twoFingerTap/threeFingerTap 永不整形——GESTURE_DEFS 画布手势消费方） |
+| `- dragLinearWithStartPoint:endPoint:duration:` / `- dragCurveWithStartPoint:endPoint:duration:` | 线性/曲线拖拽（humanize 时走 minimum-jerk + OU 噪声整形） |
+| `- dragLinearPlainWithStartPoint:endPoint:duration:` | 显式裸拖（永不整形，画布滚轮 wheelFlush 专用） |
+| `- _humanizedTaps/_humanizedDragFrom/_humanizeOffsetForTarget` | **HumanizeTouch（2026-08-28 风控对抗）**：`humanizeEnabled` 粘性开关（默认 NO；注册表 `_registerTouchCapabilities` 与 5802 touch handler 置 YES）——Fitts 偏置误差（σ=clamp(0.12×距离,2,12)px 接近轴 1.4×）、对数正态按压 45~220ms（中位 90ms）、双击间隔安全窗 80-160ms、连点重尾中位 280ms + 6% 犹豫、OU 平滑噪声（θ=8/s std≈0.8px）、down→up 微滑移 ±1.5px；裸原语（ptrAddEvent 路径）永不整形 |
 | `- pinchLinearInBounds:scale:angle:duration:` (L945) | 在 bounds 矩形内执行线性 pinch（scale 0.5~2.0 + angle 弧度） |
 | `- keyDown:` / `- keyUp:` / `- keyPress:` (L1197) | ASCII 键盘（c<128）→ HID usage code 映射（含 Shift 包装判断） |
 | `- menuPress/menuDoublePress/menuLongPress` | Home 键组合 |
@@ -597,7 +599,7 @@ TRMainTabBarController.m       四 Tab 容器（紫色调 RGB 107/78/255，所�
 **关键变量**：
 - `PACKAGE_VERSION := 0.0.1`
 - `TARGET` 选择：模拟器 `simulator:clang:latest:15.0` / 真机无 scheme `iphone:clang:16.5:14.0` / 真机有 scheme `iphone:clang:16.5:15.0`
-- `trollvncserver_FILES`（7 个核心源）：trollvncserver.mm / BulletinManager.mm / ClipboardManager.mm / ScreenCapturer.mm / STHIDEventGenerator.mm / OhMyJetsam.mm / TRScreenHasher.mm
+- `trollvncserver_FILES`（9 个核心源）：trollvncserver.mm / BulletinManager.mm / ClipboardManager.mm / ScreenCapturer.mm / STHIDEventGenerator.mm / OhMyJetsam.mm / TRScreenHasher.mm / TRVisionEngine.mm（Vision OCR + 模板匹配，2026-08-28；FRAMEWORKS +Vision，Accelerate 既有；find_image 多尺度归一 scale 参数 + 返回 width/height 帧尺寸，2026-08-28 优化）/ TRIdentityReset.mm（换号身份锚清理，2026-08-28，与 manager 双 target 编译）
 - `trollvncserver_LIBRARIES`（真机）= crypto lzo2 turbojpeg png18 sasl2 ssl vncserver z；模拟器仅 vncserver z
 - `trollvncserver_FRAMEWORKS` = Accelerate/CoreGraphics/CoreImage/CoreMedia/CoreVideo/Foundation/IOKit/IOSurface/QuartzCore/UIKit/UserNotifications；`PRIVATE_FRAMEWORKS = FrontBoardServices`
 - `THEBOOTSTRAP=1` 时额外编译 `trollvncmanager`（含 trollvncmanager.mm / TRWatchDog.mm / TaskProcess+ObjC.swift / TRGatewayClient.mm / TRCapabilityRegistry.mm / TRTunnelClient.mm 等）

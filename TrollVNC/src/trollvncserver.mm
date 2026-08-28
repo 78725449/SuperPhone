@@ -72,6 +72,8 @@ extern CFTypeRef SecTaskCopyValueForEntitlement(SecTaskRef task, CFStringRef ent
 #import "STHIDEventGenerator.h"
 #import "ScreenCapturer.h"
 #import "TRScreenHasher.h"
+#import "TRVisionEngine.h"
+#import "TRIdentityReset.h"
 #import "TRSelfSignedCert.h"
 #import "TRDataFiller.h"
 #import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
@@ -154,7 +156,10 @@ static char *gSslKeyPath = NULL;
 static SSL_CTX *gSslCtx = NULL;  // 5801/5802 HTTPS 共用 TLS 上下文（有有效证书时初始化，否则服务降级纯 http）
 
 // Bonjour / mDNS Auto-Discovery
-static BOOL gBonjourEnabled = YES; // publish _rfb._tcp (and optional _http._tcp)
+// 2026-08-28 风控收敛：mDNS publish 即广播，默认不发布才不可见（抖音逆向报告 §4 实证
+// 抖音 browse Bonjour/Multipeer 枚举局域网服务）。默认关闭；需要 VNC 局域网自动发现时
+// CLI -B on 或配置显式开启（prefs 显式值仍优先于本默认，读取见 tvLoadConfig）。
+static BOOL gBonjourEnabled = NO; // publish _rfb._tcp (and optional _http._tcp)
 
 // TightVNC 1.x file transfer extension (deprecated)
 static BOOL gFileTransferEnabled = NO;
@@ -358,7 +363,7 @@ static void printUsageAndExit(const char *prog) {
     fprintf(stderr, "  -k file    Path to SSL private key file\n\n");
 
     fprintf(stderr, "Bonjour/mDNS:\n");
-    fprintf(stderr, "  -B on|off  Advertise on local network via Bonjour (_rfb._tcp, _http._tcp) (default: on)\n\n");
+    fprintf(stderr, "  -B on|off  Advertise on local network via Bonjour (_rfb._tcp, _http._tcp) (default: off)\n\n");
 
     fprintf(stderr, "Accessibility:\n");
     fprintf(stderr, "  -O on|off  Observe iOS interface orientation and sync (default: on)\n");
@@ -3086,7 +3091,8 @@ static void wheelScheduleFlush(rfbClientPtr cl, CGPoint anchorPoint, double dela
         if (dur < gWheelDurMin)
             dur = gWheelDurMin;
 
-        [[STHIDEventGenerator sharedGenerator] dragLinearWithStartPoint:anchorPoint endPoint:endPt duration:dur];
+        // 显式裸拖：滚轮是画布（真人）操作，永不走 HumanizeTouch 整形
+        [[STHIDEventGenerator sharedGenerator] dragLinearPlainWithStartPoint:anchorPoint endPoint:endPt duration:dur];
 
         rfbDecrClientRef(cl);
     });
@@ -3592,6 +3598,10 @@ static NSDictionary *tvExtHandleTypePaste(rfbClientPtr cl, NSDictionary *params)
 static NSDictionary *tvExtHandleConfigGet(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleConfigSet(rfbClientPtr cl, NSDictionary *params);
 static NSDictionary *tvExtHandleDataRead(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleVisionOcr(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleVisionFindText(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleVisionFindImage(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleIdentityReset(rfbClientPtr cl, NSDictionary *params);
 // HTTP 管理 API（5802）：首包可能已含部分 body，由 tvHttpApiHandleClient 复用
 static NSData *tvHttpApiReadBodyFromPartial(int fd, SSL *ssl, NSData *partial);
 
@@ -3714,6 +3724,14 @@ static rfbBool tvExtHandleMessage(rfbClientPtr cl, void *data,
         resp = tvExtHandleConfigSet(cl, params);
     } else if ([op isEqualToString:@"data.read"]) {
         resp = tvExtHandleDataRead(cl, params);
+    } else if ([op isEqualToString:@"vision.ocr"]) {
+        resp = tvExtHandleVisionOcr(cl, params);
+    } else if ([op isEqualToString:@"vision.find_text"]) {
+        resp = tvExtHandleVisionFindText(cl, params);
+    } else if ([op isEqualToString:@"vision.find_image"]) {
+        resp = tvExtHandleVisionFindImage(cl, params);
+    } else if ([op isEqualToString:@"identity.reset"]) {
+        resp = tvExtHandleIdentityReset(cl, params);
     } else {
         resp = tvExtErr([NSString stringWithFormat:@"未知操作: %@", op ?: @""]);
     }
@@ -4101,6 +4119,20 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
     } else if ([op isEqualToString:@"netdisguise"]) {
         return tvExtHandleNetdisguise(params);
     }
+    // ===== vision.* 屏幕感知 OCR（2026-08-28，AI 原语：传文字→回坐标；TRVisionEngine 同进程取帧）=====
+    else if ([op isEqualToString:@"vision.ocr"]) {
+        return tvExtHandleVisionOcr(NULL, params);
+    } else if ([op isEqualToString:@"vision.find_text"]) {
+        return tvExtHandleVisionFindText(NULL, params);
+    }
+    // ===== vision.find_image 锚点图匹配（2026-08-28，vImage/vDSP 模板匹配；TRVisionEngine 同进程取帧）=====
+    else if ([op isEqualToString:@"vision.find_image"]) {
+        return tvExtHandleVisionFindImage(NULL, params);
+    }
+    // ===== identity.reset 换号身份锚清理（2026-08-28，TRIdentityReset 同进程 root 执行）=====
+    else if ([op isEqualToString:@"identity.reset"]) {
+        return tvExtHandleIdentityReset(NULL, params);
+    }
     // ===== touch.* 独立触控（2026-08-23，AI 工具/脚本经 5802 HTTP 直接注入，不依赖 5901 RFB 会话）=====
     // 与 TRCapabilityRegistry touch.tap/swipe 契约一致：坐标 0-1 归一化（屏幕比例）。
     // 复用 STHIDEventGenerator（与 type.paste 同进程同模式），换算用其 physicalScreenSize。
@@ -4114,6 +4146,7 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         CGSize sz = [[STHIDEventGenerator sharedGenerator] physicalScreenSize];
         CGPoint pt = CGPointMake(x * sz.width, y * sz.height);
         STHIDEventGenerator *gen = [STHIDEventGenerator sharedGenerator];
+        gen.humanizeEnabled = YES; // HumanizeTouch（2026-08-28）：5802 触摸=自动化入口，开启行为整形（画布路径不受影响）
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{ [gen tap:pt]; });
         return tvExtOk(@{});
     } else if ([op isEqualToString:@"touch.swipe"]) {
@@ -4127,6 +4160,7 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         CGPoint a = CGPointMake(x1n.doubleValue * sz.width, y1n.doubleValue * sz.height);
         CGPoint b = CGPointMake(x2n.doubleValue * sz.width, y2n.doubleValue * sz.height);
         STHIDEventGenerator *gen = [STHIDEventGenerator sharedGenerator];
+        gen.humanizeEnabled = YES; // HumanizeTouch（2026-08-28）：同上
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0),
                        ^{ [gen dragLinearWithStartPoint:a endPoint:b duration:dur]; });
         return tvExtOk(@{});
@@ -4797,6 +4831,111 @@ static BOOL tvDisconnectRemoteClients(void) {
         rfbCloseClient((rfbClientPtr)v.pointerValue);
     }
     return YES;
+}
+
+// --- vision.* 屏幕感知 OCR（2026-08-28，TRVisionEngine 同进程取帧；cl 未使用）---
+
+/** 处理 vision.ocr：当前屏幕中文 OCR（VNRecognizeTextRequest .accurate，zh-Hans+en-US）
+ *  - params[@"region"] 可选 0-1 归一化 {x,y,w,h} 过滤区（bbox 中心判定），缺省全屏
+ *  @return {ok, count, texts:[{text,x,y,w,h,cx,cy,confidence}], width, height, durationMs}
+ *          坐标全部 0-1 归一化左上原点，cx/cy=中心（上层 find_and_click 的点击目标点）
+ */
+static NSDictionary *tvExtHandleVisionOcr(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    CGSize frameSize = CGSizeZero;
+    NSTimeInterval durationMs = 0;
+    NSError *err = nil;
+    NSArray *rows = [[TRVisionEngine sharedEngine] recognizeScreenTextWithRegion:params[@"region"]
+                                                                       frameSize:&frameSize
+                                                                      durationMs:&durationMs
+                                                                           error:&err];
+    if (!rows) return tvExtErr(err.localizedDescription ?: @"OCR 失败");
+    return tvExtOk(@{@"count": @(rows.count), @"texts": rows,
+                     @"width": @(frameSize.width), @"height": @(frameSize.height),
+                     @"durationMs": @(round(durationMs))});
+}
+
+/** 处理 vision.find_text：OCR 全屏后按文本匹配（机械匹配原语，语义判断不在手机端）
+ *  - params[@"text"]   必填，匹配目标（两端去除空白后比对，规避 OCR 空格噪声）
+ *  - params[@"exact"]  可选，YES=全等匹配（默认 NO=包含匹配）
+ *  - params[@"region"] 可选 0-1 过滤区
+ *  @return {ok, found, count, matches:[{text,x,y,w,h,cx,cy,confidence}], durationMs}（≤20 条）
+ */
+static NSDictionary *tvExtHandleVisionFindText(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    NSString *needle = params[@"text"];
+    if (![needle isKindOfClass:[NSString class]] || needle.length == 0)
+        return tvExtErr(@"缺少参数 text");
+    BOOL exact = [params[@"exact"] boolValue];
+    CGSize frameSize = CGSizeZero;
+    NSTimeInterval durationMs = 0;
+    NSError *err = nil;
+    NSArray *rows = [[TRVisionEngine sharedEngine] recognizeScreenTextWithRegion:params[@"region"]
+                                                                       frameSize:&frameSize
+                                                                      durationMs:&durationMs
+                                                                           error:&err];
+    if (!rows) return tvExtErr(err.localizedDescription ?: @"OCR 失败");
+    NSString *normNeedle = [[needle componentsSeparatedByCharactersInSet:
+        [NSCharacterSet whitespaceCharacterSet]] componentsJoinedByString:@""];
+    NSMutableArray *matches = [NSMutableArray array];
+    for (NSDictionary *row in rows) {
+        NSString *text = row[@"text"];
+        NSString *norm = [[text componentsSeparatedByCharactersInSet:
+            [NSCharacterSet whitespaceCharacterSet]] componentsJoinedByString:@""];
+        BOOL hit = exact ? [norm isEqualToString:normNeedle] : [norm containsString:normNeedle];
+        if (hit) {
+            [matches addObject:row];
+            if (matches.count >= 20) break;
+        }
+    }
+    return tvExtOk(@{@"found": @(matches.count > 0), @"count": @(matches.count),
+                     @"matches": matches, @"durationMs": @(round(durationMs)),
+                     @"width": @(frameSize.width), @"height": @(frameSize.height)});
+}
+
+// --- vision.find_image 锚点图匹配（2026-08-28，vImage/vDSP 自实现模板匹配；cl 未使用）---
+
+/** 处理 vision.find_image：在屏幕上定位传入的锚点小图
+ *  - params[@"image"]     必填 base64（PNG/JPEG，≤256KB；全屏匹配锚点，模板 ≥32px）
+ *  - params[@"threshold"] 可选 0-1（默认 0.7；归一化相关分值，抗亮度/对比度变化）
+ *  - params[@"region"]    可选 0-1 {x,y,w,h} 搜索区
+ *  - params[@"scale"]     可选 模板相对本机原生分辨率比例（[0.25,4]，默认 1.0；云端缩略图 0.5x → 0.5——多尺度归一）
+ *  管线：灰度 → 多尺度归一（scale 单次自适应缩放）→ 1/8 金字塔（模板同步）→ 模板翻转 → vDSP_convD 相关图
+ *        → NCCC（SAT 局部均值/方差）→ 粗定位 → 原尺寸 ±48px ROI 精匹配 → 阈值判定。
+ *  @return {ok, found, score, x, y, w, h, width, height, threshold, durationMs}
+ *          （x/y=匹配中心 0-1，w/h=矩形 0-1；width/height=帧像素尺寸，编排层跨 op 帧一致性校验）
+ *          found=NO 时 score=实际最高分（<threshold）；参数/取帧错误返回 {ok:NO, error}
+ */
+static NSDictionary *tvExtHandleVisionFindImage(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    NSString *image = params[@"image"];
+    if (![image isKindOfClass:[NSString class]] || image.length == 0)
+        return tvExtErr(@"缺少参数 image（base64）");
+    double threshold = [params[@"threshold"] doubleValue];
+    double scale = [params[@"scale"] doubleValue];
+    NSError *err = nil;
+    NSDictionary *result = [[TRVisionEngine sharedEngine] findImageWithTemplateBase64:image
+                                                                           threshold:threshold
+                                                                              region:params[@"region"]
+                                                                               scale:scale
+                                                                                error:&err];
+    if (!result) return tvExtErr(err.localizedDescription ?: @"vision.find_image 失败");
+    return tvExtOk(result);
+}
+
+// --- identity.reset 换号身份锚清理（2026-08-28，TRIdentityReset 同进程 root 执行；cl 未使用）---
+
+/** 处理 identity.reset：分层清理指定 App 的 Keychain 身份项与本地残留
+ *  - params[@"bundleId"] 必填（反向域名，唯一操作边界）
+ *  - params[@"mode"]     @"dryrun"（预览）/ @"commit"（执行），缺省 dryrun
+ *  @return {ok, bundleId, mode, tier, secitem{}, keychain{}, container{}, warnings[], sop[]}
+ *          tier = secitem / keychain-db / container / sop / none（dryrun 时为 none）
+ */
+static NSDictionary *tvExtHandleIdentityReset(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    NSString *bundleId = params[@"bundleId"];
+    NSString *mode = params[@"mode"] ?: @"dryrun";
+    return [TRIdentityReset resetForBundleId:bundleId mode:mode];
 }
 
 // --- RFB 扩展 handler 实现（screen.* / clients.*，复用上方辅助函数，前向声明见任务 1）---

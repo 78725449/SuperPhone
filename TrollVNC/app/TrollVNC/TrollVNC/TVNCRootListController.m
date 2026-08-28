@@ -37,6 +37,7 @@
 // 仅 App（bootstrap tipa）：prefs bundle（越狱设置页）无 spawn root 能力，不编 Coordinator
 //（2026-08-20 编译分叉修复：symlink 共享源码后 prefs 侧曾因 import 链断链编译失败）
 #ifdef THEBOOTSTRAP
+#import "BRPickerView/BRTextPickerView.h" // 清理残留（identity.reset）目标应用选择器（仅 App 编译）
 #import "TVNCServiceCoordinator.h"
 // 2026-08-21 连接网关/桥接网关按钮文字动态化（设计文档 7.4）：TVNCAppStore 为 App 进程单例，
 // prefs bundle（Preferences.app 进程）不编译 TVNCAppStore（见 prefs Makefile），须条件编译隔离
@@ -765,6 +766,103 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     return build.length ? [NSString stringWithFormat:@"v%@ (%@)", ver, build] : ver;
 }
 
+- (void)cleanResidues {
+    // 换号身份锚清理（identity.reset，2026-08-28）：设置页一键入口 —— 选 App → 确认 → 5802 commit。
+    // 执行体在 root daemon（TRIdentityReset），App 仅消费 5802 本地通道（无权限直写 keychain-2.db）。
+    __weak typeof(self) weakSelf = self;
+    [self _identityPost:@{@"op": @"app.list", @"params": @{}} completion:^(NSDictionary *resp, NSString *errMsg) {
+        NSArray *apps = resp[@"apps"];
+        if (errMsg || ![apps isKindOfClass:[NSArray class]] || apps.count == 0) {
+            UIAlertController *fail = [UIAlertController alertControllerWithTitle:@"清理残留"
+                message:(errMsg ?: @"未获取到应用列表（服务未运行或无用户应用）")
+                preferredStyle:UIAlertControllerStyleAlert];
+            [fail addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+            [weakSelf presentViewController:fail animated:YES completion:nil];
+            return;
+        }
+#ifdef THEBOOTSTRAP
+        NSMutableArray<NSString *> *names = [NSMutableArray array];
+        NSMutableDictionary<NSString *, NSString *> *nameToBundle = [NSMutableDictionary dictionary];
+        for (NSDictionary *app in apps) {
+            NSString *bid = app[@"bundleId"];
+            NSString *name = ([app[@"name"] isKindOfClass:[NSString class]] && app[@"name"].length) ? app[@"name"] : bid;
+            if (![bid isKindOfClass:[NSString class]] || !bid.length) continue;
+            [names addObject:name];
+            nameToBundle[name] = bid;
+        }
+        BRTextPickerView *picker = [[BRTextPickerView alloc] initWithPickerMode:BRTextPickerComponentSingle];
+        picker.dataSourceArr = names;
+        picker.title = @"选择要清理残留的应用";
+        picker.singleResultBlock = ^(BRTextModel *model, NSInteger index) {
+            NSString *bundleId = nameToBundle[model.text];
+            if (!bundleId.length) return;
+            UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"清理残留"
+                message:[NSString stringWithFormat:@"将清理「%@」(%@) 的 Keychain 身份项与本地残留。\n不可恢复；securityd 缓存可能需重启设备后完全生效。", model.text, bundleId]
+                preferredStyle:UIAlertControllerStyleAlert];
+            [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+            [confirm addAction:[UIAlertAction actionWithTitle:@"清理" style:UIAlertActionStyleDestructive
+                handler:^(UIAlertAction *action) {
+                    [weakSelf _identityPost:@{@"op": @"identity.reset", @"params": @{@"bundleId": bundleId, @"mode": @"commit"}}
+                        completion:^(NSDictionary *result, NSString *err2) {
+                            NSMutableString *msg = [NSMutableString string];
+                            if (err2) {
+                                [msg appendFormat:@"失败：%@", err2];
+                            } else if (![result[@"ok"] boolValue]) {
+                                [msg appendFormat:@"失败：%@", result[@"error"] ?: @"未知错误"];
+                            } else {
+                                [msg appendFormat:@"完成（层级 %@）。", result[@"tier"] ?: @""];
+                                if ([result[@"tier"] isEqualToString:@"sop"])
+                                    [msg appendString:@"\n未发现可自动清理的残留——建议：卸载重装 + 重置广告标识符。"];
+                                for (NSString *w in result[@"warnings"]) [msg appendFormat:@"\n• %@", w];
+                            }
+                            UIAlertController *done = [UIAlertController alertControllerWithTitle:@"清理残留"
+                                message:msg preferredStyle:UIAlertControllerStyleAlert];
+                            [done addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+                            [weakSelf presentViewController:done animated:YES completion:nil];
+                        }];
+            }]];
+            [weakSelf presentViewController:confirm animated:YES completion:nil];
+        };
+        [picker show];
+#else
+        // prefs bundle（越狱设置页）上下文：BRPickerView 不在该 target 编译，引导回 App 内使用
+        UIAlertController *tip = [UIAlertController alertControllerWithTitle:@"清理残留"
+            message:@"请在 SuperPhone App 的设置页中使用此功能（需选择目标应用）。"
+            preferredStyle:UIAlertControllerStyleAlert];
+        [tip addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+        [weakSelf presentViewController:tip animated:YES completion:nil];
+#endif
+    }];
+}
+
+/** 5802 本地管理 API 调用（清理残留专用；127.0.0.1 环回 + ATS NSAllowsArbitraryLoads 放行） */
+- (void)_identityPost:(NSDictionary *)body completion:(void (^)(NSDictionary *resp, NSString *errMsg))completion {
+    NSURL *url = [NSURL URLWithString:@"http://127.0.0.1:5802/"];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.HTTPMethod = @"POST";
+    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    req.timeoutInterval = 15.0;
+    NSError *jerr = nil;
+    req.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:&jerr];
+    if (jerr || !req.HTTPBody) {
+        completion(nil, @"请求序列化失败");
+        return;
+    }
+    [[NSURLSession sharedSession] dataTaskWithRequest:req
+        completionHandler:^(NSData *data, NSURLResponse *response, NSError *err) {
+            if (err) {
+                completion(nil, err.localizedDescription ?: @"服务未运行");
+                return;
+            }
+            NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            if (![json isKindOfClass:[NSDictionary class]]) {
+                completion(nil, @"响应解析失败");
+                return;
+            }
+            completion(json, nil);
+        }] resume];
+}
+
 - (void)resetDefaults {
     NSString *title = NSLocalizedStringFromTableInBundle(@"Reset to Defaults", @"Localizable", self.bundle, nil);
     NSString *message = NSLocalizedStringFromTableInBundle(
@@ -804,7 +902,9 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     if (gatewayHost.length) [defs setObject:gatewayHost forKey:@"GatewayHost"];
     if (gatewayToken.length) [defs setObject:gatewayToken forKey:@"GatewayToken"];
     [defs setObject:@"relay" forKey:@"ConnectionMode"];
-    [defs setBool:YES forKey:@"BonjourEnabled"];
+    // 2026-08-28 风控收敛：Bonjour 默认关闭（原为 YES 安全默认）——mDNS publish 即广播，
+    // 默认不发布不可见；重置后与内建默认（trollvncserver.mm gBonjourEnabled=NO）对齐，勿改回
+    [defs setBool:NO forKey:@"BonjourEnabled"];
     [defs setInteger:60 forKey:@"WatchdogThrottleInterval"];
     [defs setInteger:3 forKey:@"WatchdogExitTimeout"];
     [defs synchronize];

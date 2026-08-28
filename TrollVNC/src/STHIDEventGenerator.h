@@ -110,6 +110,12 @@ __used NS_INLINE void STAccurateSleep(NSTimeInterval seconds) {
 // Keep-Alive: interval in seconds. 0 disables the timer (default 0).
 @property (nonatomic) NSTimeInterval keepAliveInterval;
 
+// HumanizeTouch（2026-08-28 风控对抗）：YES 时自动化入口的高层手势（tap/doubleTap/sendTaps/
+// longPress/dragLinear/dragCurve/touch.down/up/eventStream）经行为整形注入；
+// 永不整形：画布 RFB 指针（ptrAddEvent 裸原语）、画布手势消费方（twoFingerTap/threeFingerTap/
+// pinch——GESTURE_DEFS 经 invoke 进入属真人画布操作）、滚轮 dragLinearPlain。默认 NO。
+@property (nonatomic, assign) BOOL humanizeEnabled;
+
 // 触摸注入坐标空间（屏幕物理像素，竖屏语义，含 OrientationPadFix 交换；与捕获侧 gSrcWidth/gSrcHeight 同源）
 @property (nonatomic, readonly) CGSize physicalScreenSize;
 
@@ -180,6 +186,9 @@ __used NS_INLINE void STAccurateSleep(NSTimeInterval seconds) {
 
 // sync seconds
 - (void)dragCurveWithStartPoint:(CGPoint)startLocation endPoint:(CGPoint)endLocation duration:(NSTimeInterval)seconds;
+
+// sync seconds —— 显式裸拖（永不整形）：画布滚轮模拟通道（wheelFlush）专用
+- (void)dragLinearPlainWithStartPoint:(CGPoint)startLocation endPoint:(CGPoint)endLocation duration:(NSTimeInterval)seconds;
 
 /* MARK: --- Pinches --- */
 

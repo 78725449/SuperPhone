@@ -29,6 +29,10 @@ trollvncserver_FILES += src/ScreenCapturer.mm
 trollvncserver_FILES += src/STHIDEventGenerator.mm
 trollvncserver_FILES += src/OhMyJetsam.mm
 trollvncserver_FILES += src/TRScreenHasher.mm
+# Vision OCR 引擎（vision.ocr / vision.find_text；仅 server 编译——帧源在 trollvncserver 进程，注册表经 LocalCmd 桥接）
+trollvncserver_FILES += src/TRVisionEngine.mm
+# 换号身份锚清理（identity.reset；manager/server 双 root 进程等价执行，共享单一实现）
+trollvncserver_FILES += src/TRIdentityReset.mm
 trollvncserver_FILES += src/TRSelfSignedCert.mm
 # 共享模块（App 伪装页 / server / manager 三 target 各自编译同一份源码，写库单一实现）
 trollvncserver_FILES += src/CoordTransform.mm
@@ -103,6 +107,7 @@ trollvncserver_FRAMEWORKS += QuartzCore
 trollvncserver_FRAMEWORKS += Security
 trollvncserver_FRAMEWORKS += UIKit
 trollvncserver_FRAMEWORKS += UserNotifications
+trollvncserver_FRAMEWORKS += Vision
 
 trollvncserver_PRIVATE_FRAMEWORKS += FrontBoardServices
 
@@ -150,6 +155,8 @@ trollvncmanager_FILES += src/TRWifiScanContract.mm
 trollvncmanager_FILES += src/TRSimContract.mm
 # 每日轨迹（2026-08-26）：manager daemon 自治的每日通话/短信/未接 + 每周联系人（真人行为模拟）
 trollvncmanager_FILES += src/TRDailyTrajectory.mm
+# 换号身份锚清理（identity.reset：注册表 Native executor 直调，manager 为 root）
+trollvncmanager_FILES += src/TRIdentityReset.mm
 # 数据填充构建产物（corpus.js/数据源 → ObjC 常量，勿手改）
 trollvncmanager_FILES += src/TRCorpus.mm
 trollvncmanager_FILES += src/TRAreaCodes.mm

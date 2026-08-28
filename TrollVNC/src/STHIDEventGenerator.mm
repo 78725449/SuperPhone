@@ -33,6 +33,28 @@ static const NSTimeInterval fingerLiftDelay = 0.05;
 static const NSTimeInterval multiTapInterval = 0.15;
 static const NSTimeInterval fingerMoveInterval = 0.016;
 static const NSTimeInterval longPressHoldDelay = 2.0;
+
+// ===== HumanizeTouch（2026-08-28 风控对抗基线，用户定稿）=====
+// 范围：仅自动化入口调用的高层手势（tap/doubleTap/sendTaps/longPress/dragLinear/dragCurve/
+// touch.down/up/eventStream + 5802 touch.tap/swipe）。永不整形：画布 RFB 指针（ptrAddEvent
+// 裸原语）、画布手势消费方（twoFingerTap/threeFingerTap/pinch——GESTURE_DEFS 经 invoke 进入，
+// 属真人画布操作红线）、滚轮 dragLinearPlain。
+// 增强对抗（均匀分布/零记忆随机本身是机器签名）：Fitts 偏置空间误差 + 对数正态时长 +
+// 重尾连点间隔（对数正态近似，含个体节奏与偶发犹豫）+ minimum-jerk 速度剖面 + OU 平滑
+// 噪声（相关噪声；逐点独立白噪声抖动同样是序列可抓特征）+ down→up 微滑移。
+static const NSTimeInterval kHumanizePressMedian = 0.09;        // 按压时长对数正态中位数 ~90ms
+static const CGFloat kHumanizePressSigma = 0.35;
+static const NSTimeInterval kHumanizePressMin = 0.045;          // 下限（tap 判定安全）
+static const NSTimeInterval kHumanizePressMax = 0.22;           // 上限
+static const CGFloat kHumanizeOffsetSigmaPerPx = 0.12;          // Fitts：σ 随移动距离缩放
+static const CGFloat kHumanizeOffsetSigmaMin = 2.0;             // 2px 下限
+static const CGFloat kHumanizeOffsetSigmaMax = 12.0;            // 12px 上限
+static const NSTimeInterval kHumanizeDoubleTapGapMin = 0.08;    // 双击间隔安全窗（系统窗 ~250ms）
+static const NSTimeInterval kHumanizeDoubleTapGapMax = 0.16;
+static const NSTimeInterval kHumanizeRepeatGapMedian = 0.28;    // 连点间隔重尾中位 ~280ms
+static const CGFloat kHumanizeHesitationProb = 0.06;            // 偶发犹豫概率（+0.4~0.9s）
+static const CGFloat kHumanizeMicroSlipMax = 1.5;               // down→up 微滑移 ±px
+static const CGFloat kHumanizeDurationSigma = 0.2;              // 手势时长对数抖动 σ
 static const IOHIDFloat defaultMajorRadius = 5;
 static const IOHIDFloat defaultPathPressure = 0;
 static const long nanosecondsPerSecond = 1e9;
@@ -104,6 +126,27 @@ NS_INLINE void delayBetweenMove(int eventIndex, double elapsed) {
 
 NS_INLINE CGFloat clampCGFloat(CGFloat v, CGFloat min, CGFloat max) { return MIN(MAX(v, min), max); }
 
+#pragma mark - HumanizeTouch 随机源（arc4random 线程安全，无需播种）
+
+static double trHRandom01(void) { return (double)arc4random() / ((double)UINT32_MAX + 1.0); }
+
+/** Box-Muller 标准正态 */
+static double trHGaussian(void) {
+    double u1 = trHRandom01(), u2 = trHRandom01();
+    if (u1 < 1e-12) u1 = 1e-12;
+    return sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
+}
+
+/** 对数正态（真人重尾分布），钳制 [minV, maxV] */
+static NSTimeInterval trHLogNormal(double median, double sigma, double minV, double maxV) {
+    double v = median * exp(sigma * trHGaussian());
+    return (NSTimeInterval)MIN(maxV, MAX(minV, v));
+}
+
+static CGPoint trHClampPoint(CGPoint p, CGSize sz) {
+    return CGPointMake(MIN(MAX(0.0, p.x), sz.width - 1.0), MIN(MAX(0.0, p.y), sz.height - 1.0));
+}
+
 NS_INLINE void _DTXCalcLinearPinchStartEndPoints(CGRect bounds, CGFloat pixelsScale, CGFloat angle,
                                                  CGPoint *startPoint1, CGPoint *endPoint1, CGPoint *startPoint2,
                                                  CGPoint *endPoint2) {
@@ -142,7 +185,16 @@ NS_INLINE void _DTXCalcLinearPinchStartEndPoints(CGRect bounds, CGFloat pixelsSc
     dispatch_queue_t _hidEventQueue;
     NSTimeInterval _keepAliveInterval;
     NSTimer *_keepAliveTimer;
+    // HumanizeTouch 状态（2026-08-28 风控对抗）：仅自动化入口路径消费；启动期一次性置位，无并发写
+    BOOL _humanizeEnabled;
+    CGPoint _humanizeLastContact;      // 上次整形触点（Fitts 方向偏置基准）
+    BOOL _humanizeHasLastContact;
+    CGPoint _humanizeContactOffset;    // touch.down 选定的一致性接触偏移（touch.up/eventStream 复用）
+    BOOL _humanizeHasContactOffset;
+    double _humanizeOux, _humanizeOuy; // 拖动 OU 平滑噪声状态
 }
+
+@synthesize humanizeEnabled = _humanizeEnabled;
 
 + (STHIDEventGenerator *)sharedGenerator {
     static STHIDEventGenerator *_eventGenerator = nil;
@@ -640,6 +692,15 @@ static void _sendHIDEvent(IOHIDEventRef eventRef, dispatch_queue_t queue) {
 }
 
 - (void)touchDown:(CGPoint)location {
+    if (_humanizeEnabled) {
+        // 一致性接触偏移：down 选定、eventStream 与 up 复用（保持 down→流→up 全程同一接触点）
+        CGPoint off = [self _humanizeOffsetForTarget:location];
+        _humanizeContactOffset = CGPointMake(off.x - location.x, off.y - location.y);
+        _humanizeHasContactOffset = YES;
+        _humanizeLastContact = off;
+        _humanizeHasLastContact = YES;
+        location = off;
+    }
     [self touchDownAtPoints:&location touchCount:1];
     [self sendMarkerHIDEvent];
 }
@@ -687,6 +748,12 @@ static void _sendHIDEvent(IOHIDEventRef eventRef, dispatch_queue_t queue) {
 }
 
 - (void)liftUp:(CGPoint)location {
+    if (_humanizeEnabled && _humanizeHasContactOffset) {
+        // 复用 down 的一致性接触偏移 + 微滑移
+        location = [self _humanizeSlippedPoint:CGPointMake(location.x + _humanizeContactOffset.x,
+                                                          location.y + _humanizeContactOffset.y)];
+    }
+    _humanizeHasContactOffset = NO;
     [self _liftUp:location touchCount:1];
     [self sendMarkerHIDEvent];
 }
@@ -869,46 +936,257 @@ static void _sendHIDEvent(IOHIDEventRef eventRef, dispatch_queue_t queue) {
     }
 }
 
+#pragma mark - HumanizeTouch（2026-08-28 风控对抗基线）
+
+/** Fitts 偏置空间误差：σ 随与上次触点的距离缩放，沿接近轴各向异性（轴 1.4×/垂直 0.7×） */
+- (CGPoint)_humanizeOffsetForTarget:(CGPoint)target {
+    CGSize sz = _physicalScreenSize;
+    double d = 0.0, dirX = 0.0, dirY = 0.0;
+    if (_humanizeHasLastContact) {
+        double dx = target.x - _humanizeLastContact.x, dy = target.y - _humanizeLastContact.y;
+        d = sqrt(dx * dx + dy * dy);
+        if (d > 1.0) { dirX = dx / d; dirY = dy / d; }
+    }
+    double sigma = MIN(kHumanizeOffsetSigmaMax, MAX(kHumanizeOffsetSigmaMin, kHumanizeOffsetSigmaPerPx * d));
+    double along = trHGaussian() * sigma * 1.4;
+    double perp = trHGaussian() * sigma * 0.7;
+    return trHClampPoint(CGPointMake(target.x + dirX * along - dirY * perp,
+                                     target.y + dirY * along + dirX * perp), sz);
+}
+
+/** 微滑移落点（down→up ±1.5px 漂移） */
+- (CGPoint)_humanizeSlippedPoint:(CGPoint)p {
+    CGSize sz = _physicalScreenSize;
+    return trHClampPoint(CGPointMake(p.x + (trHRandom01() * 2.0 - 1.0) * kHumanizeMicroSlipMax,
+                                     p.y + (trHRandom01() * 2.0 - 1.0) * kHumanizeMicroSlipMax), sz);
+}
+
+/** 按压保持时长：对数正态（真人重尾），钳制在 tap 判定安全窗 */
+- (NSTimeInterval)_humanizePressDuration {
+    return trHLogNormal(kHumanizePressMedian, kHumanizePressSigma, kHumanizePressMin, kHumanizePressMax);
+}
+
+/** 连点间隔：双击走安全窗 80-160ms；自定义 delay × 对数抖动；否则重尾分布 + 偶发犹豫 */
+- (NSTimeInterval)_humanizeGapForSequence:(NSUInteger)tapCount customDelay:(NSTimeInterval)delay {
+    if (tapCount == 2 && delay <= 0.0)
+        return kHumanizeDoubleTapGapMin + trHRandom01() * (kHumanizeDoubleTapGapMax - kHumanizeDoubleTapGapMin);
+    NSTimeInterval gap;
+    if (delay > 0.0)
+        gap = (NSTimeInterval)MAX(delay * 0.75, MIN(delay * 1.5, delay * exp(kHumanizeDurationSigma * trHGaussian())));
+    else
+        gap = trHLogNormal(kHumanizeRepeatGapMedian, 0.35, 0.15, 0.5);
+    if (trHRandom01() < kHumanizeHesitationProb)
+        gap += 0.4 + trHRandom01() * 0.5;
+    return gap;
+}
+
+/** 整形版连点序列：逐次 Fitts 偏移落点 + 对数正态按压 + 重尾间隔 + 微滑移 */
+- (void)_humanizedTaps:(NSUInteger)tapCount location:(CGPoint)location
+       numberOfTouches:(NSUInteger)touchCount customDelay:(NSTimeInterval)delay {
+    for (NSUInteger i = 0; i < tapCount; i++) {
+        CGPoint down = [self _humanizeOffsetForTarget:location];
+        CGPoint up = [self _humanizeSlippedPoint:down];
+        [self _touchDown:down touchCount:touchCount];
+        struct timespec pressDelay = {0, (long)([self _humanizePressDuration] * nanosecondsPerSecond)};
+        nanosleep(&pressDelay, 0);
+        [self _liftUp:up touchCount:touchCount];
+        if (i + 1 != tapCount) {
+            struct timespec gapDelay = {0, (long)([self _humanizeGapForSequence:tapCount customDelay:delay] * nanosecondsPerSecond)};
+            nanosleep(&gapDelay, 0);
+        }
+        _humanizeLastContact = up;
+        _humanizeHasLastContact = YES;
+    }
+}
+
+/** 整形版拖动：Fitts 端点偏移 + minimum-jerk 速度剖面 + OU 平滑噪声 + 时长对数抖动 + 微滑移收尾 */
+- (void)_humanizedDragFrom:(CGPoint)startLocation to:(CGPoint)endLocation duration:(NSTimeInterval)seconds {
+    CGPoint s = [self _humanizeOffsetForTarget:startLocation];
+    CGPoint e = [self _humanizeOffsetForTarget:endLocation];
+    NSTimeInterval dur = (NSTimeInterval)MIN(seconds * 1.5, MAX(seconds * 0.75,
+                           seconds * exp(kHumanizeDurationSigma * trHGaussian())));
+    if (dur < 0.05) dur = 0.05;
+    _humanizeOux = 0.0;
+    _humanizeOuy = 0.0;
+    // OU 参数：θ=8/s（相关时间 ~125ms）、稳态 std≈0.8px（σ_static=std·√(2θ)≈3.2）
+    const double theta = 8.0, ouSigma = 3.2, dt = fingerMoveInterval;
+    [self _touchDown:s touchCount:1];
+    CFAbsoluteTime startTime = CFAbsoluteTimeGetCurrent();
+    int eventIndex = 0;
+    double elapsed = CFAbsoluteTimeGetCurrent() - startTime;
+    while (elapsed < (dur - fingerMoveInterval)) {
+        elapsed = CFAbsoluteTimeGetCurrent() - startTime;
+        double t = elapsed / dur;
+        if (t > 1.0) t = 1.0;
+        double tau2 = t * t, tau3 = tau2 * t, tau4 = tau3 * t, tau5 = tau4 * t;
+        double ease = 10.0 * tau3 - 15.0 * tau4 + 6.0 * tau5;   // minimum-jerk
+        _humanizeOux += -theta * _humanizeOux * dt + ouSigma * sqrt(dt) * trHGaussian();
+        _humanizeOuy += -theta * _humanizeOuy * dt + ouSigma * sqrt(dt) * trHGaussian();
+        CGPoint p = trHClampPoint(CGPointMake(s.x + (e.x - s.x) * ease + _humanizeOux,
+                                              s.y + (e.y - s.y) * ease + _humanizeOuy), _physicalScreenSize);
+        [self _updateTouchPoints:&p count:1];
+        delayBetweenMove(eventIndex++, CFAbsoluteTimeGetCurrent() - startTime);
+    }
+    [self _updateTouchPoints:&e count:1];
+    CGPoint up = [self _humanizeSlippedPoint:e];
+    [self _liftUp:up touchCount:1];
+    _humanizeLastContact = up;
+    _humanizeHasLastContact = YES;
+}
+
+/** 事件流单事件变换：整条流一个一致性偏移（保持相对几何）+ 触点微噪声；不改时间轴 */
+- (NSDictionary *)_humanizeTransformEvent:(NSDictionary *)ev offset:(CGPoint)offset {
+    if (![ev isKindOfClass:[NSDictionary class]]) return ev;
+    NSMutableDictionary *m = [ev mutableCopy];
+    NSArray *touches = m[HIDEventTouchesKey];
+    if ([touches isKindOfClass:[NSArray class]]) {
+        NSMutableArray *mt = [NSMutableArray arrayWithCapacity:touches.count];
+        for (NSDictionary *t in touches) {
+            if (![t isKindOfClass:[NSDictionary class]]) { [mt addObject:t]; continue; }
+            NSMutableDictionary *mti = [t mutableCopy];
+            NSNumber *x = mti[HIDEventXKey], *y = mti[HIDEventYKey];
+            if ([x isKindOfClass:[NSNumber class]] && [y isKindOfClass:[NSNumber class]]) {
+                mti[HIDEventXKey] = @(x.doubleValue + offset.x + trHGaussian() * 0.8);
+                mti[HIDEventYKey] = @(y.doubleValue + offset.y + trHGaussian() * 0.8);
+            }
+            [mt addObject:mti];
+        }
+        m[HIDEventTouchesKey] = mt;
+    }
+    return m;
+}
+
+/** 事件流整形：偏移基准 = 流内首个触点；若此前已有 touch.down（接触偏移在册）则复用同一偏移 */
+- (NSDictionary *)_humanizedEventStream:(NSDictionary *)eventInfo {
+    if (![eventInfo isKindOfClass:[NSDictionary class]]) return eventInfo;
+    CGSize sz = _physicalScreenSize;
+    NSMutableDictionary *inner = [eventInfo mutableCopy];
+    CGPoint first = CGPointMake(sz.width / 2.0, sz.height / 2.0);
+    BOOL found = NO;
+    NSArray *events = inner[SecondLevelEventsKey];
+    if ([events isKindOfClass:[NSArray class]]) {
+        for (NSDictionary *ev in events) {
+            if (![ev isKindOfClass:[NSDictionary class]]) continue;
+            NSArray *touches = ev[HIDEventTouchesKey];
+            if (![touches isKindOfClass:[NSArray class]]) continue;
+            for (NSDictionary *t in touches) {
+                NSNumber *x = t[HIDEventXKey], *y = t[HIDEventYKey];
+                if ([x isKindOfClass:[NSNumber class]] && [y isKindOfClass:[NSNumber class]]) {
+                    first = CGPointMake(x.doubleValue, y.doubleValue);
+                    found = YES;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+    }
+    CGPoint offset;
+    if (_humanizeHasContactOffset) {
+        offset = _humanizeContactOffset;   // 与已按下的 touch.down 保持同一接触偏移（down→流→up 全程一致）
+    } else {
+        CGPoint anchor = [self _humanizeOffsetForTarget:first];
+        offset = CGPointMake(anchor.x - first.x, anchor.y - first.y);
+    }
+    if ([events isKindOfClass:[NSArray class]]) {
+        NSMutableArray *out = [NSMutableArray arrayWithCapacity:events.count];
+        for (NSDictionary *ev in events)
+            [out addObject:[self _humanizeTransformEvent:ev offset:offset]];
+        inner[SecondLevelEventsKey] = out;
+    }
+    id startEvent = inner[HIDEventStartEventKey];
+    if ([startEvent isKindOfClass:[NSDictionary class]])
+        inner[HIDEventStartEventKey] = [self _humanizeTransformEvent:startEvent offset:offset];
+    id endEvent = inner[HIDEventEndEventKey];
+    if ([endEvent isKindOfClass:[NSDictionary class]])
+        inner[HIDEventEndEventKey] = [self _humanizeTransformEvent:endEvent offset:offset];
+    return inner;
+}
+
 - (void)sendTaps:(NSUInteger)tapCount
             location:(CGPoint)location
      numberOfTouches:(NSUInteger)touchCount
     delayBetweenTaps:(NSTimeInterval)delay {
     NSParameterAssert(delay > 0.0);
+    if (_humanizeEnabled) {
+        [self _humanizedTaps:tapCount location:location numberOfTouches:touchCount customDelay:delay];
+        [self sendMarkerHIDEvent];
+        return;
+    }
     [self _sendTaps:tapCount location:location numberOfTouches:touchCount delayBetweenTaps:delay];
     [self sendMarkerHIDEvent];
 }
 
 - (void)tap:(CGPoint)location {
+    if (_humanizeEnabled) {
+        [self _humanizedTaps:1 location:location numberOfTouches:1 customDelay:0];
+        [self sendMarkerHIDEvent];
+        return;
+    }
     [self _sendTaps:1 location:location numberOfTouches:1 delayBetweenTaps:0];
     [self sendMarkerHIDEvent];
 }
 
 - (void)doubleTap:(CGPoint)location {
+    if (_humanizeEnabled) {
+        [self _humanizedTaps:2 location:location numberOfTouches:1 customDelay:0];
+        [self sendMarkerHIDEvent];
+        return;
+    }
     [self _sendTaps:2 location:location numberOfTouches:1 delayBetweenTaps:0];
     [self sendMarkerHIDEvent];
 }
 
 - (void)twoFingerTap:(CGPoint)location {
+    // 不整形：GESTURE_DEFS（画布两指轻点）消费方——真人画布操作红线
     [self _sendTaps:1 location:location numberOfTouches:2 delayBetweenTaps:0];
     [self sendMarkerHIDEvent];
 }
 
 - (void)threeFingerTap:(CGPoint)location {
+    // 不整形：GESTURE_DEFS（画布三指轻点）消费方——真人画布操作红线
     [self _sendTaps:1 location:location numberOfTouches:3 delayBetweenTaps:0];
     [self sendMarkerHIDEvent];
 }
 
 - (void)longPress:(CGPoint)location {
-    struct timespec longPressDelay = {0, (long)(longPressHoldDelay * nanosecondsPerSecond)};
+    // 系统长按判定 ~0.5-1.0s：整形时长必须 >1s（1.1~2.8s 重尾），不可低于判定窗
+    NSTimeInterval hold = longPressHoldDelay;
+    CGPoint pt = location;
+    if (_humanizeEnabled) {
+        pt = [self _humanizeOffsetForTarget:location];
+        hold = trHLogNormal(1.6, 0.3, 1.1, 2.8);
+    }
+    struct timespec longPressDelay = {0, (long)(hold * nanosecondsPerSecond)};
 
-    [self _touchDown:location touchCount:1];
+    [self _touchDown:pt touchCount:1];
     nanosleep(&longPressDelay, 0);
-    [self _liftUp:location touchCount:1];
+    [self _liftUp:pt touchCount:1];
 
     [self sendMarkerHIDEvent];
+
+    if (_humanizeEnabled) {
+        _humanizeLastContact = pt;
+        _humanizeHasLastContact = YES;
+    }
 }
 
 - (void)dragLinearWithStartPoint:(CGPoint)startLocation endPoint:(CGPoint)endLocation duration:(NSTimeInterval)seconds {
+    NSParameterAssert(seconds > 0.0);
+
+    if (_humanizeEnabled) {
+        [self _humanizedDragFrom:startLocation to:endLocation duration:seconds];
+        [self sendMarkerHIDEvent];
+        return;
+    }
+
+    [self _touchDown:startLocation touchCount:1];
+    [self _moveLinearToPoints:&endLocation touchCount:1 duration:seconds];
+    [self _liftUp:endLocation touchCount:1];
+    [self sendMarkerHIDEvent];
+}
+
+- (void)dragLinearPlainWithStartPoint:(CGPoint)startLocation endPoint:(CGPoint)endLocation duration:(NSTimeInterval)seconds {
+    // 显式裸拖（永不整形）：画布滚轮模拟通道（wheelFlush）专用
     NSParameterAssert(seconds > 0.0);
 
     [self _touchDown:startLocation touchCount:1];
@@ -919,6 +1197,13 @@ static void _sendHIDEvent(IOHIDEventRef eventRef, dispatch_queue_t queue) {
 
 - (void)dragCurveWithStartPoint:(CGPoint)startLocation endPoint:(CGPoint)endLocation duration:(NSTimeInterval)seconds {
     NSParameterAssert(seconds > 0.0);
+
+    if (_humanizeEnabled) {
+        // 曲线变体与线性同走 minimum-jerk（现有两变体均为直线+速度剖面差异，min-jerk 即真人速度剖面）
+        [self _humanizedDragFrom:startLocation to:endLocation duration:seconds];
+        [self sendMarkerHIDEvent];
+        return;
+    }
 
     [self _touchDown:startLocation touchCount:1];
     [self _moveCurveToPoints:&endLocation touchCount:1 duration:seconds];
@@ -1338,6 +1623,8 @@ static inline uint32_t hidUsageCodeForCharacter(NSString *key) {
 }
 
 - (void)sendEventStream:(NSDictionary *)eventInfo {
+    if (_humanizeEnabled)
+        eventInfo = [self _humanizedEventStream:eventInfo];
     NSDictionary *threadData = @{TopLevelEventInfoKey : [eventInfo copy]};
     [self eventDispatchThreadEntry:threadData];
 }

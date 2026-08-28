@@ -697,6 +697,16 @@
 			<key>cell</key>
 			<string>PSButtonCell</string>
 			<key>label</key>
+			<string>清理残留</string>
+			<key>action</key>
+			<string>cleanResidues</string>
+			<key>isDestructive</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
 			<string>重置默认设置</string>
 			<key>action</key>
 			<string>resetDefaults</string>
