@@ -4306,6 +4306,73 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
                              ex.reason ?: ex.name ?: @"未知异常"]);
         }
     }
+    // ===== album.diag 相册库只读探针（2026-08-28 来源归零实验·机制确认，只读零风险）=====
+    // 定位 Photos.sqlite 的 ZASSET 表「来源」列与位置列真实落库情况：
+    // PHPhotoLibrary 导入的资产在相册详情显示「来自 SuperPhone」= Photos 库内部记录调用方，
+    // 需实锤是哪一列（ZIMPORTEDBY / ZADDITIONAL* / ZSOURCE* …），据此设计私有直写通道规避。
+    else if ([op isEqualToString:@"album.diag"]) {
+        NSString *dbPath = @"/var/mobile/Media/PhotoData/Photos.sqlite";
+        sqlite3 *db = NULL;
+        if (sqlite3_open_v2(dbPath.UTF8String, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+            if (db) sqlite3_close(db);
+            return tvExtErr([NSString stringWithFormat:@"Photos.sqlite 打开失败（只读）: %s", sqlite3_errmsg(db) ?: ""]);
+        }
+        NSMutableArray<NSString *> *cols = [NSMutableArray array];
+        NSMutableDictionary *info = [NSMutableDictionary dictionary];
+        {
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(db, "PRAGMA table_info(ZASSET)", -1, &st, NULL) == SQLITE_OK) {
+                while (sqlite3_step(st) == SQLITE_ROW) {
+                    const char *n = (const char *)sqlite3_column_text(st, 1);
+                    if (n) [cols addObject:[NSString stringWithUTF8String:n]];
+                }
+            }
+            sqlite3_finalize(st);
+        }
+        info[@"columnCount"] = @(cols.count);
+        NSMutableArray *interesting = [NSMutableArray array];
+        for (NSString *c in cols) {
+            NSString *up = c.uppercaseString;
+            if ([up containsString:@"IMPORT"] || [up containsString:@"SOURCE"] ||
+                [up containsString:@"ATTRIBUT"] || [up containsString:@"LATITUDE"] ||
+                [up containsString:@"LONGITUDE"] || [up containsString:@"ALTITUDE"] ||
+                [up containsString:@"FILENAME"] || [up containsString:@"DIRECTORY"] ||
+                [up containsString:@"DATEADDED"] || [up containsString:@"KIND"] ||
+                [up containsString:@"SAVEDASSETTYPE"] || [up containsString:@"UNIFORM"]) {
+                [interesting addObject:c];
+            }
+        }
+        info[@"interestingColumns"] = interesting;
+        NSMutableArray *rows = [NSMutableArray array];
+        {
+            sqlite3_stmt *st = NULL;
+            NSString *q = @"SELECT * FROM ZASSET ORDER BY Z_PK DESC LIMIT 8";
+            if (sqlite3_prepare_v2(db, q.UTF8String, -1, &st, NULL) == SQLITE_OK) {
+                while (sqlite3_step(st) == SQLITE_ROW) {
+                    NSMutableDictionary *row = [NSMutableDictionary dictionary];
+                    for (int i = 0; i < (int)cols.count && i < sqlite3_column_count(st); i++) {
+                        NSString *cn = cols[i];
+                        if (![interesting containsObject:cn]) continue;
+                        int type = sqlite3_column_type(st, i);
+                        id val = nil;
+                        if (type == SQLITE_INTEGER) val = @(sqlite3_column_int64(st, i));
+                        else if (type == SQLITE_FLOAT) val = @(sqlite3_column_double(st, i));
+                        else if (type == SQLITE_TEXT) {
+                            const char *t = (const char *)sqlite3_column_text(st, i);
+                            val = t ? [NSString stringWithUTF8String:t] : @"";
+                        } else if (type == SQLITE_NULL) val = @"(null)";
+                        else val = @"(blob)";
+                        row[cn] = val;
+                    }
+                    [rows addObject:row];
+                }
+            }
+            sqlite3_finalize(st);
+        }
+        info[@"recentAssets"] = rows;
+        sqlite3_close(db);
+        return tvExtOk(info);
+    }
     // ===== HID 硬件键接口（2026-08-23，home/电源/音量/亮度/搜索/键盘等，同 TRCapabilityRegistry id）=====
     else {
         SEL hidSel;
