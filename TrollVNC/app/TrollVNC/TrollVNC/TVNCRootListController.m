@@ -838,6 +838,13 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 
 /** 5802 本地管理 API 调用（清理残留专用；127.0.0.1 环回 + ATS NSAllowsArbitraryLoads 放行） */
 - (void)_identityPost:(NSDictionary *)body completion:(void (^)(NSDictionary *resp, NSString *errMsg))completion {
+    // 统一在主线程回调 completion：NSURLSession 回调在私有后台队列，而全部调用方都是 UI
+    // （弹选择器/弹窗），UIKit 非线程安全——后台线程弹 UI 必崩（2026-08-28 真机「点击清理残留即崩」定位）
+    void (^callBack)(NSDictionary *, NSString *) = ^(NSDictionary *resp, NSString *errMsg) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(resp, errMsg);
+        });
+    };
     NSURL *url = [NSURL URLWithString:@"http://127.0.0.1:5802/"];
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.HTTPMethod = @"POST";
@@ -846,21 +853,21 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     NSError *jerr = nil;
     req.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:&jerr];
     if (jerr || !req.HTTPBody) {
-        completion(nil, @"请求序列化失败");
+        callBack(nil, @"请求序列化失败");
         return;
     }
     [[[NSURLSession sharedSession] dataTaskWithRequest:req
         completionHandler:^(NSData *data, NSURLResponse *response, NSError *err) {
             if (err) {
-                completion(nil, err.localizedDescription ?: @"服务未运行");
+                callBack(nil, err.localizedDescription ?: @"服务未运行");
                 return;
             }
             NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
             if (![json isKindOfClass:[NSDictionary class]]) {
-                completion(nil, @"响应解析失败");
+                callBack(nil, @"响应解析失败");
                 return;
             }
-            completion(json, nil);
+            callBack(json, nil);
         }] resume];
 }
 
