@@ -31,8 +31,6 @@ static const NSTimeInterval kSimTrackTickInterval = 1.0;
 static const NSTimeInterval kSimAnchorTickInterval = 1.0;
 // anchor 微动范围（米）：人在原地附近小幅活动（5~50m 随机取，这里取中位）
 static const double kSimAnchorRangeM = 20.0;
-// wifi 窗口重排节奏（tick 数）：每 4s 重排注入一次（对齐 iOS 后台扫描节奏，防每 tick 全量 wifi 重启）
-static const NSUInteger kSimWifiWindowTicks = 4;
 
 @implementation SimLocationController {
     dispatch_source_t _patrolSource;   // 10s 巡检
@@ -46,13 +44,12 @@ static const NSUInteger kSimWifiWindowTicks = 4;
     // anchor 基底
     double _anchorLat, _anchorLon, _anchorAcc;
     // 当前位置（每次注入后更新；供 status / 编排初始起点 / 失效恢复）
-    double _currentLat, _currentLon, _currentSpeed, _currentCourse;
+    double _currentLat, _currentLon, _currentSpeed, _currentCourse, _currentAcc, _currentAlt;
     NSString *_currentMode;
     // anchor 微动游走状态：相对中心偏移（米，局部平面近似）
     double _currentMx, _currentMy;
     uint64_t _lastWifiTileKey;   // 上次 wifi 反查的瓦片 key（跨瓦片才重反查，轨迹跟随）
-    NSArray<TRWpsTileAP *> *_wifiTileAps; // 当前瓦片 AP 池（窗口重排源；跨瓦片/首点反查时刷新，2026-08-28）
-    NSUInteger _wifiTickCounter; // wifi 窗口重排节奏计数（每 kSimWifiWindowTicks 次 tick 重排注入一次）
+    NSArray<TRWpsTileAP *> *_wifiTileAps; // 当前瓦片 AP 池（窗口注入源；跨瓦片/首点反查时刷新，2026-08-28）
 }
 
 + (instancetype)sharedController {
@@ -142,10 +139,11 @@ static const NSUInteger kSimWifiWindowTicks = 4;
                 _anchorLat = lat;
                 _anchorLon = lon;
                 _anchorAcc = acc;
+                _currentAcc = acc;
                 // 平移后当前位置立即跟随（下一 tick 前注入一次，防空窗）
                 _currentLat = _anchorLat + _currentMy / 111320.0;
                 _currentLon = _anchorLon + _currentMx / (111320.0 * cos(_anchorLat * M_PI / 180.0));
-                [self _injectAnchorPointWithSpeed:0.0 course:_currentCourse];
+                [self _injectSimulationForCurrentLocation]; // 统一注入：wifi 窗口 + GPS 收尾（同一坐标两路）
                 TVLog(@"[locsim] anchor shift (%.5f, %.5f)", lat, lon);
             }
         } else {
@@ -184,8 +182,10 @@ static const NSUInteger kSimWifiWindowTicks = 4;
     _currentSpeed = 0.0;
     _currentCourse = 0.0;
     _currentMode = @"anchor";
-    [self _injectAnchorPointWithSpeed:0.0 course:0.0];
-    [self _injectWifiSimulationForCurrentLocation]; // wifi 注入一次即可（anchor 微动 ±20m 内 AP 集不变）
+    _currentAcc = acc;
+    _currentAlt = 45.0;
+    [self _injectGpsForCurrentLocation]; // GPS 处理器：锚点坐标立即直写广播（首次注入）
+    [self _injectWifiSimulationForCurrentLocation]; // wifi 处理器：锚点坐标反查换池（首次；反查成功后统一注入）
     if (!_anchorSource) {
         _anchorSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
         dispatch_source_set_timer(_anchorSource, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSimAnchorTickInterval * NSEC_PER_SEC)),
@@ -228,24 +228,13 @@ static const NSUInteger kSimWifiWindowTicks = 4;
     _currentSpeed = step;
     _currentCourse = course;
     _currentMode = @"anchor";
-    [self _injectAnchorPointWithSpeed:step course:course];
-    // wifi 可见窗口重排（anchor 微动也模拟可见 AP 渐变；跨瓦片由 check 换池）
-    if (++_wifiTickCounter >= kSimWifiWindowTicks) {
-        _wifiTickCounter = 0;
-        [self _injectWifiWindowForCurrentLocation];
-    }
+    _currentAcc = _anchorAcc;
+    // 统一注入动作：GPS 与 wifi 是同一微动位置的两路输出——wifi 在前、GPS 收尾
+    // （2026-08-28 用户定案：GPS 直写坐标、wifi 写 AP，同一坐标两个处理器，同 tick 完成）
+    [self _injectSimulationForCurrentLocation];
     // anchor 跨瓦片 wifi 跟随（对齐 itinerary _trackTick 语义）：
     // anchor 中心平移（挪锚点/编辑 hold）跨瓦片时自动重反查 BSSID 注入；同瓦片零成本（key 比较）
     [self _checkWifiTileChangedAndReinject];
-}
-
-- (void)_injectAnchorPointWithSpeed:(double)speed course:(double)course {
-    CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
-    [[SimLocationManager sharedManager] injectPoint:coord
-                                           altitude:45.0
-                                           accuracy:_anchorAcc
-                                             course:course
-                                              speed:speed];
 }
 
 /// 统一目标位置源：wifi 扫描模拟与 GPS 同源注入（动态反查——按当前坐标 tile 查 BSSID 注入）
@@ -277,9 +266,9 @@ static const NSUInteger kSimWifiWindowTicks = 4;
                         TVLog(@"[locsim] spiral fallback also empty, keep no wifi (real-device behavior)");
                         return;
                     }
-                    // 螺旋找到邻近有效瓦片：缓存为窗口池 + 按当前坐标窗口注入（统一路径，2026-08-28）
+                    // 螺旋找到邻近有效瓦片：缓存为窗口池 + 统一注入（wifi 窗口 + GPS 收尾，同一坐标两路，2026-08-28）
                     sSelf->_wifiTileAps = nearAps;
-                    [sSelf _injectWifiWindowForCurrentLocation];
+                    [sSelf _injectSimulationForCurrentLocation];
                 }];
             } else {
                 // 曾成功但当前反查失败（空洞瓦片/网络）：用上次成功注入的指纹重注保活——
@@ -292,15 +281,38 @@ static const NSUInteger kSimWifiWindowTicks = 4;
             }
             return;
         }
-        // 缓存瓦片 AP 池（窗口重排源）并立即按当前坐标做距离窗口注入——可见 AP=位置附近，
-        // 模拟真实设备移动时可见集渐变（不再"前 100 一批播到跨瓦片"，2026-08-28）
+        // 缓存瓦片 AP 池（窗口注入源）并统一注入（wifi 窗口 + GPS 收尾，同一坐标两路，
+        // 2026-08-28 用户定案）——可见 AP=位置附近、GPS=同一坐标直写，模拟真实设备移动时
+        // 可见集渐变且 GPS 持续广播（不再"前 100 一批播到跨瓦片"/wifi 独立节拍）
         strongSelf->_wifiTileAps = aps;
-        [strongSelf _injectWifiWindowForCurrentLocation];
+        [strongSelf _injectSimulationForCurrentLocation];
     }];
 }
 
-/// 按当前模拟位置对缓存瓦片 AP 池做距离窗口注入（可见 AP 渐变；不重新反查）
-/// 节奏：跨瓦片/首点立即 + tick 每 kSimWifiWindowTicks 次重排（对齐 iOS 扫描节奏，防每 tick 全量 wifi 重启）
+/// 统一注入动作（2026-08-28 用户定案）：GPS 与 wifi 是同一"当前位置坐标集"的两路输出——
+/// ① wifi 处理器（写 AP：从瓦片池按当前坐标取可见 AP 窗口注入）
+/// ② GPS 处理器（直写坐标：完整重启广播当前坐标）
+/// 次序 wifi 在前、GPS 收尾：wifi 重启瞬间可能打断同会话 GPS 广播，紧后 GPS 注入同 tick 恢复——
+/// 无真空、无独立兜底（对应用户"不要补丁式兜底，注入动作本身合一"）
+- (void)_injectSimulationForCurrentLocation {
+    [self _injectWifiWindowForCurrentLocation]; // ① wifi 处理器：当前坐标 → 可见 AP 窗口注入
+    [self _injectGpsForCurrentLocation];        // ② GPS 处理器：当前坐标直写完整重启（收尾）
+}
+
+/// GPS 处理器：当前模拟坐标直写（完整重启广播；无当前位置则跳过——"无 GPS 仅 wifi"语义）。
+/// acc 取 _currentAcc（itinerary=轨迹点 acc 3~15、anchor=锚点 acc，游走 tick 已同步）
+- (void)_injectGpsForCurrentLocation {
+    CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
+    if (coord.latitude == 0 && coord.longitude == 0) return; // 无当前位置
+    [[SimLocationManager sharedManager] injectPoint:coord
+                                           altitude:_currentAlt > 0 ? _currentAlt : 45.0
+                                           accuracy:_currentAcc
+                                             course:_currentCourse
+                                              speed:_currentSpeed];
+}
+
+/// wifi 处理器：按当前模拟位置对缓存瓦片 AP 池做距离窗口注入（可见 AP 渐变；不重新反查）。
+/// 池由路线/锚点确定时反查预取（跨瓦片/首点换池）；播放期只取窗口，无实时网络。
 - (void)_injectWifiWindowForCurrentLocation {
     if (_wifiTileAps.count == 0) return;
     CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
@@ -312,23 +324,7 @@ static const NSUInteger kSimWifiWindowTicks = 4;
     if (scanResults.count) {
         [[SimLocationManager sharedManager] injectWifiScanResults:scanResults];
         TVLog(@"[locsim] wifi window inject, %lu APs (visible)", (unsigned long)scanResults.count);
-        // wifi 启动同会话模拟（stopWifiSimulation→set→startWifiSimulation）瞬间会中断 locationd
-        // 对 GPS 模拟的持续广播（CLSimulationManager 会话黑盒共享）→ 兜底重注当前 GPS 点，消除
-        // "跳回真实位置"真空期（2026-08-28：GPS 每秒注入与新加的 wifi 每 4s 窗口重排高频交错所致）
-        [self _reinjectGpsForWifiRestart];
     }
-}
-
-/// wifi 重启后兜底重注当前 GPS 点（对齐"模拟位置持续广播不落地真实"设计初衷，2026-08-28）
-- (void)_reinjectGpsForWifiRestart {
-    CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
-    if (coord.latitude == 0 && coord.longitude == 0) return;
-    double acc = [_currentMode isEqualToString:@"anchor"] ? _anchorAcc : 10.0;
-    [[SimLocationManager sharedManager] injectPoint:coord
-                                           altitude:45.0
-                                           accuracy:acc
-                                             course:_currentCourse
-                                              speed:_currentSpeed];
 }
 
 /// BSSID 采样已上移 TRWpsTile sampleBssidsFromAPs:（共享原语，2026-08-28）
@@ -368,7 +364,9 @@ static const NSUInteger kSimWifiWindowTicks = 4;
         }
         startIdx = best;
     }
-    [self _injectPointDict:points[startIdx]];
+    // 首点：更新当前位置 + 统一注入（wifi 池未建→GPS 直写先行；随后反查换池，成功回调统一注入收尾）
+    [self _updateCurrentFromPoint:points[startIdx]];
+    [self _injectSimulationForCurrentLocation];
     [self _injectWifiSimulationForCurrentLocation]; // 首点坐标反查（动态 tile 查 BSSID；跨瓦片时重新触发注入即自动换源，跟随 _current）
     _lastWifiTileKey = [TRWpsTile tileKeyForCoordinate:CLLocationCoordinate2DMake(_currentLat, _currentLon)]; // 记录首点瓦片 key（首点已反查，同瓦片不重复触发）
     _trackIndex = startIdx + 1;
@@ -394,13 +392,12 @@ static const NSUInteger kSimWifiWindowTicks = 4;
         TVLog(@"[locsim] itinerary finished, keep final point");
         return;
     }
-    [self _injectPointDict:_trackPoints[_trackIndex++]];
-    // wifi 可见窗口重排（每 kSimWifiWindowTicks tick 一次，模拟扫描节奏；跨瓦片由 check 换池）
-    if (++_wifiTickCounter >= kSimWifiWindowTicks) {
-        _wifiTickCounter = 0;
-        [self _injectWifiWindowForCurrentLocation];
-    }
-    // 轨迹 wifi 跟随（用户拍板 2026-08-27）：跨瓦片才重新反查注入（同瓦片 LRU 命中零成本）
+    [self _updateCurrentFromPoint:_trackPoints[_trackIndex++]];
+    // 统一注入动作：GPS 与 wifi 是同一播放（轨迹/锚点坐标）的两路输出——wifi 在前、GPS 收尾
+    // （2026-08-28 用户定案：wifi 不要独立实时节拍，加入 GPS 完整时序；wifi 重启打断的 GPS
+    // 广播由同 tick 紧后的 GPS 注入立即恢复，无真空无兜底）
+    [self _injectSimulationForCurrentLocation];
+    // 轨迹 wifi 跟随：跨瓦片才重新反查换池（同瓦片 LRU 命中零成本；反查池成功后同 tick 注入）
     [self _checkWifiTileChangedAndReinject];
 }
 
@@ -415,25 +412,20 @@ static const NSUInteger kSimWifiWindowTicks = 4;
     [self _injectWifiSimulationForCurrentLocation];
 }
 
-- (void)_injectPointDict:(NSDictionary *)p {
+/// 轨迹点 → 更新当前位置状态（供统一注入动作 GPS/wifi 处理器消费；不注入——注入统一走
+/// _injectSimulationForCurrentLocation，2026-08-28 用户定案"同一坐标两路输出，动作合一"）
+- (void)_updateCurrentFromPoint:(NSDictionary *)p {
     double lat = [p[@"lat"] doubleValue];
     double lon = [p[@"lon"] doubleValue];
     double acc = [p[@"acc"] doubleValue];
     if (acc < 3.0) acc = 3.0;
     if (acc > 15.0) acc = 15.0;
-    double speed = [p[@"speed"] doubleValue];
-    double course = [p[@"course"] doubleValue];
-    CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(lat, lon);
-    [[SimLocationManager sharedManager] injectPoint:coord
-                                           altitude:[p[@"alt"] doubleValue] > 0 ? [p[@"alt"] doubleValue] : 45.0
-                                           accuracy:acc
-                                             course:course
-                                              speed:speed];
-    // 当前位置更新（供 status / 编排初始起点 / 失效恢复）
     _currentLat = lat;
     _currentLon = lon;
-    _currentSpeed = speed;
-    _currentCourse = course;
+    _currentAcc = acc;
+    _currentSpeed = [p[@"speed"] doubleValue];
+    _currentCourse = [p[@"course"] doubleValue];
+    _currentAlt = [p[@"alt"] doubleValue] > 0 ? [p[@"alt"] doubleValue] : 45.0;
 }
 
 - (void)_stopTrack {
