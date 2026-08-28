@@ -4300,6 +4300,23 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
             @"type": isVideo ? @"video" : @"image",
             @"gps": gpsReport
         }];
+        // 2026-08-28 来源归零收尾：导入成功即刻清掉本资产的 ZADDITIONALASSETATTRIBUTES 指纹
+        // （ZIMPORTEDBYDISPLAYNAME/BUNDLEIDENTIFIER/ZIMPORTEDBY/ZORIGINALFILENAME），
+        // 相册不再显示「来自 SuperPhone」；等 1s 让 Photos 完成 asset 记录落库再 UPDATE。
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            sqlite3 *zdb = NULL;
+            if (sqlite3_open_v2("/var/mobile/Media/PhotoData/Photos.sqlite", &zdb,
+                                SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK) {
+                char *zerr = NULL;
+                sqlite3_exec(zdb,
+                    "UPDATE ZADDITIONALASSETATTRIBUTES SET ZIMPORTEDBYDISPLAYNAME = NULL, "
+                    "ZIMPORTEDBYBUNDLEIDENTIFIER = NULL, ZIMPORTEDBY = NULL, ZORIGINALFILENAME = NULL "
+                    "WHERE ZIMPORTEDBYBUNDLEIDENTIFIER = 'com.82flex.TrollVNCApp' "
+                    "AND ZASSET = (SELECT MAX(Z_PK) FROM ZASSET)", NULL, NULL, &zerr);
+                sqlite3_exec(zdb, "PRAGMA wal_checkpoint(TRUNCATE);", NULL, NULL, NULL);
+                sqlite3_close(zdb);
+            }
+        });
         return tvExtOk(resp);
         } @catch (NSException *ex) {
             TVLog(@"album.import 内部异常被兜住: %@", ex);
@@ -4558,7 +4575,7 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
                 @"SELECT a.Z_PK, a.ZIMPORTEDBYDISPLAYNAME, a.ZIMPORTEDBYBUNDLEIDENTIFIER, "
                  "a.ZIMPORTEDBY, a.ZORIGINALFILENAME, z.ZLATITUDE, z.ZLONGITUDE, z.Z_PK "
                  "FROM ZADDITIONALASSETATTRIBUTES a JOIN ZASSET z ON a.ZASSET = z.Z_PK "
-                 "WHERE a.ZIMPORTEDBYDISPLAYNAME IS NOT NULL OR a.ZIMPORTEDBYBUNDLEIDENTIFIER IS NOT NULL "
+                 "WHERE a.ZIMPORTEDBYBUNDLEIDENTIFIER = 'com.82flex.TrollVNCApp' "
                  "ORDER BY z.Z_PK DESC LIMIT %ld", (long)limit];
             if (sqlite3_prepare_v2(db, sel.UTF8String, -1, &st, NULL) == SQLITE_OK) {
                 while (sqlite3_step(st) == SQLITE_ROW) {
@@ -4593,7 +4610,7 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
             NSMutableString *sql = [NSMutableString stringWithFormat:
                 @"UPDATE ZADDITIONALASSETATTRIBUTES SET ZIMPORTEDBYDISPLAYNAME = NULL, "
                  "ZIMPORTEDBYBUNDLEIDENTIFIER = NULL, ZIMPORTEDBY = NULL, ZORIGINALFILENAME = NULL "
-                 "WHERE (ZIMPORTEDBYDISPLAYNAME IS NOT NULL OR ZIMPORTEDBYBUNDLEIDENTIFIER IS NOT NULL) "
+                 "WHERE ZIMPORTEDBYBUNDLEIDENTIFIER = 'com.82flex.TrollVNCApp' "
                  "AND ZASSET IN (SELECT Z_PK FROM ZASSET ORDER BY Z_PK DESC LIMIT %ld)", (long)limit];
             char *err = NULL;
             int rc = sqlite3_exec(db, sql.UTF8String, NULL, NULL, &err);
@@ -4607,7 +4624,9 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
             if (slat != 0.0 && slon != 0.0) {
                 ploc = [NSMutableString stringWithFormat:
                     @"UPDATE ZASSET SET ZLATITUDE = %f, ZLONGITUDE = %f WHERE ZLATITUDE = -180 AND Z_PK IN "
-                     "(SELECT Z_PK FROM ZASSET ORDER BY Z_PK DESC LIMIT %ld)", slat, slon, (long)limit];
+                     "(SELECT z.Z_PK FROM ZADDITIONALASSETATTRIBUTES a JOIN ZASSET z ON a.ZASSET = z.Z_PK "
+                     "WHERE a.ZIMPORTEDBYBUNDLEIDENTIFIER = 'com.82flex.TrollVNCApp' "
+                     "ORDER BY z.Z_PK DESC LIMIT %ld)", slat, slon, (long)limit];
                 int rc2 = sqlite3_exec(db, ploc.UTF8String, NULL, NULL, &err);
                 if (rc2 != SQLITE_OK) {
                     sqlite3_close(db);
