@@ -785,7 +785,8 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
         NSMutableDictionary<NSString *, NSString *> *nameToBundle = [NSMutableDictionary dictionary];
         for (NSDictionary *app in apps) {
             NSString *bid = app[@"bundleId"];
-            NSString *name = ([app[@"name"] isKindOfClass:[NSString class]] && app[@"name"].length) ? app[@"name"] : bid;
+            NSString *rawName = ([app[@"name"] isKindOfClass:[NSString class]]) ? (NSString *)app[@"name"] : nil;
+            NSString *name = (rawName.length > 0) ? rawName : bid;
             if (![bid isKindOfClass:[NSString class]] || !bid.length) continue;
             [names addObject:name];
             nameToBundle[name] = bid;
