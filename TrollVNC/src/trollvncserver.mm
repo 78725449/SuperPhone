@@ -48,6 +48,7 @@
 #endif
 #import <rfb/rfb.h>
 #import <sqlite3.h>
+#import <ImageIO/ImageIO.h>
 #import <string>
 #import <sys/socket.h>
 #import <sys/sysctl.h>
@@ -4363,6 +4364,56 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
                         } else if (type == SQLITE_NULL) val = @"(null)";
                         else val = @"(blob)";
                         row[cn] = val;
+                    }
+                    // 文件层 XMP 证据（判断「来源」是否写在原文件 metadata）：
+                    // iOS 保存资产时 XMP 可能含 photoshop:Source / xmp:CreatorTool / Apple 键，
+                    // 相册详情「来自XX」若源自文件则此处可见（照片用 ImageIO；视频无 XMP 跳过）
+                    NSString *dirCol = nil, *nameCol = nil;
+                    for (NSString *c in cols) {
+                        NSString *up = c.uppercaseString;
+                        if (!dirCol && [up containsString:@"DIRECTORY"]) dirCol = c;
+                        if (!nameCol && [up containsString:@"FILENAME"]) nameCol = c;
+                    }
+                    if (dirCol && nameCol && [row[nameCol] isKindOfClass:[NSString class]]) {
+                        NSString *dir = [row[dirCol] isKindOfClass:[NSString class]] ? row[dirCol] : @"";
+                        NSString *fn = row[nameCol];
+                        NSString *efn = fn.lowercaseString;
+                        BOOL isImg = [efn hasSuffix:@".jpg"] || [efn hasSuffix:@".jpeg"] ||
+                                     [efn hasSuffix:@".heic"] || [efn hasSuffix:@".png"];
+                        if (isImg) {
+                            NSString *fp = [@"/var/mobile/Media" stringByAppendingPathComponent:
+                                            [dir stringByAppendingPathComponent:fn]];
+                            CGImageSourceRef isrc = CGImageSourceCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:fp], NULL);
+                            if (isrc) {
+                                CGImageMetadataRef md = CGImageMetadataCreateFromImageSource(isrc);
+                                if (md) {
+                                    NSMutableDictionary *xmp = [NSMutableDictionary dictionary];
+                                    xmp[@"file"] = fn;
+                                    CFArrayRef tags = CGImageMetadataCopyTags(md);
+                                    if (tags) {
+                                        NSArray *tagArr = (__bridge_transfer NSArray *)tags;
+                                        NSMutableArray *found = [NSMutableArray array];
+                                        for (id tagObj in tagArr) {
+                                            CGImageMetadataTagRef tag = (__bridge CGImageMetadataTag)tagObj;
+                                            NSString *prefix = (__bridge_transfer NSString *)CGImageMetadataTagCopyPrefix(tag);
+                                            NSString *tname = (__bridge_transfer NSString *)CGImageMetadataTagCopyName(tag);
+                                            NSString *upn = [NSString stringWithFormat:@"%@:%@", prefix ?: @"?", tname ?: @"?"].uppercaseString;
+                                            if ([upn containsString:@"SOURCE"] || [upn containsString:@"CREATOR"] ||
+                                                [upn containsString:@"SOFTWARE"] || [upn containsString:@"APPLE"]) {
+                                                CFTypeRef cv = CGImageMetadataTagCopyValue(tag);
+                                                id val2 = cv ? (__bridge id)cv : @"";
+                                                if (cv) CFRelease(cv);
+                                                [found addObject:@[upn, val2]];
+                                            }
+                                        }
+                                        if (found.count) xmp[@"hits"] = found;
+                                    }
+                                    row[@"xmp"] = xmp;
+                                    CFRelease(md);
+                                }
+                                CFRelease(isrc);
+                            }
+                        }
                     }
                     [rows addObject:row];
                 }
