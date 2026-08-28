@@ -22,6 +22,17 @@ NS_ASSUME_NONNULL_BEGIN
 /** OCR 结果行数上限（防 0x50/5802 响应超 1MB 帧上限） */
 static const NSInteger TRVisionMaxTextRows = 200;
 
+#pragma mark - 模板匹配常量（vision.find_image，2026-08-28）
+
+/** 匹配分值低于该值的候选丢弃（用户定稿 0.7） */
+static const double TRVisionDefaultMatchThreshold = 0.7;
+
+/** 模板 base64 输入上限（0x50/5802 请求帧 1MB 内的安全余量） */
+static const NSInteger TRVisionMaxTemplateB64Bytes = 256 * 1024;
+
+/** 精匹配搜索边距（全分辨率像素；粗定位 ±48px 窗内精匹配） */
+static const NSInteger TRVisionRefineMarginPx = 48;
+
 /**
  * TRVisionEngine - Vision OCR 核心（单例，串行）
  * 线程安全：内部串行队列串行化 OCR 与帧访问。
@@ -47,15 +58,6 @@ static const NSInteger TRVisionMaxTextRows = 200;
                                                              error:(NSError **)error;
 
 #pragma mark - 模板匹配（vision.find_image，2026-08-28）
-
-/** 匹配分值低于该值的候选丢弃（用户定稿 0.7） */
-static const double TRVisionDefaultMatchThreshold = 0.7;
-
-/** 模板 base64 输入上限（0x50/5802 请求帧 1MB 内的安全余量） */
-static const NSInteger TRVisionMaxTemplateB64Bytes = 256 * 1024;
-
-/** 精匹配搜索边距（全分辨率像素；粗定位 ±48px 窗内精匹配） */
-static const NSInteger TRVisionRefineMarginPx = 48;
 
 /**
  * 锚点图匹配：接收一张 base64 小图（云端视觉代理截取的锚点），在当前屏幕上找其位置。

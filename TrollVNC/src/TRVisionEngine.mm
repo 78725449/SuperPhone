@@ -30,8 +30,8 @@ static uint8_t *trvGrayFromPixelBuffer(CVPixelBufferRef pb, int *outW, int *outH
     uint8_t *base = (uint8_t *)CVPixelBufferGetBaseAddress(pb);
     OSType fmt = CVPixelBufferGetPixelFormatType(pb);
     int offR = 1, offG = 2, offB = 3;
-    if (fmt == kCVPixelFormatType32ARGB) { offR = 1; offG = 2; offB = 3; }
-    else if (fmt == kCVPixelFormatType32BGRA) { offR = 2; offG = 1; offB = 0; }
+    if (fmt == kCVPixelFormatType_32ARGB) { offR = 1; offG = 2; offB = 3; }
+    else if (fmt == kCVPixelFormatType_32BGRA) { offR = 2; offG = 1; offB = 0; }
     else { CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly); return NULL; }
     uint8_t *gray = (uint8_t *)malloc((size_t)w * h);
     if (!gray) { CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly); return NULL; }
