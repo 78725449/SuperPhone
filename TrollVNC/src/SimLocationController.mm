@@ -312,7 +312,23 @@ static const NSUInteger kSimWifiWindowTicks = 4;
     if (scanResults.count) {
         [[SimLocationManager sharedManager] injectWifiScanResults:scanResults];
         TVLog(@"[locsim] wifi window inject, %lu APs (visible)", (unsigned long)scanResults.count);
+        // wifi 启动同会话模拟（stopWifiSimulation→set→startWifiSimulation）瞬间会中断 locationd
+        // 对 GPS 模拟的持续广播（CLSimulationManager 会话黑盒共享）→ 兜底重注当前 GPS 点，消除
+        // "跳回真实位置"真空期（2026-08-28：GPS 每秒注入与新加的 wifi 每 4s 窗口重排高频交错所致）
+        [self _reinjectGpsForWifiRestart];
     }
+}
+
+/// wifi 重启后兜底重注当前 GPS 点（对齐"模拟位置持续广播不落地真实"设计初衷，2026-08-28）
+- (void)_reinjectGpsForWifiRestart {
+    CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
+    if (coord.latitude == 0 && coord.longitude == 0) return;
+    double acc = [_currentMode isEqualToString:@"anchor"] ? _anchorAcc : 10.0;
+    [[SimLocationManager sharedManager] injectPoint:coord
+                                           altitude:45.0
+                                           accuracy:acc
+                                             course:_currentCourse
+                                              speed:_currentSpeed];
 }
 
 /// BSSID 采样已上移 TRWpsTile sampleBssidsFromAPs:（共享原语，2026-08-28）

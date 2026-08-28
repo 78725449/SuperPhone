@@ -143,6 +143,10 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     // 无定位时由 focusMapOnCurrentLocation 守卫跳过，避免跳到无效坐标
     [self setupMap];
     [self setupUI];
+    // 搜索关联候选 completer：必须 init + 设 delegate（2026-08-28：此前只声明 property + 设 queryFragment，
+    // 从未 alloc/init 也未设 delegate → 对 nil 发消息静默 no-op，点搜索无反应；iOS 15+ 均需此行）
+    self.searchCompleter = [[MKLocalSearchCompleter alloc] init];
+    self.searchCompleter.delegate = self;
     [self readCurrentStatus];
     // 真实定位授权：requestWhenInUse 需 Info.plist usage description。
     // 授权成功后 locationManagerDidChangeAuthorization 建立 App 自己的活跃位置请求（startUpdatingLocation）——
