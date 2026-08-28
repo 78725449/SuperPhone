@@ -80,7 +80,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, strong) UITableView *searchResultsView;       // 搜索下拉结果列表（搜索框内向下展开）
 @property (nonatomic, strong) NSArray *searchResults;               // MKLocalSearchCompletion / MKMapItem 数组（2026-08-28 关联候选）
 @property (nonatomic, strong) MKLocalSearchCompleter *searchCompleter; // 关键词→关联候选（点搜索时一次性触发，非逐字联想，2026-08-28）
-@property (nonatomic, assign) NSUInteger searchSeq; // 搜索序号（direct 兜底过期丢弃，防覆盖新搜索，2026-08-28）
 @property (nonatomic, strong) UISegmentedControl *modeSeg;   // 步行/驾车（左下胶囊）
 @property (nonatomic, strong) UIButton *locateFab;           // 右下角圆形定位开关
 @property (nonatomic, strong) UIButton *focusBtn;                   // 定位 FAB 上方的靶心按钮（点击聚焦当前位置）
@@ -1039,46 +1038,15 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [searchBar resignFirstResponder];
     NSString *q = [searchBar.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     if (!q.length) return;
-    // 双链路搜索（2026-08-28 修复"结果列表不弹出"）：
-    // ① MKLocalSearchCompleter 关联候选（主诉求）——必须显式设 region：iOS 15.x 上 completer
-    //    不设 region 时对中文/城市名可能不回调（已知坑，社区普遍报告），当前 bug 即源于此
-    // ② MKLocalSearch 直接搜索（兜底）——completer 未回调/空时展示精确结果，保证点搜索必有结果
-    self.searchSeq++;
-    self.searchCompleter.region = [self _searchRegion];
+    // 关键词 → 关联候选：走 MKLocalSearchCompleter 一次性拉取（2026-08-28 用户定案，
+    // 替代 MKLocalSearch 直接搜索——地区名精确匹配只有 1~2 条；补全引擎出行政区/区县/POI 关联候选）；
+    // 仅在点搜索时触发，不做输入逐字联想（区别于地图 App 的边输入边弹）
     self.searchCompleter.queryFragment = q;
-    [self _runDirectSearch:q seq:self.searchSeq];
-}
-
-/// 搜索范围：全中国（覆盖国内城市/地点搜索；内网工具主场景为国内）
-- (MKCoordinateRegion)_searchRegion {
-    CLLocationCoordinate2D center = CLLocationCoordinate2DMake(28.5, 104.0);
-    return MKCoordinateRegionMake(center, MKCoordinateSpanMake(51.0, 62.0));
-}
-
-/// MKLocalSearch 直接搜索兜底：completer 未产出时展示精确结果（地区名 1~2 条、POI 多条）
-- (void)_runDirectSearch:(NSString *)q seq:(NSUInteger)seq {
-    MKLocalSearchRequest *req = [[MKLocalSearchRequest alloc] init];
-    req.naturalLanguageQuery = q;
-    req.region = [self _searchRegion];
-    MKLocalSearch *ls = [[MKLocalSearch alloc] initWithRequest:req];
-    [ls startWithCompletionHandler:^(MKLocalSearchResponse *response, NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (seq != self.searchSeq) return; // 过期（新一轮搜索已发起）
-            if (error || !response.mapItems.count) return; // completer 已兜底或确无结果
-            // completer 已展示关联候选则跳过（direct 只兜底 completer 未工作场景）
-            if (self.searchResults.count && !self.searchResultsView.hidden) return;
-            NSRange rng = NSMakeRange(0, MIN(10, (NSInteger)response.mapItems.count));
-            self.searchResults = [response.mapItems subarrayWithRange:rng];
-            [self.searchResultsView reloadData];
-            self.searchResultsView.hidden = NO;
-        });
-    }];
 }
 
 /// 关联候选就绪（点搜索触发 completer 后的回调）
 - (void)completerDidUpdateResults:(MKLocalSearchCompleter *)completer {
     NSArray *results = completer.results;
-    NSLog(@"[search] completerDidUpdateResults: %lu 条", (unsigned long)results.count); // 真机排查：确认回调触发
     if (!results.count) {
         self.searchResults = @[];
         [self.searchResultsView reloadData];
@@ -1094,7 +1062,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 }
 
 - (void)completer:(MKLocalSearchCompleter *)completer didFailWithError:(NSError *)error {
-    NSLog(@"[search] completer error: %@", error.localizedDescription); // 真机排查：失败原因
     self.searchResults = @[];
     [self.searchResultsView reloadData];
     self.searchResultsView.hidden = YES;
@@ -1660,7 +1627,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         MKLocalSearchCompletion *cc = (MKLocalSearchCompletion *)obj;
         MKLocalSearchRequest *req = [[MKLocalSearchRequest alloc] init];
         req.naturalLanguageQuery = [NSString stringWithFormat:@"%@ %@", cc.title, cc.subtitle];
-        req.region = [self _searchRegion]; // 对齐搜索范围，提高解析命中（2026-08-28）
         MKLocalSearch *ls = [[MKLocalSearch alloc] initWithRequest:req];
         [ls startWithCompletionHandler:^(MKLocalSearchResponse *response, NSError *error) {
             dispatch_async(dispatch_get_main_queue(), ^{
