@@ -147,6 +147,29 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     return [CLLocationManager locationServicesEnabled];
 }
 
++ (BOOL)loadPersistedScenario:(double)lat lon:(double)lon error:(NSError *__autoreleasing *)error {
+    @try {
+        NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"locsim_scenario.gpx"];
+        NSString *gpx = [NSString stringWithFormat:
+            @"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+             "<gpx version=\"1.1\" creator=\"SuperPhone\">\n"
+             "  <wpt lat=\"%.7f\" lon=\"%.7f\"><name>locsim</name></wpt>\n"
+             "</gpx>\n", lat, lon];
+        if (![gpx writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:error]) {
+            return NO;
+        }
+        if (!_sim) return NO;
+        // 实验性：GPX 格式是否被 loadScenarioFromURL 接受未证实；失败仅返回错误不影响主链路
+        [_sim loadScenarioFromURL:[NSURL fileURLWithPath:path]];
+        return YES;
+    } @catch (NSException *ex) {
+        if (error) *error = [NSError errorWithDomain:@"SimLocationScenario" code:1
+                                             userInfo:@{NSLocalizedDescriptionKey:
+                                                        [NSString stringWithFormat:@"场景加载异常: %@", ex.reason ?: @""]} ];
+        return NO;
+    }
+}
+
 - (void)injectWifiScanResults:(NSArray<NSDictionary *> *)scanResults {
     if (!_sim) return;
     if (scanResults.count == 0) {

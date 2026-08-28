@@ -74,6 +74,11 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)setSystemLocationServices:(BOOL)on;
 + (BOOL)systemLocationServicesEnabled;
 
+/// 场景持久化实验（2026-08-28 L3）：生成 Xcode 同款 GPX 场景文件并经 loadScenarioFromURL
+/// 加载到 locationd——目标：模拟状态脱离 manager 进程生命周期（client 崩溃后会话仍持续投递
+/// 最后模拟坐标，覆盖 manager 崩溃→launchd 拉起窗口）。实验性：格式/行为未证实，失败仅日志。
++ (BOOL)loadPersistedScenario:(double)lat lon:(double)lon error:(NSError *_Nullable *_Nullable)error;
+
 @end
 
 NS_ASSUME_NONNULL_END

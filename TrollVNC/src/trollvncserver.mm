@@ -49,6 +49,7 @@
 #import <rfb/rfb.h>
 #import <sqlite3.h>
 #import <ImageIO/ImageIO.h>
+#import <CoreLocation/CoreLocation.h>
 #import <string>
 #import <sys/socket.h>
 #import <sys/sysctl.h>
@@ -6419,6 +6420,43 @@ static void monitorParentProcess(void) {
     dispatch_resume(source);
 }
 
+// ===== 定位对抗死亡哨兵（2026-08-28，全 flavor）=====
+// manager 是模拟会话（CLSimulationManager）的 client；其崩溃后 locationd 会话行为未证实
+// （可能回真实源）。server 常驻且持有同款 root+entitlement——作为死亡哨兵：
+// getppid 从 manager pid 变 1（launchd 收养=manager 已死）→ 立即关系统定位（宁无位置不漏真实）。
+// 新 manager 由 launchd 拉起后 _forceStopOnStartup 会再次兜底；本哨兵覆盖拉起前的窗口。
+// bootstrap flavor 另有 monitorParentProcess（跟随退出契约）——两者并存：先关定位再退出。
+@interface CLLocationManager (TrollVNCLocationSwitch)
++ (void)setLocationServicesEnabled:(BOOL)enabled;
+@end
+
+static void tvLocationDeathSentinel(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            pid_t managerPid = getppid();
+            if (managerPid == 1) {
+                fprintf(stderr, "SENTINEL: started as orphan (ppid=1), skip (startup bottom-line covers)\n");
+                return;
+            }
+            while (true) {
+                usleep(1000 * 1000);   // 1s 轮询（PROC source 仅 bootstrap 有，此处统一轮询全 flavor）
+                if (getppid() == 1) {
+                    @try {
+                        if ([CLLocationManager respondsToSelector:@selector(setLocationServicesEnabled:)]) {
+                            [CLLocationManager setLocationServicesEnabled:NO];
+                            fprintf(stderr, "SENTINEL: manager(pid %d) gone -> location services OFF\n", managerPid);
+                        }
+                    } @catch (NSException *ex) {
+                        fprintf(stderr, "SENTINEL: exception %@\n", ex.reason ?: ex.name);
+                    }
+                    break;   // 关一次即可；新 manager 接管后由其启动兜底续防
+                }
+            }
+        });
+    });
+}
+
 static void monitorSelfAndRestartIfVnodeDeleted(const char *executable) {
     int myHandle = open(executable, O_EVTONLY);
     if (myHandle <= 0) {
@@ -6569,6 +6607,7 @@ int main(int argc, const char *argv[]) {
     // 2026-08-21 诊断：runloop 生命周期日志——区分「正常退出（runloop 返回）」与
     // 「启动后崩溃/被杀」（无 "runloop exited" 行即为中途异常终止）
     // fprintf 同步写 stderr（NSLog 异步缓冲，exit 太快会丢）
+    tvLocationDeathSentinel();   // 定位对抗死亡哨兵（manager 崩溃 → 即时关系统定位，2026-08-28）
     fprintf(stderr, "MAIN: entering main runloop\n");
 }
 
