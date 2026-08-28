@@ -4418,6 +4418,82 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
             sqlite3_finalize(st);
         }
         info[@"recentAssets"] = rows;
+
+        // ===== 第二轮证据：来源可能存扩展属性表（ZIMPORTSESSION 全 NULL / XMP 无键）=====
+        // 1) 全表清单（找 import/source/app/extended/computed 相关表）
+        NSMutableArray *tables = [NSMutableArray array];
+        {
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name", -1, &st, NULL) == SQLITE_OK) {
+                while (sqlite3_step(st) == SQLITE_ROW) {
+                    const char *n = (const char *)sqlite3_column_text(st, 0);
+                    if (n) [tables addObject:[NSString stringWithUTF8String:n]];
+                }
+            }
+            sqlite3_finalize(st);
+        }
+        info[@"tableCount"] = @(tables.count);
+        NSMutableArray *hotTables = [NSMutableArray array];
+        for (NSString *t in tables) {
+            NSString *up = t.uppercaseString;
+            if ([up containsString:@"IMPORT"] || [up containsString:@"SOURCE"] ||
+                [up containsString:@"EXTENDED"] || [up containsString:@"COMPUTED"] ||
+                [up containsString:@"ADDITIONAL"] || [up containsString:@"ATTRIBUTE"]) {
+                [hotTables addObject:t];
+            }
+        }
+        info[@"hotTables"] = hotTables;
+
+        // 2) 扩展属性表内容（ZEXTENDEDATTRIBUTES 等——最近 3 行，全列值）
+        for (NSString *t in @[@"ZEXTENDEDATTRIBUTES", @"ZADDITIONALASSETATTRIBUTES", @"ZCOMPUTEDATTRIBUTES", @"ZIMPORTSESSION"]) {
+            if (![tables containsObject:t]) continue;
+            NSMutableArray *tCols = [NSMutableArray array];
+            {
+                sqlite3_stmt *st = NULL;
+                NSString *pi = [NSString stringWithFormat:@"PRAGMA table_info(%@)", t];
+                if (sqlite3_prepare_v2(db, pi.UTF8String, -1, &st, NULL) == SQLITE_OK) {
+                    while (sqlite3_step(st) == SQLITE_ROW) {
+                        const char *n = (const char *)sqlite3_column_text(st, 1);
+                        if (n) [tCols addObject:[NSString stringWithUTF8String:n]];
+                    }
+                }
+                sqlite3_finalize(st);
+            }
+            NSMutableArray *tRows = [NSMutableArray array];
+            {
+                sqlite3_stmt *st = NULL;
+                NSString *q = [NSString stringWithFormat:@"SELECT * FROM %@ ORDER BY Z_PK DESC LIMIT 3", t];
+                if (sqlite3_prepare_v2(db, q.UTF8String, -1, &st, NULL) == SQLITE_OK) {
+                    while (sqlite3_step(st) == SQLITE_ROW) {
+                        NSMutableDictionary *row = [NSMutableDictionary dictionary];
+                        for (int i = 0; i < (int)tCols.count && i < sqlite3_column_count(st); i++) {
+                            NSString *cn = tCols[i];
+                            int ty = sqlite3_column_type(st, i);
+                            id v = nil;
+                            if (ty == SQLITE_INTEGER) v = @(sqlite3_column_int64(st, i));
+                            else if (ty == SQLITE_FLOAT) v = @(sqlite3_column_double(st, i));
+                            else if (ty == SQLITE_TEXT) {
+                                const char *s = (const char *)sqlite3_column_text(st, i);
+                                v = s ? [NSString stringWithUTF8String:s] : @"";
+                            } else if (ty == SQLITE_NULL) v = @"(null)";
+                            else v = @"(blob)";
+                            NSString *up = cn.uppercaseString;
+                            if ([up containsString:@"IMPORT"] || [up containsString:@"SOURCE"] ||
+                                [up containsString:@"APP"] || [up containsString:@"BUNDLE"] ||
+                                [up containsString:@"CREATOR"] || [up containsString:@"NAME"] ||
+                                [up containsString:@"ORIGIN"] || [up containsString:@"FIELDFLAG"] ||
+                                [up containsString:@"SORTTOKEN"] || [up containsString:@"RANKING"]) {
+                                row[cn] = v;
+                            }
+                        }
+                        if (row.count) [tRows addObject:row];
+                    }
+                }
+                sqlite3_finalize(st);
+            }
+            info[t] = @{@"columns": tCols, @"rows": tRows};
+        }
+
         sqlite3_close(db);
         return tvExtOk(info);
     }
