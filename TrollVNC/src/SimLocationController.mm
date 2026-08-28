@@ -553,10 +553,10 @@ static const double kSimAnchorRangeM = 20.0;
     if (![mode isKindOfClass:[NSString class]] || mode.length == 0) mode = @"off";
     if ([mode isEqualToString:@"off"]) return;
     if ([mode isEqualToString:@"anchor"]) {
-        // anchor 注入失效（locationd 会话中断）或游走 timer 丢失则重启
+        // anchor 注入失效（locationd 会话中断）或游走 timer 丢失则重启：
+        // 会话内失效=毫秒级空窗，直接重注入（2026-08-28 定案：不翻开关——开关翻转本身是
+        // 可观测事件，且重注入立即重建会话；进程级失效由 server 哨兵+启动兜底另行覆盖）
         if (![SimLocationManager sharedManager].isSimulating || !_anchorSource) {
-            // 定位对抗编排：异常期间先关系统定位（无真实值可出）→ 重注入生效后再开
-            [SimLocationManager setSystemLocationServices:NO];
             TVLog(@"[locsim] anchor lost, re-start");
             [self _startAnchor];
         } else if (![SimLocationManager sharedManager].isWifiSimulating && [SimLocationManager sharedManager].wasWifiSimulatingOnce) {
