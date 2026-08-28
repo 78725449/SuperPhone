@@ -4538,73 +4538,44 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         }
         sqlite3_busy_timeout(db, 5000);
 
-        // 2) 列发现
-        NSMutableArray<NSString *> *cols = [NSMutableArray array];
-        {
-            sqlite3_stmt *st = NULL;
-            if (sqlite3_prepare_v2(db, "PRAGMA table_info(ZASSET)", -1, &st, NULL) == SQLITE_OK) {
-                while (sqlite3_step(st) == SQLITE_ROW) {
-                    const char *n = (const char *)sqlite3_column_text(st, 1);
-                    if (n) [cols addObject:[NSString stringWithUTF8String:n]];
-                }
-            }
-            sqlite3_finalize(st);
-        }
-        NSString *sourceCol = nil;   // TEXT 类「来源」列(IMPORT 优先)
-        NSMutableArray *sourceCandidates = [NSMutableArray array];
-        NSMutableArray *latCols = [NSMutableArray array], *lonCols = [NSMutableArray array];
-        for (NSString *c in cols) {
-            NSString *up = c.uppercaseString;
-            if ([up containsString:@"IMPORT"]) [sourceCandidates addObject:c];
-            else if ([up containsString:@"SOURCE"]) [sourceCandidates addObject:c];
-            // 注意别把 ZSOURCETYPE(整数 enum)当来源文本列——交给候选，dryrun 看值再定
-            if ([up containsString:@"LATITUDE"]) [latCols addObject:c];
-            if ([up containsString:@"LONGITUDE"]) [lonCols addObject:c];
-        }
-        // 来源列选择：优先含 IMPORT 的 TEXT 列；否则第一个列名含 SOURCE 的
-        (void)sourceCandidates.firstObject;   // 仅为占位保持语义说明
-        for (NSString *cand in sourceCandidates) {
-            sqlite3_stmt *st = NULL;
-            NSString *sql = [NSString stringWithFormat:@"SELECT typeof(%@) FROM ZASSET LIMIT 1", cand];
-            if (sqlite3_prepare_v2(db, sql.UTF8String, -1, &st, NULL) == SQLITE_OK) {
-                if (sqlite3_step(st) == SQLITE_ROW) {
-                    const char *t = (const char *)sqlite3_column_text(st, 0);
-                    if (t && strcmp(t, "text") == 0) { sourceCol = cand; }
-                }
-                sqlite3_finalize(st);
-            }
-            if (sourceCol) break;
-        }
-        outInfo[@"sourceColumn"] = sourceCol ?: @"(未找到，列候选见下)";
-        outInfo[@"sourceCandidates"] = sourceCandidates;
-        outInfo[@"latColumns"] = latCols;
-        outInfo[@"lonColumns"] = lonCols;
+        // 2) 实证结论（2026-08-28 album.diag 第二轮实锤）：来源字段在
+        //    ZADDITIONALASSETATTRIBUTES 表的 ZIMPORTEDBYDISPLAYNAME/ZIMPORTEDBYBUNDLEIDENTIFIER/
+        //    ZIMPORTEDBY/ZORIGINALFILENAME（"SuperPhone" / "com.82flex.TrollVNCApp" / 3 / 导入文件名）。
+        //    真实拍摄资产这些列应为空/无；清空后相册「来源」标签消失。
+        //    位置列（ZASSET.ZLATITUDE/LONGITUDE）已由 PHPhotoLibrary 从 EXIF 同步，-180 表示无，
+        //    此处对无位置行补写当前模拟坐标（与 GPS 包装一致化）。
+        NSNumber *simLat = [[[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName] objectForKey:@"SimLocationLat"];
+        NSNumber *simLon = [[[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName] objectForKey:@"SimLocationLon"];
+        double slat = simLat ? simLat.doubleValue : 0.0;
+        double slon = simLon ? simLon.doubleValue : 0.0;
+        outInfo[@"sim"] = @{@"lat": @(slat), @"lon": @(slon)};
 
-        // 3) dryrun 预览 / commit 执行
-        NSString *latCol = latCols.count ? latCols[0] : nil;
-        NSString *lonCol = lonCols.count ? lonCols[0] : nil;
-        // 当前模拟坐标（与 album.import gps=auto 同源）
-        NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
-        double slat = [[d objectForKey:@"SimLocationLat"] doubleValue];
-        double slon = [[d objectForKey:@"SimLocationLon"] doubleValue];
-
+        // 目标行：ZADDITIONALASSETATTRIBUTES（ZASSET FK 非空，按 ZASSET.Z_PK 降序取最近 limit 条）
         NSMutableArray *rowsBefore = [NSMutableArray array];
         {
             sqlite3_stmt *st = NULL;
             NSString *sel = [NSString stringWithFormat:
-                @"SELECT Z_PK, %@ FROM ZASSET ORDER BY Z_PK DESC LIMIT %ld",
-                sourceCol ? sourceCol : @"1", (long)limit];
+                @"SELECT a.Z_PK, a.ZIMPORTEDBYDISPLAYNAME, a.ZIMPORTEDBYBUNDLEIDENTIFIER, "
+                 "a.ZIMPORTEDBY, a.ZORIGINALFILENAME, z.ZLATITUDE, z.ZLONGITUDE, z.Z_PK "
+                 "FROM ZADDITIONALASSETATTRIBUTES a JOIN ZASSET z ON a.ZASSET = z.Z_PK "
+                 "WHERE a.ZIMPORTEDBYDISPLAYNAME IS NOT NULL OR a.ZIMPORTEDBYBUNDLEIDENTIFIER IS NOT NULL "
+                 "ORDER BY z.Z_PK DESC LIMIT %ld", (long)limit];
             if (sqlite3_prepare_v2(db, sel.UTF8String, -1, &st, NULL) == SQLITE_OK) {
                 while (sqlite3_step(st) == SQLITE_ROW) {
-                    long long pk = sqlite3_column_int64(st, 0);
-                    NSString *v = nil;
-                    if (sqlite3_column_type(st, 1) == SQLITE_TEXT) {
-                        const char *t = (const char *)sqlite3_column_text(st, 1);
-                        v = t ? [NSString stringWithUTF8String:t] : @"";
-                    } else if (sqlite3_column_type(st, 1) != SQLITE_NULL) {
-                        v = @"(non-text)";
-                    }
-                    if (v && v.length) [rowsBefore addObject:@{@"pk": @(pk), @"val": v}];
+                    const char *dn = (const char *)sqlite3_column_text(st, 1);
+                    const char *bi = (const char *)sqlite3_column_text(st, 2);
+                    NSNumber *imp = sqlite3_column_type(st, 3) == SQLITE_NULL ? nil : @(sqlite3_column_int64(st, 3));
+                    const char *ofn = (const char *)sqlite3_column_text(st, 4);
+                    double zlat = sqlite3_column_double(st, 5);
+                    NSDictionary *row = @{
+                        @"attPK": @(sqlite3_column_int64(st, 0)),
+                        @"displayName": dn ? [NSString stringWithUTF8String:dn] : @"(null)",
+                        @"bundleId": bi ? [NSString stringWithUTF8String:bi] : @"(null)",
+                        @"importedBy": imp ?: @"(null)",
+                        @"origFilename": ofn ? [NSString stringWithUTF8String:ofn] : @"(null)",
+                        @"zlat": @(zlat), @"zPK": @(sqlite3_column_int64(st, 6))
+                    };
+                    [rowsBefore addObject:row];
                 }
             }
             sqlite3_finalize(st);
@@ -4612,39 +4583,46 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         outInfo[@"affectedRows"] = @(rowsBefore.count);
         outInfo[@"rowsBefore"] = rowsBefore;
 
-        if (isCommit && sourceCol) {
+        if (isCommit) {
             if (rowsBefore.count == 0) {
                 sqlite3_close(db);
-                outInfo[@"result"] = @"无来源行可清（已是干净库）";
+                outInfo[@"result"] = @"无带来源的行可清（已是干净库）";
                 return tvExtOk(outInfo);
             }
-            // 清来源 + 写位置（双写）
-            NSMutableString *sql = [NSMutableString stringWithFormat:@"UPDATE ZASSET SET %@ = NULL", sourceCol];
-            if (latCol && slat != 0.0) [sql appendFormat:@", %@ = %f", latCol, slat];
-            if (lonCol && slon != 0.0) [sql appendFormat:@", %@ = %f", lonCol, slon];
-            [sql appendFormat:@" WHERE %@ IS NOT NULL ORDER BY Z_PK DESC LIMIT %ld", sourceCol, (long)limit];
+            // 清 4 个来源字段 + 无位置行补写模拟坐标
+            NSMutableString *sql = [NSMutableString stringWithFormat:
+                @"UPDATE ZADDITIONALASSETATTRIBUTES SET ZIMPORTEDBYDISPLAYNAME = NULL, "
+                 "ZIMPORTEDBYBUNDLEIDENTIFIER = NULL, ZIMPORTEDBY = NULL, ZORIGINALFILENAME = NULL "
+                 "WHERE (ZIMPORTEDBYDISPLAYNAME IS NOT NULL OR ZIMPORTEDBYBUNDLEIDENTIFIER IS NOT NULL) "
+                 "AND ZASSET IN (SELECT Z_PK FROM ZASSET ORDER BY Z_PK DESC LIMIT %ld)", (long)limit];
             char *err = NULL;
             int rc = sqlite3_exec(db, sql.UTF8String, NULL, NULL, &err);
             if (rc != SQLITE_OK) {
                 sqlite3_close(db);
-                return tvExtErr([NSString stringWithFormat:@"UPDATE 失败: %s", err ?: ""]);
+                return tvExtErr([NSString stringWithFormat:@"来源清理 UPDATE 失败: %s", err ?: ""]);
             }
             int changed = sqlite3_changes(db);
+            // 位置补写：ZASSET 中最近 limit 条且 ZLATITUDE=-180（无位置标记）的行
+            NSMutableString *ploc = nil;
+            if (slat != 0.0 && slon != 0.0) {
+                ploc = [NSMutableString stringWithFormat:
+                    @"UPDATE ZASSET SET ZLATITUDE = %f, ZLONGITUDE = %f WHERE ZLATITUDE = -180 AND Z_PK IN "
+                     "(SELECT Z_PK FROM ZASSET ORDER BY Z_PK DESC LIMIT %ld)", slat, slon, (long)limit];
+                int rc2 = sqlite3_exec(db, ploc.UTF8String, NULL, NULL, &err);
+                if (rc2 != SQLITE_OK) {
+                    sqlite3_close(db);
+                    return tvExtErr([NSString stringWithFormat:@"位置补写 UPDATE 失败: %s", err ?: ""]);
+                }
+            }
             sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE);", NULL, NULL, NULL);
             outInfo[@"changed"] = @(changed);
-            outInfo[@"latWritten"] = (latCol && slat != 0.0) ? @(slat) : @(0);
-            outInfo[@"lonWritten"] = (lonCol && slon != 0.0) ? @(slon) : @(0);
+            outInfo[@"locWritten"] = (ploc != nil) ? @YES : @NO;
             sqlite3_close(db);
-            // 4) 回读验证
-            outInfo[@"result"] = @"已清（相册重载后来源标签应消失；如仍显示需重启 Photos 进程）";
+            outInfo[@"result"] = @"已清（相册重载后来源标签应消失；如仍显示需退相册再进入或重启 Photos 进程）";
             return tvExtOk(outInfo);
         }
         sqlite3_close(db);
-        if (!sourceCol) {
-            outInfo[@"result"] = @"未发现 TEXT 来源列——请先跑 album.diag 贴出列清单（来源可能是其它表/字段）";
-        } else {
-            outInfo[@"result"] = isCommit ? @"(commit 模式下无来源列时未执行)" : @"dryrun 预览完成，确认后带 mode=commit 执行";
-        }
+        outInfo[@"result"] = @"dryrun 预览完成，确认后带 mode=commit 执行（备份内建）";
         return tvExtOk(outInfo);
     }
     // ===== HID 硬件键接口（2026-08-23，home/电源/音量/亮度/搜索/键盘等，同 TRCapabilityRegistry id）=====
