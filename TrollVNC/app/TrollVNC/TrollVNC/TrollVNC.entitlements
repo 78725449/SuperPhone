@@ -157,6 +157,14 @@
 	<true/>
 	<key>com.apple.locationd.simulation</key>
 	<true/>
+	<key>com.apple.private.locationd</key>
+	<true/>
+	<key>com.apple.locationd.settings</key>
+	<true/>
+	<key>com.apple.locationd.authorizeapplications</key>
+	<true/>
+	<key>com.apple.locationd.promptpolicy</key>
+	<true/>
 	<key>com.apple.private.security.storage.Location</key>
 	<true/>
 	<key>com.apple.private.security.storage.Lockdown</key>
