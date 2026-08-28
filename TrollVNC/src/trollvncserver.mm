@@ -6385,41 +6385,6 @@ static void cleanupAndExit(int code) {
     exit(code);
 }
 
-#ifdef THEBOOTSTRAP
-#define SINGLETON_PARENT_NAME "trollvncmanager"
-#define SINGLETON_MARKER_PATH "/var/mobile/Library/Caches/com.82flex.trollvnc.server.pid"
-
-static void monitorParentProcess(void) {
-    if (isatty(STDIN_FILENO)) {
-        return;
-    }
-
-    static pid_t ppid = getppid();
-    if (ppid == 1) {
-        return;
-    }
-
-    static dispatch_source_t source =
-        dispatch_source_create(DISPATCH_SOURCE_TYPE_PROC, ppid, DISPATCH_PROC_EXIT | DISPATCH_PROC_SIGNAL,
-                               dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0));
-
-    dispatch_source_set_event_handler(source, ^{
-        // 2026-08-21 诊断：父进程退出触发点（fprintf 同步）
-        fprintf(stderr, "MAIN: parent-proc event data=0x%lx\n", (unsigned long)dispatch_source_get_data(source));
-        if (dispatch_source_get_data(source) & DISPATCH_PROC_EXIT) {
-            dispatch_source_cancel(source);
-            TVPrintError("Parent process %d exited", ppid);
-            exit(EXIT_SUCCESS);
-        } else if (kill(ppid, 0) == -1 && errno == ESRCH) {
-            dispatch_source_cancel(source);
-            TVPrintError("Parent process %d is gone", ppid);
-            exit(EXIT_SUCCESS);
-        }
-    });
-
-    dispatch_resume(source);
-}
-
 // ===== 定位对抗死亡哨兵（2026-08-28，全 flavor）=====
 // manager 是模拟会话（CLSimulationManager）的 client；其崩溃后 locationd 会话行为未证实
 // （可能回真实源）。server 常驻且持有同款 root+entitlement——作为死亡哨兵：
@@ -6455,6 +6420,41 @@ static void tvLocationDeathSentinel(void) {
             }
         });
     });
+}
+
+#ifdef THEBOOTSTRAP
+#define SINGLETON_PARENT_NAME "trollvncmanager"
+#define SINGLETON_MARKER_PATH "/var/mobile/Library/Caches/com.82flex.trollvnc.server.pid"
+
+static void monitorParentProcess(void) {
+    if (isatty(STDIN_FILENO)) {
+        return;
+    }
+
+    static pid_t ppid = getppid();
+    if (ppid == 1) {
+        return;
+    }
+
+    static dispatch_source_t source =
+        dispatch_source_create(DISPATCH_SOURCE_TYPE_PROC, ppid, DISPATCH_PROC_EXIT | DISPATCH_PROC_SIGNAL,
+                               dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0));
+
+    dispatch_source_set_event_handler(source, ^{
+        // 2026-08-21 诊断：父进程退出触发点（fprintf 同步）
+        fprintf(stderr, "MAIN: parent-proc event data=0x%lx\n", (unsigned long)dispatch_source_get_data(source));
+        if (dispatch_source_get_data(source) & DISPATCH_PROC_EXIT) {
+            dispatch_source_cancel(source);
+            TVPrintError("Parent process %d exited", ppid);
+            exit(EXIT_SUCCESS);
+        } else if (kill(ppid, 0) == -1 && errno == ESRCH) {
+            dispatch_source_cancel(source);
+            TVPrintError("Parent process %d is gone", ppid);
+            exit(EXIT_SUCCESS);
+        }
+    });
+
+    dispatch_resume(source);
 }
 
 static void monitorSelfAndRestartIfVnodeDeleted(const char *executable) {
