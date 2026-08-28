@@ -210,6 +210,7 @@ static const double kSimAnchorRangeM = 20.0;
     // （client 崩溃后 locationd 仍投递最后模拟坐标，覆盖崩溃→拉起窗口）；失败仅日志不影响主链路
     NSError *scErr = nil;
     BOOL scOk = [[SimLocationManager sharedManager] loadPersistedScenario:lat lon:lon error:&scErr];
+    TVLog(@"[locsim] anchor start (%.5f, %.5f) acc=%.1f", lat, lon, acc);
     TVLog(@"[locsim] scenario persist: %@ %@", scOk ? @"OK" : @"FAIL", scErr.localizedDescription ?: @"");
 }
 
