@@ -50,6 +50,7 @@ static const double kSimAnchorRangeM = 20.0;
     double _currentMx, _currentMy;
     uint64_t _lastWifiTileKey;   // 上次 wifi 反查的瓦片 key（跨瓦片才重反查，轨迹跟随）
     NSArray<TRWpsTileAP *> *_wifiTileAps; // 当前瓦片 AP 池（窗口注入源；跨瓦片/首点反查时刷新，2026-08-28）
+    NSArray<NSString *> *_lastWifiWindowBssids; // 上次注入的可见 AP BSSID 集（变化才重注入，2026-08-28）
 }
 
 + (instancetype)sharedController {
@@ -268,23 +269,20 @@ static const double kSimAnchorRangeM = 20.0;
                     }
                     // 螺旋找到邻近有效瓦片：缓存为窗口池 + 统一注入（wifi 窗口 + GPS 收尾，同一坐标两路，2026-08-28）
                     sSelf->_wifiTileAps = nearAps;
+                    sSelf->_lastWifiWindowBssids = nil; // 换池：变化检测失效，首窗口强制重注
                     [sSelf _injectSimulationForCurrentLocation];
                 }];
-            } else {
-                // 曾成功但当前反查失败（空洞瓦片/网络）：用上次成功注入的指纹重注保活——
-                // 防 locationd 的 wifi 源回落为设备本地真实扫描（GPS=模拟 vs wifi=本地不自洽，2026-08-28）
-                NSArray *lastScan = [SimLocationManager sharedManager].lastScanResults;
-                if (lastScan.count) {
-                    [[SimLocationManager sharedManager] injectWifiScanResults:lastScan];
-                    TVLog(@"[locsim] wifi re-inject last scan (empty-tile keep-alive), %lu APs", (unsigned long)lastScan.count);
-                }
             }
+            // 曾成功但当前反查失败（跨入新空洞瓦片/网络抖动）：无需保活重注——统一注入下
+            // _wifiTileAps 旧池每 tick 继续供窗口注入，wifi 源天然不断供（lastScan 重注是
+            // 旧低频注入架构的补丁，2026-08-28 统一注入后删除）；旧池持续到跨瓦片反查成功换新
             return;
         }
         // 缓存瓦片 AP 池（窗口注入源）并统一注入（wifi 窗口 + GPS 收尾，同一坐标两路，
         // 2026-08-28 用户定案）——可见 AP=位置附近、GPS=同一坐标直写，模拟真实设备移动时
         // 可见集渐变且 GPS 持续广播（不再"前 100 一批播到跨瓦片"/wifi 独立节拍）
         strongSelf->_wifiTileAps = aps;
+        strongSelf->_lastWifiWindowBssids = nil; // 换池：变化检测失效，首窗口强制重注
         [strongSelf _injectSimulationForCurrentLocation];
     }];
 }
@@ -313,6 +311,9 @@ static const double kSimAnchorRangeM = 20.0;
 
 /// wifi 处理器：按当前模拟位置对缓存瓦片 AP 池做距离窗口注入（可见 AP 渐变；不重新反查）。
 /// 池由路线/锚点确定时反查预取（跨瓦片/首点换池）；播放期只取窗口，无实时网络。
+/// 变化检测：BSSID 集未变（静止/微动未跨出可见阈值）则跳过注入——统一注入动作下 wifi
+/// 与 GPS 同 tick 跑，但 wifi 完整重启成本高（stopWifiSimulation→set→start），集不变不重启，
+/// 消除"每 tick 全量 wifi 重启"（2026-08-28：用户定案统一注入 + 此节流）
 - (void)_injectWifiWindowForCurrentLocation {
     if (_wifiTileAps.count == 0) return;
     CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
@@ -320,8 +321,10 @@ static const double kSimAnchorRangeM = 20.0;
     NSArray<TRWpsTileAP *> *winAps = [TRWpsTile windowApsByDistance:_wifiTileAps center:coord window:kTRWpsWindowSize];
     if (winAps.count == 0) return;
     NSArray<NSString *> *bssids = [TRWpsTile sampleBssidsFromAPs:winAps max:100];
+    if (_lastWifiWindowBssids && [bssids isEqualToArray:_lastWifiWindowBssids]) return; // 可见集未变：不重注入
     NSArray *scanResults = [SimLocationManager buildScanResultsFromBssidStrings:bssids];
     if (scanResults.count) {
+        _lastWifiWindowBssids = bssids;
         [[SimLocationManager sharedManager] injectWifiScanResults:scanResults];
         TVLog(@"[locsim] wifi window inject, %lu APs (visible)", (unsigned long)scanResults.count);
     }
@@ -543,11 +546,13 @@ static const double kSimAnchorRangeM = 20.0;
         if (![SimLocationManager sharedManager].isSimulating || !_anchorSource) {
             TVLog(@"[locsim] anchor lost, re-start");
             [self _startAnchor];
-        } else if ([SimLocationManager sharedManager].isSimulating && [SimLocationManager sharedManager].wasWifiSimulatingOnce) {
-            // wifi 曾成功但当前丢失（locationd 会话中断）→ 兜底重注（幂等：内部完整重启）。
+        } else if (![SimLocationManager sharedManager].isWifiSimulating && [SimLocationManager sharedManager].wasWifiSimulatingOnce) {
+            // wifi 曾成功但当前丢失（locationd 会话中断）→ 重反查换池（2026-08-28 定案：
+            // 原条件 isSimulating && wasWifiSimulatingOnce 在 GPS 正常+曾成功时恒真 → 每 10s
+            // 无条件重反查，曾致"每 10s 报 wifi lost"假象；改为仅 wifi 源确实丢失才触发）。
             // 从未成功（空洞瓦片反查失败）不重试——重注无意义且造成"自我锁死循环"；
             // 等轨迹跨瓦片（_lastWifiTileKey 变化）自然换源反查（2026-08-27 定案）
-            TVLog(@"[locsim] anchor wifi lost, re-inject");
+            TVLog(@"[locsim] anchor wifi lost, re-query");
             [self _injectWifiSimulationForCurrentLocation];
         }
     } else if ([mode isEqualToString:@"itinerary"]) {
@@ -555,9 +560,9 @@ static const double kSimAnchorRangeM = 20.0;
         if (!_trackFinished && !_trackSource) {
             TVLog(@"[locsim] itinerary timer lost, restart");
             [self _startTrack];
-        } else if ([SimLocationManager sharedManager].isSimulating && [SimLocationManager sharedManager].wasWifiSimulatingOnce) {
-            // 同上：仅"曾成功但丢失"重注；"从未成功"（空洞瓦片）安静等待跨瓦片换源
-            TVLog(@"[locsim] itinerary wifi lost, re-inject");
+        } else if (![SimLocationManager sharedManager].isWifiSimulating && [SimLocationManager sharedManager].wasWifiSimulatingOnce) {
+            // 同上：仅"曾成功但丢失"重反查；"从未成功"（空洞瓦片）安静等待跨瓦片换源
+            TVLog(@"[locsim] itinerary wifi lost, re-query");
             [self _injectWifiSimulationForCurrentLocation];
         }
     }
