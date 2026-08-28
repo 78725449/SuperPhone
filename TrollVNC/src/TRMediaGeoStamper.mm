@@ -198,28 +198,39 @@ static NSError *tmgError(int code, NSString *msg) {
     [writer startSessionAtSourceTime:kCMTimeZero];
 
     // 3) 主轨拷贝循环
+    // 2026-08-28 真机第三坑：requestMediaDataWhenReady 的 block 会被系统多次回调，
+    // 曾在每次回调 leave（enter 仅一次）→ group 计数提前归零 → group_wait 早返回、
+    // reader 尚在读（status=Reading）被误判失败。修正：仅当 copy 返回 nil（读尽）时
+    // markAsFinished 并 leave 一次；block 再次回调时 finished 短路。
     dispatch_group_t group = dispatch_group_create();
     for (NSUInteger i = 0; i < wIns.count; i++) {
         AVAssetWriterInput *wi = wIns[i];
         AVAssetReaderOutput *ro = rOuts[i];
         if (!wi || !ro) continue;
         dispatch_group_enter(group);
+        __block BOOL finished = NO;
         [wi requestMediaDataWhenReadyOnQueue:dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0)
                                   usingBlock:^{
+            if (finished) return;
             while ([wi isReadyForMoreMediaData]) {
                 CMSampleBufferRef sbuf = [ro copyNextSampleBuffer];
                 if (sbuf) {
                     [wi appendSampleBuffer:sbuf];
                     CFRelease(sbuf);
                 } else {
+                    finished = YES;
                     [wi markAsFinished];
                     break;
                 }
             }
-            dispatch_group_leave(group);
+            if (finished) dispatch_group_leave(group);
         }];
     }
     dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, 180 * NSEC_PER_SEC));
+    // group 收敛后 reader 状态切换可能仍有瞬态：短轮询收口
+    for (int w = 0; w < 100 && reader.status == AVAssetReaderStatusReading; w++) {
+        usleep(50000);
+    }
 
     if (reader.status != AVAssetReaderStatusCompleted) {
         [writer cancelWriting];
