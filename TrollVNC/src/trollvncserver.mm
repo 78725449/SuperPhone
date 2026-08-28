@@ -4385,31 +4385,28 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
                                             [dir stringByAppendingPathComponent:fn]];
                             CGImageSourceRef isrc = CGImageSourceCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:fp], NULL);
                             if (isrc) {
-                                CGImageMetadataRef md = CGImageMetadataCreateFromImageSource(isrc);
-                                if (md) {
+                                // 14.5 SDK 兼容：CGImageMetadataCreateFromImageSource 不可用（iOS13+），
+                                // 改用 properties 字典枚举 XMP 键（PNG 的 kCGImagePropertyPNGXMPDictionary 等）
+                                NSDictionary *props = (__bridge_transfer NSDictionary *)CGImageSourceCopyPropertiesAtIndex(isrc, 0, NULL);
+                                if (props) {
                                     NSMutableDictionary *xmp = [NSMutableDictionary dictionary];
                                     xmp[@"file"] = fn;
-                                    CFArrayRef tags = CGImageMetadataCopyTags(md);
-                                    if (tags) {
-                                        NSArray *tagArr = (__bridge_transfer NSArray *)tags;
-                                        NSMutableArray *found = [NSMutableArray array];
-                                        for (id tagObj in tagArr) {
-                                            CGImageMetadataTagRef tag = (__bridge CGImageMetadataTag)tagObj;
-                                            NSString *prefix = (__bridge_transfer NSString *)CGImageMetadataTagCopyPrefix(tag);
-                                            NSString *tname = (__bridge_transfer NSString *)CGImageMetadataTagCopyName(tag);
-                                            NSString *upn = [NSString stringWithFormat:@"%@:%@", prefix ?: @"?", tname ?: @"?"].uppercaseString;
-                                            if ([upn containsString:@"SOURCE"] || [upn containsString:@"CREATOR"] ||
-                                                [upn containsString:@"SOFTWARE"] || [upn containsString:@"APPLE"]) {
-                                                CFTypeRef cv = CGImageMetadataTagCopyValue(tag);
-                                                id val2 = cv ? (__bridge id)cv : @"";
-                                                if (cv) CFRelease(cv);
-                                                [found addObject:@[upn, val2]];
-                                            }
+                                    NSMutableArray *found = [NSMutableArray array];
+                                    for (NSString *k in props) {
+                                        NSString *uk = k.uppercaseString;
+                                        if ([uk containsString:@"XMP"] || [uk containsString:@"SOFTWARE"] ||
+                                            [uk containsString:@"CREATOR"] || [uk containsString:@"SOURCE"]) {
+                                            id v = props[k];
+                                            NSString *sv = @"";
+                                            if ([v isKindOfClass:[NSString class]]) sv = v;
+                                            else if ([v isKindOfClass:[NSDictionary class]])
+                                                sv = [[v description] substringToIndex:MIN(200u, [[v description] length])];
+                                            else sv = [v description];
+                                            [found addObject:@[k, sv]];
                                         }
-                                        if (found.count) xmp[@"hits"] = found;
                                     }
+                                    if (found.count) xmp[@"hits"] = found;
                                     row[@"xmp"] = xmp;
-                                    CFRelease(md);
                                 }
                                 CFRelease(isrc);
                             }
