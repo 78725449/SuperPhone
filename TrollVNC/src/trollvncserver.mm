@@ -4195,6 +4195,9 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
     // PHPhotoLibrary 标准 API（Photos.framework）；数据经 5802 HTTP JSON base64 传入。
     // 授权：AddOnly 级别（只写不读）；首次 NotDetermined → 触发系统权限弹窗并提示重试。
     else if ([op isEqualToString:@"album.import"]) {
+        // 2026-08-28 真机崩溃修复：视频 AVAssetWriterMetadataAdaptor 曾抛 NSInvalidArgumentException
+        // 未捕获 SIGABRT 杀 daemon——daemon 内任何框架异常必须被兜住，只回错误不崩进程
+        @try {
         NSString *dataB64 = params[@"data"];
         NSString *filename = params[@"filename"];
         if (![dataB64 isKindOfClass:[NSString class]] || dataB64.length == 0)
@@ -4297,6 +4300,11 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
             @"gps": gpsReport
         }];
         return tvExtOk(resp);
+        } @catch (NSException *ex) {
+            TVLog(@"album.import 内部异常被兜住: %@", ex);
+            return tvExtErr([NSString stringWithFormat:@"相册导入内部异常: %@",
+                             ex.reason ?: ex.name ?: @"未知异常"]);
+        }
     }
     // ===== HID 硬件键接口（2026-08-23，home/电源/音量/亮度/搜索/键盘等，同 TRCapabilityRegistry id）=====
     else {

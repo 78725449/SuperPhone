@@ -175,14 +175,6 @@ static NSError *tmgError(int code, NSString *msg) {
         [rOuts addObject:ro]; [wIns addObject:wi];
     }
 
-    // 2) 元数据轨 + adaptor（GPS / 清 GPS）
-    AVAssetWriterInput *metaInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeMetadata
-                                                                  outputSettings:nil
-                                                                sourceFormatHint:nil];
-    AVAssetWriterInputMetadataAdaptor *adaptor =
-        [[AVAssetWriterInputMetadataAdaptor alloc] initWithAssetWriterInput:metaInput];
-    if ([writer canAddInput:metaInput]) [writer addInput:metaInput];
-
     if (![reader startReading] || ![writer startWriting]) {
         [fm removeItemAtPath:inPath error:nil];
         if (error) *error = tmgError(17, @"视频读写启动失败");
@@ -190,21 +182,20 @@ static NSError *tmgError(int code, NSString *msg) {
     }
     [writer startSessionAtSourceTime:kCMTimeZero];
 
-    // 3) GPS 元数据（ISO 6709：+DD.DDDDDD+DDD.DDDDDD/）
-    if (adaptor && mode == TRMediaGpsModeWrite) {
+    // 2.5) GPS 全局元数据（writer.metadata——不建 metadata 轨：
+    // 2026-08-28 真机崩溃修复：AVAssetWriterInputMetadataAdaptor 要求 metadata input 带 format hint，
+    // nil hint 构造即抛 NSInvalidArgumentException → 未捕获 SIGABRT 杀 daemon；改 writer.metadata 无异常路径）
+    if (mode == TRMediaGpsModeWrite) {
         NSString *iso = [NSString stringWithFormat:@"%+.7f%+.7f/", lat, lon];
-        // AVMutableMetadataItem：identifier/value 可写（AVMetadataItem 为只读）；key 用 ISO6709 identifier 串
         AVMutableMetadataItem *loc = [[AVMutableMetadataItem alloc] init];
         loc.key = AVMetadataIdentifierQuickTimeMetadataLocationISO6709;
         loc.keySpace = AVMetadataKeySpaceQuickTimeMetadata;
         loc.value = iso;
-        NSArray *items = @[loc];
-        AVTimedMetadataGroup *grp = [[AVTimedMetadataGroup alloc] initWithItems:items
-                                                                      timeRange:CMTimeRangeMake(kCMTimeZero, kCMTimePositiveInfinity)];
-        [adaptor appendTimedMetadataGroup:grp];
+        writer.metadata = @[loc];
     }
+    // Clear 模式：重 mux 不写任何 location 元数据 = 无位置（源 location 不继承）
 
-    // 4) 主轨拷贝循环
+    // 3) 主轨拷贝循环
     dispatch_group_t group = dispatch_group_create();
     for (NSUInteger i = 0; i < wIns.count; i++) {
         AVAssetWriterInput *wi = wIns[i];
