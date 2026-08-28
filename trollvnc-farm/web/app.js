@@ -59,16 +59,27 @@ function showLogin() {
   if (document.getElementById('loginBox')) return;
   const wrap = document.createElement('div');
   wrap.id = 'loginBox';
-  wrap.className = 'login';
+  wrap.className = 'login-mask';   // fixed 全屏遮罩 + flex 居中（2026-08-28：鉴权卡须画面正中心）
   wrap.innerHTML = `
-    <h3>控制台</h3>
-    <input id="loginToken" type="password" placeholder="访问令牌 (FARM_TOKEN)" />
-    <button id="btnLogin" class="primary">进入</button>`;
+    <div class="login">
+      <h3>控制台</h3>
+      <input id="loginToken" type="password" placeholder="访问令牌 (FARM_TOKEN)" />
+      <button id="btnLogin" class="primary">进入</button>
+    </div>`;
+  document.body.classList.add('auth-wait');   // 未鉴权隐藏顶栏/屏幕墙（2026-08-28）
   document.body.prepend(wrap);
+  const inp = $('loginToken');
+  inp.focus();
+  inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') $('btnLogin').click(); });
   $('btnLogin').onclick = async () => {
     setToken($('loginToken').value.trim());
     wrap.remove();
-    try { await refreshDevices(); restoreFocusFromUrl(); } catch { showLogin(); }
+    try {
+      await refreshDevices();            // 先渲染好屏幕墙再恢复显示，避免进入闪一下（2026-08-28）
+      document.body.classList.remove('auth-wait');   // 鉴权通过 + 数据就绪，恢复顶栏/屏幕墙
+      restoreFocusFromUrl();
+      connectEventsWS();   // 未授权启动时未连 WS，登录成功后补齐（2026-08-28）
+    } catch { showLogin(); }
   };
 }
 
@@ -3380,11 +3391,16 @@ document.addEventListener('click', (e) => {
 window.addEventListener('resize', fitFocusPanel);
 
 (async () => {
+  // 2026-08-28：无本地令牌先弹居中登录卡（输入密钥后才进屏幕墙）；有令牌仍走 401 兜底
+  if (!TOKEN) { showLogin(); return; }
+  document.body.classList.add('auth-wait');   // 数据就绪前不露出顶栏/屏幕墙（2026-08-28：避免进入闪一下）
   try {
     await refreshDevices();
+    document.body.classList.remove('auth-wait');
     restoreFocusFromUrl(); // 2026-08-14：刷新后自动恢复当前操作的设备画面（URL ?focus=）
     connectEventsWS(); // 2026-08-18：设备变更推送订阅（2026-08-19 移除 6s 轮询，WS 心跳保活由后端负责）
   } catch (e) {
     if (e.message === 'unauthorized') showLogin();
+    else document.body.classList.remove('auth-wait');   // 非鉴权故障（如网络断）也展示界面便于排查
   }
 })();

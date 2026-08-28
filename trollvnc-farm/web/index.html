@@ -7,7 +7,7 @@
 <link rel="icon" href="data:," />
 <link rel="stylesheet" href="style.css?v=40" />
 </head>
-<body>
+<body class="auth-wait">  <!-- 2026-08-28：鉴权门禁默认态落静态 HTML，首帧即隐藏顶栏/屏幕墙，杜绝 JS 后补 class 导致的短暂漏出 -->
 <header>
   <div id="meta" class="meta"></div>
   <div class="actions">
@@ -122,6 +122,6 @@
 <!-- 设备卡片小菜单 -->
   <div id="tileMenu" class="tile-menu hidden"></div>
 
-  <script type="module" src="app.js?v=219"></script>
+  <script type="module" src="app.js?v=222"></script>
 </body>
 </html>

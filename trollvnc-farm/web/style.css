@@ -520,10 +520,21 @@ main {
   border-radius: 6px; padding: 6px 9px; font-size: 14px;
 }
 .cfg-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+/* 鉴权门禁（2026-08-28）：未输入令牌时顶栏与屏幕墙整体隐藏，只显示居中登录卡 */
+body.auth-wait header,
+body.auth-wait main { visibility: hidden; }
+
+/* 登录遮罩：fixed 全屏 + flex 居中（2026-08-28：鉴权卡不得从顶部弹出，须绝对居中于画面） */
+.login-mask {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex; align-items: center; justify-content: center;
+}
 .login {
-  margin: 10vh auto; width: min(380px, 92vw);
+  margin: 0 auto; width: min(380px, 92vw);
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
   padding: 24px; display: flex; flex-direction: column; gap: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
 }
 .login input { background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 10px; }
 
