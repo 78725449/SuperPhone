@@ -43,7 +43,7 @@ typedef NS_ENUM(NSInteger, TRMediaGpsMode) {
                                mode:(TRMediaGpsMode)mode
                                 lat:(double)lat
                                 lon:(double)lon
-                              error:(NSError **)error;
+                              error:(NSError * _Nullable * _Nullable)error;
 
 /**
  * 改写视频元数据 GPS（AVAssetReader/Writer 逐轨直拷，不重编码）。
@@ -55,7 +55,7 @@ typedef NS_ENUM(NSInteger, TRMediaGpsMode) {
                                mode:(TRMediaGpsMode)mode
                                 lat:(double)lat
                                 lon:(double)lon
-                              error:(NSError **)error;
+                              error:(NSError * _Nullable * _Nullable)error;
 
 @end
 

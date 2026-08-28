@@ -154,10 +154,10 @@ static NSError *tmgError(int code, NSString *msg) {
     NSMutableArray<AVAssetReaderOutput *> *rOuts = [NSMutableArray array];
     NSMutableArray<AVAssetWriterInput *> *wIns = [NSMutableArray array];
     for (AVAssetTrack *tr in vidTracks) {
-        AVAssetReaderTrackOutput *ro = [AVAssetReaderTrackOutput trackOutputWithTrack:tr outputSettings:nil];
-        AVAssetWriterInput *wi = [AVAssetWriterInput inputWithMediaType:AVMediaTypeVideo
-                                                         outputSettings:nil
-                                                       sourceFormatHint:tr.formatDescriptions.firstObject];
+        AVAssetReaderTrackOutput *ro = [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:tr outputSettings:nil];   // 14.5 SDK 旧名
+        AVAssetWriterInput *wi = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo
+                                                                  outputSettings:nil
+                                                                sourceFormatHint:tr.formatDescriptions.firstObject];
         wi.transform = tr.preferredTransform;
         wi.expectsMediaDataInRealTime = NO;
         if ([reader canAddOutput:ro]) [reader addOutput:ro];
@@ -165,10 +165,10 @@ static NSError *tmgError(int code, NSString *msg) {
         [rOuts addObject:ro]; [wIns addObject:wi];
     }
     for (AVAssetTrack *tr in audTracks) {
-        AVAssetReaderTrackOutput *ro = [AVAssetReaderTrackOutput trackOutputWithTrack:tr outputSettings:nil];
-        AVAssetWriterInput *wi = [AVAssetWriterInput inputWithMediaType:AVMediaTypeAudio
-                                                         outputSettings:nil
-                                                       sourceFormatHint:tr.formatDescriptions.firstObject];
+        AVAssetReaderTrackOutput *ro = [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:tr outputSettings:nil];
+        AVAssetWriterInput *wi = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio
+                                                                  outputSettings:nil
+                                                                sourceFormatHint:tr.formatDescriptions.firstObject];
         wi.expectsMediaDataInRealTime = NO;
         if ([reader canAddOutput:ro]) [reader addOutput:ro];
         if ([writer canAddInput:wi]) [writer addInput:wi];
@@ -176,9 +176,9 @@ static NSError *tmgError(int code, NSString *msg) {
     }
 
     // 2) 元数据轨 + adaptor（GPS / 清 GPS）
-    AVAssetWriterInput *metaInput = [AVAssetWriterInput inputWithMediaType:AVMediaTypeMetadata
-                                                           outputSettings:nil
-                                                         sourceFormatHint:nil];
+    AVAssetWriterInput *metaInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeMetadata
+                                                                  outputSettings:nil
+                                                                sourceFormatHint:nil];
     AVAssetWriterInputMetadataAdaptor *adaptor =
         [[AVAssetWriterInputMetadataAdaptor alloc] initWithAssetWriterInput:metaInput];
     if ([writer canAddInput:metaInput]) [writer addInput:metaInput];
@@ -193,9 +193,10 @@ static NSError *tmgError(int code, NSString *msg) {
     // 3) GPS 元数据（ISO 6709：+DD.DDDDDD+DDD.DDDDDD/）
     if (adaptor && mode == TRMediaGpsModeWrite) {
         NSString *iso = [NSString stringWithFormat:@"%+.7f%+.7f/", lat, lon];
-        AVMetadataItem *loc = [AVMetadataItem metadataItemWithKey:AVMetadataKeyQuickTimeMetadataLocationISO6709
-                                                         keySpace:AVMetadataKeySpaceQuickTimeMetadata];
-        loc.identifier = AVMetadataIdentifierQuickTimeMetadataLocationISO6709;
+        // AVMutableMetadataItem：identifier/value 可写（AVMetadataItem 为只读）；key 用 ISO6709 identifier 串
+        AVMutableMetadataItem *loc = [[AVMutableMetadataItem alloc] init];
+        loc.key = AVMetadataIdentifierQuickTimeMetadataLocationISO6709;
+        loc.keySpace = AVMetadataKeySpaceQuickTimeMetadata;
         loc.value = iso;
         NSArray *items = @[loc];
         AVTimedMetadataGroup *grp = [[AVTimedMetadataGroup alloc] initWithItems:items
