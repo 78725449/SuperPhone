@@ -157,7 +157,7 @@ static NSError *tmgError(int code, NSString *msg) {
         AVAssetReaderTrackOutput *ro = [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:tr outputSettings:nil];   // 14.5 SDK 旧名
         AVAssetWriterInput *wi = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo
                                                                   outputSettings:nil
-                                                                sourceFormatHint:tr.formatDescriptions.firstObject];
+                                                                sourceFormatHint:(__bridge CMFormatDescriptionRef)tr.formatDescriptions.firstObject];
         wi.transform = tr.preferredTransform;
         wi.expectsMediaDataInRealTime = NO;
         if ([reader canAddOutput:ro]) [reader addOutput:ro];
@@ -168,7 +168,7 @@ static NSError *tmgError(int code, NSString *msg) {
         AVAssetReaderTrackOutput *ro = [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:tr outputSettings:nil];
         AVAssetWriterInput *wi = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio
                                                                   outputSettings:nil
-                                                                sourceFormatHint:tr.formatDescriptions.firstObject];
+                                                                sourceFormatHint:(__bridge CMFormatDescriptionRef)tr.formatDescriptions.firstObject];
         wi.expectsMediaDataInRealTime = NO;
         if ([reader canAddOutput:ro]) [reader addOutput:ro];
         if ([writer canAddInput:wi]) [writer addInput:wi];

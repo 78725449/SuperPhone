@@ -39,7 +39,7 @@ typedef NS_ENUM(NSInteger, TRMediaGpsMode) {
  * @return 改写后的图片数据；失败返回 nil 并置 error（绝不静默）
  */
 + (nullable NSData *)stampImageData:(NSData *)src
-                                uti:(CFStringRef * _Nullable)outUTI
+                                uti:(CFStringRef _Nullable * _Nullable)outUTI
                                mode:(TRMediaGpsMode)mode
                                 lat:(double)lat
                                 lon:(double)lon
