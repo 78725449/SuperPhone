@@ -33,6 +33,8 @@ trollvncserver_FILES += src/TRScreenHasher.mm
 trollvncserver_FILES += src/TRVisionEngine.mm
 # 换号身份锚清理（identity.reset；manager/server 双 root 进程等价执行，共享单一实现）
 trollvncserver_FILES += src/TRIdentityReset.mm
+# 相册媒体 GPS 包装（album.import gps 参数：改写/清除 EXIF 与 ISO6709 定位，2026-08-28）
+trollvncserver_FILES += src/TRMediaGeoStamper.mm
 trollvncserver_FILES += src/TRSelfSignedCert.mm
 # 共享模块（App 伪装页 / server / manager 三 target 各自编译同一份源码，写库单一实现）
 trollvncserver_FILES += src/CoordTransform.mm
@@ -108,6 +110,9 @@ trollvncserver_FRAMEWORKS += Security
 trollvncserver_FRAMEWORKS += UIKit
 trollvncserver_FRAMEWORKS += UserNotifications
 trollvncserver_FRAMEWORKS += Vision
+trollvncserver_FRAMEWORKS += ImageIO
+trollvncserver_FRAMEWORKS += AVFoundation
+trollvncserver_FRAMEWORKS += MobileCoreServices
 
 trollvncserver_PRIVATE_FRAMEWORKS += FrontBoardServices
 

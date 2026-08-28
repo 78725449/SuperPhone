@@ -74,6 +74,7 @@ extern CFTypeRef SecTaskCopyValueForEntitlement(SecTaskRef task, CFStringRef ent
 #import "TRScreenHasher.h"
 #import "TRVisionEngine.h"
 #import "TRIdentityReset.h"
+#import "TRMediaGeoStamper.h"   // album.import gps 包装（EXIF/ISO6709 定位改写，2026-08-28）
 #import "TRSelfSignedCert.h"
 #import "TRDataFiller.h"
 #import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
@@ -4209,6 +4210,69 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         if (st == PHAuthorizationStatusDenied || st == PHAuthorizationStatusRestricted) {
             return tvExtErr(@"无相册写权限（设置 → 隐私 → 照片 允许添加）");
         }
+        // ===== GPS 包装（2026-08-28）：抖音 TMMediaGPSReadingCache 读媒体 EXIF GPS——
+        // 上传文件若带异地/真实位置会与模拟定位冲突。gps 参数：
+        //   缺省/auto  → 有模拟（SimLocationMode≠off 且坐标非 0,0）写目标坐标；off/0,0 清除 GPS
+        //   keep       → 原样保留（编排显式选择）
+        //   {lat, lon} → 显式坐标覆盖
+        // 写入失败返回明确错误，绝不静默（归零原则）。
+        NSDictionary *simCfg = nil;
+        {
+            NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
+            NSString *modeStr = [d stringForKey:@"SimLocationMode"];
+            NSNumber *slat = [d objectForKey:@"SimLocationLat"];
+            NSNumber *slon = [d objectForKey:@"SimLocationLon"];
+            simCfg = @{@"mode": modeStr ?: @"off",
+                       @"lat": slat ?: @0.0, @"lon": slon ?: @0.0};
+        }
+        TRMediaGpsMode gpsMode = TRMediaGpsModeClear;   // 无模拟默认清除（防真实位置泄露）
+        double glat = 0, glon = 0;
+        id gpsParam = params[@"gps"];
+        if ([gpsParam isKindOfClass:[NSDictionary class]]) {
+            NSNumber *plat = gpsParam[@"lat"], *plon = gpsParam[@"lon"];
+            if ([plat isKindOfClass:[NSNumber class]] && [plon isKindOfClass:[NSNumber class]]) {
+                gpsMode = TRMediaGpsModeWrite; glat = plat.doubleValue; glon = plon.doubleValue;
+            } else {
+                return tvExtErr(@"gps 对象须含 lat/lon 数字");
+            }
+        } else if ([gpsParam isKindOfClass:[NSString class]] && [gpsParam isEqualToString:@"keep"]) {
+            gpsMode = TRMediaGpsModeKeep;
+        } else {
+            NSString *modeStr = simCfg[@"mode"];
+            double slat = [simCfg[@"lat"] doubleValue], slon = [simCfg[@"lon"] doubleValue];
+            if ([modeStr isEqualToString:@"off"] || !modeStr.length ||
+                (slat == 0.0 && slon == 0.0)) {
+                gpsMode = TRMediaGpsModeClear;
+            } else {
+                gpsMode = TRMediaGpsModeWrite; glat = slat; glon = slon;
+            }
+        }
+        NSMutableDictionary *gpsReport = [NSMutableDictionary dictionary];
+        if (gpsMode != TRMediaGpsModeKeep) {
+            NSString *mediaExt = filename ? filename.pathExtension.lowercaseString : @"";
+            BOOL mediaIsVideo = [mediaExt isEqualToString:@"mp4"] || [mediaExt isEqualToString:@"mov"] || [mediaExt isEqualToString:@"m4v"];
+            NSError *gerr = nil;
+            NSData *stamped = nil;
+            if (mediaIsVideo) {
+                stamped = [TRMediaGeoStamper stampVideoData:data mode:gpsMode lat:glat lon:glon error:&gerr];
+            } else {
+                stamped = [TRMediaGeoStamper stampImageData:data uti:NULL mode:gpsMode lat:glat lon:glon error:&gerr];
+            }
+            if (!stamped) {
+                return tvExtErr([NSString stringWithFormat:@"GPS 包装失败: %@",
+                                 gerr.localizedDescription ?: @"未知错误（可传 gps=keep 原样导入）"]);
+            }
+            data = stamped;
+            if (gpsMode == TRMediaGpsModeWrite) {
+                gpsReport[@"mode"] = @"stamped";
+                gpsReport[@"lat"] = @(glat); gpsReport[@"lon"] = @(glon);
+            } else {
+                gpsReport[@"mode"] = @"cleared";
+            }
+        } else {
+            gpsReport[@"mode"] = @"kept";
+        }
+        (void)simCfg;
         // NotDetermined：不请求（避免崩溃），直接尝试 performChangesAndWait，由 entitlement 判定
         NSString *ext = filename ? filename.pathExtension.lowercaseString : @"";
         BOOL isVideo = [ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"] || [ext isEqualToString:@"m4v"];
@@ -4227,7 +4291,12 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
         } error:&perr];
         [[NSFileManager defaultManager] removeItemAtPath:tmpPath error:nil];
         if (!pOk) return tvExtErr([NSString stringWithFormat:@"相册导入失败: %@", perr.localizedDescription ?: @""]);
-        return tvExtOk(@{@"size": @(data.length), @"type": isVideo ? @"video" : @"image"});
+        NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithDictionary:@{
+            @"size": @(data.length),
+            @"type": isVideo ? @"video" : @"image",
+            @"gps": gpsReport
+        }];
+        return tvExtOk(resp);
     }
     // ===== HID 硬件键接口（2026-08-23，home/电源/音量/亮度/搜索/键盘等，同 TRCapabilityRegistry id）=====
     else {
