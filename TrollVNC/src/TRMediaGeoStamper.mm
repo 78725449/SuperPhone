@@ -175,16 +175,11 @@ static NSError *tmgError(int code, NSString *msg) {
         [rOuts addObject:ro]; [wIns addObject:wi];
     }
 
-    if (![reader startReading] || ![writer startWriting]) {
-        [fm removeItemAtPath:inPath error:nil];
-        if (error) *error = tmgError(17, @"视频读写启动失败");
-        return nil;
-    }
-    [writer startSessionAtSourceTime:kCMTimeZero];
-
     // 2.5) GPS 全局元数据（writer.metadata——不建 metadata 轨：
-    // 2026-08-28 真机崩溃修复：AVAssetWriterInputMetadataAdaptor 要求 metadata input 带 format hint，
-    // nil hint 构造即抛 NSInvalidArgumentException → 未捕获 SIGABRT 杀 daemon；改 writer.metadata 无异常路径）
+    // 2026-08-28 真机崩溃修复①：AVAssetWriterInputMetadataAdaptor 要求 metadata input 带 format hint，
+    // nil hint 构造即抛 NSInvalidArgumentException → 未捕获 SIGABRT 杀 daemon；改 writer.metadata 无异常路径。
+    // 修复②（真机第二坑）：writer.metadata 必须于 startWriting（status=Writing）之前设置，否则
+    // setMetadata 抛异常 Cannot call method when status is 1——故本段置于 startReading/startWriting 之前。
     if (mode == TRMediaGpsModeWrite) {
         NSString *iso = [NSString stringWithFormat:@"%+.7f%+.7f/", lat, lon];
         AVMutableMetadataItem *loc = [[AVMutableMetadataItem alloc] init];
@@ -194,6 +189,13 @@ static NSError *tmgError(int code, NSString *msg) {
         writer.metadata = @[loc];
     }
     // Clear 模式：重 mux 不写任何 location 元数据 = 无位置（源 location 不继承）
+
+    if (![reader startReading] || ![writer startWriting]) {
+        [fm removeItemAtPath:inPath error:nil];
+        if (error) *error = tmgError(17, @"视频读写启动失败");
+        return nil;
+    }
+    [writer startSessionAtSourceTime:kCMTimeZero];
 
     // 3) 主轨拷贝循环
     dispatch_group_t group = dispatch_group_create();
