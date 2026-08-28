@@ -161,8 +161,11 @@ static double *trvCorrelate2D(const double *img, int iw,
                               const double *tplFlipped, int tw, int th,
                               int outW, int outH) {
     double *out = (double *)calloc(sizeof(double), (size_t)outW * outH);
-    double *acc = (double *)malloc(sizeof(double) * (size_t)outW);
-    double *part = (double *)malloc(sizeof(double) * (size_t)outW);
+    // vDSP_convD 全卷积输出长度 = N + M - 1（Apple 文档硬性要求），只读前 outW 个有效相关值；
+    // 曾按 outW 分配导致堆溢出写越界，任意合法模板必崩 daemon（2026-08-28 真机 E2E 定位）
+    size_t convCap = (size_t)iw + tw - 1;
+    double *acc = (double *)malloc(sizeof(double) * convCap);
+    double *part = (double *)malloc(sizeof(double) * convCap);
     if (!out || !acc || !part) { free(out); free(acc); free(part); return NULL; }
     for (int v = 0; v < outH; v++) {
         for (int j = 0; j < th; j++) {
@@ -467,7 +470,7 @@ static double trvNCCScore(double corr, const double *satSum, const double *satSq
                 win[(size_t)y * ww + x] = (double)sgray[(size_t)(wy + y) * W + (wx + x)];
         satWS = trvBuildSAT(win, ww, wh, 0);   // 必须在 win 填值后构建（曾于填充前构建读到未初始化内存）
         satWSq = trvBuildSAT(win, ww, wh, 1);
-        if (!satWSq) goto cleanup;
+        if (!satWS || !satWSq) goto cleanup;
         int wOutW = ww - tw + 1, wOutH = wh - th + 1;
         corrW = trvCorrelate2D(win, ww, tflipFull, tw, th, wOutW, wOutH);
         if (!corrW) goto cleanup;
