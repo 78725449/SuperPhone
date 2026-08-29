@@ -198,7 +198,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
             _currentLon = lon;
             _currentAcc = acc;
             [self _injectGpsForCurrentLocation];
-            [self _updateTrajectoryFile];
+            [self _persistState];   // 位置变化持久化
             if (![CLLocationManager locationServicesEnabled]) {
                 [SimLocationManager setSystemLocationServices:YES];
             }
@@ -692,41 +692,25 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
 
 /// 持久化当前模拟状态（anchor 游走偏移 + 模式），崩溃恢复用（L3'，2026-08-29）
 - (void)_persistState {
-    if ([_currentMode isEqualToString:@"anchor"]) {
-        NSDictionary *st = @{
-            @"version": @1,
-            @"mode": @"anchor",
-            @"anchorLat": @(_anchorLat), @"anchorLon": @(_anchorLon), @"anchorAcc": @(_anchorAcc),
-            @"mx": @(_currentMx), @"my": @(_currentMy),
-        };
-        NSData *json = [NSJSONSerialization dataWithJSONObject:st options:0 error:NULL];
-        [json writeToFile:kSimStateFilePath atomically:YES];
-    } else if ([_currentMode isEqualToString:@"itinerary"]) {
-        // itinerary：存当前位置（_startTrack 的续播逻辑依赖 _current 找最近点；崩溃后恢复续播不从头跳变）
-        NSDictionary *st = @{
-            @"version": @1,
-            @"mode": @"itinerary",
-            @"lat": @(_currentLat), @"lon": @(_currentLon), @"acc": @(_currentAcc),
-        };
-        NSData *json = [NSJSONSerialization dataWithJSONObject:st options:0 error:NULL];
-        [json writeToFile:kSimStateFilePath atomically:YES];
-    } else {
-        [[NSFileManager defaultManager] removeItemAtPath:kSimStateFilePath error:NULL];
-    }
-}
-
-#pragma mark - 轨迹文件（永久真相源，2026-08-29）
-
-/// 更新轨迹文件（原子写入；首次锚点创建，播放过程更新当前位置）
-- (void)_updateTrajectoryFile {
+    // 持久化当前位置到轨迹文件（单文件真相源，2026-08-29）
+    // 60s 定时器、trackTick、off 分支坐标变化、anchor 创建均调用此方法
     NSMutableDictionary *traj = [NSMutableDictionary dictionary];
     traj[@"version"] = @2;
-    // anchors：当前锚点列表（从 _anchorLat/_anchorLon + _currentMode 构建）
+    traj[@"mode"] = _currentMode ?: @"off";
     if (_currentLat != 0 || _currentLon != 0) {
         traj[@"currentPosition"] = @{@"lat": @(_currentLat), @"lon": @(_currentLon), @"acc": @(_currentAcc)};
     }
-    traj[@"mode"] = _currentMode ?: @"off";
-    // 轨迹文件只写当前位置，锚点列表由 App 侧管理（uploadTrackPoints 写入路线点）
+    // anchor 模式额外存游走偏移（崩溃恢复保留微动状态）
+    if ([_currentMode isEqualToString:@"anchor"]) {
+        traj[@"anchorLat"] = @(_anchorLat);
+        traj[@"anchorLon"] = @(_anchorLon);
+        traj[@"mx"] = @(_currentMx);
+        traj[@"my"] = @(_currentMy);
+    }
+    // itinerary 模式存轨迹索引（崩溃续播定位）
+    if ([_currentMode isEqualToString:@"itinerary"]) {
+        traj[@"trackIndex"] = @(_trackIndex > 0 ? _trackIndex - 1 : 0);
+    }
     NSError *jerr = nil;
     NSData *json = [NSJSONSerialization dataWithJSONObject:traj options:0 error:&jerr];
     if (!json) return;
@@ -735,6 +719,8 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     [[NSFileManager defaultManager] removeItemAtPath:kTrajectoryFilePath error:NULL];
     [[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kTrajectoryFilePath error:NULL];
 }
+
+#pragma mark - 轨迹文件（永久真相源，2026-08-29）
 
 /// 读取轨迹文件；无/损坏返回 nil
 + (NSDictionary *)loadTrajectoryFile {
