@@ -1493,7 +1493,9 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 旧实现每刷新对每个锚点全量遍历 submittedPoints 找最近索引（区域轨迹可达数万点 → 主线程 O(A×P) haversine 卡死）
 /// liveW 为当前位置（WGS）；仅定位中生效（停止态颜色定格）
 - (void)updateAnchorPassStateWithLiveWGS:(CLLocationCoordinate2D)liveW {
-    if (!self.locating || self.anchors.count == 0) return;
+    // 2026-08-30：不依赖 locating——有当前位置即更新锚点红蓝（首锚点后 locating=NO 也生效：
+    // 基于当前位置创建的锚点立即标红=已消费，点击位置锚点保持蓝=待消费）
+    if (self.anchors.count == 0) return;
     static const double kPassedThresholdM = 25.0; // 距锚点 25m 内视为经过（停留微动 ±1m 远小于阈值，锚点间距通常 >50m）
     TRAnchorAnnotation *departAnchor = nil; // 当前位置所在段的出发锚点 = 已经过的最后一个锚点
     for (TRAnchorAnnotation *a in self.anchors) {
