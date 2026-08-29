@@ -685,7 +685,7 @@ int main(int argc, const char *argv[]) {
                 (void)token;
                 fprintf(stderr, "[manager] manager-restart notified -> graceful exit (launchd will respawn)\n");
                 // 停模拟（off 清理：注入会话+开关关闭——启动契约也会兜底，双保险）
-                [[SimLocationController sharedController] reloadFromPrefsWithModeOff];
+                [SimLocationController forceOffAndReload];
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
                                dispatch_get_main_queue(), ^{
                     CFRunLoopStop(CFRunLoopGetMain());   // 优雅退出 → launchd KeepAlive 拉起新 manager
