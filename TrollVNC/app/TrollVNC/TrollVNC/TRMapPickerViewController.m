@@ -955,7 +955,15 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.locating = YES;
         self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻：模拟分支只认晚于此的 fix（过滤注入落地前的真实残留）
         self.startupLockedToAnchor = YES; // 开启瞬间到注入落地前：锁定锚点位置显示，忽略真实 fix（防"真实→锚点"横跳）
-        [self commitAnchor];
+        [self commitAnchor]; // 写坐标+notify（不写模式）
+        // 写模式=anchor（开启模拟/播放开关）；有路线则写 itinerary
+        {
+            NSUserDefaults *d2 = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
+            BOOL hasRoute = [[NSFileManager defaultManager] fileExistsAtPath:kTRSimTrackFilePath];
+            [d2 setObject:hasRoute ? @"itinerary" : @"anchor" forKey:@"SimLocationMode"];
+            [d2 synchronize];
+            notify_post(TVNC_NOTIFY_PREFS_CHANGED);
+        }
         [self refreshUserLocationView];       // 当前位置水滴恢复出行图标
         // 停止后再开启：之前模拟位置（cur）距当前实际位置（lastFix=真实或残留）>500m → 瞬间跳回停止前位置（复用首锚点视野行为）；
         // 距离近（位置本就在附近/残留）不跳——维持"开启不主动聚焦"的常规语义
@@ -1649,9 +1657,9 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 #pragma mark - 落盘自治（App=配置源，manager=注入执行器）
 
 - (void)commitAnchor {
+    // 2026-08-29 定案：只写坐标，不写模式——daemon off 分支检测坐标变化后注入+开定位，保持模式为 off
     CLLocationCoordinate2D wgs = [CoordTransform gcj02ToWgs84:self.cur];
     NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
-    [d setObject:@"anchor" forKey:@"SimLocationMode"];
     [d setDouble:wgs.latitude forKey:@"SimLocationLat"];
     [d setDouble:wgs.longitude forKey:@"SimLocationLon"];
     [d synchronize];
@@ -1670,8 +1678,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// "只要不是停止定位，编辑时底层保持当前位置不乱跳"（仅定位中生效；停止态编辑不动 daemon）
 - (void)holdAtCurrentPosition:(CLLocationCoordinate2D)curW {
     if (!self.locating) return;
+    // 2026-08-29 定案：只写坐标，不写模式——编辑时保持当前模式不变
     NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
-    [d setObject:@"anchor" forKey:@"SimLocationMode"];
     [d setDouble:curW.latitude forKey:@"SimLocationLat"];
     [d setDouble:curW.longitude forKey:@"SimLocationLon"];
     [d synchronize];
@@ -1972,10 +1980,9 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             [[NSFileManager defaultManager] removeItemAtPath:kTRSimTrackFilePath error:nil];
         }
         if (![[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kTRSimTrackFilePath error:nil]) return;
+        // 2026-08-29 定案：轨迹写入后不自动切换模式——播放开关由用户控制
         if (locating) {
-            NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
-            [d setObject:@"itinerary" forKey:@"SimLocationMode"];
-            [d synchronize];
+            // 仅通知 daemon 轨迹文件已更新（不改变模式，可用于读取路线点）
             notify_post(TVNC_NOTIFY_PREFS_CHANGED);
         }
     });
