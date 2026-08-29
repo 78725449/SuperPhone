@@ -4,6 +4,7 @@
 */
 #import "TRWifiKnownNetworks.h"
 #import <SystemConfiguration/CaptiveNetwork.h>
+#import <spawn.h>   // posix_spawn（wifid 重载通知；模块化编译需显式 import）
 
 static NSString *const kKnownNetworksPath = @"/var/preferences/com.apple.wifi.known-networks.plist";
 
