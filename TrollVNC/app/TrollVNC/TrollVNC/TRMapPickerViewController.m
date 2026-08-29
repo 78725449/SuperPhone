@@ -424,10 +424,10 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         [statusBtn.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
         [statusBtn.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
         [statusBtn.heightAnchor constraintEqualToConstant:32],
-        // WiFi 诊断标签：状态条下 6、与搜索框左对齐、右不超边（2 行自适应高度）
+        // WiFi 诊断标签：状态条下 6、与定位状态栏同宽（2026-08-30 用户定案）、高度自适应
         [wifiDiag.topAnchor constraintEqualToAnchor:statusBtn.bottomAnchor constant:6],
-        [wifiDiag.leadingAnchor constraintEqualToAnchor:self.searchBar.leadingAnchor],
-        [wifiDiag.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.trailingAnchor constant:-16],
+        [wifiDiag.leadingAnchor constraintEqualToAnchor:statusBtn.leadingAnchor],
+        [wifiDiag.trailingAnchor constraintEqualToAnchor:statusBtn.trailingAnchor],
         // 搜索下拉结果列表：搜索框下 4、左右 12、高 ≤240（可滚动）
         [srv.topAnchor constraintEqualToAnchor:sb.bottomAnchor constant:4],
         [srv.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
