@@ -24,6 +24,8 @@ static NSString *const kSimMobilePrefsPath = @"/var/mobile/Library/Preferences/c
 // 模拟状态持久化文件（L3' 崩溃恢复，2026-08-29）：{mode, anchorLat/Lon/Acc, mx, my, lastRefresh}
 // 崩溃后新 manager 据此恢复播放（复用轨迹文件"文件即状态"机制）；与轨迹文件并列
 static NSString *const kSimStateFilePath = @"/var/mobile/Library/Preferences/com.82flex.trollvnc.simstate.json";
+// 轨迹文件（永久真相源，首次锚点创建，永不删除）：{version, anchors[], currentPosition, routePoints[]}
+static NSString *const kTrajectoryFilePath = @"/var/mobile/Library/Preferences/com.82flex.trollvnc.trajectory.json";
 // 巡检间隔（已移除 2026-08-29：配置驱动 + L3' + L4 哨兵 + 启动兜底已覆盖）
 // prefs-changed 重载合并窗口：App 一次编辑链（holdAtCurrentPosition → 重算 → writeTrackFile）
 // 连发多次通知，窗口内合并为一次重载（防热重载风暴，2026-08-27）
@@ -99,6 +101,20 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     TVLog(@"[locsim] startup: system location = %@", sysLocON ? @"ON" : @"OFF");
     // ② 先关定位（确定安全状态；setSystemLocationServices: 内部幂等：已关则跳过）
     [SimLocationManager setSystemLocationServices:NO];
+
+    // ③ 读轨迹文件，注入当前位置（有则注入，确保注入始终跑——即使不恢复播放）
+    NSDictionary *traj = [SimLocationController loadTrajectoryFile];
+    CLLocationCoordinate2D trajPos = [SimLocationController readPositionFromTrajectory:traj];
+    if (CLLocationCoordinate2DIsValid(trajPos)) {
+        _currentLat = trajPos.latitude;
+        _currentLon = trajPos.longitude;
+        _currentAcc = [traj[@"currentPosition"][@"acc"] doubleValue];
+        if (_currentAcc < 3.0) _currentAcc = 5.0;
+        [self _injectGpsForCurrentLocation];
+        TVLog(@"[locsim] startup: injected trajectory position (%.5f, %.5f)", trajPos.latitude, trajPos.longitude);
+    } else {
+        TVLog(@"[locsim] startup: no trajectory file, no injection (first launch)");
+    }
 
     NSString *mode = [self _readPref:@"SimLocationMode"];
     NSDictionary *state = [SimLocationController loadPersistedState];
@@ -643,6 +659,45 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     } else {
         [[NSFileManager defaultManager] removeItemAtPath:kSimStateFilePath error:NULL];
     }
+}
+
+#pragma mark - 轨迹文件（永久真相源，2026-08-29）
+
+/// 更新轨迹文件（原子写入；首次锚点创建，播放过程更新当前位置）
+- (void)_updateTrajectoryFile {
+    NSMutableDictionary *traj = [NSMutableDictionary dictionary];
+    traj[@"version"] = @2;
+    // anchors：当前锚点列表（从 _anchorLat/_anchorLon + _currentMode 构建）
+    if (_currentLat != 0 || _currentLon != 0) {
+        traj[@"currentPosition"] = @{@"lat": @(_currentLat), @"lon": @(_currentLon), @"acc": @(_currentAcc)};
+    }
+    traj[@"mode"] = _currentMode ?: @"off";
+    // 轨迹文件只写当前位置，锚点列表由 App 侧管理（uploadTrackPoints 写入路线点）
+    NSError *jerr = nil;
+    NSData *json = [NSJSONSerialization dataWithJSONObject:traj options:0 error:&jerr];
+    if (!json) return;
+    NSString *tmp = [kTrajectoryFilePath stringByAppendingString:@".tmp"];
+    [json writeToFile:tmp options:NSDataWritingAtomic error:NULL];
+    [[NSFileManager defaultManager] removeItemAtPath:kTrajectoryFilePath error:NULL];
+    [[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kTrajectoryFilePath error:NULL];
+}
+
+/// 读取轨迹文件；无/损坏返回 nil
++ (NSDictionary *)loadTrajectoryFile {
+    NSData *data = [NSData dataWithContentsOfFile:kTrajectoryFilePath];
+    if (!data.length) return nil;
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    return [json isKindOfClass:[NSDictionary class]] ? json : nil;
+}
+
+/// 从轨迹文件提取当前位置坐标（无效时返回 kCLLocationCoordinate2DInvalid）
++ (CLLocationCoordinate2D)readPositionFromTrajectory:(NSDictionary *)traj {
+    NSDictionary *cp = traj[@"currentPosition"];
+    if (![cp isKindOfClass:[NSDictionary class]]) return kCLLocationCoordinate2DInvalid;
+    double lat = [cp[@"lat"] doubleValue];
+    double lon = [cp[@"lon"] doubleValue];
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return kCLLocationCoordinate2DInvalid;
+    return CLLocationCoordinate2DMake(lat, lon);
 }
 
 /// 读取持久化状态（崩溃恢复）；无/损坏返回 nil
