@@ -68,6 +68,8 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     BOOL _restorePending;
     uint64_t _trackTickCount;   // itinerary 落盘节流（每 5 tick 持久化一次）
     uint64_t _lastWifiTileKey;   // 上次 wifi 反查的瓦片 key（跨瓦片才重反查，轨迹跟随）
+    NSString *_wifiTargetBSSID;   // SCDynamicStore 监听目标 BSSID
+    SCDynamicStoreRef _wifiReconnectStore; // WiFi 重连监听器
     NSArray<TRWpsTileAP *> *_wifiTileAps; // 当前瓦片 AP 池（窗口注入源；跨瓦片/首点反查时刷新，2026-08-28）
     NSArray<NSString *> *_lastWifiWindowBssids; // 上次注入的可见 AP BSSID 集（变化才重注入，2026-08-28）
 }
@@ -360,8 +362,47 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
             TVLog(@"[locsim] known-networks rename %@->%@ : %@ %@",
                   curSSID, targetSSID, rn ? @"OK" : @"FAIL", err.localizedDescription ?: @"");
         }
+        // 启动 SCDynamicStore 监听 WiFi 重连（收到 notify 后 App 更新水滴）
+        [sSelf _startWifiReconnectMonitorWithTargetBSSID:nearest.bssid];
     }];
 }
+
+#pragma mark - SCDynamicStore WiFi 重连监听（2026-08-29）
+
+static void _wifiReconnectCallback(SCDynamicStoreRef store, CFArrayRef changedKeys, void *info) {
+    SimLocationController *self = (__bridge SimLocationController *)info;
+    if (!self || !self->_wifiTargetBSSID) return;
+    NSString *curBSSID = [TRWifiKnownNetworks currentBSSID];
+    if (curBSSID.length && [curBSSID caseInsensitiveCompare:self->_wifiTargetBSSID] == NSOrderedSame) {
+        notify_post("com.82flex.trollvnc.wifi-switched");
+        TVLog(@"[locsim] wifi reconnect: %@ matches target, notified App", curBSSID);
+        self->_wifiTargetBSSID = nil;
+        if (self->_wifiReconnectStore) { CFRelease(self->_wifiReconnectStore); self->_wifiReconnectStore = NULL; }
+    }
+}
+
+- (void)_startWifiReconnectMonitorWithTargetBSSID:(NSString *)bssid {
+    _wifiTargetBSSID = bssid;
+    if (_wifiReconnectStore) { CFRelease(_wifiReconnectStore); _wifiReconnectStore = NULL; }
+    SCDynamicStoreContext ctx = {0, (__bridge void *)self, NULL, NULL, NULL};
+    _wifiReconnectStore = SCDynamicStoreCreate(NULL, CFSTR("com.82flex.trollvnc.wifi-monitor"), _wifiReconnectCallback, &ctx);
+    if (!_wifiReconnectStore) { TVLog(@"[locsim] SCDynamicStore create failed"); return; }
+    NSArray *keys = @[@"State:/Network/Interface/en0/AirPort"];
+    SCDynamicStoreSetNotificationKeys(_wifiReconnectStore, (__bridge CFArrayRef)keys, NULL);
+    SCDynamicStoreSetDispatchQueue(_wifiReconnectStore, dispatch_get_main_queue());
+    __weak __typeof__(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        __strong __typeof__(self) sSelf = weakSelf;
+        if (!sSelf || !sSelf->_wifiReconnectStore) return;
+        if (sSelf->_wifiTargetBSSID) {
+            TVLog(@"[locsim] wifi monitor timeout (10s), target=%@", sSelf->_wifiTargetBSSID);
+        }
+        sSelf->_wifiTargetBSSID = nil;
+        CFRelease(sSelf->_wifiReconnectStore);
+        sSelf->_wifiReconnectStore = NULL;
+    });
+}
+
 
 /// 统一注入动作（2026-08-29 改造）：GPS 直写为主；wifi 处理器改为"软路由联动下发"——
 /// ① wifi 处理器（新链路：反查 AP → 下发软路由改 {SSID,BSSID} → 改 known-networks → 设备重连）

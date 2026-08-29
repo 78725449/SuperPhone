@@ -178,6 +178,14 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             if (!bssids) return;
             [strongSelf handleActiveWifiBssids:bssids];
         });
+    // 订阅 WiFi 切换通知（daemon AP 下发成功 → SCDynamicStore 检测重连 → notify App）
+    int wifiSwitchToken = 0;
+    notify_register_dispatch("com.82flex.trollvnc.wifi-switched", &wifiSwitchToken,
+        dispatch_get_main_queue(), ^(int token) {
+            __strong typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [strongSelf _refreshWifiAnnoFromCurrentConnection];
+        });
     // 启动水合：daemon 常驻可能在 App 启动前已扫过，直接读一次（归一读取，2026-08-28）
     NSArray<NSString *> *seedBssids = [self _readActiveScanBssids];
     if (seedBssids) [self handleActiveWifiBssids:seedBssids];
