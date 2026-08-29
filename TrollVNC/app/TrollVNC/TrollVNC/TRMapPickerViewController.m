@@ -167,7 +167,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     // 已移除 NEHotspotHelper 被动订阅/水合——不做回退，保证主动扫描唯一数据源可靠工作。
     __weak typeof(self) weakSelf = self;
     // 主动扫描订阅：daemon（root）周期扫周边 BSSID → 写共享 JSON + Darwin 通知。
-    // 模拟关闭→真实 BSSID 反查标注；模拟开启→瓦片检测驱动模拟位置反查（同 requeryAnnotationForSimLocation）。
+    // 模拟开启/关闭→统一读「当前连接 WiFi」的 BSSID 反查标注（2026-08-29 职责重定义，不跟随模拟坐标）。
     int wifiScanToken = 0;
     notify_register_dispatch(kTRWifiScanUpdatedNotification.UTF8String, &wifiScanToken,
         dispatch_get_main_queue(), ^(int token) {
@@ -488,93 +488,33 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 检测），此处触发同款检测（跨瓦片才重反查）。
 - (void)handleActiveWifiBssids:(NSArray<NSString *> *)bssids {
     if (self.locating) {
-        [self _refreshWifiAnnoIfTileChanged]; // 模拟态：fix 驱动为主，扫描回调触发同款检测（同瓦片跳过零成本）
+        [self _refreshWifiAnnoFromCurrentConnection]; // 模拟态：水滴=当前连接 BSSID 反查（不跟随模拟坐标）
         return;
     }
     NSUInteger seq = ++self.wifiQuerySeq;
     [self _queryWifiAnnoWithBssids:bssids seq:seq]; // 空列表在方法内统一处理（清除残留标注）
 }
 
-/// 模拟态 wifi 标注瓦片检测刷新（对齐 daemon SimLocationController _checkWifiTileChangedAndReinject）：
-/// 计算当前模拟位置（self.cur）所属瓦片 key，跨瓦片才重新反查标注（同瓦片跳过，LRU 命中零成本）。
-/// 驱动源 = handleLocationUpdate（fix 每 tick 调）——与当前位置水滴同源同步，不再依赖 8s 扫描周期。
-/// 2026-08-28 扩展：同瓦片内也用缓存 AP 池做窗口质心刷新（wifi 水滴沿 AP 走，跟随播放）。
-- (void)_refreshWifiAnnoIfTileChanged {
-    if (!self.locating) return;
-    CLLocationCoordinate2D curW = [CoordTransform gcj02ToWgs84:self.cur];
-    if (curW.latitude == 0 && curW.longitude == 0) return; // 无当前位置
-    uint64_t newKey = 0;
-    if (![TRWpsTile tileChangedForCoordinate:curW previous:self.wifiLastTileKey newKey:&newKey]) {
-        [self _updateWifiAnnoFromTilePool]; // 同瓦片：缓存池窗口质心刷新（跟随播放，无网络）
+/// WiFi 水滴（2026-08-29 职责重定义，用户定案）：只读「当前连接 WiFi」的 SSID/BSSID →
+/// 用 BSSID 做 wloc 反查（复用 _queryWifiAnnoWithBssids）→ 标注真实 AP 的位置。
+/// 不跟随模拟坐标——它是软路由切换效果的可视化验证（真实 BSSID 被定位到哪 = 切换是否生效），
+/// 与 GPS 轨迹/模拟位置完全解耦。旧「瓦片检测 + 缓存池质心跟随」逻辑已删。
+/// 数据源 = CNCopyCurrentNetworkInfo（App 有定位授权可用；daemon 才需要 ipconfig 通道）。
+- (void)_refreshWifiAnnoFromCurrentConnection {
+    NSDictionary *info = nil;
+    NSArray *ifs = (__bridge_transfer NSArray *)CNCopySupportedInterfaces();
+    for (id ifname in ifs) {
+        info = (__bridge_transfer NSDictionary *)
+            CNCopyCurrentNetworkInfo((__bridge CFStringRef)ifname);
+        if (info) break;
+    }
+    NSString *bssid = info[(__bridge NSString *)kCNNetworkInfoKeyBSSID];
+    if (!bssid.length) {
+        [self removeWifiAnnotationIfExists]; // 未连接：清除残留标注（真实状态可视化）
         return;
     }
-    self.wifiLastTileKey = newKey;
-    [self requeryAnnotationForSimLocation]; // 跨瓦片：按模拟当前位置反查换池
-}
-
-/// 用缓存瓦片 AP 池按当前坐标距离窗口质心更新标注（与 daemon 注入同源窗口；wifi 水滴沿 AP 走，2026-08-28）
-- (void)_updateWifiAnnoFromTilePool {
-    if (self.wifiTileAps.count == 0) return;
-    CLLocationCoordinate2D curW = [CoordTransform gcj02ToWgs84:self.cur];
-    if (curW.latitude == 0 && curW.longitude == 0) return;
-    NSArray<TRWpsTileAP *> *win = [TRWpsTile windowApsByDistance:self.wifiTileAps center:curW window:kTRWpsWindowSize];
-    if (win.count == 0) return;
-    CLLocationCoordinate2D centroid = [TRWpsTile rssiWeightedCentroidOfAps:win];
-    if (!CLLocationCoordinate2DIsValid(centroid)) return;
-    self.wifiCurWGS = centroid;
-    [self removeWifiAnnotationIfExists];
-    CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:centroid];
-    TRWifiAnnotation *ann = [[TRWifiAnnotation alloc] init];
-    ann.coordinate = gcj;
-    ann.title = @"WiFi 定位（模拟位置）";
-    ann.info = [NSString stringWithFormat:@"%.4f, %.4f（%lu 个可见 AP）", centroid.latitude, centroid.longitude, (unsigned long)win.count];
-    ann.subtitle = ann.info;
-    [self.mapView addAnnotation:ann];
-    self.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: 指纹质心(%.4f,%.4f)←%lu AP", centroid.latitude, centroid.longitude, (unsigned long)win.count];
-}
-
-/// 模拟态 wifi 标注反查（唯一调用方 = _refreshWifiAnnoIfTileChanged；停止态调用为 no-op——
-/// 方法首行 locating=NO 即 return，停止态残留清除由 handleActiveWifiBssids 空列表分支负责）：
-/// 按模拟当前位置动态反查 BSSID（TRWpsTile，与 daemon 注入同源；轨迹跟随）。
-/// 真实位置标注统一走 handleActiveWifiBssids（主动扫描唯一数据源）。
-- (void)requeryAnnotationForSimLocation {
-    if (!self.locating) return; // 仅模拟态使用；停止态由 handleActiveWifiBssids 驱动
-    // 模拟开启：按模拟当前位置动态反查 BSSID（TRWpsTile，与 daemon 注入同源；轨迹跟随）
-    CLLocationCoordinate2D curW = [CoordTransform gcj02ToWgs84:self.cur];
-    if (curW.latitude != 0 || curW.longitude != 0) {
-        NSUInteger seqHere = ++self.wifiQuerySeq;
-        __weak typeof(self) wSelf = self;
-        [[TRWpsTile sharedClient] queryBssidsForCoordinate:curW force:NO completion:^(NSArray<TRWpsTileAP *> *aps, NSError *error) {
-            __strong typeof(self) sSelf = wSelf;
-            if (!sSelf) return;
-            if (seqHere != sSelf.wifiQuerySeq) return; // 过期回调丢弃（竞态防护，同机制）
-            if (error || aps.count == 0) {
-                // 反查失败/空：更新诊断标签——必须带"模拟位置"坐标，否则用户会误以为
-                // 反查的是刚点击的锚点（实为轨迹播放当前位置；曾致"点全国哪里都失败"误诊，
-                // 实际当前位置困在驻马店空洞瓦片，2026-08-28）
-                sSelf.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: 模拟位置(%.4f,%.4f)瓦片反查失败%@",
-                    curW.latitude, curW.longitude,
-                    error.localizedDescription ?: @"（该位置无 BSSID，Apple 数据空洞区）"];
-                // 空洞瓦片：螺旋找最近有效瓦片（与 daemon 注入同源，2026-08-28）——
-                // 从未缓存过池（起点即空洞）才螺旋；曾成功则保留旧池质心（同瓦片刷新已覆盖）
-                if (!sSelf.wifiTileAps) {
-                    [TRWpsTile queryNearestBssidsForCoordinate:curW maxAttempts:24 completion:^(NSArray<TRWpsTileAP *> *nearAps, NSError *nearErr) {
-                        __strong typeof(self) ssSelf = wSelf;
-                        if (!ssSelf) return;
-                        if (nearErr || nearAps.count == 0) return; // 周边全空洞：保持无标注（真实设备行为）
-                        ssSelf.wifiTileAps = nearAps;
-                        [ssSelf _updateWifiAnnoFromTilePool];
-                    }];
-                }
-                return;
-            }
-            // 缓存瓦片 AP 池 + 窗口质心标注（去 wloc 网络反查；与 daemon 注入同源窗口，2026-08-28）
-            sSelf.wifiTileAps = aps;
-            [sSelf _updateWifiAnnoFromTilePool];
-        }];
-        return; // 动态路径走完（不落固定 BSSID 集）
-    }
-    // cur 无效（未定位）：不显示模拟位置
+    NSUInteger seq = ++self.wifiQuerySeq;
+    [self _queryWifiAnnoWithBssids:@[bssid] seq:seq]; // 复用既有 wloc 反查标注（坐标+AP 数气泡）
 }
 
 /// 用给定 BSSID 集合反查并更新 wifi 标注（动态反查与真实扫描共用；seq 竞态防护，丢弃过期回调）
@@ -631,13 +571,13 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             NSUInteger seq = ++self.wifiQuerySeq;
             [self _queryWifiAnnoWithBssids:bssids seq:seq]; // 真实 BSSID wloc 反查标注（回到真实位置）
         } else {
-            [self requeryAnnotationForSimLocation]; // 停止态下方法内 locating=NO 直接 return（行为保持）；残留清除等 next notify
+            [self _refreshWifiAnnoFromCurrentConnection]; // 停止态：同样读当前连接反查（职责统一）
         }
         self.wifiLastTileKey = 0; // 重置瓦片 key：下次开启模拟强制重新反查
         self.wifiTileAps = nil;   // 清瓦片 AP 池（停止态不保留模拟指纹，2026-08-28）
         return;
     }
-    [self _refreshWifiAnnoIfTileChanged]; // 模拟态：瓦片检测（跨瓦片才反查，对齐 fix 驱动语义）
+    [self _refreshWifiAnnoFromCurrentConnection]; // 模拟态：当前连接 BSSID 反查（与模拟坐标解耦）
 }
 
 /// 移除地图上已有的 WiFi 定位标注（按类型匹配，防重复标注累积）
@@ -1468,7 +1408,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.lastFix = loc; // 记录回调 fix（坐标/速度真相源，不读属性缓存）
         self.cur = [CoordTransform wgs84ToGcj02:loc.coordinate];
         [self _syncSelfDrivenDroplet]; // 定位关时自驱水滴跟编排推进（定位开时不显示自驱水滴，无影响）
-        [self _refreshWifiAnnoIfTileChanged]; // wifi 标注同源驱动：跨瓦片才重新反查标注（对齐水滴跟随，不再依赖 8s 扫描周期）
+        [self _refreshWifiAnnoFromCurrentConnection]; // wifi 水滴驱动：读当前连接 BSSID 反查（不随 fix tick 跟随模拟坐标）
         [self updateAnchorPassStateWithLiveWGS:loc.coordinate]; // 先更新段速度/经过态，状态栏立即反映
         [self updateStatus];
         // 自动聚焦：Follow 原生已跟随无需重复；用户拖动退出 Follow 后模拟位置距上次聚焦点超阈值则拉回

@@ -3,7 +3,6 @@
   数据结构实证见头文件；写盘用 plist 二进制（与系统一致），修改后通知 wifid。
 */
 #import "TRWifiKnownNetworks.h"
-#import <SystemConfiguration/CaptiveNetwork.h>
 #import <spawn.h>   // posix_spawn（wifid 重载通知；模块化编译需显式 import）
 
 static NSString *const kKnownNetworksPath = @"/var/preferences/com.apple.wifi.known-networks.plist";
@@ -103,27 +102,13 @@ static NSString *const kKnownNetworksPath = @"/var/preferences/com.apple.wifi.kn
 }
 
 + (nullable NSString *)currentSSID {
-    NSString *v = [self _valueFromIPConfig:@"SSID"];
-    if (v.length) return v;
-    NSDictionary *ifs = (__bridge_transfer NSDictionary *)CNCopySupportedInterfaces();
-    for (id ifname in ifs) {
-        NSDictionary *info = (__bridge_transfer NSDictionary *)
-            CNCopyCurrentNetworkInfo((__bridge CFStringRef)ifname);
-        if (info) return info[(__bridge NSString *)kCNNetworkInfoKeySSID];
-    }
-    return nil;
+    // 仅走 ipconfig（root 可用、实测有效）；CNCopyCurrentNetworkInfo 已删——
+    // 它在 root daemon 无 TCC 授权上下文下不返回（2026-08-29 实测证伪，保留只会混淆）
+    return [self _valueFromIPConfig:@"SSID"];
 }
 
 + (nullable NSString *)currentBSSID {
-    NSString *v = [self _valueFromIPConfig:@"BSSID"];
-    if (v.length) return v;
-    NSDictionary *ifs = (__bridge_transfer NSDictionary *)CNCopySupportedInterfaces();
-    for (id ifname in ifs) {
-        NSDictionary *info = (__bridge_transfer NSDictionary *)
-            CNCopyCurrentNetworkInfo((__bridge CFStringRef)ifname);
-        if (info) return info[(__bridge NSString *)kCNNetworkInfoKeyBSSID];
-    }
-    return nil;
+    return [self _valueFromIPConfig:@"BSSID"];
 }
 
 @end
