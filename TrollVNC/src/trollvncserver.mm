@@ -6424,6 +6424,7 @@ static void tvLocationDeathSentinel(void) {
                 fprintf(stderr, "SENTINEL: started as orphan (ppid=1), skip (startup bottom-line covers)\n");
                 return;
             }
+            BOOL spawned = NO;
             while (true) {
                 usleep(1000 * 1000);   // 1s 轮询（PROC source 仅 bootstrap 有，此处统一轮询全 flavor）
                 if (getppid() == 1) {
@@ -6436,23 +6437,32 @@ static void tvLocationDeathSentinel(void) {
                         fprintf(stderr, "SENTINEL: exception %@\n", ex.reason ?: ex.name);
                     }
                     // 2026-08-29：manager 无 launchd 托管（系统卷只读，/Library/LaunchDaemons 不可写）——
-                    // 由 server（常驻）反向拉起新 manager（同 bundle 二进制），实现崩溃自愈：
-                    // manager 死后 server 成孤儿（ppid==1），此时 spawn 新 manager → 新 manager 启动
-                    // 走 _forceStopOnStartup（L3' 状态恢复）→ 重新托管 server（watchdog spawn 新 server）。
-                    // 旧 server 继续当哨兵直到被新 manager 的 sysctl 清理/端口让位。
-                    NSString *mgrPath = [[NSBundle mainBundle] pathForResource:@"trollvncmanager" ofType:@""];
-                    if (mgrPath.length && access(mgrPath.UTF8String, X_OK) == 0) {
-                        pid_t child = 0;
-                        char *args[] = { (char *)mgrPath.UTF8String, NULL };
-                        int sr = posix_spawn(&child, mgrPath.UTF8String, NULL, NULL, args, NULL);
-                        fprintf(stderr, "SENTINEL: spawned new manager %s rc=%d pid=%d\n",
-                                mgrPath.UTF8String, sr, child);
-                    } else {
-                        fprintf(stderr, "SENTINEL: manager path not resolvable, spawn skipped\n");
+                    // App 前台保活（ServiceCoordinator）覆盖不到 App 挂起场景，由 server（常驻）补位：
+                    // manager 死后 server 成孤儿（ppid==1）→ spawn 新 manager（同 bundle 二进制）→
+                    // 新 manager 走 _forceStopOnStartup（L3' 状态恢复）→ watchdog spawn 新 server。
+                    // ★ spawn 仅一次（spawned 标记），避免 1s 循环无限拉起 manager；随后本哨兵退出轮询
+                    // （新 manager 的 sysctl 孤儿清理会回收本 server，使命完成）。
+                    if (!spawned) {
+                        spawned = YES;
+                        NSString *mgrPath = [[NSBundle mainBundle] pathForResource:@"trollvncmanager" ofType:@""];
+                        if (mgrPath.length && access(mgrPath.UTF8String, X_OK) == 0) {
+                            // 与 App ServiceCoordinator spawn 对齐（root 身份 + 语言码 env——manager 消费）：
+                            // posix_spawn 继承本进程（server=root）身份，补 TVNC_LANGUAGE_CODE 环境
+                            pid_t child = 0;
+                            char *args[] = { (char *)mgrPath.UTF8String, NULL };
+                            NSString *lang = [[NSLocale preferredLanguages] firstObject] ?: @"zh-Hans";
+                            char *envArr[] = {
+                                (char *)[[@"TVNC_LANGUAGE_CODE=" stringByAppendingString:lang] UTF8String],
+                                NULL
+                            };
+                            int sr = posix_spawn(&child, mgrPath.UTF8String, NULL, NULL, args, envArr);
+                            fprintf(stderr, "SENTINEL: spawned new manager %s rc=%d pid=%d lang=%s\n",
+                                    mgrPath.UTF8String, sr, child, lang.UTF8String);
+                        } else {
+                            fprintf(stderr, "SENTINEL: manager path not resolvable, spawn skipped\n");
+                        }
                     }
-                    // 不 exit——本哨兵继续轮询；新 manager 会 spawn 新 server（watchdog），
-                    // 本 server 由新 manager 启动时的孤儿清理（sysctl）回收
-                    managerPid = getppid();   // 更新基准（现在 ppid=1，但保持循环以持续探测）
+                    break;   // 只处理一次：关定位 + 拉起一次；后续由新 manager 全权接管
                 }
             }
         });
