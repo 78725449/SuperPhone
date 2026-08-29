@@ -1043,6 +1043,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         // 第一个锚点（也是当前定位）：聚焦该点但不开启模拟播放
         self.hasStart = YES;
         self.cur = gcj;
+        self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻：过滤旧 fix
+        self.startupLockedToAnchor = YES; // 锁定锚点显示，忽略旧位置（防"旧→新"横跳）
         // 不设 self.locating（保持 OFF）——首锚点只设位置，不开启模拟播放
         [self _syncSelfDrivenDroplet]; // 自驱水滴跟随新首锚点（cur 已就绪）
         [self commitAnchor];
@@ -1433,7 +1435,17 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     }
     // 停止态：只认晚于停止时刻的 fix（真实位置）——过滤停止瞬间的模拟残留/旧缓存
     if ([loc.timestamp timeIntervalSince1970] <= self.stopTimestamp) return;
+    // 首锚点锁定（2026-08-30）：创建锚点后注入落地前，locationd 广播的还是旧位置——
+    // 距新锚点 >25m 的 fix 忽略（保持锚点位置显示，防"旧→新"横跳）；注入落地后 fix≈锚点（<25m）→ 解锁
+    if (self.startupLockedToAnchor) {
+        double d = [SimRouteCalculator haversineMeters:loc.coordinate to:[CoordTransform gcj02ToWgs84:self.cur]];
+        if (d > 25.0) return;
+        self.startupLockedToAnchor = NO;
+    }
     self.lastFix = loc; // 记录回调 fix
+    // 更新当前位置（首锚点注入落地后，self.cur 跟随 locationd 注入位置）
+    self.cur = [CoordTransform wgs84ToGcj02:loc.coordinate];
+    [self _syncSelfDrivenDroplet]; // 定位关时自驱水滴跟随
     [self updateStatus];
     // 自动聚焦（距离阈值）：真实 fix 距停止瞬间基线（模拟残留）超阈值才聚焦——
     // 残留 fix（≈基线）不触发、真实 fix（画布外）必触发；GPS 收敛渐进超阈值再拉回
