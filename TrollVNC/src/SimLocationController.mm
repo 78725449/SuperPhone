@@ -340,13 +340,16 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     sLastAPBSSID = nearest.bssid;
     NSString *targetSSID = [self _generateCitySSIDForBSSID:nearest.bssid];
     TVLog(@"[locsim] wifi-switch -> {ssid:%@ bssid:%@} d=%.0fm", targetSSID, nearest.bssid, best);
+    // 下发前先取当前连接 SSID（软路由按它定位要改的 wireless 段；known-networks 也改它）
+    NSString *curSSID = [TRWifiKnownNetworks currentSSID];
+    if (!curSSID.length) { TVLog(@"[locsim] no current ssid (not associated?), skip switch"); return; }
     __weak __typeof__(self) weakSelf = self;
-    [self _requestRouterSwitchSSID:targetSSID bssid:nearest.bssid completion:^(BOOL ok) {
+    [self _requestRouterSwitchSSID:targetSSID bssid:nearest.bssid currentSSID:curSSID completion:^(BOOL ok) {
         __strong __typeof__(self) sSelf = weakSelf;
         if (!sSelf) return;
         if (!ok) { TVLog(@"[locsim] router switch failed, skip known-networks"); return; }
-        NSString *curSSID = [TRWifiKnownNetworks currentSSID];
-        if (curSSID.length && ![curSSID isEqualToString:targetSSID]) {
+        // AP 已改成功（回调）→ 改设备已知网络条目 SSID（用户定案时序：AP 先行，设备随后）
+        if (![curSSID isEqualToString:targetSSID]) {
             NSError *err = nil;
             BOOL rn = [TRWifiKnownNetworks renameKnownNetworkSSID:curSSID to:targetSSID error:&err];
             TVLog(@"[locsim] known-networks rename %@->%@ : %@ %@",
@@ -360,57 +363,10 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
 /// ② GPS 处理器（直写坐标：完整重启广播当前坐标）
 /// GPS 链路全程不受影响（anchor/itinerary 坐标注入独立保留）；wifi 注入扫描结果链路已移除
 - (void)_injectSimulationForCurrentLocation {
-    [self _maybeSwitchRouterAPForCurrentLocation];  // ① wifi 处理器：轨迹沿 AP 排列切换软路由
+    [self _handleAPSwitchForCurrentLocation];  // ① wifi 处理器：轨迹沿 AP 排列切换软路由
     [self _injectGpsForCurrentLocation];            // ② GPS 处理器：当前坐标直写完整重启（收尾）
 }
 
-/// wifi 处理器（2026-08-29 软路由联动）：按当前坐标反查 AP 列表 → 取最近 AP → 下发软路由
-/// 切换 {SSID,BSSID} → 改 known-networks 条目 → 设备自动重连。轨迹移动时逐 AP 切换
-/// （同 GPS 路线本质）；空洞瓦片用螺旋反查（保留原能力——空瓦片仍需拿 AP 列表）。
-- (void)_maybeSwitchRouterAPForCurrentLocation {
-    CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
-    if (coord.latitude == 0 && coord.longitude == 0) return;
-    // 防止频繁切换：记录当前已下发 AP 的 BSSID，同一 AP 不重复下发
-    static NSString *sLastAPBSSID = nil;
-    __weak __typeof__(self) weakSelf = self;
-    void (^handleAPs)(NSArray<TRWpsTileAP *> *) = ^(NSArray<TRWpsTileAP *> *aps) {
-        __strong __typeof__(self) sSelf = weakSelf;
-        if (!sSelf || aps.count == 0) return;
-        // 按坐标距离取最近 AP（WPS 反查的 AP 带坐标；距离最近 = 当前位置最可能连接的）
-        TRWpsTileAP *nearest = aps[0];
-        double best = DBL_MAX;
-        for (TRWpsTileAP *ap in aps) {
-            double d = [SimRouteCalculator haversineMeters:coord to:ap.coord];
-            if (d < best) { best = d; nearest = ap; }
-        }
-        if (sLastAPBSSID && [sLastAPBSSID isEqualToString:nearest.bssid]) return; // 同 AP 不重复
-        sLastAPBSSID = nearest.bssid;
-        // 下发软路由：{target ssid/bssid} → HTTP → 回调成功后改 known-networks
-        NSString *targetSSID = [sSelf _generateCitySSIDForBSSID:nearest.bssid]; // SSID 生成（城市风格池）
-        TVLog(@"[locsim] wifi-switch -> target {ssid:%@ bssid:%@} d=%.0fm", targetSSID, nearest.bssid, best);
-        [sSelf _requestRouterSwitchSSID:targetSSID bssid:nearest.bssid completion:^(BOOL ok) {
-            if (!ok) { TVLog(@"[locsim] router switch failed, skip known-networks"); return; }
-            // AP 已改成功 → 改设备已知网络条目（复用原条目认证配置；新 AP 同加密同密码）
-            NSString *curSSID = [TRWifiKnownNetworks currentSSID];
-            if (curSSID.length && ![curSSID isEqualToString:targetSSID]) {
-                NSError *err = nil;
-                BOOL rn = [TRWifiKnownNetworks renameKnownNetworkSSID:curSSID to:targetSSID error:&err];
-                TVLog(@"[locsim] known-networks rename %@ -> %@ : %@ %@",
-                      curSSID, targetSSID, rn ? @"OK" : @"FAIL", err.localizedDescription ?: @"");
-            }
-        }];
-    };
-    [[TRWpsTile sharedClient] queryBssidsForCoordinate:coord force:NO completion:^(NSArray<TRWpsTileAP *> *aps, NSError *error) {
-        if (error || aps.count == 0) {
-            // 空洞瓦片 → 螺旋找最近有效瓦片拿 AP 列表（保留原能力）
-            [TRWpsTile queryNearestBssidsForCoordinate:coord maxAttempts:24 completion:^(NSArray<TRWpsTileAP *> *nearAps, NSError *nearErr) {
-                if (!nearErr && nearAps.count) handleAPs(nearAps);
-            }];
-            return;
-        }
-        handleAPs(aps);
-    }];
-}
 
 /// SSID 生成：WPS 反查只有 BSSID 无 SSID——用"城市常见 SSID 风格池"按 BSSID 哈希取稳定名
 - (NSString *)_generateCitySSIDForBSSID:(NSString *)bssid {
@@ -427,17 +383,22 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     return [prefix stringByAppendingString:suffix];
 }
 
-/// 下发软路由：HTTP POST /wifi/switch {target:{ssid,bssid}} → {ok}
+/// 下发软路由：HTTP POST /cgi-bin/wifi-switch {current_ssid, target:{ssid,bssid}} → {ok}
+/// （Superwrt uhttpd CGI：按 current_ssid 定位 wireless 段 → uci 改 ssid+macaddr → wifi reload）
 - (void)_requestRouterSwitchSSID:(NSString *)ssid bssid:(NSString *)bssid
+                    currentSSID:(NSString *)curSSID
                        completion:(void (^)(BOOL ok))completion {
     NSString *routerURL = [self _readPref:@"SimRouterHTTP"];
-    if (!routerURL.length) routerURL = @"http://192.168.1.1:8088/wifi/switch"; // 默认软路由地址（可配置）
+    if (!routerURL.length) routerURL = @"http://10.0.0.1/cgi-bin/wifi-switch"; // Superwrt uhttpd CGI（可配置）
     NSURL *url = [NSURL URLWithString:routerURL];
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.HTTPMethod = @"POST";
     [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-    req.timeoutInterval = 8.0;
-    NSDictionary *body = @{ @"target": @{ @"ssid": ssid, @"bssid": bssid } };
+    req.timeoutInterval = 15.0;   // wifi reload 断线重连 1-3s，放宽超时
+    NSDictionary *body = @{
+        @"current_ssid": curSSID ?: @"",
+        @"target": @{ @"ssid": ssid, @"bssid": bssid },
+    };
     req.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:NULL];
     NSURLSession *sess = [NSURLSession sharedSession];
     NSURLSessionDataTask *task = [sess dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
