@@ -4325,26 +4325,6 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
                              ex.reason ?: ex.name ?: @"未知异常"]);
         }
     }
-    // ===== net.whoami 公网出口 IP 探针（2026-08-29）=====
-    // 验证上层 AP 是否让设备公网出口在模拟城市（IP 定位通道防线）：daemon 请求回显服务，
-    // 返回出口公网 IP + 归属（服务端 IP 库，简化为 IP 文本）。零写入。
-    else if ([op isEqualToString:@"net.whoami"]) {
-        NSURL *url = [NSURL URLWithString:@"https://api.ipify.org?format=json"];
-        NSURLSession *sess = [NSURLSession sharedSession];
-        dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-        __block NSString *ip = nil;
-        NSURLSessionDataTask *task = [sess dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-            if (!err && data.length) {
-                NSDictionary *j = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
-                if ([j isKindOfClass:[NSDictionary class]]) ip = j[@"ip"];
-            }
-            dispatch_semaphore_signal(sema);
-        }];
-        [task resume];
-        dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
-        if (!ip.length) return tvExtErr(@"公网 IP 探测失败（ipify 不可达？）");
-        return tvExtOk(@{@"ip": ip, @"note": @"出口公网 IP——须与模拟城市一致（上层 AP 通道）"});
-    }
     // ===== album.diag 相册库只读探针（2026-08-28 来源归零实验·机制确认，只读零风险）=====
     // 定位 Photos.sqlite 的 ZASSET 表「来源」列与位置列真实落库情况：
     // PHPhotoLibrary 导入的资产在相册详情显示「来自 SuperPhone」= Photos 库内部记录调用方，

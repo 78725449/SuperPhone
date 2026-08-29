@@ -11,6 +11,7 @@
 
 #import "SimLocationManager.h"
 #import "SimRouteCalculator.h" // haversineMeters（与 App 截断同度量，选最近续播点）
+#import "TRWifiKnownNetworks.h" // 软路由联动：已知网络条目 SSID 修改（2026-08-29）
 #import "TRWpsTile.h" // 坐标→BSSID 动态反查（daemon 注入 wifi 模拟源）
 #import "TRSimContract.h" // 跨端定位契约（轨迹文件路径单一真相源，2026-08-28）
 #import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
@@ -240,7 +241,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     _currentAcc = acc;
     _currentAlt = 45.0;
     [self _injectGpsForCurrentLocation]; // GPS 处理器：锚点坐标立即直写广播（首次注入）
-    [self _injectWifiSimulationForCurrentLocation]; // wifi 处理器：锚点坐标反查换池（首次；反查成功后统一注入）
+    [self _handleAPSwitchForCurrentLocation]; // wifi 处理器：锚点坐标反查 → 下发软路由切换（首次）
     if (!_anchorSource) {
         _anchorSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
         dispatch_source_set_timer(_anchorSource, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSimAnchorTickInterval * NSEC_PER_SEC)),
@@ -278,7 +279,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         _currentMy = sin(ang) * r;
         _anchorLastMoveAt = CFAbsoluteTimeGetCurrent();
         [self _commitAnchorPoint];
-        [self _checkWifiTileChangedAndReinject];
+        [self _handleAPSwitchForCurrentLocation];   // 迁移/首点后重新反查 → AP 切换
         return;
     }
     if ((CFAbsoluteTimeGetCurrent() - _anchorLastRefreshAt) >= kSimAnchorRefreshInterval) {
@@ -307,58 +308,147 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
 /// 真机验证点：
 /// 1. injectPoint: 的 clearSimulatedLocations 是否连带清 wifi 模拟（若会则需注入后兜底重注）
 /// 2. 总开关关闭后 GPS + wifi 是否都恢复真实（5902 日志确认）
-- (void)_injectWifiSimulationForCurrentLocation {
+- (void)_handleAPSwitchForCurrentLocation {
+    // 2026-08-29 软路由联动：反查 AP 列表（空洞螺旋保留）→ 最近 AP → 下发软路由切换
     CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
-    if (coord.latitude == 0 && coord.longitude == 0) return; // 无当前位置
-    __weak __typeof__(self) weakSelf = self;
+    if (coord.latitude == 0 && coord.longitude == 0) return;
     [[TRWpsTile sharedClient] queryBssidsForCoordinate:coord force:NO completion:^(NSArray<TRWpsTileAP *> *aps, NSError *error) {
-        __strong __typeof__(self) strongSelf = weakSelf;
-        if (!strongSelf) return;
         if (error || aps.count == 0) {
-            // 反查失败/空（空洞瓦片 404 等）：保持现状不打断已有 wifi 模拟；
-            // 无负缓存——失败重试节奏由巡检区分"曾成功/从未成功"控制（2026-08-27 定案）
             TVLog(@"[locsim] tile query skipped: %@", error.localizedDescription ?: @"no APs");
-            // 从未成功（起点即空洞，远程伪装场景）：不注入会让 locationd 的 wifi 源回落为
-            // 设备本地真实扫描（GPS=模拟 vs wifi=本地，数百公里级不自洽）——螺旋找最近有效瓦片
-            // 注入邻近指纹（偏差 1-10km，次优但最优解，2026-08-28 定案）
             if (![SimLocationManager sharedManager].wasWifiSimulatingOnce) {
                 TVLog(@"[locsim] start in empty tile, spiral to nearest valid tile");
                 [TRWpsTile queryNearestBssidsForCoordinate:coord maxAttempts:24 completion:^(NSArray<TRWpsTileAP *> *nearAps, NSError *nearErr) {
-                    __strong __typeof__(self) sSelf = weakSelf;
-                    if (!sSelf) return;
-                    if (nearErr || nearAps.count == 0) {
-                        // 周边 24 瓦片全空洞：保持不注入（真实设备在此同样查不到 wloc 指纹）
-                        TVLog(@"[locsim] spiral fallback also empty, keep no wifi (real-device behavior)");
-                        return;
-                    }
-                    // 螺旋找到邻近有效瓦片：缓存为窗口池 + 统一注入（wifi 窗口 + GPS 收尾，同一坐标两路，2026-08-28）
-                    sSelf->_wifiTileAps = nearAps;
-                    sSelf->_lastWifiWindowBssids = nil; // 换池：变化检测失效，首窗口强制重注
-                    [sSelf _injectSimulationForCurrentLocation];
+                    if (!nearErr && nearAps.count) [self _handleAPList:nearAps atCoord:coord];
                 }];
             }
-            // 曾成功但当前反查失败（跨入新空洞瓦片/网络抖动）：无需保活重注——统一注入下
-            // _wifiTileAps 旧池每 tick 继续供窗口注入，wifi 源天然不断供（lastScan 重注是
-            // 旧低频注入架构的补丁，2026-08-28 统一注入后删除）；旧池持续到跨瓦片反查成功换新
             return;
         }
-        // 缓存瓦片 AP 池（窗口注入源）并统一注入（wifi 窗口 + GPS 收尾，同一坐标两路，
-        // 2026-08-28 用户定案）——可见 AP=位置附近、GPS=同一坐标直写，模拟真实设备移动时
-        // 可见集渐变且 GPS 持续广播（不再"前 100 一批播到跨瓦片"/wifi 独立节拍）
-        strongSelf->_wifiTileAps = aps;
-        strongSelf->_lastWifiWindowBssids = nil; // 换池：变化检测失效，首窗口强制重注
-        [strongSelf _injectSimulationForCurrentLocation];
+        [self _handleAPList:aps atCoord:coord];
     }];
 }
 
-/// 统一注入动作（2026-08-28 用户定案）：GPS 与 wifi 是同一"当前位置坐标集"的两路输出——
-/// ① wifi 处理器（写 AP：从瓦片池按当前坐标取可见 AP 窗口注入）
+/// AP 列表处理：按距离取最近 AP → 下发软路由切换（已知网络条目修改在回调后）
+- (void)_handleAPList:(NSArray<TRWpsTileAP *> *)aps atCoord:(CLLocationCoordinate2D)coord {
+    TRWpsTileAP *nearest = aps[0];
+    double best = DBL_MAX;
+    for (TRWpsTileAP *ap in aps) {
+        double d = [SimRouteCalculator haversineMeters:coord to:ap.coord];
+        if (d < best) { best = d; nearest = ap; }
+    }
+    static NSString *sLastAPBSSID = nil;
+    if (sLastAPBSSID && [sLastAPBSSID isEqualToString:nearest.bssid]) return; // 同 AP 不重复下发
+    sLastAPBSSID = nearest.bssid;
+    NSString *targetSSID = [self _generateCitySSIDForBSSID:nearest.bssid];
+    TVLog(@"[locsim] wifi-switch -> {ssid:%@ bssid:%@} d=%.0fm", targetSSID, nearest.bssid, best);
+    __weak __typeof__(self) weakSelf = self;
+    [self _requestRouterSwitchSSID:targetSSID bssid:nearest.bssid completion:^(BOOL ok) {
+        __strong __typeof__(self) sSelf = weakSelf;
+        if (!sSelf) return;
+        if (!ok) { TVLog(@"[locsim] router switch failed, skip known-networks"); return; }
+        NSString *curSSID = [TRWifiKnownNetworks currentSSID];
+        if (curSSID.length && ![curSSID isEqualToString:targetSSID]) {
+            NSError *err = nil;
+            BOOL rn = [TRWifiKnownNetworks renameKnownNetworkSSID:curSSID to:targetSSID error:&err];
+            TVLog(@"[locsim] known-networks rename %@->%@ : %@ %@",
+                  curSSID, targetSSID, rn ? @"OK" : @"FAIL", err.localizedDescription ?: @"");
+        }
+    }];
+}
+
+/// 统一注入动作（2026-08-29 改造）：GPS 直写为主；wifi 处理器改为"软路由联动下发"——
+/// ① wifi 处理器（新链路：反查 AP → 下发软路由改 {SSID,BSSID} → 改 known-networks → 设备重连）
 /// ② GPS 处理器（直写坐标：完整重启广播当前坐标）
-/// 次序 wifi 在前、GPS 收尾：wifi 重启瞬间可能打断同会话 GPS 广播，紧后 GPS 注入同 tick 恢复——
-/// 无真空、无独立兜底（对应用户"不要补丁式兜底，注入动作本身合一"）
+/// GPS 链路全程不受影响（anchor/itinerary 坐标注入独立保留）；wifi 注入扫描结果链路已移除
 - (void)_injectSimulationForCurrentLocation {
-    [self _injectWifiWindowForCurrentLocation]; // ① wifi 处理器：当前坐标 → 可见 AP 窗口注入
-    [self _injectGpsForCurrentLocation];        // ② GPS 处理器：当前坐标直写完整重启（收尾）
+    [self _maybeSwitchRouterAPForCurrentLocation];  // ① wifi 处理器：轨迹沿 AP 排列切换软路由
+    [self _injectGpsForCurrentLocation];            // ② GPS 处理器：当前坐标直写完整重启（收尾）
+}
+
+/// wifi 处理器（2026-08-29 软路由联动）：按当前坐标反查 AP 列表 → 取最近 AP → 下发软路由
+/// 切换 {SSID,BSSID} → 改 known-networks 条目 → 设备自动重连。轨迹移动时逐 AP 切换
+/// （同 GPS 路线本质）；空洞瓦片用螺旋反查（保留原能力——空瓦片仍需拿 AP 列表）。
+- (void)_maybeSwitchRouterAPForCurrentLocation {
+    CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
+    if (coord.latitude == 0 && coord.longitude == 0) return;
+    // 防止频繁切换：记录当前已下发 AP 的 BSSID，同一 AP 不重复下发
+    static NSString *sLastAPBSSID = nil;
+    __weak __typeof__(self) weakSelf = self;
+    void (^handleAPs)(NSArray<TRWpsTileAP *> *) = ^(NSArray<TRWpsTileAP *> *aps) {
+        __strong __typeof__(self) sSelf = weakSelf;
+        if (!sSelf || aps.count == 0) return;
+        // 按坐标距离取最近 AP（WPS 反查的 AP 带坐标；距离最近 = 当前位置最可能连接的）
+        TRWpsTileAP *nearest = aps[0];
+        double best = DBL_MAX;
+        for (TRWpsTileAP *ap in aps) {
+            double d = [SimRouteCalculator haversineMeters:coord to:ap.coord];
+            if (d < best) { best = d; nearest = ap; }
+        }
+        if (sLastAPBSSID && [sLastAPBSSID isEqualToString:nearest.bssid]) return; // 同 AP 不重复
+        sLastAPBSSID = nearest.bssid;
+        // 下发软路由：{target ssid/bssid} → HTTP → 回调成功后改 known-networks
+        NSString *targetSSID = [sSelf _generateCitySSIDForBSSID:nearest.bssid]; // SSID 生成（城市风格池）
+        TVLog(@"[locsim] wifi-switch -> target {ssid:%@ bssid:%@} d=%.0fm", targetSSID, nearest.bssid, best);
+        [sSelf _requestRouterSwitchSSID:targetSSID bssid:nearest.bssid completion:^(BOOL ok) {
+            if (!ok) { TVLog(@"[locsim] router switch failed, skip known-networks"); return; }
+            // AP 已改成功 → 改设备已知网络条目（复用原条目认证配置；新 AP 同加密同密码）
+            NSString *curSSID = [TRWifiKnownNetworks currentSSID];
+            if (curSSID.length && ![curSSID isEqualToString:targetSSID]) {
+                NSError *err = nil;
+                BOOL rn = [TRWifiKnownNetworks renameKnownNetworkSSID:curSSID to:targetSSID error:&err];
+                TVLog(@"[locsim] known-networks rename %@ -> %@ : %@ %@",
+                      curSSID, targetSSID, rn ? @"OK" : @"FAIL", err.localizedDescription ?: @"");
+            }
+        }];
+    };
+    [[TRWpsTile sharedClient] queryBssidsForCoordinate:coord force:NO completion:^(NSArray<TRWpsTileAP *> *aps, NSError *error) {
+        if (error || aps.count == 0) {
+            // 空洞瓦片 → 螺旋找最近有效瓦片拿 AP 列表（保留原能力）
+            [TRWpsTile queryNearestBssidsForCoordinate:coord maxAttempts:24 completion:^(NSArray<TRWpsTileAP *> *nearAps, NSError *nearErr) {
+                if (!nearErr && nearAps.count) handleAPs(nearAps);
+            }];
+            return;
+        }
+        handleAPs(aps);
+    }];
+}
+
+/// SSID 生成：WPS 反查只有 BSSID 无 SSID——用"城市常见 SSID 风格池"按 BSSID 哈希取稳定名
+- (NSString *)_generateCitySSIDForBSSID:(NSString *)bssid {
+    static NSArray *kCitySSIDPool = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        kCitySSIDPool = @[@"CMCC-", @"ChinaNet-", @"ChinaUnicom-", @"Tenda_", @"TP-LINK_", @"HUAWEI-"];
+    });
+    // BSSID 后 3 段做哈希 → 稳定取池 + 随机后缀
+    NSUInteger h = 0;
+    for (NSUInteger i = 0; i < bssid.length; i++) h = h * 31 + [bssid characterAtIndex:i];
+    NSString *prefix = kCitySSIDPool[h % kCitySSIDPool.count];
+    NSString *suffix = [NSString stringWithFormat:@"%02X%02X", (unsigned)(h >> 16 & 0xFF), (unsigned)(h & 0xFF)];
+    return [prefix stringByAppendingString:suffix];
+}
+
+/// 下发软路由：HTTP POST /wifi/switch {target:{ssid,bssid}} → {ok}
+- (void)_requestRouterSwitchSSID:(NSString *)ssid bssid:(NSString *)bssid
+                       completion:(void (^)(BOOL ok))completion {
+    NSString *routerURL = [self _readPref:@"SimRouterHTTP"];
+    if (!routerURL.length) routerURL = @"http://192.168.1.1:8088/wifi/switch"; // 默认软路由地址（可配置）
+    NSURL *url = [NSURL URLWithString:routerURL];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.HTTPMethod = @"POST";
+    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    req.timeoutInterval = 8.0;
+    NSDictionary *body = @{ @"target": @{ @"ssid": ssid, @"bssid": bssid } };
+    req.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:NULL];
+    NSURLSession *sess = [NSURLSession sharedSession];
+    NSURLSessionDataTask *task = [sess dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        BOOL ok = NO;
+        if (!err && data.length) {
+            NSDictionary *j = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+            ok = [j isKindOfClass:[NSDictionary class]] && [j[@"ok"] boolValue];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(ok); });
+    }];
+    [task resume];
 }
 
 /// GPS 处理器：当前模拟坐标直写（完整重启广播；无当前位置则跳过——"无 GPS 仅 wifi"语义）。
@@ -373,28 +463,9 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
                                               speed:_currentSpeed];
 }
 
-/// wifi 处理器：按当前模拟位置对缓存瓦片 AP 池做距离窗口注入（可见 AP 渐变；不重新反查）。
-/// 池由路线/锚点确定时反查预取（跨瓦片/首点换池）；播放期只取窗口，无实时网络。
-/// 变化检测：BSSID 集未变（静止/微动未跨出可见阈值）则跳过注入——统一注入动作下 wifi
-/// 与 GPS 同 tick 跑，但 wifi 完整重启成本高（stopWifiSimulation→set→start），集不变不重启，
-/// 消除"每 tick 全量 wifi 重启"（2026-08-28：用户定案统一注入 + 此节流）
-- (void)_injectWifiWindowForCurrentLocation {
-    if (_wifiTileAps.count == 0) return;
-    CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
-    if (coord.latitude == 0 && coord.longitude == 0) return; // 无当前位置
-    NSArray<TRWpsTileAP *> *winAps = [TRWpsTile windowApsByDistance:_wifiTileAps center:coord window:kTRWpsWindowSize];
-    if (winAps.count == 0) return;
-    NSArray<NSString *> *bssids = [TRWpsTile sampleBssidsFromAPs:winAps max:100];
-    if (_lastWifiWindowBssids && [bssids isEqualToArray:_lastWifiWindowBssids]) return; // 可见集未变：不重注入
-    NSArray *scanResults = [SimLocationManager buildScanResultsFromBssidStrings:bssids];
-    if (scanResults.count) {
-        _lastWifiWindowBssids = bssids;
-        [[SimLocationManager sharedManager] injectWifiScanResults:scanResults];
-        TVLog(@"[locsim] wifi window inject, %lu APs (visible)", (unsigned long)scanResults.count);
-    }
-}
-
-/// BSSID 采样已上移 TRWpsTile sampleBssidsFromAPs:（共享原语，2026-08-28）
+/// wifi 处理器（旧：locationd 扫描输入注入）已于 2026-08-29 移除——
+/// 抖音读的是「当前连接网络的 SSID/BSSID」（CNCopyCurrentNetworkInfo），不读扫描列表；
+/// 扫描模拟被证伪为无用功。新链路：反查 AP → 下发软路由改 SSID/BSSID → 设备重连（见 _handleAPList）。
 
 - (void)_stopAnchor {
     if (_anchorSource) {
@@ -434,7 +505,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     // 首点：更新当前位置 + 统一注入（wifi 池未建→GPS 直写先行；随后反查换池，成功回调统一注入收尾）
     [self _updateCurrentFromPoint:points[startIdx]];
     [self _injectSimulationForCurrentLocation];
-    [self _injectWifiSimulationForCurrentLocation]; // 首点坐标反查（动态 tile 查 BSSID；跨瓦片时重新触发注入即自动换源，跟随 _current）
+    [self _handleAPSwitchForCurrentLocation]; // 首点坐标反查（动态 tile 查 AP；跨瓦片重新反查，跟随 _current）
     _lastWifiTileKey = [TRWpsTile tileKeyForCoordinate:CLLocationCoordinate2DMake(_currentLat, _currentLon)]; // 记录首点瓦片 key（首点已反查，同瓦片不重复触发）
     _trackIndex = startIdx + 1;
     _trackFinished = NO;
@@ -468,10 +539,10 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     [self _injectSimulationForCurrentLocation];
     if (++_trackTickCount % 5 == 0) [self _persistState];   // 每 5s 落盘（崩溃续播不丢太多）
     // 轨迹 wifi 跟随：跨瓦片才重新反查换池（同瓦片 LRU 命中零成本；反查池成功后同 tick 注入）
-    [self _checkWifiTileChangedAndReinject];
+    [self _handleAPSwitchForCurrentLocation];   // 迁移/首点后重新反查 → AP 切换
 }
 
-/// 检测当前坐标瓦片是否变化，跨瓦片则重新 wifi 动态反查注入（轨迹跟随）
+/// 检测当前坐标瓦片是否变化，跨瓦片则重新反查并下发软路由 AP 切换（轨迹跟随，2026-08-29）
 /// 共享原语 TRWpsTile tileChangedForCoordinate:（App/daemon 同源，2026-08-28）
 - (void)_checkWifiTileChangedAndReinject {
     CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
@@ -479,7 +550,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     uint64_t newKey = 0;
     if (![TRWpsTile tileChangedForCoordinate:coord previous:_lastWifiTileKey newKey:&newKey]) return; // 同瓦片：不重反查（LRU 已覆盖）
     _lastWifiTileKey = newKey;
-    [self _injectWifiSimulationForCurrentLocation];
+    [self _handleAPSwitchForCurrentLocation];
 }
 
 /// 轨迹点 → 更新当前位置状态（供统一注入动作 GPS/wifi 处理器消费；不注入——注入统一走
@@ -668,7 +739,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
             // 从未成功（空洞瓦片反查失败）不重试——重注无意义且造成"自我锁死循环"；
             // 等轨迹跨瓦片（_lastWifiTileKey 变化）自然换源反查（2026-08-27 定案）
             TVLog(@"[locsim] anchor wifi lost, re-query");
-            [self _injectWifiSimulationForCurrentLocation];
+            [self _handleAPSwitchForCurrentLocation];
         }
     } else if ([mode isEqualToString:@"itinerary"]) {
         // 已完成（停在终点）不重播：仅播放中 timer 丢失才重启；进度不持久化，进程重启后从头播
@@ -678,7 +749,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         } else if (![SimLocationManager sharedManager].isWifiSimulating && [SimLocationManager sharedManager].wasWifiSimulatingOnce) {
             // 同上：仅"曾成功但丢失"重反查；"从未成功"（空洞瓦片）安静等待跨瓦片换源
             TVLog(@"[locsim] itinerary wifi lost, re-query");
-            [self _injectWifiSimulationForCurrentLocation];
+            [self _handleAPSwitchForCurrentLocation];
         }
     }
 }
