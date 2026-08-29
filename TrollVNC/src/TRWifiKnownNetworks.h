@@ -29,6 +29,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 读当前连接 WiFi 的 SSID（CNCopyCurrentNetworkInfo；iOS15+ 定位权限已给则可用）
 + (nullable NSString *)currentSSID;
 
+/// 读当前连接 WiFi 的 BSSID（软路由双定位校验用：SSID+MAC 防 2.4G/5G 同名歧义）
++ (nullable NSString *)currentBSSID;
+
 @end
 
 NS_ASSUME_NONNULL_END

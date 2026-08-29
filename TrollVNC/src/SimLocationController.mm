@@ -342,9 +342,10 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     TVLog(@"[locsim] wifi-switch -> {ssid:%@ bssid:%@} d=%.0fm", targetSSID, nearest.bssid, best);
     // 下发前先取当前连接 SSID（软路由按它定位要改的 wireless 段；known-networks 也改它）
     NSString *curSSID = [TRWifiKnownNetworks currentSSID];
+    NSString *curBSSID = [TRWifiKnownNetworks currentBSSID];
     if (!curSSID.length) { TVLog(@"[locsim] no current ssid (not associated?), skip switch"); return; }
     __weak __typeof__(self) weakSelf = self;
-    [self _requestRouterSwitchSSID:targetSSID bssid:nearest.bssid currentSSID:curSSID completion:^(BOOL ok) {
+    [self _requestRouterSwitchSSID:targetSSID bssid:nearest.bssid currentSSID:curSSID currentBSSID:curBSSID completion:^(BOOL ok) {
         __strong __typeof__(self) sSelf = weakSelf;
         if (!sSelf) return;
         if (!ok) { TVLog(@"[locsim] router switch failed, skip known-networks"); return; }
@@ -383,10 +384,10 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     return [prefix stringByAppendingString:suffix];
 }
 
-/// 下发软路由：HTTP POST /cgi-bin/wifi-switch {current_ssid, target:{ssid,bssid}} → {ok}
-/// （Superwrt uhttpd CGI：按 current_ssid 定位 wireless 段 → uci 改 ssid+macaddr → wifi reload）
+/// 下发软路由：HTTP POST /cgi-bin/wifi-switch {current_ssid, current_bssid, target:{ssid,bssid}} → {ok}
+/// （Superwrt uhttpd CGI：SSID+MAC 双定位 wireless 段（防同名歧义）→ uci 改 ssid+macaddr → wifi reload）
 - (void)_requestRouterSwitchSSID:(NSString *)ssid bssid:(NSString *)bssid
-                    currentSSID:(NSString *)curSSID
+                    currentSSID:(NSString *)curSSID currentBSSID:(NSString *)curBSSID
                        completion:(void (^)(BOOL ok))completion {
     NSString *routerURL = [self _readPref:@"SimRouterHTTP"];
     if (!routerURL.length) routerURL = @"http://10.0.0.1/cgi-bin/wifi-switch"; // Superwrt uhttpd CGI（可配置）
@@ -397,6 +398,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     req.timeoutInterval = 15.0;   // wifi reload 断线重连 1-3s，放宽超时
     NSDictionary *body = @{
         @"current_ssid": curSSID ?: @"",
+        @"current_bssid": curBSSID ?: @"",
         @"target": @{ @"ssid": ssid, @"bssid": bssid },
     };
     req.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:NULL];

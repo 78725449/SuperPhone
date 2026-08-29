@@ -91,4 +91,14 @@ static NSString *const kKnownNetworksPath = @"/var/preferences/com.apple.wifi.kn
     return nil;
 }
 
++ (nullable NSString *)currentBSSID {
+    NSDictionary *ifs = (__bridge_transfer NSDictionary *)CNCopySupportedInterfaces();
+    for (id ifname in ifs) {
+        NSDictionary *info = (__bridge_transfer NSDictionary *)
+            CNCopyCurrentNetworkInfo((__bridge CFStringRef)ifname);
+        if (info) return info[(__bridge NSString *)kCNNetworkInfoKeyBSSID];
+    }
+    return nil;
+}
+
 @end
