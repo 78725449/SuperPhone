@@ -198,7 +198,6 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
             _currentLon = lon;
             _currentAcc = acc;
             [self _injectGpsForCurrentLocation];
-            [self _persistState];   // 位置变化持久化
             if (![CLLocationManager locationServicesEnabled]) {
                 [SimLocationManager setSystemLocationServices:YES];
             }
@@ -278,7 +277,6 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         [SimLocationManager setSystemLocationServices:YES];
     }
     // 不创建播放 timer（静止在锚点，等路线生成后 _startTrack 接管）
-    [self _persistState];   // 位置持久化
     TVLog(@"[locsim] anchor set (%.5f, %.5f) acc=%.1f (no playback)", lat, lon, acc);
 }
 
@@ -322,7 +320,6 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     _currentMode = @"anchor";
     _currentAcc = _anchorAcc;
     [self _injectGpsForCurrentLocation];
-    [self _persistState];   // 状态落盘（崩溃恢复用；45s 低频写，无 I/O 压力）
 }
 
 /// 统一目标位置源：wifi 扫描模拟与 GPS 同源注入（动态反查——按当前坐标 tile 查 BSSID 注入）
@@ -480,6 +477,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
                                            accuracy:_currentAcc
                                              course:_currentCourse
                                               speed:_currentSpeed];
+    [self _persistState];   // 每次注入顺带持久化当前位置（2026-08-29 定案）
 }
 
 /// wifi 处理器（旧：locationd 扫描输入注入）已于 2026-08-29 移除——
@@ -506,8 +504,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
             __strong __typeof__(self) sSelf = weakSelf;
             if (!sSelf) return;
             if (sSelf->_currentLat == 0 && sSelf->_currentLon == 0) return;
-            [sSelf _injectGpsForCurrentLocation];  // 刷新 timestamp
-            [sSelf _persistState];  // 状态持久化
+            [sSelf _injectGpsForCurrentLocation];  // 刷新 timestamp（_injectGpsForCurrentLocation 内部已持久化）
         });
         dispatch_resume(timer);
     });
@@ -564,7 +561,6 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     if (![CLLocationManager locationServicesEnabled]) {
         [SimLocationManager setSystemLocationServices:YES];
     }
-    [self _persistState];   // 位置持久化
     TVLog(@"[locsim] itinerary start, %lu points (from idx %lu)", (unsigned long)points.count, (unsigned long)startIdx);
 }
 
@@ -579,7 +575,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     // （2026-08-28 用户定案：wifi 不要独立实时节拍，加入 GPS 完整时序；wifi 重启打断的 GPS
     // 广播由同 tick 紧后的 GPS 注入立即恢复，无真空无兜底）
     [self _injectSimulationForCurrentLocation];
-    if (++_trackTickCount % 5 == 0) [self _persistState];   // 每 5s 落盘（崩溃续播不丢太多）
+    // 持久化已在 _injectGpsForCurrentLocation 内部完成，无需额外落盘
     // 轨迹 wifi 跟随：跨瓦片才重新反查换池（同瓦片 LRU 命中零成本；反查池成功后同 tick 注入）
     [self _handleAPSwitchForCurrentLocation];   // 迁移/首点后重新反查 → AP 切换
 }
