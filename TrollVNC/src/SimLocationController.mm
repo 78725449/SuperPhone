@@ -278,8 +278,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         [SimLocationManager setSystemLocationServices:YES];
     }
     // 不创建播放 timer（静止在锚点，等路线生成后 _startTrack 接管）
-    // 更新轨迹文件
-    [self _updateTrajectoryFile];
+    [self _persistState];   // 位置持久化
     TVLog(@"[locsim] anchor set (%.5f, %.5f) acc=%.1f (no playback)", lat, lon, acc);
 }
 
@@ -565,8 +564,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     if (![CLLocationManager locationServicesEnabled]) {
         [SimLocationManager setSystemLocationServices:YES];
     }
-    // 更新轨迹文件（标记当前位置为路线起点）
-    [self _updateTrajectoryFile];
+    [self _persistState];   // 位置持久化
     TVLog(@"[locsim] itinerary start, %lu points (from idx %lu)", (unsigned long)points.count, (unsigned long)startIdx);
 }
 
