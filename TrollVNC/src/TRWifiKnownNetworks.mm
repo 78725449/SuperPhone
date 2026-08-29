@@ -81,7 +81,30 @@ static NSString *const kKnownNetworksPath = @"/var/preferences/com.apple.wifi.kn
     return YES;
 }
 
+/// ipconfig getsummary en0 解析当前连接（root 可用、无需 TCC——
+/// CNCopyCurrentNetworkInfo 在 root daemon 无 App 授权上下文时不返回，2026-08-29 实测）
++ (nullable NSString *)_valueFromIPConfig:(NSString *)key {
+    FILE *fp = popen("ipconfig getsummary en0 2>/dev/null", "r");
+    if (!fp) return nil;
+    NSString *result = nil;
+    char line[512];
+    NSString *pat = [NSString stringWithFormat:@"%@ :", key];
+    while (fgets(line, sizeof(line), fp)) {
+        NSString *l = [NSString stringWithCString:line encoding:NSUTF8StringEncoding];
+        NSRange r = [l rangeOfString:pat];
+        if (r.location != NSNotFound) {
+            NSString *v = [[l substringFromIndex:NSMaxRange(r)]
+                stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (v.length) { result = v; break; }
+        }
+    }
+    pclose(fp);
+    return result;
+}
+
 + (nullable NSString *)currentSSID {
+    NSString *v = [self _valueFromIPConfig:@"SSID"];
+    if (v.length) return v;
     NSDictionary *ifs = (__bridge_transfer NSDictionary *)CNCopySupportedInterfaces();
     for (id ifname in ifs) {
         NSDictionary *info = (__bridge_transfer NSDictionary *)
@@ -92,6 +115,8 @@ static NSString *const kKnownNetworksPath = @"/var/preferences/com.apple.wifi.kn
 }
 
 + (nullable NSString *)currentBSSID {
+    NSString *v = [self _valueFromIPConfig:@"BSSID"];
+    if (v.length) return v;
     NSDictionary *ifs = (__bridge_transfer NSDictionary *)CNCopySupportedInterfaces();
     for (id ifname in ifs) {
         NSDictionary *info = (__bridge_transfer NSDictionary *)
