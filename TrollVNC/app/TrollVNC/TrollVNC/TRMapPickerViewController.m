@@ -627,19 +627,35 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
     [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude), @"mode": mode}];
     if (self.segments.count == 1) {
-        // 第一个锚点：无前驱 → 点击点成为当前定位；聚焦该点但不开启模拟播放
-        self.hasStart = YES;
-        self.cur = gcj;
-        // 不设 self.locating（保持 OFF）——首锚点只设位置，不开启模拟播放
-        [self _syncSelfDrivenDroplet]; // 自驱水滴跟随新首锚点（cur 已就绪）
-        [self commitAnchor];
-        // 启用 MKUserLocation 跟随注入位置（daemon off 分支已开定位）
-        [self _updateDropletMode];
-        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES]; // 立即聚焦锚点
-        self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:gcj]; // 自动聚焦基线
-        self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（MKUserLocation 跟随 locationd 注入位置）
-        [self refreshWifiAnnotation];                            // 首锚点：wifi 标注切到锚点位置
-        [self setHint:@"已设定位点 · 继续点击添加锚点生长路线"];
+        // 第一个锚点：判断是否有当前位置（持久化/注入的）
+        CLLocationCoordinate2D curPos = [self currentSimPosition]; // lastFix 优先（daemon 注入的当前位置）
+        BOOL hasCurPos = (curPos.latitude != 0 || curPos.longitude != 0);
+        if (hasCurPos) {
+            // 有当前位置（持久化恢复）：基于当前位置创建锚点（起点，消费），点击位置作为终点 → 生成路线
+            // 当前位置锚点插到点击位置前面（segments[0]=起点，segments[1]=终点）
+            CLLocationCoordinate2D curG = [CoordTransform wgs84ToGcj02:curPos];
+            [self.segments insertObject:@{@"type": @"anchor", @"lat": @(curG.latitude), @"lon": @(curG.longitude), @"mode": mode}
+                                atIndex:0];
+            self.hasStart = YES;
+            self.cur = curG;   // 保持当前位置（不跳到点击位置）
+            [self _syncSelfDrivenDroplet];
+            [self runEdit:^{ [self commitItinerary]; }];  // 生成 当前位置 → 点击位置 路线
+            [self setHint:@"已基于当前位置创建锚点 · 路线从当前位置生长"];
+        } else {
+            // 首次启动无当前位置：点击点成为当前定位；聚焦该点但不开启模拟播放
+            self.hasStart = YES;
+            self.cur = gcj;
+            // 不设 self.locating（保持 OFF）——首锚点只设位置，不开启模拟播放
+            [self _syncSelfDrivenDroplet]; // 自驱水滴跟随新首锚点（cur 已就绪）
+            [self commitAnchor];
+            // 启用 MKUserLocation 跟随注入位置（daemon off 分支已开定位）
+            [self _updateDropletMode];
+            [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES]; // 立即聚焦锚点
+            self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:gcj]; // 自动聚焦基线
+            self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（MKUserLocation 跟随 locationd 注入位置）
+            [self refreshWifiAnnotation];                            // 首锚点：wifi 标注切到锚点位置
+            [self setHint:@"已设定位点 · 继续点击添加锚点生长路线"];
+        }
     } else {
         // 后续锚点：点击点只是目标锚点——当前位置图标保持当前实际位置，不随点击瞬移
         //（当前位置由注入事件/定时器随注入实时刷新）
@@ -1040,18 +1056,33 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
     [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude), @"mode": mode}];
     if (self.segments.count == 1) {
-        // 第一个锚点（也是当前定位）：聚焦该点但不开启模拟播放
-        self.hasStart = YES;
-        self.cur = gcj;
-        self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻：过滤旧 fix
-        self.startupLockedToAnchor = YES; // 锁定锚点显示，忽略旧位置（防"旧→新"横跳）
-        // 不设 self.locating（保持 OFF）——首锚点只设位置，不开启模拟播放
-        [self _syncSelfDrivenDroplet]; // 自驱水滴跟随新首锚点（cur 已就绪）
-        [self commitAnchor];
-        [self _updateDropletMode]; // 确保 MKUserLocation 跟随注入位置
-        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
-        self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:gcj]; // 自动聚焦基线
-        self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（MKUserLocation 跟随 locationd 注入位置）
+        // 第一个锚点：判断是否有当前位置（持久化/注入的）
+        CLLocationCoordinate2D curPos = [self currentSimPosition];
+        BOOL hasCurPos = (curPos.latitude != 0 || curPos.longitude != 0);
+        if (hasCurPos) {
+            // 有当前位置：基于当前位置创建锚点（起点，消费），搜索位置作为终点 → 生成路线
+            CLLocationCoordinate2D curG = [CoordTransform wgs84ToGcj02:curPos];
+            [self.segments insertObject:@{@"type": @"anchor", @"lat": @(curG.latitude), @"lon": @(curG.longitude), @"mode": mode}
+                                atIndex:0];
+            self.hasStart = YES;
+            self.cur = curG;   // 保持当前位置
+            [self _syncSelfDrivenDroplet];
+            [self runEdit:^{ [self commitItinerary]; }];  // 生成 当前位置 → 搜索位置 路线
+            [self setHint:@"已基于当前位置创建锚点 · 路线从当前位置生长"];
+        } else {
+            // 首次启动无当前位置：搜索点成为第一锚点+当前定位；聚焦但不开启模拟播放
+            self.hasStart = YES;
+            self.cur = gcj;
+            self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻：过滤旧 fix
+            self.startupLockedToAnchor = YES; // 锁定锚点显示，忽略旧位置（防"旧→新"横跳）
+            // 不设 self.locating（保持 OFF）——首锚点只设位置，不开启模拟播放
+            [self _syncSelfDrivenDroplet]; // 自驱水滴跟随新首锚点（cur 已就绪）
+            [self commitAnchor];
+            [self _updateDropletMode]; // 确保 MKUserLocation 跟随注入位置
+            [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
+            self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:gcj]; // 自动聚焦基线
+            self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（MKUserLocation 跟随 locationd 注入位置）
+        }
     } else {
         // 后续锚点：不移动视野（保持当前位置聚焦），从上一位置生长（生成中挂起，编辑不丢）
         [self runEdit:^{ [self commitItinerary]; }];
