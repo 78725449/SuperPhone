@@ -915,23 +915,35 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         @"center": @{@"lat": @(self.regionCenter.latitude), @"lon": @(self.regionCenter.longitude)},
     } mutableCopy];
     if (walkRatio) seg[@"walkRatio"] = walkRatio;
-    // 链首 region 段（无前驱锚点）：在区域内自生成入口锚点（2026-08-28 用户定案：
-    // 区域漫游独立成环，不从当前位置/0,0 起链）——随机取半径内 0.3~0.8 因子一点（避开边缘/圆心），
-    // 插为链首后区域段成为 index 1 正常生成；cur 一并设为入口（供 commitAnchor/currentSimPosition/水滴）
+    // 链首 region 段（无前驱锚点）：有当前位置 → 基于当前位置创建入口锚点（2026-08-30 用户定案）；
+    // 无当前位置（新设备第一次打开 APP）→ 随机取区域半径内 0.3~0.8 因子一点（避开边缘/圆心）生成入口锚点
     if (self.segments.count == 0) {
-        CLLocationCoordinate2D centerW = [CoordTransform gcj02ToWgs84:self.regionCenter];
-        double ang = (double)(arc4random_uniform(62832)) / 10000.0; // 0~2π
-        double distM = self.regionRadiusM * (0.3 + (double)(arc4random_uniform(50)) / 100.0);
-        double cosLat = cos(centerW.latitude * M_PI / 180.0);
-        CLLocationCoordinate2D entryW = CLLocationCoordinate2DMake(
-            centerW.latitude + distM * sin(ang) / 111320.0,
-            centerW.longitude + distM * cos(ang) / (111320.0 * cosLat));
-        CLLocationCoordinate2D entryG = [CoordTransform wgs84ToGcj02:entryW];
-        [self.segments addObject:@{@"type": @"anchor",
-            @"lat": @(entryG.latitude), @"lon": @(entryG.longitude),
-            @"mode": (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk"}];
-        self.hasStart = YES;
-        self.cur = entryG;
+        CLLocationCoordinate2D curPos = [self currentSimPosition];
+        BOOL hasCurPos = (curPos.latitude != 0 || curPos.longitude != 0);
+        if (hasCurPos) {
+            // 有当前位置：基于当前位置创建链首入口锚点（区域漫游从当前位置进入）
+            CLLocationCoordinate2D curG = [CoordTransform wgs84ToGcj02:curPos];
+            [self.segments addObject:@{@"type": @"anchor",
+                @"lat": @(curG.latitude), @"lon": @(curG.longitude),
+                @"mode": (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk"}];
+            self.hasStart = YES;
+            self.cur = curG;
+        } else {
+            // 无当前位置（新设备第一次）：随机生成区域内入口锚点
+            CLLocationCoordinate2D centerW = [CoordTransform gcj02ToWgs84:self.regionCenter];
+            double ang = (double)(arc4random_uniform(62832)) / 10000.0; // 0~2π
+            double distM = self.regionRadiusM * (0.3 + (double)(arc4random_uniform(50)) / 100.0);
+            double cosLat = cos(centerW.latitude * M_PI / 180.0);
+            CLLocationCoordinate2D entryW = CLLocationCoordinate2DMake(
+                centerW.latitude + distM * sin(ang) / 111320.0,
+                centerW.longitude + distM * cos(ang) / (111320.0 * cosLat));
+            CLLocationCoordinate2D entryG = [CoordTransform wgs84ToGcj02:entryW];
+            [self.segments addObject:@{@"type": @"anchor",
+                @"lat": @(entryG.latitude), @"lon": @(entryG.longitude),
+                @"mode": (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk"}];
+            self.hasStart = YES;
+            self.cur = entryG;
+        }
     }
     [self.segments addObject:seg];
     [self.regionPanel removeFromSuperview];
