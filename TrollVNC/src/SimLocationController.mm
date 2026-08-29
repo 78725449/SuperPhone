@@ -12,7 +12,7 @@
 #import "SimLocationManager.h"
 #import "SimRouteCalculator.h" // haversineMeters（与 App 截断同度量，选最近续播点）
 #import "TRWifiKnownNetworks.h" // 软路由联动：已知网络条目 SSID 修改（2026-08-29）
-#import <SystemConfiguration/SystemConfiguration.h> // SCDynamicStore（WiFi 重连监听，2026-08-29）
+#import <notify.h> // notify_post（WiFi 重连通知 App 更新水滴，2026-08-29）
 #import "TRWpsTile.h" // 坐标→BSSID 动态反查（daemon 注入 wifi 模拟源）
 #import "TRSimContract.h" // 跨端定位契约（轨迹文件路径单一真相源，2026-08-28）
 #import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
@@ -68,8 +68,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     BOOL _restorePending;
     uint64_t _trackTickCount;   // itinerary 落盘节流（每 5 tick 持久化一次）
     uint64_t _lastWifiTileKey;   // 上次 wifi 反查的瓦片 key（跨瓦片才重反查，轨迹跟随）
-    NSString *_wifiTargetBSSID;   // SCDynamicStore 监听目标 BSSID
-    SCDynamicStoreRef _wifiReconnectStore; // WiFi 重连监听器
+    NSString *_wifiTargetBSSID;   // WiFi 重连监听目标 BSSID（1s 轮询比对，切换后 10s 窗口）
     NSArray<TRWpsTileAP *> *_wifiTileAps; // 当前瓦片 AP 池（窗口注入源；跨瓦片/首点反查时刷新，2026-08-28）
     NSArray<NSString *> *_lastWifiWindowBssids; // 上次注入的可见 AP BSSID 集（变化才重注入，2026-08-28）
 }
@@ -367,39 +366,34 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     }];
 }
 
-#pragma mark - SCDynamicStore WiFi 重连监听（2026-08-29）
-
-static void _wifiReconnectCallback(SCDynamicStoreRef store, CFArrayRef changedKeys, void *info) {
-    SimLocationController *self = (__bridge SimLocationController *)info;
-    if (!self || !self->_wifiTargetBSSID) return;
-    NSString *curBSSID = [TRWifiKnownNetworks currentBSSID];
-    if (curBSSID.length && [curBSSID caseInsensitiveCompare:self->_wifiTargetBSSID] == NSOrderedSame) {
-        notify_post("com.82flex.trollvnc.wifi-switched");
-        TVLog(@"[locsim] wifi reconnect: %@ matches target, notified App", curBSSID);
-        self->_wifiTargetBSSID = nil;
-        if (self->_wifiReconnectStore) { CFRelease(self->_wifiReconnectStore); self->_wifiReconnectStore = NULL; }
-    }
-}
+#pragma mark - WiFi 重连监听（1s 轮询，仅切换后 10s 窗口内，2026-08-29）
+/// SCDynamicStore 在 iOS 上不可用（macOS-only），改用 1s 轮询 ipconfig 检测 BSSID 变化——
+/// 仅在 AP 切换后 10s 窗口内轮询，零长期占用。
 
 - (void)_startWifiReconnectMonitorWithTargetBSSID:(NSString *)bssid {
     _wifiTargetBSSID = bssid;
-    if (_wifiReconnectStore) { CFRelease(_wifiReconnectStore); _wifiReconnectStore = NULL; }
-    SCDynamicStoreContext ctx = {0, (__bridge void *)self, NULL, NULL, NULL};
-    _wifiReconnectStore = SCDynamicStoreCreate(NULL, CFSTR("com.82flex.trollvnc.wifi-monitor"), _wifiReconnectCallback, &ctx);
-    if (!_wifiReconnectStore) { TVLog(@"[locsim] SCDynamicStore create failed"); return; }
-    NSArray *keys = @[@"State:/Network/Interface/en0/AirPort"];
-    SCDynamicStoreSetNotificationKeys(_wifiReconnectStore, (__bridge CFArrayRef)keys, NULL);
-    SCDynamicStoreSetDispatchQueue(_wifiReconnectStore, dispatch_get_main_queue());
+    // 读取当前 BSSID（重连前可能还是旧的/空的）
     __weak __typeof__(self) weakSelf = self;
+    dispatch_source_t pollTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(pollTimer, dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), 1 * NSEC_PER_SEC, 0);
+    dispatch_source_set_event_handler(pollTimer, ^{
+        __strong __typeof__(self) sSelf = weakSelf;
+        if (!sSelf || !sSelf->_wifiTargetBSSID) { dispatch_source_cancel(pollTimer); return; }
+        NSString *curBSSID = [TRWifiKnownNetworks currentBSSID];
+        if (curBSSID.length && [curBSSID caseInsensitiveCompare:sSelf->_wifiTargetBSSID] == NSOrderedSame) {
+            notify_post("com.82flex.trollvnc.wifi-switched");
+            TVLog(@"[locsim] wifi reconnect: %@ matches target, notified App", curBSSID);
+            sSelf->_wifiTargetBSSID = nil;
+            dispatch_source_cancel(pollTimer);
+        }
+    });
+    dispatch_resume(pollTimer);
+    // 10s 超时自动清理
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         __strong __typeof__(self) sSelf = weakSelf;
-        if (!sSelf || !sSelf->_wifiReconnectStore) return;
-        if (sSelf->_wifiTargetBSSID) {
-            TVLog(@"[locsim] wifi monitor timeout (10s), target=%@", sSelf->_wifiTargetBSSID);
-        }
+        if (!sSelf || !sSelf->_wifiTargetBSSID) return;
+        TVLog(@"[locsim] wifi poll timeout (10s), target=%@", sSelf->_wifiTargetBSSID);
         sSelf->_wifiTargetBSSID = nil;
-        CFRelease(sSelf->_wifiReconnectStore);
-        sSelf->_wifiReconnectStore = NULL;
     });
 }
 

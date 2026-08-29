@@ -43,6 +43,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// 总停止：GPS + wifi 模拟一并停止（总开关关闭时调用，恢复真实定位与真实扫描源）
 - (void)stopAll;
+- (void)stopPlaybackOnly;    // 只停播放，不清 locationd 会话（2026-08-29）
 
 /// WiFi 扫描模拟注入（输入层）：setWifiScanResults + setSimulatedWifiPower + startWifiSimulation
 /// @param scanResults  NSArray<NSDictionary *>，每项含 bssid/ssid/rssi/channel/age/timestamp

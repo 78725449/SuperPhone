@@ -181,7 +181,6 @@ trollvncmanager_FRAMEWORKS += IOKit
 trollvncmanager_FRAMEWORKS += IOSurface
 trollvncmanager_FRAMEWORKS += QuartzCore
 trollvncmanager_FRAMEWORKS += UserNotifications
-trollvncmanager_FRAMEWORKS += SystemConfiguration
 trollvncmanager_FRAMEWORKS += CoreLocation
 trollvncmanager_FRAMEWORKS += MapKit
 trollvncmanager_FRAMEWORKS += Contacts
