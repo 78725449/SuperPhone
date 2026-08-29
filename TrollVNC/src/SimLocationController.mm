@@ -712,12 +712,14 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     [json writeToFile:tmp options:NSDataWritingAtomic error:NULL];
     [[NSFileManager defaultManager] removeItemAtPath:kTrajectoryFilePath error:NULL];
     [[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kTrajectoryFilePath error:NULL];
-    // 同步写 App 可读的 suite（跨端 prefs 域：App 启动显式恢复当前位置，2026-08-30）
+    // 同步写 App 可读的 mobile 域 plist（2026-08-30：daemon root 写 NSUserDefaults suite 会落到
+    // /var/root/... root 域，App sandbox 读不到——直接写 mobile 域文件 kSimMobilePrefsPath）
     if (_currentLat != 0 || _currentLon != 0) {
-        NSUserDefaults *ud = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
-        [ud setDouble:_currentLat forKey:@"SimCurrentLat"];
-        [ud setDouble:_currentLon forKey:@"SimCurrentLon"];
-        [ud synchronize];
+        NSMutableDictionary *mp = [NSMutableDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath]
+                                    ?: [NSMutableDictionary dictionary];
+        mp[@"SimCurrentLat"] = @(_currentLat);
+        mp[@"SimCurrentLon"] = @(_currentLon);
+        [mp writeToFile:kSimMobilePrefsPath atomically:YES];
     }
 }
 
