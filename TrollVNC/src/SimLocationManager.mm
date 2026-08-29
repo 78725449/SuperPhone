@@ -118,6 +118,12 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     [self stopWifiScanSimulation]; // wifi：stopWifiSimulation + power NO
 }
 
+/// 只停播放，不清掉 locationd 模拟会话——注入持续活到最后位置（2026-08-29 定案）
+- (void)stopPlaybackOnly {
+    [self stopWifiScanSimulation];
+    // 不调 [self stop] —— 不清 locationd 会话（stopLocationSimulation + clear + flush 都不调）
+}
+
 - (BOOL)isWifiSimulating {
     return _wifiSimulating;
 }

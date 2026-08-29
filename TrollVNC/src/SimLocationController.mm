@@ -87,7 +87,8 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     // 宁可停止不自动模拟：模拟由用户显式开启（App 定位 UI），manager 重启（watchdog 拉起）同理不恢复。
     [self _forceStopOnStartup];
     [self reloadFromPrefs];
-    // 旧巡检（10s 轮询 _checkRestore）已移除（2026-08-29 定案：配置驱动 + L3' + L4 哨兵 + 启动兜底已覆盖）
+    // 60s 持久刷新 timer：注入坐标 timestamp 保鲜 + 状态持久化，不受模拟开关影响（2026-08-29）
+    [self _startPersistentRefreshTimer];
 }
 
 /// 启动定位处理（2026-08-29 定案）：先关定位（安全基底）→ 再根据状态决定是否恢复模拟
@@ -166,13 +167,12 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     if (![mode isKindOfClass:[NSString class]] || mode.length == 0) mode = @"off";
     TVLog(@"[locsim] apply mode=%@", mode);
     if ([mode isEqualToString:@"off"]) {
-        // 定位对抗编排（2026-08-28）：关模拟=先关系统定位（宁无位置不漏真实）→ 再停注入
-        [SimLocationManager setSystemLocationServices:NO];
+        // 2026-08-29 定案：关模拟=只停播放，不关系统定位，不清注入
         [self _stopAnchor];
         [self _stopTrack];
+        [[SimLocationManager sharedManager] stopPlaybackOnly];
         _currentMode = @"off";
         _lastWifiTileKey = 0; // 防残留：off 后重启时首点必重新触发反查
-        [[SimLocationManager sharedManager] stopAll]; // 总停：GPS + wifi 一并恢复真实
     } else if ([mode isEqualToString:@"anchor"]) {
         double lat = [self _readDouble:@"SimLocationLat" def:0.0];
         double lon = [self _readDouble:@"SimLocationLon" def:0.0];
@@ -204,16 +204,16 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         [self _startTrack];
     } else {
         TVLog(@"[locsim] unknown mode=%@ -> off", mode);
-        [SimLocationManager setSystemLocationServices:NO];
         [self _stopAnchor];
         [self _stopTrack];
+        [[SimLocationManager sharedManager] stopPlaybackOnly];
         _currentMode = @"off";
         _lastWifiTileKey = 0; // 防残留：off 后重启时首点必重新触发反查
-        [[SimLocationManager sharedManager] stopAll]; // 总停：GPS + wifi 一并恢复真实
     }
 }
 
 - (void)_startAnchor {
+    // 2026-08-29 定案：首锚点只注入坐标 + 确保定位开启，不启动播放（等待路线生成后 _startTrack 接管）
     double lat = [self _readDouble:@"SimLocationLat" def:0.0];
     double lon = [self _readDouble:@"SimLocationLon" def:0.0];
     double acc = [self _readDouble:@"SimLocationAccuracy" def:5.0];
@@ -227,10 +227,6 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         _currentMy = 0.0;
     }
     _restorePending = NO;
-    _anchorTickCount = 0;
-    _anchorLastRefreshAt = CFAbsoluteTimeGetCurrent();
-    _anchorLastMoveAt = CFAbsoluteTimeGetCurrent();   // 启动即开始计时（首次迁移 3~8min 后）
-    // 首点注入前必须同步 _current（否则用残留值/0 坐标注入，蓝点闪跳）
     _currentLat = lat;
     _currentLon = lon;
     _currentSpeed = 0.0;
@@ -238,24 +234,17 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     _currentMode = @"anchor";
     _currentAcc = acc;
     _currentAlt = 45.0;
-    [self _injectGpsForCurrentLocation]; // GPS 处理器：锚点坐标立即直写广播（首次注入）
-    [self _handleAPSwitchForCurrentLocation]; // wifi 处理器：锚点坐标反查 → 下发软路由切换（首次）
-    if (!_anchorSource) {
-        _anchorSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-        dispatch_source_set_timer(_anchorSource, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSimAnchorTickInterval * NSEC_PER_SEC)),
-                                  (uint64_t)(kSimAnchorTickInterval * NSEC_PER_SEC), 0);
-        __weak __typeof__(self) weakSelf = self; // 用 __typeof__（trollvncserver 的 -std=c++20 下 typeof 不可用，2026-08-25）
-        dispatch_source_set_event_handler(_anchorSource, ^{
-            [weakSelf _anchorTick];
-        });
-        dispatch_resume(_anchorSource);
+    // 注入新坐标（变更持久注入的内容）
+    [self _injectGpsForCurrentLocation];
+    [self _handleAPSwitchForCurrentLocation]; // 反查 AP（播放未开始，不触发下发）
+    // 检查并开启系统定位（先注入后开，确保第一秒即模拟值）
+    if (![CLLocationManager locationServicesEnabled]) {
+        [SimLocationManager setSystemLocationServices:YES];
     }
-    // 定位对抗编排：注入已生效（首点已进 locationd 会话）后才开系统定位——
-    // 定位开启的第一秒就是模拟值，无真实坐标空窗（2026-08-28）
-    [SimLocationManager setSystemLocationServices:YES];
-    // L3 场景持久化（实验）：模拟状态写入 locationd 场景文件，目标=脱离 manager 生命周期
-    // （client 崩溃后 locationd 仍投递最后模拟坐标，覆盖崩溃→拉起窗口）；失败仅日志不影响主链路
-    TVLog(@"[locsim] anchor start (%.5f, %.5f) acc=%.1f", lat, lon, acc);
+    // 不创建播放 timer（静止在锚点，等路线生成后 _startTrack 接管）
+    // 更新轨迹文件
+    [self _updateTrajectoryFile];
+    TVLog(@"[locsim] anchor set (%.5f, %.5f) acc=%.1f (no playback)", lat, lon, acc);
 }
 
 - (void)_anchorTick {
@@ -435,6 +424,26 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     }
 }
 
+#pragma mark - 60s 持久刷新（注入坐标 timestamp 保鲜 + 状态持久化，2026-08-29）
+
+- (void)_startPersistentRefreshTimer {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC),
+                                  60 * NSEC_PER_SEC, 0);
+        __weak __typeof__(self) weakSelf = self;
+        dispatch_source_set_event_handler(timer, ^{
+            __strong __typeof__(self) sSelf = weakSelf;
+            if (!sSelf) return;
+            if (sSelf->_currentLat == 0 && sSelf->_currentLon == 0) return;
+            [sSelf _injectGpsForCurrentLocation];  // 刷新 timestamp
+            [sSelf _persistState];  // 状态持久化
+        });
+        dispatch_resume(timer);
+    });
+}
+
 #pragma mark - itinerary 轨迹推进（每秒注入一点，完成后保持终点）
 
 - (void)_startTrack {
@@ -442,7 +451,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     if (points.count == 0) {
         TVLog(@"[locsim] track file empty/missing: %@", kTRSimTrackFilePath);
         [self _stopTrack];
-        [[SimLocationManager sharedManager] stopAll]; // 空轨迹全停（GPS+wifi 一并恢复真实，防残留）
+        [[SimLocationManager sharedManager] stopPlaybackOnly]; // 空轨迹：停播放，不清注入
         return;
     }
     _trackPoints = points;
@@ -482,8 +491,12 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         [weakSelf _trackTick];
     });
     dispatch_resume(_trackSource);
-    // 定位对抗编排：同 anchor——注入生效后再开系统定位（2026-08-28）
-    [SimLocationManager setSystemLocationServices:YES];
+    // 2026-08-29 定案：路线播放前检查/开启系统定位（注入已在首点完成）
+    if (![CLLocationManager locationServicesEnabled]) {
+        [SimLocationManager setSystemLocationServices:YES];
+    }
+    // 更新轨迹文件（标记当前位置为路线起点）
+    [self _updateTrajectoryFile];
     TVLog(@"[locsim] itinerary start, %lu points (from idx %lu)", (unsigned long)points.count, (unsigned long)startIdx);
 }
 
