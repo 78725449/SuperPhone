@@ -1040,17 +1040,16 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
     [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude), @"mode": mode}];
     if (self.segments.count == 1) {
-        // 第一个锚点（也是当前定位）：立即聚焦该点并原生跟随
+        // 第一个锚点（也是当前定位）：聚焦该点但不开启模拟播放
         self.hasStart = YES;
         self.cur = gcj;
-        self.locating = YES;
-        [self _syncSelfDrivenDroplet]; // 定位关时自驱水滴跟随新首锚点（cur+locating 已就绪）
-        self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻（同 toggleLocate）
-        self.startupLockedToAnchor = YES; // 注入落地前锁定锚点显示（防"真实→锚点"横跳，同 toggleLocate）
+        // 不设 self.locating（保持 OFF）——首锚点只设位置，不开启模拟播放
+        [self _syncSelfDrivenDroplet]; // 自驱水滴跟随新首锚点（cur 已就绪）
         [self commitAnchor];
+        [self _updateDropletMode]; // 确保 MKUserLocation 跟随注入位置
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
-        self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:gcj]; // 自动聚焦基线（同 toggleLocate）
-        self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（水滴跟随 locationd）
+        self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:gcj]; // 自动聚焦基线
+        self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（MKUserLocation 跟随 locationd 注入位置）
     } else {
         // 后续锚点：不移动视野（保持当前位置聚焦），从上一位置生长（生成中挂起，编辑不丢）
         [self runEdit:^{ [self commitItinerary]; }];
@@ -1356,8 +1355,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 否则移除（定位开时不显示自驱水滴，避免与 MKUserLocation 双层重复）。self.cur 全部赋值点与定位开关切换后调用
 - (void)_syncSelfDrivenDroplet {
     TRSelfDrivenDroplet *drop = self.selfDrivenDroplet;
-    if (![self _systemLocationAvailable] && self.locating
-        && (self.cur.latitude != 0 || self.cur.longitude != 0)) {
+    // 2026-08-29 定案：只要有有效位置就显示绿色水滴（不依赖 self.locating——首锚点后 locating=NO 也显示）
+    if (![self _systemLocationAvailable] && (self.cur.latitude != 0 || self.cur.longitude != 0)) {
         if (!drop) {
             drop = [[TRSelfDrivenDroplet alloc] init];
             drop.title = @"当前位置";
