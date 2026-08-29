@@ -186,11 +186,29 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     TVLog(@"[locsim] apply mode=%@", mode);
     if ([mode isEqualToString:@"off"]) {
         // 2026-08-29 定案：关模拟=只停播放，不关系统定位，不清注入
+        // 但若坐标有变化（App 创建锚点/更新位置），则注入新坐标+开定位
+        double lat = [self _readDouble:@"SimLocationLat" def:0.0];
+        double lon = [self _readDouble:@"SimLocationLon" def:0.0];
+        double acc = [self _readDouble:@"SimLocationAccuracy" def:5.0];
+        if (acc < 3.0) acc = 3.0;
+        if (acc > 15.0) acc = 15.0;
+        BOOL coordChanged = (fabs(_currentLat - lat) > 0.000001 || fabs(_currentLon - lon) > 0.000001);
+        if (coordChanged && (lat != 0 || lon != 0)) {
+            _currentLat = lat;
+            _currentLon = lon;
+            _currentAcc = acc;
+            [self _injectGpsForCurrentLocation];
+            [self _updateTrajectoryFile];
+            if (![CLLocationManager locationServicesEnabled]) {
+                [SimLocationManager setSystemLocationServices:YES];
+            }
+            TVLog(@"[locsim] off mode: injected position (%.5f, %.5f) acc=%.1f", lat, lon, acc);
+        }
         [self _stopAnchor];
         [self _stopTrack];
         [[SimLocationManager sharedManager] stopPlaybackOnly];
         _currentMode = @"off";
-        _lastWifiTileKey = 0; // 防残留：off 后重启时首点必重新触发反查
+        _lastWifiTileKey = 0;
     } else if ([mode isEqualToString:@"anchor"]) {
         double lat = [self _readDouble:@"SimLocationLat" def:0.0];
         double lon = [self _readDouble:@"SimLocationLon" def:0.0];
