@@ -390,7 +390,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
                     currentSSID:(NSString *)curSSID currentBSSID:(NSString *)curBSSID
                        completion:(void (^)(BOOL ok))completion {
     NSString *routerURL = [self _readPref:@"SimRouterHTTP"];
-    if (!routerURL.length) routerURL = @"http://10.0.0.1/cgi-bin/wifi-switch"; // Superwrt uhttpd CGI（可配置）
+    if (!routerURL.length) routerURL = @"http://10.0.0.1:8080/cgi-bin/wifi-switch.cgi"; // Superwrt uhttpd CGI（默认=用户部署路径；可配置覆盖）
     NSURL *url = [NSURL URLWithString:routerURL];
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.HTTPMethod = @"POST";
