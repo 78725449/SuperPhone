@@ -4325,6 +4325,26 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
                              ex.reason ?: ex.name ?: @"未知异常"]);
         }
     }
+    // ===== net.whoami 公网出口 IP 探针（2026-08-29）=====
+    // 验证上层 AP 是否让设备公网出口在模拟城市（IP 定位通道防线）：daemon 请求回显服务，
+    // 返回出口公网 IP + 归属（服务端 IP 库，简化为 IP 文本）。零写入。
+    else if ([op isEqualToString:@"net.whoami"]) {
+        NSURL *url = [NSURL URLWithString:@"https://api.ipify.org?format=json"];
+        NSURLSession *sess = [NSURLSession sharedSession];
+        dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+        __block NSString *ip = nil;
+        NSURLSessionDataTask *task = [sess dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+            if (!err && data.length) {
+                NSDictionary *j = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+                if ([j isKindOfClass:[NSDictionary class]]) ip = j[@"ip"];
+            }
+            dispatch_semaphore_signal(sema);
+        }];
+        [task resume];
+        dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
+        if (!ip.length) return tvExtErr(@"公网 IP 探测失败（ipify 不可达？）");
+        return tvExtOk(@{@"ip": ip, @"note": @"出口公网 IP——须与模拟城市一致（上层 AP 通道）"});
+    }
     // ===== album.diag 相册库只读探针（2026-08-28 来源归零实验·机制确认，只读零风险）=====
     // 定位 Photos.sqlite 的 ZASSET 表「来源」列与位置列真实落库情况：
     // PHPhotoLibrary 导入的资产在相册详情显示「来自 SuperPhone」= Photos 库内部记录调用方，
@@ -6415,7 +6435,24 @@ static void tvLocationDeathSentinel(void) {
                     } @catch (NSException *ex) {
                         fprintf(stderr, "SENTINEL: exception %@\n", ex.reason ?: ex.name);
                     }
-                    break;   // 关一次即可；新 manager 接管后由其启动兜底续防
+                    // 2026-08-29：manager 无 launchd 托管（系统卷只读，/Library/LaunchDaemons 不可写）——
+                    // 由 server（常驻）反向拉起新 manager（同 bundle 二进制），实现崩溃自愈：
+                    // manager 死后 server 成孤儿（ppid==1），此时 spawn 新 manager → 新 manager 启动
+                    // 走 _forceStopOnStartup（L3' 状态恢复）→ 重新托管 server（watchdog spawn 新 server）。
+                    // 旧 server 继续当哨兵直到被新 manager 的 sysctl 清理/端口让位。
+                    NSString *mgrPath = [[NSBundle mainBundle] pathForResource:@"trollvncmanager" ofType:@""];
+                    if (mgrPath.length && access(mgrPath.UTF8String, X_OK) == 0) {
+                        pid_t child = 0;
+                        char *args[] = { (char *)mgrPath.UTF8String, NULL };
+                        int sr = posix_spawn(&child, mgrPath.UTF8String, NULL, NULL, args, NULL);
+                        fprintf(stderr, "SENTINEL: spawned new manager %s rc=%d pid=%d\n",
+                                mgrPath.UTF8String, sr, child);
+                    } else {
+                        fprintf(stderr, "SENTINEL: manager path not resolvable, spawn skipped\n");
+                    }
+                    // 不 exit——本哨兵继续轮询；新 manager 会 spawn 新 server（watchdog），
+                    // 本 server 由新 manager 启动时的孤儿清理（sysctl）回收
+                    managerPid = getppid();   // 更新基准（现在 ppid=1，但保持循环以持续探测）
                 }
             }
         });
