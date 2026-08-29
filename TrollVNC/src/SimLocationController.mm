@@ -20,6 +20,9 @@
 // 轨迹点序列文件路径 → kTRSimTrackFilePath（TRSimContract.h 跨端单一真相源，2026-08-28）
 // 配置 plist（mobile 域=配置源：App 写 mobile、uploadTrackPoints 也写 mobile；root 域仅兜底）
 static NSString *const kSimMobilePrefsPath = @"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist";
+// 模拟状态持久化文件（L3' 崩溃恢复，2026-08-29）：{mode, anchorLat/Lon/Acc, mx, my, lastRefresh}
+// 崩溃后新 manager 据此恢复播放（复用轨迹文件"文件即状态"机制）；与轨迹文件并列
+static NSString *const kSimStateFilePath = @"/var/mobile/Library/Preferences/com.82flex.trollvnc.simstate.json";
 // 巡检间隔：失效检测 + 参数变更感知合一
 static const NSTimeInterval kSimPatrolInterval = 10.0;
 // prefs-changed 重载合并窗口：App 一次编辑链（holdAtCurrentPosition → 重算 → writeTrackFile）
@@ -27,10 +30,16 @@ static const NSTimeInterval kSimPatrolInterval = 10.0;
 static const NSTimeInterval kSimReloadMergeInterval = 0.5;
 // track 逐点注入间隔（itinerary：1s/点）
 static const NSTimeInterval kSimTrackTickInterval = 1.0;
-// anchor 微动游走间隔（1s/步）
+// anchor 节拍间隔（1s/拍）
 static const NSTimeInterval kSimAnchorTickInterval = 1.0;
 // anchor 微动范围（米）：人在原地附近小幅活动（5~50m 随机取，这里取中位）
 static const double kSimAnchorRangeM = 20.0;
+// 拟人化（2026-08-29 漂移问题修复）：真人 95% 时间静止在一点——
+// ①静止期低频注入刷新 timestamp（30~60s 一次，同坐标新时间戳，防"1小时前fix"指纹）
+// ②偶发小迁移（3~10min 一次，5~20m 内新点，模拟在房间间走动/起身）
+static const NSTimeInterval kSimAnchorRefreshInterval = 45.0;   // 静止刷新间隔（s）
+static const NSTimeInterval kSimAnchorMoveMinGap = 180.0;       // 小迁移最小间隔（s）
+static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁移概率（≈3~8min 一次）
 
 @implementation SimLocationController {
     dispatch_source_t _patrolSource;   // 10s 巡检
@@ -48,6 +57,13 @@ static const double kSimAnchorRangeM = 20.0;
     NSString *_currentMode;
     // anchor 微动游走状态：相对中心偏移（米，局部平面近似）
     double _currentMx, _currentMy;
+    // 拟人化节拍（2026-08-29）：静止刷新/小迁移计时
+    uint64_t _anchorTickCount;
+    CFAbsoluteTime _anchorLastRefreshAt;
+    CFAbsoluteTime _anchorLastMoveAt;
+    // 崩溃恢复标记（L3'）：_forceStopOnStartup 恢复状态后置位，_startAnchor 消费（保留游走偏移）
+    BOOL _restorePending;
+    uint64_t _trackTickCount;   // itinerary 落盘节流（每 5 tick 持久化一次）
     uint64_t _lastWifiTileKey;   // 上次 wifi 反查的瓦片 key（跨瓦片才重反查，轨迹跟随）
     NSArray<TRWpsTileAP *> *_wifiTileAps; // 当前瓦片 AP 池（窗口注入源；跨瓦片/首点反查时刷新，2026-08-28）
     NSArray<NSString *> *_lastWifiWindowBssids; // 上次注入的可见 AP BSSID 集（变化才重注入，2026-08-28）
@@ -78,14 +94,40 @@ static const double kSimAnchorRangeM = 20.0;
 /// 幂等：仅当残留为 anchor/itinerary 时写 off；off 已是不变式。
 - (void)_forceStopOnStartup {
     NSString *mode = [self _readPref:@"SimLocationMode"];
+    // L3' 崩溃恢复（2026-08-29）：若崩溃前模拟在跑（有状态 JSON + prefs 非 off），
+    // 恢复模拟播放（重注入 + 重开系统定位），而不是一律强制 off——模拟不因崩溃中断。
+    // 仅当：无状态文件 / prefs=off / 状态损坏 时才走"off + 关定位"的旧契约。
+    NSDictionary *state = [SimLocationController loadPersistedState];
+    if ([mode isEqualToString:@"anchor"] && state && [state[@"mode"] isEqualToString:@"anchor"]) {
+        // L3' 崩溃恢复：把持久化状态写进 ivars，标记 pending——真正的重注入+开定位
+        // 由随后的 reloadFromPrefs→applyFromPrefs→_startAnchor 统一完成（复用主链路，
+        // 不重复注入/不重复建 timer）；_startAnchor 消费 pending 保留游走偏移（蓝点不跳变）
+        _anchorLat = [state[@"anchorLat"] doubleValue];
+        _anchorLon = [state[@"anchorLon"] doubleValue];
+        _anchorAcc = [state[@"anchorAcc"] doubleValue];
+        _currentMx = [state[@"mx"] doubleValue];
+        _currentMy = [state[@"my"] doubleValue];
+        _currentLat = _anchorLat + _currentMy / 111320.0;
+        _currentLon = _anchorLon + _currentMx / (111320.0 * cos(_anchorLat * M_PI / 180.0));
+        _currentMode = @"anchor";
+        _currentAcc = _anchorAcc;
+        _restorePending = YES;
+        TVLog(@"[locsim] startup: state restored, pending re-start (%.5f, %.5f)", _anchorLat, _anchorLon);
+        return;   // 不强制 off、不关定位——reload 将恢复模拟
+    }
+    // itinerary：轨迹文件仍在 → reload 的 applyFromPrefs 会走 _startTrack 恢复播放（复用原机制），
+    // 这里只需不强制 off（放行 reload 恢复）；无轨迹文件时 _startTrack 会全停回退
+    if ([mode isEqualToString:@"itinerary"]) {
+        TVLog(@"[locsim] startup: itinerary mode, allowing reload to restore playback");
+        return;   // 放行（_startTrack 内部处理空轨迹回退）
+    }
+    // 旧契约兜底：off/未知 → 强制 off + 关系统定位（宁停不漏）
     if ([mode isEqualToString:@"anchor"] || [mode isEqualToString:@"itinerary"]) {
         NSMutableDictionary *mp = [NSMutableDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath] ?: [NSMutableDictionary dictionary];
         mp[@"SimLocationMode"] = @"off";
         [mp writeToFile:kSimMobilePrefsPath atomically:YES];
         TVLog(@"[locsim] startup: residual mode %@ forced -> off (startup-stop contract)", mode);
     }
-    // 定位对抗编排：启动即关闭系统定位（宁停不漏）——off 期间真实坐标不得裸奔；
-    // 模拟由用户在 App 显式开启（开启链路会先注入再重开开关）
     [SimLocationManager setSystemLocationServices:NO];
 }
 
@@ -181,8 +223,14 @@ static const double kSimAnchorRangeM = 20.0;
     _anchorLat = lat;
     _anchorLon = lon;
     _anchorAcc = acc;
-    _currentMx = 0.0;
-    _currentMy = 0.0;
+    if (!_restorePending) {
+        _currentMx = 0.0;
+        _currentMy = 0.0;
+    }
+    _restorePending = NO;
+    _anchorTickCount = 0;
+    _anchorLastRefreshAt = CFAbsoluteTimeGetCurrent();
+    _anchorLastMoveAt = CFAbsoluteTimeGetCurrent();   // 启动即开始计时（首次迁移 3~8min 后）
     // 首点注入前必须同步 _current（否则用残留值/0 坐标注入，蓝点闪跳）
     _currentLat = lat;
     _currentLon = lon;
@@ -208,48 +256,50 @@ static const double kSimAnchorRangeM = 20.0;
     [SimLocationManager setSystemLocationServices:YES];
     // L3 场景持久化（实验）：模拟状态写入 locationd 场景文件，目标=脱离 manager 生命周期
     // （client 崩溃后 locationd 仍投递最后模拟坐标，覆盖崩溃→拉起窗口）；失败仅日志不影响主链路
-    NSError *scErr = nil;
-    BOOL scOk = [[SimLocationManager sharedManager] loadPersistedScenario:lat lon:lon error:&scErr];
     TVLog(@"[locsim] anchor start (%.5f, %.5f) acc=%.1f", lat, lon, acc);
-    TVLog(@"[locsim] scenario persist: %@ %@", scOk ? @"OK" : @"FAIL", scErr.localizedDescription ?: @"");
 }
 
 - (void)_anchorTick {
-    // 微动游走：微步随机游走 + 范围约束 + 周期回中（相对中心偏移，米制局部平面近似）
-    double step = 0.1 + (double)(arc4random_uniform(400)) / 1000.0; // 0.1~0.5m
-    double ang = (double)(arc4random_uniform(62832)) / 10000.0;     // 0~2π
-    double dx = _currentMx + cos(ang) * step;
-    double dy = _currentMy + sin(ang) * step;
-    double dist = sqrt(dx * dx + dy * dy);
-    if (dist > kSimAnchorRangeM) {
-        // 超出范围：朝中心回拉一半（避免越走越远）
-        double over = dist - kSimAnchorRangeM;
-        dx -= (dx / dist) * over * 0.5;
-        dy -= (dy / dist) * over * 0.5;
-    } else if (dist > 0.01 && (arc4random_uniform(100) < 15)) {
-        // 15% 概率轻微回中（避免长期单方向漂移）
-        double pull = dist * 0.2;
-        dx -= (dx / dist) * pull;
-        dy -= (dy / dist) * pull;
+    // 拟人化锚点（2026-08-29 漂移问题修复）：真人"静止为主"——
+    // 默认不注入（蓝点静止，locationd 重复投递最后 fix），仅两类事件触发注入：
+    //  ① 静止刷新（45s）：同坐标重注入（时间戳保鲜，防"1 小时前 fix"指纹）
+    //  ② 偶发小迁移（3~8min 一次概率）：5~20m 内新点（房间间走动/起身），迁移后静止
+    // 彻底去除"每秒连续微动爬行"（旧实现每秒动 0.1~0.5m = 不自然的永动漂移）
+    _anchorTickCount++;
+    BOOL shouldMove = (_anchorLastMoveAt == 0)
+        ? (arc4random_uniform(1000) < 50)   // 首个迁移点稍快出现（启动后 1~2min）
+        : (arc4random_uniform(10000) < (uint32_t)(kSimAnchorMoveProbPerTick * 10000));
+    if (shouldMove &&
+        (CFAbsoluteTimeGetCurrent() - _anchorLastMoveAt) >= kSimAnchorMoveMinGap) {
+        // 小迁移：在 anchor 中心 5~20m 内取新偏移点（不连续漂移，直接落点）
+        double r = 5.0 + (double)(arc4random_uniform(1500)) / 100.0;  // 5~20m
+        double ang = (double)(arc4random_uniform(62832)) / 10000.0;
+        _currentMx = cos(ang) * r;
+        _currentMy = sin(ang) * r;
+        _anchorLastMoveAt = CFAbsoluteTimeGetCurrent();
+        [self _commitAnchorPoint];
+        [self _checkWifiTileChangedAndReinject];
+        return;
     }
-    _currentMx = dx;
-    _currentMy = dy;
-    double lat = _anchorLat + dy / 111320.0;
-    double lon = _anchorLon + dx / (111320.0 * cos(_anchorLat * M_PI / 180.0));
-    double course = atan2(dy, dx) * 180.0 / M_PI;
-    if (course < 0) course += 360.0;
+    if ((CFAbsoluteTimeGetCurrent() - _anchorLastRefreshAt) >= kSimAnchorRefreshInterval) {
+        // 静止刷新：同坐标重注入（timestamp 保鲜）
+        _anchorLastRefreshAt = CFAbsoluteTimeGetCurrent();
+        [self _commitAnchorPoint];
+    }
+}
+
+/// anchor 当前点提交：按当前游走偏移计算坐标并注入（GPS 单路；wifi 由调用方按需触发）
+- (void)_commitAnchorPoint {
+    double lat = _anchorLat + _currentMy / 111320.0;
+    double lon = _anchorLon + _currentMx / (111320.0 * cos(_anchorLat * M_PI / 180.0));
     _currentLat = lat;
     _currentLon = lon;
-    _currentSpeed = step;
-    _currentCourse = course;
+    _currentSpeed = 0.0;                 // 静止：速度 0（真人在家无 GPS 速度）
+    _currentCourse = 0.0;
     _currentMode = @"anchor";
     _currentAcc = _anchorAcc;
-    // 统一注入动作：GPS 与 wifi 是同一微动位置的两路输出——wifi 在前、GPS 收尾
-    // （2026-08-28 用户定案：GPS 直写坐标、wifi 写 AP，同一坐标两个处理器，同 tick 完成）
-    [self _injectSimulationForCurrentLocation];
-    // anchor 跨瓦片 wifi 跟随（对齐 itinerary _trackTick 语义）：
-    // anchor 中心平移（挪锚点/编辑 hold）跨瓦片时自动重反查 BSSID 注入；同瓦片零成本（key 比较）
-    [self _checkWifiTileChangedAndReinject];
+    [self _injectGpsForCurrentLocation];
+    [self _persistState];   // 状态落盘（崩溃恢复用；45s 低频写，无 I/O 压力）
 }
 
 /// 统一目标位置源：wifi 扫描模拟与 GPS 同源注入（动态反查——按当前坐标 tile 查 BSSID 注入）
@@ -416,6 +466,7 @@ static const double kSimAnchorRangeM = 20.0;
     // （2026-08-28 用户定案：wifi 不要独立实时节拍，加入 GPS 完整时序；wifi 重启打断的 GPS
     // 广播由同 tick 紧后的 GPS 注入立即恢复，无真空无兜底）
     [self _injectSimulationForCurrentLocation];
+    if (++_trackTickCount % 5 == 0) [self _persistState];   // 每 5s 落盘（崩溃续播不丢太多）
     // 轨迹 wifi 跟随：跨瓦片才重新反查换池（同瓦片 LRU 命中零成本；反查池成功后同 tick 注入）
     [self _checkWifiTileChangedAndReinject];
 }
@@ -520,6 +571,52 @@ static const double kSimAnchorRangeM = 20.0;
     [mp writeToFile:kSimMobilePrefsPath atomically:YES];
     TVLog(@"[locsim] track uploaded: %lu points", (unsigned long)clean.count);
     return YES;
+}
+
+#pragma mark - daemon.restart 升级通道（2026-08-28）
+
+/// 持久化当前模拟状态（anchor 游走偏移 + 模式），崩溃恢复用（L3'，2026-08-29）
+- (void)_persistState {
+    if ([_currentMode isEqualToString:@"anchor"]) {
+        NSDictionary *st = @{
+            @"version": @1,
+            @"mode": @"anchor",
+            @"anchorLat": @(_anchorLat), @"anchorLon": @(_anchorLon), @"anchorAcc": @(_anchorAcc),
+            @"mx": @(_currentMx), @"my": @(_currentMy),
+        };
+        NSData *json = [NSJSONSerialization dataWithJSONObject:st options:0 error:NULL];
+        [json writeToFile:kSimStateFilePath atomically:YES];
+    } else if ([_currentMode isEqualToString:@"itinerary"]) {
+        // itinerary：存当前位置（_startTrack 的续播逻辑依赖 _current 找最近点；崩溃后恢复续播不从头跳变）
+        NSDictionary *st = @{
+            @"version": @1,
+            @"mode": @"itinerary",
+            @"lat": @(_currentLat), @"lon": @(_currentLon), @"acc": @(_currentAcc),
+        };
+        NSData *json = [NSJSONSerialization dataWithJSONObject:st options:0 error:NULL];
+        [json writeToFile:kSimStateFilePath atomically:YES];
+    } else {
+        [[NSFileManager defaultManager] removeItemAtPath:kSimStateFilePath error:NULL];
+    }
+}
+
+/// 读取持久化状态（崩溃恢复）；无/损坏返回 nil
++ (NSDictionary *)loadPersistedState {
+    NSData *data = [NSData dataWithContentsOfFile:kSimStateFilePath];
+    if (!data.length) return nil;
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    return [json isKindOfClass:[NSDictionary class]] ? json : nil;
+}
+
++ (void)forceOffAndReload {
+    // 重启前停模拟：写 off 到 mobile 域 plist（配置源）→ reloadFromPrefs 走 off 分支
+    // （先关系统定位再停注入，宁无位置不漏真实）；启动契约亦会兜底
+    NSMutableDictionary *mp = [NSMutableDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath]
+                                ?: [NSMutableDictionary dictionary];
+    mp[@"SimLocationMode"] = @"off";
+    [mp writeToFile:kSimMobilePrefsPath atomically:YES];
+    [[SimLocationController sharedController] reloadFromPrefs];
+    TVLog(@"[locsim] forceOffAndReload done (daemon restarting)");
 }
 
 #pragma mark - 当前位置状态（App/daemon 查询；2026-08-26 起 sim.location.status 已收敛）

@@ -676,6 +676,23 @@ int main(int argc, const char *argv[]) {
             });
     }
     {
+        // 2026-08-28 daemon.restart 升级通道：装新 .tipa 后旧 daemon 进程仍持旧映像——
+        // server 5802 收 daemon.restart → notify 本通知 → manager 收到即优雅退出（launchd
+        // KeepAlive 拉起新 manager=新二进制）→ 新 manager watchdog spawn 新 server。全链换血。
+        int mgrRestartToken = 0;
+        notify_register_dispatch("com.82flex.trollvnc.manager-restart", &mgrRestartToken,
+            dispatch_get_main_queue(), ^(int token) {
+                (void)token;
+                fprintf(stderr, "[manager] manager-restart notified -> graceful exit (launchd will respawn)\n");
+                // 停模拟（off 清理：注入会话+开关关闭——启动契约也会兜底，双保险）
+                [[SimLocationController sharedController] reloadFromPrefsWithModeOff];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    CFRunLoopStop(CFRunLoopGetMain());   // 优雅退出 → launchd KeepAlive 拉起新 manager
+                });
+            });
+    }
+    {
         // WiFi 立即扫描请求（2026-08-27）：App 关闭模拟定位时 notify_post →
         // daemon 立即触发一次主动扫描（不等 8s 周期），关模拟瞬间拿到最新真实 BSSID 反查标注。
         int wifiScanReqToken = 0;

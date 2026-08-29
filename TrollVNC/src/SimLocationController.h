@@ -47,6 +47,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// 当前位置状态（App/daemon 查询当前注入状态；2026-08-26 起注册表 sim.location.status 已移除）：{mode, lat, lon, speed, course}
 + (NSDictionary *)currentStatus;
 
+/// daemon.restart 升级通道用（2026-08-28）：强制写 off（mobile 域 plist）并重载——
+/// 重启前停模拟清理注入会话与系统定位开关（宁无位置不漏真实）
++ (void)forceOffAndReload;
+
 @end
 
 NS_ASSUME_NONNULL_END
