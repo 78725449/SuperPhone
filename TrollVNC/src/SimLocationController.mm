@@ -712,6 +712,13 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     [json writeToFile:tmp options:NSDataWritingAtomic error:NULL];
     [[NSFileManager defaultManager] removeItemAtPath:kTrajectoryFilePath error:NULL];
     [[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kTrajectoryFilePath error:NULL];
+    // 同步写 App 可读的 suite（跨端 prefs 域：App 启动显式恢复当前位置，2026-08-30）
+    if (_currentLat != 0 || _currentLon != 0) {
+        NSUserDefaults *ud = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
+        [ud setDouble:_currentLat forKey:@"SimCurrentLat"];
+        [ud setDouble:_currentLon forKey:@"SimCurrentLon"];
+        [ud synchronize];
+    }
 }
 
 #pragma mark - 轨迹文件（永久真相源，2026-08-29）

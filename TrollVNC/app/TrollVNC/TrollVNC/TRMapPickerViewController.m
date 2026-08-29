@@ -609,7 +609,16 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         [d synchronize];
         notify_post(TVNC_NOTIFY_PREFS_CHANGED);
     }
-    self.locating = NO;   // 不恢复定位中；self.cur 保持 0,0，初始视野/聚焦以 locationd（真实）为准
+    // 2026-08-30 显式恢复当前位置：读 daemon 写入 suite 的 SimCurrentLat/Lon（轨迹文件当前位置跨端同步）
+    double curLat = [d doubleForKey:@"SimCurrentLat"];
+    double curLon = [d doubleForKey:@"SimCurrentLon"];
+    if (curLat != 0 || curLon != 0) {
+        self.cur = CLLocationCoordinate2DMake(curLat, curLon);
+        self.hasStart = YES;  // 有当前位置：可作为锚点起点
+        [self _syncSelfDrivenDroplet]; // 绿色水滴显示在恢复的当前位置
+        [self _updateDropletMode];     // 确保 MKUserLocation 跟随
+    }
+    self.locating = NO;   // 不恢复定位中；初始视野/聚焦以 locationd（真实）为准
     [self updateStatus];
 }
 
