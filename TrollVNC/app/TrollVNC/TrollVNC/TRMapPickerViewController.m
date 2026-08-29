@@ -627,18 +627,18 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
     [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude), @"mode": mode}];
     if (self.segments.count == 1) {
-        // 第一个锚点：无前驱 → 点击点成为当前定位；立即聚焦该点并原生跟随
+        // 第一个锚点：无前驱 → 点击点成为当前定位；聚焦该点但不开启模拟播放
         self.hasStart = YES;
         self.cur = gcj;
-        self.locating = YES;
-        [self _syncSelfDrivenDroplet]; // 定位关时自驱水滴跟随新首锚点（cur+locating 已就绪）
-        self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻（同 toggleLocate）
-        self.startupLockedToAnchor = YES; // 注入落地前锁定锚点显示（防"真实→锚点"横跳，同 toggleLocate）
+        // 不设 self.locating（保持 OFF）——首锚点只设位置，不开启模拟播放
+        [self _syncSelfDrivenDroplet]; // 自驱水滴跟随新首锚点（cur 已就绪）
         [self commitAnchor];
+        // 启用 MKUserLocation 跟随注入位置（daemon off 分支已开定位）
+        [self _updateDropletMode];
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES]; // 立即聚焦锚点
-        self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:gcj]; // 自动聚焦基线（同 toggleLocate）
-        self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（水滴跟随 locationd）
-        [self refreshWifiAnnotation];                            // 首锚点=进入模拟：立即把 wifi 标注切到锚点位置（不等主动扫描 8s 周期/NEHotspotHelper 回调）
+        self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:gcj]; // 自动聚焦基线
+        self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（MKUserLocation 跟随 locationd 注入位置）
+        [self refreshWifiAnnotation];                            // 首锚点：wifi 标注切到锚点位置
         [self setHint:@"已设定位点 · 继续点击添加锚点生长路线"];
     } else {
         // 后续锚点：点击点只是目标锚点——当前位置图标保持当前实际位置，不随点击瞬移
