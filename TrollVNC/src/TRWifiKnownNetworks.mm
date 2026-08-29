@@ -83,7 +83,8 @@ static NSString *const kKnownNetworksPath = @"/var/preferences/com.apple.wifi.kn
 /// ipconfig getsummary en0 解析当前连接（root 可用、无需 TCC——
 /// CNCopyCurrentNetworkInfo 在 root daemon 无 App 授权上下文时不返回，2026-08-29 实测）
 + (nullable NSString *)_valueFromIPConfig:(NSString *)key {
-    FILE *fp = popen("ipconfig getsummary en0 2>/dev/null", "r");
+    // 绝对路径：daemon 环境 PATH 可能为空（server spawn manager 时只传语言码 env）
+    FILE *fp = popen("/usr/sbin/ipconfig getsummary en0 2>/dev/null", "r");
     if (!fp) return nil;
     NSString *result = nil;
     char line[512];

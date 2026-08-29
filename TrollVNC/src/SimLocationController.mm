@@ -24,8 +24,7 @@ static NSString *const kSimMobilePrefsPath = @"/var/mobile/Library/Preferences/c
 // 模拟状态持久化文件（L3' 崩溃恢复，2026-08-29）：{mode, anchorLat/Lon/Acc, mx, my, lastRefresh}
 // 崩溃后新 manager 据此恢复播放（复用轨迹文件"文件即状态"机制）；与轨迹文件并列
 static NSString *const kSimStateFilePath = @"/var/mobile/Library/Preferences/com.82flex.trollvnc.simstate.json";
-// 巡检间隔：失效检测 + 参数变更感知合一
-static const NSTimeInterval kSimPatrolInterval = 10.0;
+// 巡检间隔（已移除 2026-08-29：配置驱动 + L3' + L4 哨兵 + 启动兜底已覆盖）
 // prefs-changed 重载合并窗口：App 一次编辑链（holdAtCurrentPosition → 重算 → writeTrackFile）
 // 连发多次通知，窗口内合并为一次重载（防热重载风暴，2026-08-27）
 static const NSTimeInterval kSimReloadMergeInterval = 0.5;
@@ -43,7 +42,7 @@ static const NSTimeInterval kSimAnchorMoveMinGap = 180.0;       // 小迁移最�
 static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁移概率（≈3~8min 一次）
 
 @implementation SimLocationController {
-    dispatch_source_t _patrolSource;   // 10s 巡检
+    // dispatch_source_t _patrolSource; 已移除（2026-08-29 配置驱动覆盖）
     dispatch_source_t _trackSource;    // itinerary 逐点注入
     dispatch_source_t _anchorSource;   // anchor 微动游走
     dispatch_source_t _reloadDebounce; // prefs-changed 重载合并（500ms 窗口）
@@ -88,21 +87,22 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     // 宁可停止不自动模拟：模拟由用户显式开启（App 定位 UI），manager 重启（watchdog 拉起）同理不恢复。
     [self _forceStopOnStartup];
     [self reloadFromPrefs];
-    [self _startPatrol];
+    // 旧巡检（10s 轮询 _checkRestore）已移除（2026-08-29 定案：配置驱动 + L3' + L4 哨兵 + 启动兜底已覆盖）
 }
 
-/// 残留模拟模式强制 off（写 mobile 域 plist=配置源，对齐 App readCurrentStatus 语义）。
-/// 幂等：仅当残留为 anchor/itinerary 时写 off；off 已是不变式。
+/// 启动定位处理（2026-08-29 定案）：先关定位（安全基底）→ 再根据状态决定是否恢复模拟
+/// 用户定案：宁停不漏；恢复模拟由后续 reload→apply→_startAnchor 统一完成
 - (void)_forceStopOnStartup {
+    // ① 读系统定位当前状态（诊断）
+    BOOL sysLocON = [CLLocationManager locationServicesEnabled];
+    TVLog(@"[locsim] startup: system location = %@", sysLocON ? @"ON" : @"OFF");
+    // ② 先关定位（确定安全状态；setSystemLocationServices: 内部幂等：已关则跳过）
+    [SimLocationManager setSystemLocationServices:NO];
+
     NSString *mode = [self _readPref:@"SimLocationMode"];
-    // L3' 崩溃恢复（2026-08-29）：若崩溃前模拟在跑（有状态 JSON + prefs 非 off），
-    // 恢复模拟播放（重注入 + 重开系统定位），而不是一律强制 off——模拟不因崩溃中断。
-    // 仅当：无状态文件 / prefs=off / 状态损坏 时才走"off + 关定位"的旧契约。
     NSDictionary *state = [SimLocationController loadPersistedState];
+    // ③ 可恢复 anchor → 恢复游走偏移，标记 pending（reload→apply→_startAnchor 统一完成注入+开定位）
     if ([mode isEqualToString:@"anchor"] && state && [state[@"mode"] isEqualToString:@"anchor"]) {
-        // L3' 崩溃恢复：把持久化状态写进 ivars，标记 pending——真正的重注入+开定位
-        // 由随后的 reloadFromPrefs→applyFromPrefs→_startAnchor 统一完成（复用主链路，
-        // 不重复注入/不重复建 timer）；_startAnchor 消费 pending 保留游走偏移（蓝点不跳变）
         _anchorLat = [state[@"anchorLat"] doubleValue];
         _anchorLon = [state[@"anchorLon"] doubleValue];
         _anchorAcc = [state[@"anchorAcc"] doubleValue];
@@ -114,30 +114,28 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         _currentAcc = _anchorAcc;
         _restorePending = YES;
         TVLog(@"[locsim] startup: state restored, pending re-start (%.5f, %.5f)", _anchorLat, _anchorLon);
-        return;   // 不强制 off、不关定位——reload 将恢复模拟
+        return;   // 定位已关；reload→apply→_startAnchor 将注入+开定位
     }
-    // itinerary：轨迹文件仍在 → reload 的 applyFromPrefs 会走 _startTrack 恢复播放（复用原机制），
-    // 这里只需不强制 off（放行 reload 恢复）；无轨迹文件时 _startTrack 会全停回退
+    // ④ itinerary：放行 reload 恢复（轨迹文件驱动）
     if ([mode isEqualToString:@"itinerary"]) {
         TVLog(@"[locsim] startup: itinerary mode, allowing reload to restore playback");
-        return;   // 放行（_startTrack 内部处理空轨迹回退）
+        return;   // 定位已关；reload 恢复播放
     }
-    // 旧契约兜底：off/未知 → 强制 off + 关系统定位（宁停不漏）
+    // ⑤ 无可恢复状态 → 保持关闭（定位已在②关掉）
     if ([mode isEqualToString:@"anchor"] || [mode isEqualToString:@"itinerary"]) {
+        // 预置 off 写回（防 _readPref 双域不一致）
         NSMutableDictionary *mp = [NSMutableDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath] ?: [NSMutableDictionary dictionary];
         mp[@"SimLocationMode"] = @"off";
         [mp writeToFile:kSimMobilePrefsPath atomically:YES];
         TVLog(@"[locsim] startup: residual mode %@ forced -> off (startup-stop contract)", mode);
     }
-    [SimLocationManager setSystemLocationServices:NO];
+    // 定位已在②关掉，无需额外动作
 }
 
 - (void)reloadFromPrefs {
     NSString *sig = [self _paramsSignature];
     if (_lastParamsSig && [sig isEqualToString:_lastParamsSig]) {
-        // 参数未变：仍做一次失效兜底（若 static 注入失效则重注入）
-        [self _checkRestore];
-        return;
+        return;   // 参数未变：跳过（旧巡检已移除，配置驱动 notify 覆盖）
     }
     _lastParamsSig = sig;
     [self applyFromPrefs];
@@ -668,53 +666,6 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         @"speed": @(c->_currentSpeed),
         @"course": @(c->_currentCourse),
     };
-}
-
-#pragma mark - 巡检（10s：失效恢复 + 参数变更感知）
-
-- (void)_startPatrol {
-    if (_patrolSource) return;
-    _patrolSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-    dispatch_source_set_timer(_patrolSource, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSimPatrolInterval * NSEC_PER_SEC)),
-                              (uint64_t)(kSimPatrolInterval * NSEC_PER_SEC), 0);
-    __weak __typeof__(self) weakSelf = self; // 用 __typeof__（-std=c++20 下 typeof 不可用）
-    dispatch_source_set_event_handler(_patrolSource, ^{
-        [weakSelf reloadFromPrefs];
-    });
-    dispatch_resume(_patrolSource);
-}
-
-- (void)_checkRestore {
-    NSString *mode = [self _readPref:@"SimLocationMode"];
-    if (![mode isKindOfClass:[NSString class]] || mode.length == 0) mode = @"off";
-    if ([mode isEqualToString:@"off"]) return;
-    if ([mode isEqualToString:@"anchor"]) {
-        // anchor 注入失效（locationd 会话中断）或游走 timer 丢失则重启：
-        // 会话内失效=毫秒级空窗，直接重注入（2026-08-28 定案：不翻开关——开关翻转本身是
-        // 可观测事件，且重注入立即重建会话；进程级失效由 server 哨兵+启动兜底另行覆盖）
-        if (![SimLocationManager sharedManager].isSimulating || !_anchorSource) {
-            TVLog(@"[locsim] anchor lost, re-start");
-            [self _startAnchor];
-        } else if (![SimLocationManager sharedManager].isWifiSimulating && [SimLocationManager sharedManager].wasWifiSimulatingOnce) {
-            // wifi 曾成功但当前丢失（locationd 会话中断）→ 重反查换池（2026-08-28 定案：
-            // 原条件 isSimulating && wasWifiSimulatingOnce 在 GPS 正常+曾成功时恒真 → 每 10s
-            // 无条件重反查，曾致"每 10s 报 wifi lost"假象；改为仅 wifi 源确实丢失才触发）。
-            // 从未成功（空洞瓦片反查失败）不重试——重注无意义且造成"自我锁死循环"；
-            // 等轨迹跨瓦片（_lastWifiTileKey 变化）自然换源反查（2026-08-27 定案）
-            TVLog(@"[locsim] anchor wifi lost, re-query");
-            [self _handleAPSwitchForCurrentLocation];
-        }
-    } else if ([mode isEqualToString:@"itinerary"]) {
-        // 已完成（停在终点）不重播：仅播放中 timer 丢失才重启；进度不持久化，进程重启后从头播
-        if (!_trackFinished && !_trackSource) {
-            TVLog(@"[locsim] itinerary timer lost, restart");
-            [self _startTrack];
-        } else if (![SimLocationManager sharedManager].isWifiSimulating && [SimLocationManager sharedManager].wasWifiSimulatingOnce) {
-            // 同上：仅"曾成功但丢失"重反查；"从未成功"（空洞瓦片）安静等待跨瓦片换源
-            TVLog(@"[locsim] itinerary wifi lost, re-query");
-            [self _handleAPSwitchForCurrentLocation];
-        }
-    }
 }
 
 #pragma mark - 参数读取（双域：root 域 → mobile 域 plist 回退）
