@@ -518,6 +518,15 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         if (info) break;
     }
     NSString *bssid = info[(__bridge NSString *)kCNNetworkInfoKeyBSSID];
+    NSString *ssid = info[(__bridge NSString *)kCNNetworkInfoKeySSID];
+    // 2026-08-30：诊断标签改为当前连接 WiFi 实时状态（软路由切换效果可视化，替代旧"主动扫描"诊断）
+    if (bssid.length && ssid.length) {
+        self.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: %@ (%@)", ssid, bssid];
+    } else if (bssid.length) {
+        self.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: %@", bssid];
+    } else {
+        self.wifiDiagLabel.text = @"WiFi: 未连接";
+    }
     if (!bssid.length) {
         [self removeWifiAnnotationIfExists]; // 未连接：清除残留标注（真实状态可视化）
         return;
@@ -1128,7 +1137,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         ? @"   --"
         : [NSString stringWithFormat:@"   %.5f, %.5f", showWgs.latitude, showWgs.longitude];
     NSString *speedTxt = @"0.0 m/s";
-    NSString *modeTxt = self.locating ? @"模拟中 · 定位" : @"已停止 · 定位";
+    // 2026-08-30：注入始终跑，无"停止"——移动中=路线播放，模拟中=静止注入
+    NSString *modeTxt = self.locating ? @"移动中" : @"模拟中";
     if (self.locating) {
         // 速度 = 当前所在路线（出发锚点段）的生成速度——updateAnchorPassStateWithLiveWGS 已从段缓存更新 currentLegSpeed
         speedTxt = [NSString stringWithFormat:@"%.1f m/s", self.currentLegSpeed];
@@ -1148,10 +1158,11 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         NSForegroundColorAttributeName: [UIColor secondaryLabelColor],
     }]];
     [self.statusBtn setAttributedTitle:as forState:UIControlStateNormal];
-    // 状态圆点：定位中=绿（glow），停止=灰（对齐原型 stat .p.on）
-    self.statusDot.backgroundColor = self.locating ? [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0] : [UIColor systemGrayColor];
-    self.statusDot.layer.shadowColor = self.locating ? self.statusDot.backgroundColor.CGColor : [UIColor clearColor].CGColor;
-    self.statusDot.layer.shadowOpacity = self.locating ? 0.6 : 0;
+    // 状态圆点：移动中=绿（glow），模拟中=品牌蓝（注入中，2026-08-30 去掉"停止=灰"——注入始终跑）
+    UIColor *simBlue = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0];
+    self.statusDot.backgroundColor = self.locating ? [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0] : simBlue;
+    self.statusDot.layer.shadowColor = self.statusDot.backgroundColor.CGColor;
+    self.statusDot.layer.shadowOpacity = self.locating ? 0.6 : 0.3;
     self.statusDot.layer.shadowRadius = 3;
     // FAB 状态切换：未开启=品牌紫+定位图标；定位中=铜钱（渐变金底+暗金描边+招财进宝四字+方孔——金色=进行中，与"待开启"紫区分）
     UIColor *brand = [UIColor colorWithRed:0.29 green:0.25 blue:0.89 alpha:1.0];
