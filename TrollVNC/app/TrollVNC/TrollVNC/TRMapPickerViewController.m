@@ -21,7 +21,7 @@
 #import <CoreLocation/CoreLocation.h> // 真实定位（未模拟定位时显示系统蓝点并聚焦）
 #import <SystemConfiguration/CaptiveNetwork.h> // 当前连接 WiFi SSID/BSSID（WiFi 水滴数据源，2026-08-29）
 #import <notify.h>
-#import "CoordTransform.h"
+// CoordTransform 已删（2026-08-30 坐标统一：MKMapView 层全程 WGS-84，无 GCJ/WGS 手动转换）
 #import "TRWpsTile.h" // 坐标→BSSID 动态反查（模拟分支按当前位置反查，与 daemon 注入同源；轨迹跟随）
 #import "../../../src/TRWifiScanContract.h" // 跨端扫描契约常量（单一真相源，2026-08-28）
 #import "../../../src/TRSimContract.h" // 跨端定位契约（轨迹文件路径单一真相源，2026-08-28）
@@ -98,7 +98,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, assign) BOOL segmentZeroPending;                     // 删首锚点后"当前位置→新首锚"段 0 待生成（段 0 特殊机制：正常链段 0=首锚点仅起点恒有效）
 @property (nonatomic, strong) NSMutableArray *anchors;       // 每段对应的锚点标注（TRAnchorAnnotation）
 @property (nonatomic, strong) NSMutableArray *waypointAnns;          // 区域漫游途经点标注（TRWaypointAnnotation，随区域段生成/重建）
-@property (nonatomic, assign) CLLocationCoordinate2D cur;    // 当前模拟位置（地图坐标 GCJ-02）
+@property (nonatomic, assign) CLLocationCoordinate2D cur;    // 当前模拟位置（统一 WGS-84，2026-08-30 坐标统一：MKMapView 层全程 WGS-84，不再存 GCJ-02）
 @property (nonatomic, assign) BOOL hasStart;
 @property (nonatomic, assign) BOOL locating;                // 定位开关状态
 @property (nonatomic, copy) NSString *currentLegMode;       // 当前位置水滴的出行方式（当前段目标锚点的，walk/drive）
@@ -544,9 +544,9 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         }
         // 更新/创建 wifi 标注（先移除旧的再添加新的，避免重复）
         [strongSelf removeWifiAnnotationIfExists];
-        CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:centroid];
+        // centroid 为 WGS-84（wloc 反查质心），MKMapView 层统一 WGS-84（2026-08-30 坐标统一）
         TRWifiAnnotation *ann = [[TRWifiAnnotation alloc] init];
-        ann.coordinate = gcj;
+        ann.coordinate = centroid;
         ann.title = strongSelf.locating ? @"WiFi 定位（模拟位置）" : @"WiFi 定位（wloc 反查）";
         ann.info = [NSString stringWithFormat:@"%.4f, %.4f（%lu 个 AP）",
                     centroid.latitude, centroid.longitude, (unsigned long)result.count];
@@ -616,9 +616,10 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     CGPoint pt = [g locationInView:self.mapView];
     // 点击锚点水滴的拦截由 shouldReceiveTouch 在 touch 阶段完成（早于 didSelect 删除时序，无竞态）。
     // 此处不再做 ended 检测兜底——删除重建后 annotations 已变，兜底检测本身会产生竞态误判（单机制原则）
-    CLLocationCoordinate2D gcj = [self.mapView convertPoint:pt toCoordinateFromView:self.mapView];
+    // convertPoint 返回 WGS-84（MKMapView API 契约；2026-08-30 坐标统一：segments 全程存 WGS-84）
+    CLLocationCoordinate2D wgs = [self.mapView convertPoint:pt toCoordinateFromView:self.mapView];
     NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
-    [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude), @"mode": mode}];
+    [self.segments addObject:@{@"type": @"anchor", @"lat": @(wgs.latitude), @"lon": @(wgs.longitude), @"mode": mode}];
     if (self.segments.count == 1) {
         // 第一个锚点：判断是否有当前位置（持久化/注入的）
         CLLocationCoordinate2D curPos = [self currentSimPosition]; // lastFix 优先（daemon 注入的当前位置）
@@ -626,25 +627,25 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         if (hasCurPos) {
             // 有当前位置（持久化恢复）：基于当前位置创建锚点（起点，消费），点击位置作为终点 → 生成路线
             // 当前位置锚点插到点击位置前面（segments[0]=起点，segments[1]=终点）
-            CLLocationCoordinate2D curG = [CoordTransform wgs84ToGcj02:curPos];
-            [self.segments insertObject:@{@"type": @"anchor", @"lat": @(curG.latitude), @"lon": @(curG.longitude), @"mode": mode}
+            // curPos 为 WGS-84（currentSimPosition 契约），segments 统一存 WGS-84（2026-08-30 坐标统一）
+            [self.segments insertObject:@{@"type": @"anchor", @"lat": @(curPos.latitude), @"lon": @(curPos.longitude), @"mode": mode}
                                 atIndex:0];
             self.hasStart = YES;
-            self.cur = curG;   // 保持当前位置（不跳到点击位置）
+            self.cur = curPos; // 保持当前位置（不跳到点击位置）
             [self _syncSelfDrivenDroplet];
             [self runEdit:^{ [self commitItinerary]; }];  // 生成 当前位置 → 点击位置 路线
             [self setHint:@"已基于当前位置创建锚点 · 路线从当前位置生长"];
         } else {
             // 首次启动无当前位置：点击点成为当前定位；聚焦该点但不开启模拟播放
             self.hasStart = YES;
-            self.cur = gcj;
+            self.cur = wgs;
             // 不设 self.locating（保持 OFF）——首锚点只设位置，不开启模拟播放
             [self _syncSelfDrivenDroplet]; // 自驱水滴跟随新首锚点（cur 已就绪）
             [self commitAnchor];
             // 启用 MKUserLocation 跟随注入位置（daemon off 分支已开定位）
             [self _updateDropletMode];
-            [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES]; // 立即聚焦锚点
-            self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:gcj]; // 自动聚焦基线
+            [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(wgs, 3000, 3000) animated:YES]; // 立即聚焦锚点
+            self.lastAutoFocusWGS = wgs; // 自动聚焦基线（WGS-84，2026-08-30 坐标统一）
             self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（MKUserLocation 跟随 locationd 注入位置）
             [self refreshWifiAnnotation];                            // 首锚点：wifi 标注切到锚点位置
             [self setHint:@"已设定位点 · 继续点击添加锚点生长路线"];
@@ -664,11 +665,12 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 长按区域：出现遮罩（原生半透明圆）→ 圆内拖动移动中心 / 圆边拖动调覆盖范围 → 松开弹配置菜单（对齐原型 ring+ringHandle+param）
 - (void)handleLongPress:(UILongPressGestureRecognizer *)g {
     CGPoint pt = [g locationInView:self.mapView];
-    CLLocationCoordinate2D gcj = [self.mapView convertPoint:pt toCoordinateFromView:self.mapView];
+    // convertPoint 返回 WGS-84（2026-08-30 坐标统一：regionCenter 存 WGS-84）
+    CLLocationCoordinate2D wgs = [self.mapView convertPoint:pt toCoordinateFromView:self.mapView];
     switch (g.state) {
         case UIGestureRecognizerStateBegan: {
             self.regionPicking = YES;
-            self.regionCenter = gcj;
+            self.regionCenter = wgs;
             self.regionRadiusM = 300;
             CGPoint centerPt = [self.mapView convertCoordinate:self.regionCenter toPointToView:self.mapView];
             self.regionTouchOffset = CGPointMake(pt.x - centerPt.x, pt.y - centerPt.y);
@@ -688,9 +690,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
                 self.regionCenter = newCenter;
             } else {
                 // 圆边/外拖动 → 调节覆盖范围（手势点到中心距离）
-                CLLocationCoordinate2D gcjW = [CoordTransform gcj02ToWgs84:gcj];
-                CLLocationCoordinate2D centerW = [CoordTransform gcj02ToWgs84:self.regionCenter];
-                self.regionRadiusM = MAX(50, MIN(5000, [SimRouteCalculator haversineMeters:centerW to:gcjW]));
+                // wgs/regionCenter 均为 convertPoint 返回（WGS-84），MKMapView 层统一 WGS-84，无需转换（2026-08-30）
+                self.regionRadiusM = MAX(50, MIN(5000, [SimRouteCalculator haversineMeters:self.regionCenter to:wgs]));
             }
             [self addRegionOverlay];
             break;
@@ -915,27 +916,26 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         BOOL hasCurPos = (curPos.latitude != 0 || curPos.longitude != 0);
         if (hasCurPos) {
             // 有当前位置：基于当前位置创建链首入口锚点（区域漫游从当前位置进入）
-            CLLocationCoordinate2D curG = [CoordTransform wgs84ToGcj02:curPos];
+            // curPos 为 WGS-84（currentSimPosition 契约），segments/cur 统一存 WGS-84（2026-08-30）
             [self.segments addObject:@{@"type": @"anchor",
-                @"lat": @(curG.latitude), @"lon": @(curG.longitude),
+                @"lat": @(curPos.latitude), @"lon": @(curPos.longitude),
                 @"mode": (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk"}];
             self.hasStart = YES;
-            self.cur = curG;
+            self.cur = curPos;
         } else {
             // 无当前位置（新设备第一次）：随机生成区域内入口锚点
-            CLLocationCoordinate2D centerW = [CoordTransform gcj02ToWgs84:self.regionCenter];
+            // regionCenter 为 convertPoint 返回（WGS-84），MKMapView 层统一 WGS-84，无需转换（2026-08-30）
             double ang = (double)(arc4random_uniform(62832)) / 10000.0; // 0~2π
             double distM = self.regionRadiusM * (0.3 + (double)(arc4random_uniform(50)) / 100.0);
-            double cosLat = cos(centerW.latitude * M_PI / 180.0);
+            double cosLat = cos(self.regionCenter.latitude * M_PI / 180.0);
             CLLocationCoordinate2D entryW = CLLocationCoordinate2DMake(
-                centerW.latitude + distM * sin(ang) / 111320.0,
-                centerW.longitude + distM * cos(ang) / (111320.0 * cosLat));
-            CLLocationCoordinate2D entryG = [CoordTransform wgs84ToGcj02:entryW];
+                self.regionCenter.latitude + distM * sin(ang) / 111320.0,
+                self.regionCenter.longitude + distM * cos(ang) / (111320.0 * cosLat));
             [self.segments addObject:@{@"type": @"anchor",
-                @"lat": @(entryG.latitude), @"lon": @(entryG.longitude),
+                @"lat": @(entryW.latitude), @"lon": @(entryW.longitude),
                 @"mode": (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk"}];
             self.hasStart = YES;
-            self.cur = entryG;
+            self.cur = entryW;
         }
     }
     [self.segments addObject:seg];
@@ -989,13 +989,14 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         // 停止后再开启：之前模拟位置（cur）距当前实际位置（lastFix=真实或残留）>500m → 瞬间跳回停止前位置（复用首锚点视野行为）；
         // 距离近（位置本就在附近/残留）不跳——维持"开启不主动聚焦"的常规语义
         if (self.lastFix) {
-            CLLocationCoordinate2D curW = [CoordTransform gcj02ToWgs84:self.cur];
+            // self.cur 为 WGS-84（2026-08-30 坐标统一），lastFix 亦 WGS-84，直接比较
+            CLLocationCoordinate2D curW = self.cur;
             if ((curW.latitude != 0 || curW.longitude != 0)
                 && [SimRouteCalculator haversineMeters:curW to:self.lastFix.coordinate] > kAutoFocusThresholdM) {
                 [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(self.cur, 3000, 3000) animated:YES];
             }
         }
-        self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:self.cur]; // 自动聚焦基线=模拟位置（拖动退出 Follow 后模拟位置超阈值才拉回）
+        self.lastAutoFocusWGS = self.cur; // 自动聚焦基线=模拟位置（WGS-84，拖动退出 Follow 后模拟位置超阈值才拉回）
         self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随：MapKit 内部位置源持续订阅 locationd → 水滴跟随模拟位置（单一数据源）
         [self refreshWifiAnnotation];                            // 开启：立即切到模拟位置 wifi 标注（不等下次系统扫描回调）
     }
@@ -1057,36 +1058,36 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 搜索选中结果 → 添加锚点（与地图点击同构，无起点差别）
 /// 第一个锚点无前驱 → 直接作为当前定位；后续锚点 → 从上一锚点生长路线
 - (void)applySearchResult:(MKMapItem *)item {
+    // placemark.coordinate 为 WGS-84（MKMapView 层统一 WGS-84，2026-08-30 坐标统一，segments 存 WGS-84）
     CLLocationCoordinate2D wgs = item.placemark.coordinate;
-    CLLocationCoordinate2D gcj = [CoordTransform wgs84ToGcj02:wgs];
     NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
-    [self.segments addObject:@{@"type": @"anchor", @"lat": @(gcj.latitude), @"lon": @(gcj.longitude), @"mode": mode}];
+    [self.segments addObject:@{@"type": @"anchor", @"lat": @(wgs.latitude), @"lon": @(wgs.longitude), @"mode": mode}];
     if (self.segments.count == 1) {
         // 第一个锚点：判断是否有当前位置（持久化/注入的）
         CLLocationCoordinate2D curPos = [self currentSimPosition];
         BOOL hasCurPos = (curPos.latitude != 0 || curPos.longitude != 0);
         if (hasCurPos) {
             // 有当前位置：基于当前位置创建锚点（起点，消费），搜索位置作为终点 → 生成路线
-            CLLocationCoordinate2D curG = [CoordTransform wgs84ToGcj02:curPos];
-            [self.segments insertObject:@{@"type": @"anchor", @"lat": @(curG.latitude), @"lon": @(curG.longitude), @"mode": mode}
+            // curPos 为 WGS-84（currentSimPosition 契约）
+            [self.segments insertObject:@{@"type": @"anchor", @"lat": @(curPos.latitude), @"lon": @(curPos.longitude), @"mode": mode}
                                 atIndex:0];
             self.hasStart = YES;
-            self.cur = curG;   // 保持当前位置
+            self.cur = curPos;   // 保持当前位置
             [self _syncSelfDrivenDroplet];
             [self runEdit:^{ [self commitItinerary]; }];  // 生成 当前位置 → 搜索位置 路线
             [self setHint:@"已基于当前位置创建锚点 · 路线从当前位置生长"];
         } else {
             // 首次启动无当前位置：搜索点成为第一锚点+当前定位；聚焦但不开启模拟播放
             self.hasStart = YES;
-            self.cur = gcj;
+            self.cur = wgs;
             self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻：过滤旧 fix
             self.startupLockedToAnchor = YES; // 锁定锚点显示，忽略旧位置（防"旧→新"横跳）
             // 不设 self.locating（保持 OFF）——首锚点只设位置，不开启模拟播放
             [self _syncSelfDrivenDroplet]; // 自驱水滴跟随新首锚点（cur 已就绪）
             [self commitAnchor];
             [self _updateDropletMode]; // 确保 MKUserLocation 跟随注入位置
-            [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 3000, 3000) animated:YES];
-            self.lastAutoFocusWGS = [CoordTransform gcj02ToWgs84:gcj]; // 自动聚焦基线
+            [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(wgs, 3000, 3000) animated:YES];
+            self.lastAutoFocusWGS = wgs; // 自动聚焦基线（WGS-84，2026-08-30 坐标统一）
             self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（MKUserLocation 跟随 locationd 注入位置）
         }
     } else {
@@ -1210,21 +1211,32 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 }
 
 /// 段目标锚点坐标（WGS；anchor 用 lat/lon，旧 route 兼容 to）
+/// segments 统一存 WGS-84（2026-08-30 坐标统一），直接返回不再转 GCJ→WGS（曾多转一次致算路起点偏移）
 - (CLLocationCoordinate2D)anchorWGSOfSegment:(NSDictionary *)seg {
     if ([seg[@"type"] isEqualToString:@"region"]) {
         // region 段目标锚点 = 区域中心（region 段无 lat/lon，缺失此分支会取到 (0,0) → 涉及 region 段的编辑路线乱连）
-        return [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"center"][@"lat"] doubleValue], [seg[@"center"][@"lon"] doubleValue])];
+        return CLLocationCoordinate2DMake([seg[@"center"][@"lat"] doubleValue], [seg[@"center"][@"lon"] doubleValue]);
     }
     if ([seg[@"to"] isKindOfClass:[NSDictionary class]]) {
-        return [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"to"][@"lat"] doubleValue], [seg[@"to"][@"lon"] doubleValue])];
+        return CLLocationCoordinate2DMake([seg[@"to"][@"lat"] doubleValue], [seg[@"to"][@"lon"] doubleValue]);
     }
-    return [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue])];
+    return CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue]);
 }
 
-/// 删除第 idx 锚点（任意锚点）：锚点链顺序语义——删锚 k 只重算跨过它的连接段（前驱→后继），
+/// 删除第 idx 锚点（2026-08-30 用户定案：只删已消费锚点）：
+/// 锚点链顺序语义——删锚 k 只重算跨过它的连接段（前驱→后继），
 /// 其余段点序列缓存与生长线保留；删首=当前位置作起点、删尾=轨迹截断保持当前位置
 - (void)deleteSegmentAt:(NSInteger)idx {
     if (idx < 0 || idx >= (NSInteger)self.segments.count) return;
+    // 守卫：任何时候只能删除已消费锚点（红），未消费（蓝）一律禁止删除（2026-08-30 用户定案）
+    TRAnchorAnnotation *targetAnchor = nil;
+    for (TRAnchorAnnotation *a in self.anchors) {
+        if (a.segmentIndex == idx) { targetAnchor = a; break; }
+    }
+    if (targetAnchor && !targetAnchor.passed) {
+        [self setHint:@"只能删除已经过的锚点（红色），未消费锚点不可删除"];
+        return;
+    }
     NSDictionary *removed = self.segments[idx];
     if ([removed[@"type"] isEqualToString:@"region"]) {
         // 区域段删除 → 该区域不再生长，同步清途经点标注
@@ -1324,10 +1336,10 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 #pragma mark - 基于当前位置的局部重算（manager 注入写回 mobile plist 为当前位置真相）
 
 /// 读当前位置（WGS）——权威 = 最近一次通过过滤的回调 fix（lastFix，locationd 广播真实值，不读 locationManager 属性缓存）；
-/// 模拟开启=注入位置/关闭=真实位置；无 fix 时回退 self.cur
+/// 模拟开启=注入位置/关闭=真实位置；无 fix 时回退 self.cur（统一 WGS-84，2026-08-30 坐标统一）
 - (CLLocationCoordinate2D)currentSimPosition {
     if (self.lastFix) return self.lastFix.coordinate;
-    return [CoordTransform gcj02ToWgs84:self.cur];
+    return self.cur;
 }
 
 /// 停止定位后只记录自动聚焦基线（停止瞬间位置=模拟残留）——不主动聚焦：
@@ -1343,7 +1355,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     BOOL uninitialized = (self.lastAutoFocusWGS.latitude == 0 && self.lastAutoFocusWGS.longitude == 0);
     if (!uninitialized && [SimRouteCalculator haversineMeters:wgs to:self.lastAutoFocusWGS] < kAutoFocusThresholdM) return;
     self.lastAutoFocusWGS = wgs;
-    [self.mapView setRegion:MKCoordinateRegionMakeWithDistance([CoordTransform wgs84ToGcj02:wgs], 3000, 3000) animated:YES];
+    // wgs 为 WGS-84，MKMapView 层统一 WGS-84（2026-08-30 坐标统一，去掉多余 GCJ 转换）
+    [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(wgs, 3000, 3000) animated:YES];
 }
 
 - (void)viewDidLayoutSubviews {
@@ -1353,12 +1366,12 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 
 /// 地图立即聚焦到当前位置（首锚点/启动定位/停止/回前台时调用）
 /// 定位中=聚焦 self.cur（模拟位置，App 已知锚点）；未定位=GPS 活跃订阅真实位置优先，无 GPS 用 wifi 真实位置兜底
+/// 全程 WGS-84（2026-08-30 坐标统一）：currentSimPosition/wifiCurWGS 均为 WGS-84，MKMapView 层直接用
 - (void)focusMapOnCurrentLocation {
-    CLLocationCoordinate2D center = self.locating ? self.cur
-                                                   : [CoordTransform wgs84ToGcj02:[self currentSimPosition]];
+    CLLocationCoordinate2D center = self.locating ? self.cur : [self currentSimPosition];
     // GPS 无 fix（locationd 未就绪）→ wifi 位置兜底（wifiCurWGS，真实 wifi 反查质心）
     if (center.latitude == 0 && center.longitude == 0) {
-        center = [CoordTransform wgs84ToGcj02:self.wifiCurWGS];
+        center = self.wifiCurWGS;
     }
     // 守卫：位置无效（从未设过且 locationd/wifi 均未就绪）→ 不聚焦，保持当前视野
     if (center.latitude == 0 && center.longitude == 0) return;
@@ -1404,7 +1417,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             [self.mapView addAnnotation:drop];
             self.selfDrivenDroplet = drop;
         }
-        drop.coordinate = self.cur; // GCJ-02 地图坐标，MKAnnotationView coordinate 直接使用（KVO 自动移动视图）
+        drop.coordinate = self.cur; // WGS-84（2026-08-30 坐标统一），MKAnnotationView coordinate 直接使用（KVO 自动移动视图）
     } else {
         if (drop) {
             [self.mapView removeAnnotation:drop];
@@ -1458,12 +1471,13 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         // 开启锁定：注入落地前 locationd 广播的还是真实位置——距锚点 >25m 的 fix 忽略（保持锚点显示，防"真实→锚点"横跳）；
         // 注入落地后 fix≈锚点（<25m）→ 解锁，恢复 fix 驱动
         if (self.startupLockedToAnchor) {
-            double d = [SimRouteCalculator haversineMeters:loc.coordinate to:[CoordTransform gcj02ToWgs84:self.cur]];
+            // loc.coordinate/self.cur 均为 WGS-84（2026-08-30 坐标统一，去掉多余转换）
+            double d = [SimRouteCalculator haversineMeters:loc.coordinate to:self.cur];
             if (d > 25.0) return;
             self.startupLockedToAnchor = NO;
         }
         self.lastFix = loc; // 记录回调 fix（坐标/速度真相源，不读属性缓存）
-        self.cur = [CoordTransform wgs84ToGcj02:loc.coordinate];
+        self.cur = loc.coordinate; // fix 为 WGS-84，self.cur 统一存 WGS-84（2026-08-30 坐标统一）
         [self _syncSelfDrivenDroplet]; // 定位关时自驱水滴跟编排推进（定位开时不显示自驱水滴，无影响）
         [self _updateWifiStatusBar]; // wifi 状态栏刷新（模拟位置/模拟AP）
         [self _refreshWifiAnnoFromCurrentConnection]; // wifi 水滴标注更新
@@ -1478,13 +1492,13 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     // 首锚点锁定（2026-08-30）：创建锚点后注入落地前，locationd 广播的还是旧位置——
     // 距新锚点 >25m 的 fix 忽略（保持锚点位置显示，防"旧→新"横跳）；注入落地后 fix≈锚点（<25m）→ 解锁
     if (self.startupLockedToAnchor) {
-        double d = [SimRouteCalculator haversineMeters:loc.coordinate to:[CoordTransform gcj02ToWgs84:self.cur]];
+        double d = [SimRouteCalculator haversineMeters:loc.coordinate to:self.cur];
         if (d > 25.0) return;
         self.startupLockedToAnchor = NO;
     }
     self.lastFix = loc; // 记录回调 fix
-    // 更新当前位置（首锚点注入落地后，self.cur 跟随 locationd 注入位置）
-    self.cur = [CoordTransform wgs84ToGcj02:loc.coordinate];
+    // 更新当前位置（首锚点注入落地后，self.cur 跟随 locationd 注入位置；fix 为 WGS-84，直接存）
+    self.cur = loc.coordinate;
     [self _syncSelfDrivenDroplet]; // 定位关时自驱水滴跟随
     [self updateStatus];
     // 自动聚焦（距离阈值）：真实 fix 距停止瞬间基线（模拟残留）超阈值才聚焦——
@@ -1508,7 +1522,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     static const double kPassedThresholdM = 25.0; // 距锚点 25m 内视为经过（停留微动 ±1m 远小于阈值，锚点间距通常 >50m）
     TRAnchorAnnotation *departAnchor = nil; // 当前位置所在段的出发锚点 = 已经过的最后一个锚点
     for (TRAnchorAnnotation *a in self.anchors) {
-        CLLocationCoordinate2D aW = [CoordTransform gcj02ToWgs84:a.coordinate];
+        // a.coordinate 来自 rebuildAnchors（segments WGS-84），直接使用（2026-08-30 坐标统一）
+        CLLocationCoordinate2D aW = a.coordinate;
         BOOL passed = [SimRouteCalculator haversineMeters:liveW to:aW] < kPassedThresholdM;
         if (passed != a.passed) {
             a.passed = passed;
@@ -1608,7 +1623,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     NSString *sub = @"";
     if ([type isEqualToString:@"anchor"]) {
         title = @"锚点";
-        CLLocationCoordinate2D w = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue])];
+        // segments 存 WGS-84（2026-08-30 坐标统一），直接取值显示
+        CLLocationCoordinate2D w = CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue]);
         sub = [NSString stringWithFormat:@"%.4f, %.4f", w.latitude, w.longitude];
     } else {
         title = @"区域漫游";
@@ -1652,7 +1668,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     // 状态栏行程列表：点击聚焦到该行锚点（anchor=锚点坐标，region=区域中心）
     if (tableView == self.stepTable && indexPath.row >= 0 && indexPath.row < (NSInteger)self.segments.count) {
         CLLocationCoordinate2D wgs = [self anchorWGSOfSegment:self.segments[indexPath.row]];
-        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance([CoordTransform wgs84ToGcj02:wgs], 2000, 2000) animated:YES];
+        // wgs 为 WGS-84，MKMapView 层统一 WGS-84（2026-08-30 坐标统一）
+        [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(wgs, 2000, 2000) animated:YES];
     }
 }
 
@@ -1711,7 +1728,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 
 - (void)commitAnchor {
     // 2026-08-29 定案：只写坐标，不写模式——daemon off 分支检测坐标变化后注入+开定位，保持模式为 off
-    CLLocationCoordinate2D wgs = [CoordTransform gcj02ToWgs84:self.cur];
+    // self.cur 统一 WGS-84（2026-08-30 坐标统一），daemon 注入只收 WGS-84，直接写
+    CLLocationCoordinate2D wgs = self.cur;
     NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     [d setDouble:wgs.latitude forKey:@"SimLocationLat"];
     [d setDouble:wgs.longitude forKey:@"SimLocationLon"];
@@ -1766,7 +1784,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [self syncChainAndGenerate];
 }
 
-/// 生长可视化：每段算路点序列追加为生长轨迹线（算路点 WGS-84 → 画图转 GCJ-02，否则路线与点击点偏移数百米）
+/// 生长可视化：每段算路点序列追加为生长轨迹线（算路点/segments 均为 WGS-84，MKMapView 层统一 WGS-84——
+/// 2026-08-30 坐标统一：曾"画图转 GCJ-02"系早期自定义 GCJ 瓦片时代的经验，标准 MKMapView 契约下已多余）
 /// 分段式渲染：生长线挂所属编排段索引，增删/重算只动受影响段，不重画整条链
 /// 显示层降采样：轨迹点按 1 点/秒生成（步行 1.4m/点），长路线（区域段可达数千点）整条 polyline
 /// 在地图滚动/缩放时每帧重绘是"操作地图卡顿"主因——显示抽稀到 ≤600 点（轨迹文件保留全量播放精度）
@@ -1785,7 +1804,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     CLLocationCoordinate2D *cs = malloc(disp.count * sizeof(CLLocationCoordinate2D));
     for (NSUInteger i = 0; i < disp.count; i++) {
         NSDictionary *p = disp[i];
-        cs[i] = [CoordTransform wgs84ToGcj02:CLLocationCoordinate2DMake([p[@"lat"] doubleValue], [p[@"lon"] doubleValue])];
+        // 算路点 WGS-84，直接画（2026-08-30 坐标统一）
+        cs[i] = CLLocationCoordinate2DMake([p[@"lat"] doubleValue], [p[@"lon"] doubleValue]);
     }
     TRGrowPolyline *line = [TRGrowPolyline polylineWithCoordinates:cs count:disp.count];
     line.segmentIndex = segIdx;
@@ -1889,7 +1909,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// （<30m/算路失败 → 忽略该中间途经点，直接进入下一途经点）+ 停留微动；回调整段点序列（不再递归后续段）
 - (void)generateRegionSegment:(NSInteger)i completion:(void (^)(NSArray<NSDictionary *> *pts))completion {
     NSDictionary *seg = self.segments[i];
-    CLLocationCoordinate2D centerW = [CoordTransform gcj02ToWgs84:CLLocationCoordinate2DMake([seg[@"center"][@"lat"] doubleValue], [seg[@"center"][@"lon"] doubleValue])];
+    // segments 存 WGS-84（2026-08-30 坐标统一），center 直接取，无需 GCJ→WGS 转换
+    CLLocationCoordinate2D centerW = CLLocationCoordinate2DMake([seg[@"center"][@"lat"] doubleValue], [seg[@"center"][@"lon"] doubleValue]);
     double radius = [seg[@"radius"] doubleValue];
     double durationMin = [seg[@"durationMin"] doubleValue];
     NSString *regionMode = seg[@"mode"] ?: @"walk";
@@ -1912,8 +1933,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [self.waypointAnns removeAllObjects];
     for (NSUInteger k = 0; k < wps.count; k++) {
         TRWaypointAnnotation *w = [[TRWaypointAnnotation alloc] init];
-        // 途经点坐标转 GCJ-02（plan 返回 WGS-84；地图显示坐标系=GCJ，与生长线 appendGrowLine 同转换，不转则图标偏离路线数百米）
-        w.coordinate = [CoordTransform wgs84ToGcj02:[wps[k] MKCoordinateValue]];
+        // 途经点坐标：plan 返回 WGS-84，MKMapView 层统一 WGS-84，直接使用（2026-08-30 坐标统一，曾转 GCJ-02 致双重偏移）
+        w.coordinate = [wps[k] MKCoordinateValue];
         [self.waypointAnns addObject:w];
         [self.mapView addAnnotation:w];
     }

@@ -184,6 +184,7 @@ trollvncmanager_FRAMEWORKS += UserNotifications
 trollvncmanager_FRAMEWORKS += CoreLocation
 trollvncmanager_FRAMEWORKS += MapKit
 trollvncmanager_FRAMEWORKS += Contacts
+trollvncmanager_FRAMEWORKS += SystemConfiguration  # SCDynamicStore 读当前连接 WiFi（TRWifiKnownNetworks，2026-08-30 真机验证可用）
 trollvncmanager_LIBRARIES += sqlite3
 ifeq ($(THEOS_DEVICE_SIMULATOR),1)
 trollvncmanager_CODESIGN_FLAGS += -f -s - --entitlements src/trollvncmanager.entitlements

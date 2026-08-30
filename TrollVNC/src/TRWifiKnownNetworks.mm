@@ -4,6 +4,7 @@
 */
 #import "TRWifiKnownNetworks.h"
 #import <spawn.h>   // posix_spawn（wifid 重载通知；模块化编译需显式 import）
+#import <SystemConfiguration/SystemConfiguration.h> // SCDynamicStore 读当前连接 WiFi（2026-08-30 真机验证：iOS 可用，替代 popen/ipconfig）
 
 static NSString *const kKnownNetworksPath = @"/var/preferences/com.apple.wifi.known-networks.plist";
 
@@ -80,37 +81,40 @@ static NSString *const kKnownNetworksPath = @"/var/preferences/com.apple.wifi.kn
     return YES;
 }
 
-/// ipconfig getsummary en0 解析当前连接（root 可用、无需 TCC——
-/// CNCopyCurrentNetworkInfo 在 root daemon 无 App 授权上下文时不返回，2026-08-29 实测）
-+ (nullable NSString *)_valueFromIPConfig:(NSString *)key {
-    // 绝对路径：daemon 环境 PATH 可能为空（server spawn manager 时只传语言码 env）
-    FILE *fp = popen("/usr/sbin/ipconfig getsummary en0 2>/dev/null", "r");
-    if (!fp) return nil;
-    NSString *result = nil;
-    char line[512];
-    // 前导空格避免匹配 "BSSID :"（BSSID 包含 SSID 子串）
-    NSString *pat = [NSString stringWithFormat:@" %@ :", key];
-    while (fgets(line, sizeof(line), fp)) {
-        NSString *l = [NSString stringWithCString:line encoding:NSUTF8StringEncoding];
-        NSRange r = [l rangeOfString:pat];
-        if (r.location != NSNotFound) {
-            NSString *v = [[l substringFromIndex:NSMaxRange(r)]
-                stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-            if (v.length) { result = v; break; }
-        }
-    }
-    pclose(fp);
-    return result;
+/// 用 SCDynamicStore 读当前连接 WiFi 状态字典（2026-08-30：真机验证 iOS 可用，替代 popen/ipconfig——
+/// daemon 环境 popen 受限致 currentSSID 空、AP 下发被 no current ssid 跳过；SCDynamicStore 纯系统 API 无 shell 依赖）
++ (nullable NSDictionary *)_airportState {
+    SCDynamicStoreRef store = SCDynamicStoreCreate(NULL, CFSTR("com.82flex.trollvnc.wifi"), NULL, NULL);
+    if (!store) return nil;
+    CFPropertyListRef val = SCDynamicStoreCopyValue(store, CFSTR("State:/Network/Interface/en0/AirPort"));
+    CFRelease(store);
+    if (!val) return nil;
+    NSDictionary *dict = [(__bridge NSDictionary *)val copy];
+    CFRelease(val);
+    return dict;
 }
 
 + (nullable NSString *)currentSSID {
-    // 仅走 ipconfig（root 可用、实测有效）；CNCopyCurrentNetworkInfo 已删——
-    // 它在 root daemon 无 TCC 授权上下文下不返回（2026-08-29 实测证伪，保留只会混淆）
-    return [self _valueFromIPConfig:@"SSID"];
+    // 真机实测（2026-08-30）：键字典 SSID_STR 是 NSString（如"时来运转"），SSID 是 NSData（UTF-8 字节）——
+    // 优先 SSID_STR；异常情况降级解码 SSID data
+    NSDictionary *st = [self _airportState];
+    if (!st) return nil;
+    NSString *str = st[@"SSID_STR"];
+    if (str.length) return str;
+    NSData *data = st[@"SSID"];
+    if (data.length) return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    return nil;
 }
 
 + (nullable NSString *)currentBSSID {
-    return [self _valueFromIPConfig:@"BSSID"];
+    // 真机实测：BSSID 是 6 字节 NSData（如 0xa477589f0039），格式化为 mac 字符串 a4:77:58:9f:00:39
+    NSDictionary *st = [self _airportState];
+    if (!st) return nil;
+    NSData *data = st[@"BSSID"];
+    if (data.length != 6) return nil;
+    const uint8_t *b = (const uint8_t *)data.bytes;
+    return [NSString stringWithFormat:@"%02x:%02x:%02x:%02x:%02x:%02x",
+            b[0], b[1], b[2], b[3], b[4], b[5]];
 }
 
 @end
