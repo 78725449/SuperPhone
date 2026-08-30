@@ -88,7 +88,8 @@ static NSString *const kKnownNetworksPath = @"/var/preferences/com.apple.wifi.kn
     if (!fp) return nil;
     NSString *result = nil;
     char line[512];
-    NSString *pat = [NSString stringWithFormat:@"%@ :", key];
+    // 前导空格避免匹配 "BSSID :"（BSSID 包含 SSID 子串）
+    NSString *pat = [NSString stringWithFormat:@" %@ :", key];
     while (fgets(line, sizeof(line), fp)) {
         NSString *l = [NSString stringWithCString:line encoding:NSUTF8StringEncoding];
         NSRange r = [l rangeOfString:pat];
