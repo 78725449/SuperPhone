@@ -36,12 +36,13 @@
 // WiFi 主动扫描契约常量 → TRWifiScanContract.h（共享模块单一真相源，2026-08-28 收敛；不再本地 static 字面量）
 static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：fix 距上次聚焦点 ≥500m 才拉回（GPS 抖动 <50m 不打扰）
 
-/// 锚点标注（关联编排段索引，点击删除该段；水滴图钉状态分类：未经过=蓝/已经过=红，当前位置=绿；
+/// 锚点标注（关联编排段索引，点击删除该段；水滴图钉状态分类：未消费=蓝/消费中=绿/已消费=红，当前位置=绿；
 /// 水滴内嵌该锚点生成时所使用的出行方式图标 🚶/🚗）
 @interface TRAnchorAnnotation : MKPointAnnotation
 @property (nonatomic, assign) NSInteger segmentIndex;
 @property (nonatomic, copy) NSString *type; // anchor | route | region
-@property (nonatomic, assign) BOOL passed;  // 是否已被当前位置经过（经过=红，未经过=蓝）
+@property (nonatomic, assign) BOOL passed;  // 是否已被当前位置到达（单调：置 YES 后不回退；到达=红/绿，未到达=蓝）
+@property (nonatomic, assign) BOOL consuming; // 消费中（绿）：已到达且当前位置正在以它为出发点的路线上（= 当前段出发锚点）
 @property (nonatomic, copy) NSString *mode; // 该锚点生成时所使用的出行方式（walk/drive）
 @end
 @implementation TRAnchorAnnotation
@@ -291,7 +292,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [self.view addSubview:wifiDiag];
     self.wifiDiagLabel = wifiDiag;
 
-    // 步骤列表（默认收起；地图左上卡片，删除 + 拖拽排序，对齐原型 segPanel）
+    // 步骤列表（默认收起；地图左上卡片，删除 + 消费状态圆点，2026-08-30 移除拖拽排序）
     UITableView *table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
     table.translatesAutoresizingMaskIntoConstraints = NO;
     table.dataSource = self;
@@ -301,9 +302,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     table.layer.borderWidth = 0.5;
     table.layer.borderColor = [UIColor separatorColor].CGColor;
     table.backgroundColor = [UIColor systemBackgroundColor];
-    table.editing = NO; // 自绘 cell：左=拖动图标（dragDelegate），右=删除按钮（点击即删，无系统二次确认）
-    table.dragDelegate = self;
-    table.dropDelegate = self;
+    table.editing = NO; // 自绘 cell：左=消费状态圆点，右=删除按钮（点击即删，无系统二次确认）
+    // dragDelegate/dropDelegate 已移除（2026-08-30 用户定案：取消拖拽排序，列表开始处改显消费状态）
     table.separatorInset = UIEdgeInsetsMake(0, 40, 0, 0);
     table.layer.shadowColor = [UIColor blackColor].CGColor;
     table.layer.shadowOpacity = 0.12;
@@ -1187,6 +1187,12 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 #pragma mark - 锚点系统（每段终点/中心地图锚点，点击删除该段，路线自适应）
 
 - (void)rebuildAnchors {
+    // 2026-08-30 修复：重建前按 segmentIndex 保存旧 passed（红锚点不因重建丢失——
+    // 播放中 syncSegmentsUI 频繁重建，旧实现重建后全蓝 + 25m 距离重算 → 远离的红锚点"消失"）
+    NSMutableDictionary *oldPassed = [NSMutableDictionary dictionary];
+    for (TRAnchorAnnotation *oldA in self.anchors) {
+        oldPassed[@(oldA.segmentIndex)] = @(oldA.passed);
+    }
     for (TRAnchorAnnotation *a in self.anchors) [self.mapView removeAnnotation:a];
     [self.anchors removeAllObjects];
     for (NSUInteger i = 0; i < self.segments.count; i++) {
@@ -1205,6 +1211,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         a.segmentIndex = (NSInteger)i;
         a.type = type;
         a.mode = seg[@"mode"] ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk"); // 该锚点生成时的出行方式
+        a.passed = [oldPassed[@(i)] boolValue]; // 迁移旧 passed（同索引锚点保持已消费状态）
         [self.anchors addObject:a];
         [self.mapView addAnnotation:a];
     }
@@ -1223,19 +1230,36 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     return CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue]);
 }
 
-/// 删除第 idx 锚点（2026-08-30 用户定案：只删已消费锚点）：
+/// 删除第 idx 锚点（2026-08-30 用户定案三态删除）：
+/// - 红（已消费+路线消费完，当前位置不在它出发的路段）：可删
+/// - 绿（消费中，当前位置正在它出发的路段）：禁删
+/// - 蓝（未消费）：可删（复用补插位逻辑），但作为"消费中路线的终点"（当前路段目标锚点）时禁删
 /// 锚点链顺序语义——删锚 k 只重算跨过它的连接段（前驱→后继），
 /// 其余段点序列缓存与生长线保留；删首=当前位置作起点、删尾=轨迹截断保持当前位置
 - (void)deleteSegmentAt:(NSInteger)idx {
     if (idx < 0 || idx >= (NSInteger)self.segments.count) return;
-    // 守卫：任何时候只能删除已消费锚点（红），未消费（蓝）一律禁止删除（2026-08-30 用户定案）
+    // 找目标锚点 + 当前段出发锚点（消费中）
     TRAnchorAnnotation *targetAnchor = nil;
+    TRAnchorAnnotation *departAnchor = nil; // 消费中锚点 = 当前位置正在它出发的路段
     for (TRAnchorAnnotation *a in self.anchors) {
-        if (a.segmentIndex == idx) { targetAnchor = a; break; }
+        if (a.segmentIndex == idx) targetAnchor = a;
+        if (a.consuming) departAnchor = a;
     }
-    if (targetAnchor && !targetAnchor.passed) {
-        [self setHint:@"只能删除已经过的锚点（红色），未消费锚点不可删除"];
-        return;
+    if (targetAnchor) {
+        if (targetAnchor.consuming) {
+            // 绿：消费中（当前位置正在走它出发的路段）
+            [self setHint:@"该锚点正在消费中（绿色），暂不可删除"];
+            return;
+        }
+        if (!targetAnchor.passed) {
+            // 蓝：未消费——可删，除非它是消费中路线的终点（当前路段目标锚点 = departAnchor 的下一锚点）
+            if (departAnchor && departAnchor.segmentIndex + 1 == idx) {
+                [self setHint:@"该锚点是消费中路线的终点，暂不可删除"];
+                return;
+            }
+            // 蓝锚点可删：走补插位逻辑（下方删锚 k 只重算前驱→后继段）
+        }
+        // 红（passed && !consuming）：已消费且路线走完，可删
     }
     NSDictionary *removed = self.segments[idx];
     if ([removed[@"type"] isEqualToString:@"region"]) {
@@ -1500,6 +1524,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     // 更新当前位置（首锚点注入落地后，self.cur 跟随 locationd 注入位置；fix 为 WGS-84，直接存）
     self.cur = loc.coordinate;
     [self _syncSelfDrivenDroplet]; // 定位关时自驱水滴跟随
+    [self updateAnchorPassStateWithLiveWGS:loc.coordinate]; // 停止态也更新三态（passed 单调：红锚点保持红，仅反映真实位置新经过）
     [self updateStatus];
     // 自动聚焦（距离阈值）：真实 fix 距停止瞬间基线（模拟残留）超阈值才聚焦——
     // 残留 fix（≈基线）不触发、真实 fix（画布外）必触发；GPS 收敛渐进超阈值再拉回
@@ -1511,28 +1536,46 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [self handleLocationUpdate:locations.lastObject];
 }
 
-/// 锚点状态刷新（O(锚点数)，修复全量轨迹扫描卡顿）：当前位置距锚点 < 阈值视为"经过"（passed 单调不回退），
-/// 锚点红蓝 + 当前位置水滴出行图标切换。轨迹单向推进（算路生成），无需按轨迹索引判定——
+/// 锚点状态刷新（O(锚点数)，修复全量轨迹扫描卡顿）：当前位置距锚点 < 阈值视为"到达"（passed 单调不回退，
+/// 2026-08-30 修复：旧实现可回退致播放远离后红锚点"消失"）；三态消费状态（2026-08-30 用户定案）：
+/// - 蓝（未消费）：当前位置未到达（passed=NO）
+/// - 绿（消费中）：已到达且当前位置正在它出发的路段上（= 当前段出发锚点：它已到达、下一锚点未到达）
+/// - 红（已消费）：已到达且路线已走完（下一锚点也已到达 / 链尾）
+/// 锚点红蓝绿 + 当前位置水滴出行图标切换。轨迹单向推进（算路生成），无需按轨迹索引判定——
 /// 旧实现每刷新对每个锚点全量遍历 submittedPoints 找最近索引（区域轨迹可达数万点 → 主线程 O(A×P) haversine 卡死）
 /// liveW 为当前位置（WGS）；仅定位中生效（停止态颜色定格）
 - (void)updateAnchorPassStateWithLiveWGS:(CLLocationCoordinate2D)liveW {
-    // 2026-08-30：不依赖 locating——有当前位置即更新锚点红蓝（首锚点后 locating=NO 也生效：
+    // 2026-08-30：不依赖 locating——有当前位置即更新锚点三态（首锚点后 locating=NO 也生效：
     // 基于当前位置创建的锚点立即标红=已消费，点击位置锚点保持蓝=待消费）
     if (self.anchors.count == 0) return;
-    static const double kPassedThresholdM = 25.0; // 距锚点 25m 内视为经过（停留微动 ±1m 远小于阈值，锚点间距通常 >50m）
-    TRAnchorAnnotation *departAnchor = nil; // 当前位置所在段的出发锚点 = 已经过的最后一个锚点
+    static const double kPassedThresholdM = 25.0; // 距锚点 25m 内视为到达（停留微动 ±1m 远小于阈值，锚点间距通常 >50m）
+    // 第一遍：passed 单调置位（到达过即到达过，不回退——防播放远离后红锚点消失）
     for (TRAnchorAnnotation *a in self.anchors) {
         // a.coordinate 来自 rebuildAnchors（segments WGS-84），直接使用（2026-08-30 坐标统一）
         CLLocationCoordinate2D aW = a.coordinate;
-        BOOL passed = [SimRouteCalculator haversineMeters:liveW to:aW] < kPassedThresholdM;
-        if (passed != a.passed) {
-            a.passed = passed;
-            MKAnnotationView *v = [self.mapView viewForAnnotation:a];
-            if (v) v.image = [self waterdropImageWithColor:(passed ? [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0] : [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]) size:22 emoji:[self emojiForMode:a.mode]];
-        }
-        if (a.passed) departAnchor = a; // 已经过的最后一个锚点 = 当前位置所在段的出发锚点
+        BOOL reached = [SimRouteCalculator haversineMeters:liveW to:aW] < kPassedThresholdM;
+        if (reached) a.passed = YES; // 单调：只置 YES，不回退
     }
-    // 当前位置出行方式：取所在段出发锚点的出行方式；链首/空则退回首个锚点或当前选择
+    // 第二遍：三态判定（绿=当前段出发锚点：已到达且下一锚点未到达；链尾视为路线走完→红）
+    TRAnchorAnnotation *departAnchor = nil; // 消费中锚点 = 当前位置所在段的出发锚点
+    for (NSUInteger i = 0; i < self.anchors.count; i++) {
+        TRAnchorAnnotation *a = self.anchors[i];
+        BOOL nextPassed = (i + 1 < self.anchors.count) ? ((TRAnchorAnnotation *)self.anchors[i + 1]).passed : YES; // 链尾=已消费
+        a.consuming = a.passed && !nextPassed; // 已到达 + 下一锚点未到达 = 正在走它出发的路段
+        if (a.consuming) departAnchor = a;
+        // 状态色：蓝（未到达）/ 绿（消费中）/ 红（已到达且路线走完）
+        UIColor *stateColor = nil;
+        if (!a.passed) {
+            stateColor = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]; // 蓝
+        } else if (a.consuming) {
+            stateColor = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0]; // 绿（消费中）
+        } else {
+            stateColor = [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]; // 红（已消费）
+        }
+        MKAnnotationView *v = [self.mapView viewForAnnotation:a];
+        if (v) v.image = [self waterdropImageWithColor:stateColor size:22 emoji:[self emojiForMode:a.mode]];
+    }
+    // 当前位置出行方式：取消费中锚点的出行方式（当前路段出发锚点）；无消费中（链首未消费/全消费）退回首个锚点或当前选择
     NSString *mode = departAnchor ? departAnchor.mode
                                   : (self.anchors.count ? ((TRAnchorAnnotation *)self.anchors.firstObject).mode : nil);
     mode = mode ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
@@ -1540,7 +1583,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.currentLegMode = mode;
         [self refreshUserLocationView]; // 当前位置水滴切换出行图标（原生 MKUserLocation 视图）
     }
-    // 当前段速度：从段缓存取"当前位置所在段"首点生成速度（出发锚点→下一锚点）
+    // 当前段速度：从段缓存取"当前位置所在段"首点生成速度（消费中锚点→下一锚点）
     [self updateCurrentLegSpeedWithDepart:departAnchor mode:mode];
 }
 
@@ -1593,14 +1636,13 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:rid];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:rid];
-        // 左：拖动图标（最前；拖拽排序走 dragDelegate，整行可拖）
-        UIImageView *drag = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"line.3.horizontal"]];
-        drag.tag = 201;
-        drag.tintColor = [UIColor secondaryLabelColor];
-        drag.frame = CGRectMake(10, 13, 20, 18);
-        drag.autoresizingMask = UIViewAutoresizingFlexibleBottomMargin | UIViewAutoresizingFlexibleRightMargin;
-        [cell.contentView addSubview:drag];
-        // 标题 / 副标题（自绘，避开左侧拖动图标；删除走系统原生右滑，无自绘删除按钮）
+        // 左：消费状态圆点（2026-08-30 用户定案：替代原拖拽排序图标——列表开始处显示 蓝(未消费)/绿(消费中)/红(已消费)）
+        UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(14, 14, 10, 10)];
+        dot.tag = 201;
+        dot.layer.cornerRadius = 5;
+        dot.autoresizingMask = UIViewAutoresizingFlexibleBottomMargin | UIViewAutoresizingFlexibleRightMargin;
+        [cell.contentView addSubview:dot];
+        // 标题 / 副标题（自绘，避开左侧状态圆点；删除走系统原生右滑，无自绘删除按钮）
         UILabel *tl = [[UILabel alloc] init];
         tl.tag = 203;
         tl.font = [UIFont systemFontOfSize:12];
@@ -1616,7 +1658,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         [cell.contentView addSubview:sl];
     }
     cell.userInteractionEnabled = YES;
-    [cell.contentView viewWithTag:201].hidden = NO;
     NSDictionary *seg = self.segments[indexPath.row];
     NSString *type = seg[@"type"];
     NSString *title = @"";
@@ -1632,6 +1673,24 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     }
     ((UILabel *)[cell.contentView viewWithTag:203]).text = [NSString stringWithFormat:@"%ld  %@", (long)(indexPath.row + 1), title];
     ((UILabel *)[cell.contentView viewWithTag:204]).text = sub;
+    // 状态圆点颜色 = 该锚点消费状态（蓝未消费/绿消费中/红已消费；region 段目标=区域中心同规则）
+    UIView *dot = [cell.contentView viewWithTag:201];
+    dot.hidden = NO;
+    TRAnchorAnnotation *rowAnchor = nil;
+    for (TRAnchorAnnotation *a in self.anchors) {
+        if (a.segmentIndex == (NSInteger)indexPath.row) { rowAnchor = a; break; }
+    }
+    UIColor *stateColor = [UIColor secondaryLabelColor];
+    if (rowAnchor) {
+        if (!rowAnchor.passed) {
+            stateColor = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]; // 蓝（未消费）
+        } else if (rowAnchor.consuming) {
+            stateColor = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0]; // 绿（消费中）
+        } else {
+            stateColor = [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]; // 红（已消费）
+        }
+    }
+    dot.backgroundColor = stateColor;
     return cell;
 }
 
@@ -1685,7 +1744,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 }
 
 - (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
-    return tableView == self.stepTable;
+    // 2026-08-30 用户定案：移除拖拽排序能力（状态栏列表开始处改显消费状态圆点，不再支持排序）
+    return NO;
 }
 
 - (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)from toIndexPath:(NSIndexPath *)to {
@@ -1694,34 +1754,18 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     }
 }
 
-#pragma mark - UITableViewDragDelegate / UITableViewDropDelegate（原生拖拽排序：整行可拖）
+#pragma mark - UITableViewDragDelegate / UITableViewDropDelegate（2026-08-30 已移除拖拽排序：方法保留但禁用，防误触）
 
 - (NSArray<UIDragItem *> *)tableView:(UITableView *)tableView itemsForBeginningDragSession:(id<UIDragSession>)session atIndexPath:(NSIndexPath *)indexPath {
-    if (tableView != self.stepTable) return @[];
-    if (indexPath.row < 0 || indexPath.row >= (NSInteger)self.segments.count) return @[];
-    NSItemProvider *ip = [[NSItemProvider alloc] initWithObject:@(indexPath.row)];
-    UIDragItem *item = [[UIDragItem alloc] initWithItemProvider:ip];
-    item.localObject = @(indexPath.row);
-    return @[item];
+    return @[]; // 拖拽已移除（2026-08-30 用户定案）
 }
 
 - (UITableViewDropProposal *)tableView:(UITableView *)tableView dropSessionDidUpdate:(id<UIDropSession>)session withDestinationIndexPath:(NSIndexPath *)destinationIndexPath {
-    if (tableView != self.stepTable) return [[UITableViewDropProposal alloc] initWithDropOperation:UIDropOperationForbidden];
-    return [[UITableViewDropProposal alloc] initWithDropOperation:UIDropOperationMove intent:UITableViewDropIntentInsertAtDestinationIndexPath];
+    return [[UITableViewDropProposal alloc] initWithDropOperation:UIDropOperationForbidden];
 }
 
 - (void)tableView:(UITableView *)tableView performDropWithCoordinator:(id<UITableViewDropCoordinator>)coordinator {
-    if (tableView != self.stepTable) return;
-    NSIndexPath *dest = coordinator.destinationIndexPath;
-    if (!dest) dest = [NSIndexPath indexPathForRow:MAX(0, (NSInteger)self.segments.count - 1) inSection:0];
-    for (id<UITableViewDropItem> di in coordinator.items) {
-        NSNumber *fromRow = di.dragItem.localObject;
-        if ([fromRow isKindOfClass:[NSNumber class]]) {
-            NSInteger from = fromRow.integerValue;
-            if (from >= 0 && from < (NSInteger)self.segments.count) [self moveSegmentFrom:from to:dest.row];
-            break;
-        }
-    }
+    // 拖拽已移除（2026-08-30 用户定案）：空实现
 }
 
 #pragma mark - 落盘自治（App=配置源，manager=注入执行器）
@@ -2153,10 +2197,13 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             v.userInteractionEnabled = YES; // 保证 tap shouldReceiveTouch 能命中标注视图（拦截误加锚点）
         }
         v.annotation = annotation;
-        // 实心水滴图钉（状态分类：未经过=蓝/已经过=红；内嵌该锚点生成时的出行方式图标；尖对准坐标点）
-        UIColor *color = a.passed
-            ? [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]
-            : [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0];
+        // 实心水滴图钉（状态分类：蓝=未消费/绿=消费中/红=已消费，2026-08-30 用户定案三态；内嵌出行方式图标；尖对准坐标点）
+        UIColor *color = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]; // 蓝（未消费）
+        if (a.passed) {
+            color = a.consuming
+                ? [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0] // 绿（消费中）
+                : [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]; // 红（已消费）
+        }
         v.image = [self waterdropImageWithColor:color size:22 emoji:[self emojiForMode:a.mode]];
         v.centerOffset = CGPointMake(0, -14); // 尖对准坐标点
         v.frame = CGRectMake(0, 0, 22, 28);
