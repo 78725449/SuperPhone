@@ -42,7 +42,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, assign) NSInteger segmentIndex;
 @property (nonatomic, copy) NSString *type; // anchor | route | region
 @property (nonatomic, assign) BOOL passed;  // 是否已被当前位置到达（单调：置 YES 后不回退；到达=红/绿，未到达=蓝）
-@property (nonatomic, assign) BOOL consuming; // 消费中（绿）：已到达且当前位置正在以它为出发点的路线上（= 当前段出发锚点）
+@property (nonatomic, assign) BOOL consuming; // 消费中（绿）：当前路段两端——出发锚点（已到达）或终点锚点（下一锚点，即将到达）；禁删
 @property (nonatomic, copy) NSString *mode; // 该锚点生成时所使用的出行方式（walk/drive）
 @end
 @implementation TRAnchorAnnotation
@@ -1230,37 +1230,25 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     return CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue]);
 }
 
-/// 删除第 idx 锚点（2026-08-30 用户定案三态删除）：
-/// - 红（已消费+路线消费完，当前位置不在它出发的路段）：可删
-/// - 绿（消费中，当前位置正在它出发的路段）：禁删
-/// - 蓝（未消费）：可删（复用补插位逻辑），但作为"消费中路线的终点"（当前路段目标锚点）时禁删
+/// 删除第 idx 锚点（2026-08-30 用户定案 v2：绿=消费中禁删，蓝/红可删）：
+/// - 红（已消费，路线走完）：可删
+/// - 绿（消费中：当前路段出发锚点 或 终点锚点）：禁删——统一覆盖"终点禁删"，无特例
+/// - 蓝（未消费，非当前路段）：可删（复用补插位逻辑：重算上一个锚点和下一个锚点的路线并更新 json）
 /// 锚点链顺序语义——删锚 k 只重算跨过它的连接段（前驱→后继），
 /// 其余段点序列缓存与生长线保留；删首=当前位置作起点、删尾=轨迹截断保持当前位置
 - (void)deleteSegmentAt:(NSInteger)idx {
     if (idx < 0 || idx >= (NSInteger)self.segments.count) return;
-    // 找目标锚点 + 当前段出发锚点（消费中）
+    // 找目标锚点
     TRAnchorAnnotation *targetAnchor = nil;
-    TRAnchorAnnotation *departAnchor = nil; // 消费中锚点 = 当前位置正在它出发的路段
     for (TRAnchorAnnotation *a in self.anchors) {
-        if (a.segmentIndex == idx) targetAnchor = a;
-        if (a.consuming) departAnchor = a;
+        if (a.segmentIndex == idx) { targetAnchor = a; break; }
     }
-    if (targetAnchor) {
-        if (targetAnchor.consuming) {
-            // 绿：消费中（当前位置正在走它出发的路段）
-            [self setHint:@"该锚点正在消费中（绿色），暂不可删除"];
-            return;
-        }
-        if (!targetAnchor.passed) {
-            // 蓝：未消费——可删，除非它是消费中路线的终点（当前路段目标锚点 = departAnchor 的下一锚点）
-            if (departAnchor && departAnchor.segmentIndex + 1 == idx) {
-                [self setHint:@"该锚点是消费中路线的终点，暂不可删除"];
-                return;
-            }
-            // 蓝锚点可删：走补插位逻辑（下方删锚 k 只重算前驱→后继段）
-        }
-        // 红（passed && !consuming）：已消费且路线走完，可删
+    if (targetAnchor && targetAnchor.consuming) {
+        // 绿：消费中（出发锚点 或 当前路段终点）——禁止删除
+        [self setHint:@"该锚点正在消费中（绿色，含终点），暂不可删除"];
+        return;
     }
+    // 红（已消费路线走完）/ 蓝（未消费）：可删——蓝走补插位逻辑（下方删锚 k 只重算前驱→后继段）
     NSDictionary *removed = self.segments[idx];
     if ([removed[@"type"] isEqualToString:@"region"]) {
         // 区域段删除 → 该区域不再生长，同步清途经点标注
@@ -1537,10 +1525,11 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 }
 
 /// 锚点状态刷新（O(锚点数)，修复全量轨迹扫描卡顿）：当前位置距锚点 < 阈值视为"到达"（passed 单调不回退，
-/// 2026-08-30 修复：旧实现可回退致播放远离后红锚点"消失"）；三态消费状态（2026-08-30 用户定案）：
-/// - 蓝（未消费）：当前位置未到达（passed=NO）
-/// - 绿（消费中）：已到达且当前位置正在它出发的路段上（= 当前段出发锚点：它已到达、下一锚点未到达）
-/// - 红（已消费）：已到达且路线已走完（下一锚点也已到达 / 链尾）
+/// 2026-08-30 修复：旧实现可回退致播放远离后红锚点"消失"）；三态消费状态（2026-08-30 用户定案 v2）：
+/// - 蓝（未消费）：不在当前路段上（未到达且非终点）
+/// - 绿（消费中）：当前路段两端——出发锚点（已到达，正在走它出发的路段）**或终点锚点**（下一锚点，即将到达）
+/// - 红（已消费）：已到达且路线已走完（非当前段出发锚点 / 链尾）
+/// 绿=消费中禁删统一覆盖"终点禁删"（删除规则只需判 consuming，无特例）
 /// 锚点红蓝绿 + 当前位置水滴出行图标切换。轨迹单向推进（算路生成），无需按轨迹索引判定——
 /// 旧实现每刷新对每个锚点全量遍历 submittedPoints 找最近索引（区域轨迹可达数万点 → 主线程 O(A×P) haversine 卡死）
 /// liveW 为当前位置（WGS）；仅定位中生效（停止态颜色定格）
@@ -1556,26 +1545,29 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         BOOL reached = [SimRouteCalculator haversineMeters:liveW to:aW] < kPassedThresholdM;
         if (reached) a.passed = YES; // 单调：只置 YES，不回退
     }
-    // 第二遍：三态判定（绿=当前段出发锚点：已到达且下一锚点未到达；链尾视为路线走完→红）
-    TRAnchorAnnotation *departAnchor = nil; // 消费中锚点 = 当前位置所在段的出发锚点
+    // 第二遍：找当前段出发锚点（已到达且下一锚点未到达；链尾视为路线走完非出发锚点）
+    TRAnchorAnnotation *departAnchor = nil; // 当前段出发锚点
     for (NSUInteger i = 0; i < self.anchors.count; i++) {
         TRAnchorAnnotation *a = self.anchors[i];
         BOOL nextPassed = (i + 1 < self.anchors.count) ? ((TRAnchorAnnotation *)self.anchors[i + 1]).passed : YES; // 链尾=已消费
-        a.consuming = a.passed && !nextPassed; // 已到达 + 下一锚点未到达 = 正在走它出发的路段
-        if (a.consuming) departAnchor = a;
-        // 状态色：蓝（未到达）/ 绿（消费中）/ 红（已到达且路线走完）
+        if (a.passed && !nextPassed) { departAnchor = a; break; } // 第一个满足 = 当前位置所在段的出发锚点
+    }
+    // 第三遍：consuming = 出发锚点 + 终点锚点（当前路段两端），状态色：绿=consuming / 红=passed / 蓝=其余
+    for (TRAnchorAnnotation *a in self.anchors) {
+        a.consuming = (a == departAnchor)
+            || (departAnchor && a.segmentIndex == departAnchor.segmentIndex + 1); // 终点锚点=下一锚点（消费中）
         UIColor *stateColor = nil;
-        if (!a.passed) {
-            stateColor = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]; // 蓝
-        } else if (a.consuming) {
-            stateColor = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0]; // 绿（消费中）
-        } else {
+        if (a.consuming) {
+            stateColor = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0]; // 绿（消费中：出发锚点/终点）
+        } else if (a.passed) {
             stateColor = [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]; // 红（已消费）
+        } else {
+            stateColor = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]; // 蓝（未消费）
         }
         MKAnnotationView *v = [self.mapView viewForAnnotation:a];
         if (v) v.image = [self waterdropImageWithColor:stateColor size:22 emoji:[self emojiForMode:a.mode]];
     }
-    // 当前位置出行方式：取消费中锚点的出行方式（当前路段出发锚点）；无消费中（链首未消费/全消费）退回首个锚点或当前选择
+    // 当前位置出行方式：取当前段出发锚点的出行方式；无出发锚点（链首未消费/全消费）退回首个锚点或当前选择
     NSString *mode = departAnchor ? departAnchor.mode
                                   : (self.anchors.count ? ((TRAnchorAnnotation *)self.anchors.firstObject).mode : nil);
     mode = mode ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
@@ -1583,7 +1575,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.currentLegMode = mode;
         [self refreshUserLocationView]; // 当前位置水滴切换出行图标（原生 MKUserLocation 视图）
     }
-    // 当前段速度：从段缓存取"当前位置所在段"首点生成速度（消费中锚点→下一锚点）
+    // 当前段速度：从段缓存取"当前位置所在段"首点生成速度（出发锚点→下一锚点）
     [self updateCurrentLegSpeedWithDepart:departAnchor mode:mode];
 }
 
@@ -1682,12 +1674,12 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     }
     UIColor *stateColor = [UIColor secondaryLabelColor];
     if (rowAnchor) {
-        if (!rowAnchor.passed) {
-            stateColor = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]; // 蓝（未消费）
-        } else if (rowAnchor.consuming) {
-            stateColor = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0]; // 绿（消费中）
-        } else {
+        if (rowAnchor.consuming) {
+            stateColor = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0]; // 绿（消费中：出发锚点/终点）
+        } else if (rowAnchor.passed) {
             stateColor = [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]; // 红（已消费）
+        } else {
+            stateColor = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]; // 蓝（未消费）
         }
     }
     dot.backgroundColor = stateColor;
@@ -2197,12 +2189,12 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             v.userInteractionEnabled = YES; // 保证 tap shouldReceiveTouch 能命中标注视图（拦截误加锚点）
         }
         v.annotation = annotation;
-        // 实心水滴图钉（状态分类：蓝=未消费/绿=消费中/红=已消费，2026-08-30 用户定案三态；内嵌出行方式图标；尖对准坐标点）
+        // 实心水滴图钉（状态分类：绿=消费中(出发锚点/终点)/红=已消费/蓝=未消费，2026-08-30 用户定案 v2；内嵌出行方式图标；尖对准坐标点）
         UIColor *color = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]; // 蓝（未消费）
-        if (a.passed) {
-            color = a.consuming
-                ? [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0] // 绿（消费中）
-                : [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]; // 红（已消费）
+        if (a.consuming) {
+            color = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0]; // 绿（消费中：出发锚点/终点）
+        } else if (a.passed) {
+            color = [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]; // 红（已消费）
         }
         v.image = [self waterdropImageWithColor:color size:22 emoji:[self emojiForMode:a.mode]];
         v.centerOffset = CGPointMake(0, -14); // 尖对准坐标点
