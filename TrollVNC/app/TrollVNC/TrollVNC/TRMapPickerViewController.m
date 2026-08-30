@@ -296,6 +296,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     wifiDiag.layer.cornerRadius = 6;
     wifiDiag.layer.masksToBounds = YES;
     wifiDiag.numberOfLines = 2;
+    wifiDiag.textAlignment = NSTextAlignmentCenter;  // 2026-08-30：文字居中
     wifiDiag.text = @"WiFi: 初始化中";
     wifiDiag.userInteractionEnabled = YES;
     UITapGestureRecognizer *wifiTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(wifiDiagTapped:)];
