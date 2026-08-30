@@ -592,15 +592,10 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         [d synchronize];
         notify_post(TVNC_NOTIFY_PREFS_CHANGED);
     }
-    // 2026-08-30 显式恢复当前位置：读 daemon 写入 suite 的 SimCurrentLat/Lon（轨迹文件当前位置跨端同步）
-    double curLat = [d doubleForKey:@"SimCurrentLat"];
-    double curLon = [d doubleForKey:@"SimCurrentLon"];
-    if (curLat != 0 || curLon != 0) {
-        self.cur = CLLocationCoordinate2DMake(curLat, curLon);
-        self.hasStart = YES;  // 有当前位置：可作为锚点起点
-        [self _syncSelfDrivenDroplet]; // 绿色水滴显示在恢复的当前位置
-        [self _updateDropletMode];     // 确保 MKUserLocation 跟随
-    }
+    // 2026-08-30 定案：不再从 SimCurrentLat/Lon 恢复 self.cur——该值可能残留旧坐标系（GCJ-02）
+    // 致绿点偏移（实测 SimLocationLat 与 SimCurrentLat 差 538m 东南 = GCJ 偏移特征）。
+    // 当前位置唯一真相 = locationd 广播 fix（handleLocationUpdate → self.cur = loc.coordinate，WGS-84）；
+    // 启动后首个真实 fix 到达即建立 self.cur/绿点，无需历史恢复。
     self.locating = NO;   // 不恢复定位中；初始视野/聚焦以 locationd（真实）为准
     [self _updateWifiStatusBar]; // wifi 状态栏：启动时显示当前连接 AP
     [self updateStatus];
@@ -1552,15 +1547,15 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         BOOL nextPassed = (i + 1 < self.anchors.count) ? ((TRAnchorAnnotation *)self.anchors[i + 1]).passed : YES; // 链尾=已消费
         if (a.passed && !nextPassed) { departAnchor = a; break; } // 第一个满足 = 当前位置所在段的出发锚点
     }
-    // 第三遍：consuming = 出发锚点 + 终点锚点（当前路段两端），状态色：绿=consuming / 红=passed / 蓝=其余
+    // 第三遍：consuming = 出发锚点 + 终点锚点（当前路段两端，删除守卫用）；颜色：绿=终点（即将到达）/红=已到达（含出发锚点+已走完）/蓝=未消费
     for (TRAnchorAnnotation *a in self.anchors) {
         a.consuming = (a == departAnchor)
             || (departAnchor && a.segmentIndex == departAnchor.segmentIndex + 1); // 终点锚点=下一锚点（消费中）
         UIColor *stateColor = nil;
-        if (a.consuming) {
-            stateColor = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0]; // 绿（消费中：出发锚点/终点）
+        if (a.consuming && !a.passed) {
+            stateColor = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0]; // 绿：终点锚点（即将到达，消费中）
         } else if (a.passed) {
-            stateColor = [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]; // 红（已消费）
+            stateColor = [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]; // 红：已消费（出发锚点/已走完）
         } else {
             stateColor = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]; // 蓝（未消费）
         }
@@ -1674,10 +1669,10 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     }
     UIColor *stateColor = [UIColor secondaryLabelColor];
     if (rowAnchor) {
-        if (rowAnchor.consuming) {
-            stateColor = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0]; // 绿（消费中：出发锚点/终点）
+        if (rowAnchor.consuming && !rowAnchor.passed) {
+            stateColor = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0]; // 绿：终点锚点（即将到达，消费中）
         } else if (rowAnchor.passed) {
-            stateColor = [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]; // 红（已消费）
+            stateColor = [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]; // 红：已消费（出发锚点/已走完）
         } else {
             stateColor = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]; // 蓝（未消费）
         }
@@ -2189,12 +2184,12 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             v.userInteractionEnabled = YES; // 保证 tap shouldReceiveTouch 能命中标注视图（拦截误加锚点）
         }
         v.annotation = annotation;
-        // 实心水滴图钉（状态分类：绿=消费中(出发锚点/终点)/红=已消费/蓝=未消费，2026-08-30 用户定案 v2；内嵌出行方式图标；尖对准坐标点）
+        // 实心水滴图钉（状态分类：绿=终点锚点(即将到达)/红=已消费(出发锚点+已走完)/蓝=未消费，2026-08-30 用户定案 v3；内嵌出行方式图标；尖对准坐标点）
         UIColor *color = [UIColor colorWithRed:0.13 green:0.65 blue:0.97 alpha:1.0]; // 蓝（未消费）
-        if (a.consuming) {
-            color = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0]; // 绿（消费中：出发锚点/终点）
+        if (a.consuming && !a.passed) {
+            color = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0]; // 绿：终点锚点（即将到达，消费中）
         } else if (a.passed) {
-            color = [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]; // 红（已消费）
+            color = [UIColor colorWithRed:0.94 green:0.23 blue:0.13 alpha:1.0]; // 红：已消费（出发锚点/已走完）
         }
         v.image = [self waterdropImageWithColor:color size:22 emoji:[self emojiForMode:a.mode]];
         v.centerOffset = CGPointMake(0, -14); // 尖对准坐标点
