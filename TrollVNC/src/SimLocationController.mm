@@ -13,7 +13,7 @@
 #import "SimRouteCalculator.h" // haversineMeters（与 App 截断同度量，选最近续播点）
 #import "TRWifiKnownNetworks.h" // 软路由联动：已知网络条目 SSID 修改（2026-08-29）
 #import <notify.h> // notify_post（WiFi 重连通知 App 更新水滴，2026-08-29）
-#import <SystemConfiguration/SystemConfiguration.h> // SCDynamicStore WiFi 重连监听（2026-08-30 真机验证 iOS 可用）
+// SCDynamicStore 动态符号解析由 TRWifiKnownNetworks.mm 兼容层提供（TVLoadSCDynamicStore；SDK 头标记 iOS 不可用但真机 dyld cache 存在，2026-08-30）
 #import "TRWpsTile.h" // 坐标→BSSID 动态反查（daemon 注入 wifi 模拟源）
 #import "TRSimContract.h" // 跨端定位契约（轨迹文件路径单一真相源，2026-08-28）
 #import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
@@ -70,7 +70,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     uint64_t _trackTickCount;   // itinerary 落盘节流（每 5 tick 持久化一次）
     uint64_t _lastWifiTileKey;   // 上次 wifi 反查的瓦片 key（跨瓦片才重反查，轨迹跟随）
     NSString *_wifiTargetBSSID;   // WiFi 重连监听目标 BSSID（SCDynamicStore 键变化比对，切换后 10s 窗口）
-    SCDynamicStoreRef _wifiStore; // WiFi 重连监听 store（SCDynamicStore 键变化回调，2026-08-30 替代 1s 轮询）
+    TVSCDynamicStoreRef _wifiStore; // WiFi 重连监听 store（SCDynamicStore 键变化回调，2026-08-30 替代 1s 轮询）
     NSArray<TRWpsTileAP *> *_wifiTileAps; // 当前瓦片 AP 池（窗口注入源；跨瓦片/首点反查时刷新，2026-08-28）
     NSArray<NSString *> *_lastWifiWindowBssids; // 上次注入的可见 AP BSSID 集（变化才重注入，2026-08-28）
 }
@@ -394,8 +394,8 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
 }
 
 #pragma mark - WiFi 重连监听（SCDynamicStore 键变化回调，仅切换后 10s 窗口内，2026-08-30）
-/// 2026-08-30 真机验证：SCDynamicStore 在 iOS 上可用（此前"不可用"注释系误判，已删）——
-/// 监听 State:/Network/Interface/en0/AirPort 键变化（重连时 configd 更新该键），
+/// 2026-08-30 真机验证：SCDynamicStore 符号在 iOS dyld cache 存在（SDK 头标记"不可用"系编译期误判，已删错误注释）——
+/// dlsym 动态解析后监听 State:/Network/Interface/en0/AirPort 键变化（重连时 configd 更新该键），
 /// 匹配目标 BSSID 后 notify App 更新水滴；保留 10s 兜底超时，零长期占用。
 
 /// AirPort 状态键变化回调：重连完成时 configd 更新该键，读当前 BSSID 比对目标
@@ -406,15 +406,21 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         notify_post("com.82flex.trollvnc.wifi-switched");
         TVLog(@"[locsim] wifi reconnect: %@ matches target, notified App", curBSSID);
         _wifiTargetBSSID = nil;
-        if (_wifiStore) {
-            SCDynamicStoreSetDispatchQueue(_wifiStore, NULL);
-            CFRelease(_wifiStore);
-            _wifiStore = NULL;
-        }
+        [self _teardownWifiStore];
     }
 }
 
-static void _wifiAirPortStoreCallback(SCDynamicStoreRef store, CFArrayRef changedKeys, void *info) {
+/// 释放 SCDynamicStore 监听（SetDispatchQueue(NULL) 停止投递 + CFRelease）
+- (void)_teardownWifiStore {
+    if (!_wifiStore) return;
+    TVFn_SCDynamicStoreSetDispatchQueue setQueueFn = NULL;
+    TVLoadSCDynamicStore(NULL, NULL, NULL, &setQueueFn);
+    if (setQueueFn) setQueueFn(_wifiStore, NULL);
+    CFRelease(_wifiStore);
+    _wifiStore = NULL;
+}
+
+static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef changedKeys, void *info) {
     SimLocationController *ctrl = (__bridge SimLocationController *)info;
     [ctrl _handleWifiStoreChanged];
 }
@@ -422,20 +428,23 @@ static void _wifiAirPortStoreCallback(SCDynamicStoreRef store, CFArrayRef change
 - (void)_startWifiReconnectMonitorWithTargetBSSID:(NSString *)bssid {
     _wifiTargetBSSID = bssid;
     // 清理旧监听（复用/重复下发时）
-    if (_wifiStore) {
-        SCDynamicStoreSetDispatchQueue(_wifiStore, NULL);
-        CFRelease(_wifiStore);
-        _wifiStore = NULL;
+    [self _teardownWifiStore];
+    TVFn_SCDynamicStoreCreate createFn = NULL;
+    TVFn_SCDynamicStoreSetNotificationKeys setKeysFn = NULL;
+    TVFn_SCDynamicStoreSetDispatchQueue setQueueFn = NULL;
+    if (!TVLoadSCDynamicStore(&createFn, NULL, &setKeysFn, &setQueueFn)) {
+        TVLog(@"[locsim] SCDynamicStore symbols unavailable, skip wifi monitor");
+        return;
     }
-    SCDynamicStoreContext ctx = {0, (__bridge void *)self, NULL, NULL, NULL};
-    _wifiStore = SCDynamicStoreCreate(NULL, CFSTR("com.82flex.trollvnc.wifi-monitor"), _wifiAirPortStoreCallback, &ctx);
+    TVSCDynamicStoreContext ctx = {0, (__bridge void *)self, NULL, NULL, NULL};
+    _wifiStore = createFn(NULL, CFSTR("com.82flex.trollvnc.wifi-monitor"), _wifiAirPortStoreCallback, &ctx);
     if (!_wifiStore) { TVLog(@"[locsim] SCDynamicStoreCreate failed"); return; }
     // 监听 AirPort 状态键（重连/断连时 configd 更新该键 → 回调）
     CFStringRef keys[] = { CFSTR("State:/Network/Interface/en0/AirPort") };
     CFArrayRef keyArr = CFArrayCreate(NULL, (const void **)keys, 1, &kCFTypeArrayCallBacks);
-    SCDynamicStoreSetNotificationKeys(_wifiStore, keyArr, NULL);
+    setKeysFn(_wifiStore, keyArr, NULL);
     CFRelease(keyArr);
-    SCDynamicStoreSetDispatchQueue(_wifiStore, dispatch_get_main_queue());
+    setQueueFn(_wifiStore, dispatch_get_main_queue());
     // 10s 兜底超时自动清理（回调未触发也释放监听）
     __weak __typeof__(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
@@ -443,11 +452,7 @@ static void _wifiAirPortStoreCallback(SCDynamicStoreRef store, CFArrayRef change
         if (!sSelf || !sSelf->_wifiTargetBSSID) return;
         TVLog(@"[locsim] wifi monitor timeout (10s), target=%@", sSelf->_wifiTargetBSSID);
         sSelf->_wifiTargetBSSID = nil;
-        if (sSelf->_wifiStore) {
-            SCDynamicStoreSetDispatchQueue(sSelf->_wifiStore, NULL);
-            CFRelease(sSelf->_wifiStore);
-            sSelf->_wifiStore = NULL;
-        }
+        [sSelf _teardownWifiStore];
     });
 }
 

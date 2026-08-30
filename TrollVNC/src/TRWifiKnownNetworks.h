@@ -34,5 +34,31 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+// ===== SCDynamicStore 兼容层（2026-08-30 真机验证）=====
+// SDK 头文件将 SCDynamicStore* API 标记 API_UNAVAILABLE(ios) → 编译期直接调用报错（此前被误判为"运行期不可用"）。
+// 真机实证：/usr/sbin/scutil（链接 SystemConfiguration.framework）可读 State:/Network/Interface/en0/AirPort
+// 含 SSID/BSSID → 符号在 iOS dyld shared cache 中存在。此处自声明类型 + dlsym 运行时解析，绕开编译期标记。
+// 供 TRWifiKnownNetworks.mm 与 SimLocationController.mm（WiFi 重连监听）共用。
+typedef const struct __SCDynamicStore *TVSCDynamicStoreRef;
+typedef void (*TVSCDynamicStoreCallBack)(TVSCDynamicStoreRef store, CFArrayRef changedKeys, void *info);
+typedef struct {
+    CFIndex version;
+    void *info;
+    const void *(*retain)(const void *info);
+    void (*release)(const void *info);
+    CFStringRef (*copyDescription)(const void *info);
+} TVSCDynamicStoreContext;
+typedef TVSCDynamicStoreRef (*TVFn_SCDynamicStoreCreate)(CFAllocatorRef allocator, CFStringRef name,
+                                                          TVSCDynamicStoreCallBack callout, TVSCDynamicStoreContext *context);
+typedef CFPropertyListRef (*TVFn_SCDynamicStoreCopyValue)(TVSCDynamicStoreRef store, CFStringRef key);
+typedef Boolean (*TVFn_SCDynamicStoreSetNotificationKeys)(TVSCDynamicStoreRef store, CFArrayRef keys, CFArrayRef patterns);
+typedef void (*TVFn_SCDynamicStoreSetDispatchQueue)(TVSCDynamicStoreRef store, dispatch_queue_t queue);
+
+/// 一次性 dlopen SystemConfiguration + dlsym 解析符号；返回是否至少取到 Create/CopyValue（核心读能力）
+BOOL TVLoadSCDynamicStore(TVFn_SCDynamicStoreCreate *_Nullable outCreate,
+                          TVFn_SCDynamicStoreCopyValue *_Nullable outCopyValue,
+                          TVFn_SCDynamicStoreSetNotificationKeys *_Nullable outSetKeys,
+                          TVFn_SCDynamicStoreSetDispatchQueue *_Nullable outSetQueue);
+
 NS_ASSUME_NONNULL_END
 #endif /* TRWifiKnownNetworks_h */

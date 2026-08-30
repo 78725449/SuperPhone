@@ -4,7 +4,35 @@
 */
 #import "TRWifiKnownNetworks.h"
 #import <spawn.h>   // posix_spawn（wifid 重载通知；模块化编译需显式 import）
-#import <SystemConfiguration/SystemConfiguration.h> // SCDynamicStore 读当前连接 WiFi（2026-08-30 真机验证：iOS 可用，替代 popen/ipconfig）
+#import <dlfcn.h>   // dlsym（SCDynamicStore 符号动态解析——SDK 头标记 iOS 不可用，但真机 dyld cache 存在，2026-08-30）
+
+// SCDynamicStore 兼容层类型/加载函数声明在 TRWifiKnownNetworks.h（供本文件与 SimLocationController.mm 共用）
+
+/// 一次性 dlopen SystemConfiguration + dlsym 解析符号；失败返回 NO（调用方降级）
+BOOL TVLoadSCDynamicStore(TVFn_SCDynamicStoreCreate *outCreate,
+                          TVFn_SCDynamicStoreCopyValue *outCopyValue,
+                          TVFn_SCDynamicStoreSetNotificationKeys *outSetKeys,
+                          TVFn_SCDynamicStoreSetDispatchQueue *outSetQueue) {
+    static TVFn_SCDynamicStoreCreate sCreate = NULL;
+    static TVFn_SCDynamicStoreCopyValue sCopyValue = NULL;
+    static TVFn_SCDynamicStoreSetNotificationKeys sSetKeys = NULL;
+    static TVFn_SCDynamicStoreSetDispatchQueue sSetQueue = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        void *h = dlopen("/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration", RTLD_LAZY | RTLD_GLOBAL);
+        if (!h) h = dlopen("SystemConfiguration.framework/SystemConfiguration", RTLD_LAZY | RTLD_GLOBAL); // 兜底：dyld cache 按名解析
+        if (!h) return;
+        sCreate = (TVFn_SCDynamicStoreCreate)dlsym(h, "SCDynamicStoreCreate");
+        sCopyValue = (TVFn_SCDynamicStoreCopyValue)dlsym(h, "SCDynamicStoreCopyValue");
+        sSetKeys = (TVFn_SCDynamicStoreSetNotificationKeys)dlsym(h, "SCDynamicStoreSetNotificationKeys");
+        sSetQueue = (TVFn_SCDynamicStoreSetDispatchQueue)dlsym(h, "SCDynamicStoreSetDispatchQueue");
+    });
+    if (outCreate) *outCreate = sCreate;
+    if (outCopyValue) *outCopyValue = sCopyValue;
+    if (outSetKeys) *outSetKeys = sSetKeys;
+    if (outSetQueue) *outSetQueue = sSetQueue;
+    return (sCreate && sCopyValue);
+}
 
 static NSString *const kKnownNetworksPath = @"/var/preferences/com.apple.wifi.known-networks.plist";
 
@@ -81,12 +109,15 @@ static NSString *const kKnownNetworksPath = @"/var/preferences/com.apple.wifi.kn
     return YES;
 }
 
-/// 用 SCDynamicStore 读当前连接 WiFi 状态字典（2026-08-30：真机验证 iOS 可用，替代 popen/ipconfig——
+/// 用 SCDynamicStore 读当前连接 WiFi 状态字典（2026-08-30：真机验证 iOS dyld cache 存在，替代 popen/ipconfig——
 /// daemon 环境 popen 受限致 currentSSID 空、AP 下发被 no current ssid 跳过；SCDynamicStore 纯系统 API 无 shell 依赖）
 + (nullable NSDictionary *)_airportState {
-    SCDynamicStoreRef store = SCDynamicStoreCreate(NULL, CFSTR("com.82flex.trollvnc.wifi"), NULL, NULL);
+    TVFn_SCDynamicStoreCreate createFn = NULL;
+    TVFn_SCDynamicStoreCopyValue copyFn = NULL;
+    if (!TVLoadSCDynamicStore(&createFn, &copyFn, NULL, NULL)) return nil; // 符号解析失败（罕见）降级
+    TVSCDynamicStoreRef store = createFn(NULL, CFSTR("com.82flex.trollvnc.wifi"), NULL, NULL);
     if (!store) return nil;
-    CFPropertyListRef val = SCDynamicStoreCopyValue(store, CFSTR("State:/Network/Interface/en0/AirPort"));
+    CFPropertyListRef val = copyFn(store, CFSTR("State:/Network/Interface/en0/AirPort"));
     CFRelease(store);
     if (!val) return nil;
     NSDictionary *dict = [(__bridge NSDictionary *)val copy];
