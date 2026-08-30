@@ -354,10 +354,21 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         double d = [SimRouteCalculator haversineMeters:coord to:ap.coord];
         if (d < best) { best = d; nearest = ap; }
     }
+    NSString *targetSSID = [self _generateCitySSIDForBSSID:nearest.bssid];
+    // 写入 SimAP 信息（App wifi 状态栏消费：当前模拟 AP 的 SSID/BSSID/坐标/距离）
+    {
+        NSMutableDictionary *mp = [NSMutableDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath]
+                                    ?: [NSMutableDictionary dictionary];
+        mp[@"SimAPSSID"] = targetSSID;
+        mp[@"SimAPBSSID"] = nearest.bssid;
+        mp[@"SimAPLat"] = @(nearest.coord.latitude);
+        mp[@"SimAPLon"] = @(nearest.coord.longitude);
+        mp[@"SimAPDistance"] = @(best);
+        [mp writeToFile:kSimMobilePrefsPath atomically:YES];
+    }
     static NSString *sLastAPBSSID = nil;
     if (sLastAPBSSID && [sLastAPBSSID isEqualToString:nearest.bssid]) return; // 同 AP 不重复下发
     sLastAPBSSID = nearest.bssid;
-    NSString *targetSSID = [self _generateCitySSIDForBSSID:nearest.bssid];
     TVLog(@"[locsim] wifi-switch -> {ssid:%@ bssid:%@} d=%.0fm", targetSSID, nearest.bssid, best);
     // 下发前先取当前连接 SSID（软路由按它定位要改的 wireless 段；known-networks 也改它）
     NSString *curSSID = [TRWifiKnownNetworks currentSSID];

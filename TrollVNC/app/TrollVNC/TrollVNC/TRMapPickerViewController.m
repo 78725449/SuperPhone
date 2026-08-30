@@ -167,28 +167,15 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     // WiFi 位置自动显示（唯一实现 = daemon 主动扫描，2026-08-27 定案）：订阅 Apple80211 扫描通知。
     // 已移除 NEHotspotHelper 被动订阅/水合——不做回退，保证主动扫描唯一数据源可靠工作。
     __weak typeof(self) weakSelf = self;
-    // 主动扫描订阅：daemon（root）周期扫周边 BSSID → 写共享 JSON + Darwin 通知。
-    // 模拟开启/关闭→统一读「当前连接 WiFi」的 BSSID 反查标注（2026-08-29 职责重定义，不跟随模拟坐标）。
-    int wifiScanToken = 0;
-    notify_register_dispatch(kTRWifiScanUpdatedNotification.UTF8String, &wifiScanToken,
-        dispatch_get_main_queue(), ^(int token) {
-            __strong typeof(self) strongSelf = weakSelf;
-            if (!strongSelf) return;
-            NSArray<NSString *> *bssids = [strongSelf _readActiveScanBssids];
-            if (!bssids) return;
-            [strongSelf handleActiveWifiBssids:bssids];
-        });
-    // 订阅 WiFi 切换通知（daemon AP 下发成功 → SCDynamicStore 检测重连 → notify App）
+    // 订阅 WiFi 切换通知（daemon AP 下发成功 → 检测重连 → notify App）
     int wifiSwitchToken = 0;
     notify_register_dispatch("com.82flex.trollvnc.wifi-switched", &wifiSwitchToken,
         dispatch_get_main_queue(), ^(int token) {
             __strong typeof(self) strongSelf = weakSelf;
             if (!strongSelf) return;
-            [strongSelf _refreshWifiAnnoFromCurrentConnection];
+            [strongSelf _updateWifiStatusBar];       // 刷新状态栏（模拟 AP 信息）
+            [strongSelf _refreshWifiAnnoFromCurrentConnection]; // 更新水滴标注
         });
-    // 启动水合：daemon 常驻可能在 App 启动前已扫过，直接读一次（归一读取，2026-08-28）
-    NSArray<NSString *> *seedBssids = [self _readActiveScanBssids];
-    if (seedBssids) [self handleActiveWifiBssids:seedBssids];
     [self _updateDropletMode]; // 水滴模式统一切换（系统定位开=MKUserLocation / 关=自驱水滴跟编排位置）
     // 启动：地图聚焦到当前所在位置（启动一律停止态=真实位置，取不到则回退默认视野）
     [self focusMapOnCurrentLocation];
@@ -457,52 +444,51 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     ]];
 }
 
-/// 刷新 WiFi 链路诊断标签（唯一实现=主动扫描：JSON 时间戳 + BSSID 数 + 最近反查状态）
-/// 诊断需 ts，保留单次原始读取后内部取 bssids 计数——不再调 _readActiveScanBssids 二次读文件（2026-08-28）
-- (void)refreshWifiDiag {
-    NSData *data = [NSData dataWithContentsOfFile:kTRWifiScanJsonPath];
-    if (data) {
-        NSDictionary *obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
-        if ([obj isKindOfClass:[NSDictionary class]]) {
-            NSArray *bssids = obj[@"bssids"];
-            NSNumber *ts = obj[@"ts"];
-            self.wifiDiagLabel.text = [NSString stringWithFormat:
-                @"WiFi: 主动扫描 %lu BSSID @%@",
-                (unsigned long)([bssids isKindOfClass:[NSArray class]] ? bssids.count : 0),
-                ts ? [NSDate dateWithTimeIntervalSince1970:[ts doubleValue]] : (id)@"—"];
-            return;
+/// 点击 WiFi 诊断标签：手动刷新当前状态
+- (void)wifiDiagTapped:(UITapGestureRecognizer *)g {
+    [self _updateWifiStatusBar]; // 立即刷新当前状态
+}
+
+/// wifi 状态栏更新（2026-08-30）：统一管理 wifiDiagLabel 显示，取代旧多处分散更新
+/// 模拟中 → 读 daemon 写入的 SimAP 数据（SSID/BSSID/坐标/距离）+ 当前位置
+/// 非模拟 → 读 CNCopy 当前连接 SSID/BSSID + wloc 反查坐标
+- (void)_updateWifiStatusBar {
+    CLLocationCoordinate2D pos = [self currentSimPosition];
+    if (pos.latitude == 0 && pos.longitude == 0) return;
+    NSString *posStr = [NSString stringWithFormat:@"%.5f,%.5f", pos.latitude, pos.longitude];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
+    if (self.locating) {
+        // 模拟态：显示模拟 AP 信息（daemon _handleAPList 写入）
+        NSString *apSSID = [d stringForKey:@"SimAPSSID"];
+        NSString *apBSSID = [d stringForKey:@"SimAPBSSID"];
+        double apDist = [d doubleForKey:@"SimAPDistance"];
+        if (apSSID.length && apBSSID.length) {
+            self.wifiDiagLabel.text = [NSString stringWithFormat:@"模拟位置：%@   模拟AP：%@，%@，距离：%.0fm",
+                posStr, apSSID, apBSSID, apDist];
+        } else {
+            self.wifiDiagLabel.text = [NSString stringWithFormat:@"模拟位置：%@   模拟AP：反查中…", posStr];
+        }
+    } else {
+        // 停止态：显示当前连接 WiFi 信息
+        NSDictionary *info = nil;
+        NSArray *ifs = (__bridge_transfer NSArray *)CNCopySupportedInterfaces();
+        for (id ifname in ifs) {
+            info = (__bridge_transfer NSDictionary *)CNCopyCurrentNetworkInfo((__bridge CFStringRef)ifname);
+            if (info) break;
+        }
+        NSString *bssid = info[(__bridge NSString *)kCNNetworkInfoKeyBSSID];
+        NSString *ssid = info[(__bridge NSString *)kCNNetworkInfoKeySSID];
+        if (bssid.length && ssid.length) {
+            // 用 wloc 反查 BSSID 坐标（已有 _queryWifiAnnoWithBssids 异步回调，但状态栏需即时显示）
+            // 先显示 SSID/BSSID，反查结果通过 _queryWifiAnnoWithBssids 回调更新
+            self.wifiDiagLabel.text = [NSString stringWithFormat:@"当前AP：%@，%@，AP位置：反查中…", ssid, bssid];
+            // 启动一次 wloc 反查（仅用于获取坐标更新状态栏）
+            NSUInteger seq = ++self.wifiQuerySeq;
+            [self _queryWifiAnnoWithBssids:@[bssid] seq:seq];
+        } else {
+            self.wifiDiagLabel.text = @"WiFi: 当前连接获取中…";
         }
     }
-    self.wifiDiagLabel.text = @"WiFi: 主动扫描未产出数据";
-}
-
-/// 点击 WiFi 诊断标签：手动刷新当前状态（读 daemon 主动扫描 JSON）
-- (void)wifiDiagTapped:(UITapGestureRecognizer *)g {
-    [self refreshWifiDiag]; // 立即刷新当前状态
-}
-
-/// 主动扫描 JSON 读取归一（读文件→解析→取 bssids；无/格式错返回 nil）——订阅回调/水合/刷新共用（2026-08-28）
-- (NSArray<NSString *> *)_readActiveScanBssids {
-    NSData *data = [NSData dataWithContentsOfFile:kTRWifiScanJsonPath];
-    if (!data) return nil;
-    NSDictionary *obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
-    if (![obj isKindOfClass:[NSDictionary class]]) return nil;
-    NSArray *bssids = obj[@"bssids"];
-    if (![bssids isKindOfClass:[NSArray class]]) return nil;
-    return bssids;
-}
-
-/// 主动扫描结果消费（唯一实现 = daemon Apple80211 周期扫周边 BSSID → 共享 JSON → 本方法标注）。
-/// 语义（用户拍板 2026-08-27）：模拟关闭→真实 BSSID wloc 反查标注（不再依赖「打开系统 Wi-Fi 设置页
-/// 触发被动扫描」，也无 NEHotspotHelper 回退）；模拟开启→标注由 fix 驱动（handleLocationUpdate 瓦片
-/// 检测），此处触发同款检测（跨瓦片才重反查）。
-- (void)handleActiveWifiBssids:(NSArray<NSString *> *)bssids {
-    if (self.locating) {
-        [self _refreshWifiAnnoFromCurrentConnection]; // 模拟态：水滴=当前连接 BSSID 反查（不跟随模拟坐标）
-        return;
-    }
-    NSUInteger seq = ++self.wifiQuerySeq;
-    [self _queryWifiAnnoWithBssids:bssids seq:seq]; // 空列表在方法内统一处理（清除残留标注）
 }
 
 /// WiFi 水滴（2026-08-29 职责重定义，用户定案）：只读「当前连接 WiFi」的 SSID/BSSID →
@@ -511,6 +497,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 与 GPS 轨迹/模拟位置完全解耦。旧「瓦片检测 + 缓存池质心跟随」逻辑已删。
 /// 数据源 = CNCopyCurrentNetworkInfo（App 有定位授权可用；daemon 才需要 ipconfig 通道）。
 - (void)_refreshWifiAnnoFromCurrentConnection {
+    // 2026-08-30：此方法只负责 WiFi 水滴标注更新（wloc 反查 BSSID→坐标→地图显示）
+    // wifiDiagLabel 状态栏由 _updateWifiStatusBar 统一管理
     NSDictionary *info = nil;
     NSArray *ifs = (__bridge_transfer NSArray *)CNCopySupportedInterfaces();
     for (id ifname in ifs) {
@@ -519,21 +507,12 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         if (info) break;
     }
     NSString *bssid = info[(__bridge NSString *)kCNNetworkInfoKeyBSSID];
-    NSString *ssid = info[(__bridge NSString *)kCNNetworkInfoKeySSID];
-    // 2026-08-30：诊断标签改为当前连接 WiFi 实时状态（软路由切换效果可视化，替代旧"主动扫描"诊断）
-    if (bssid.length && ssid.length) {
-        self.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: %@ (%@)", ssid, bssid];
-    } else if (bssid.length) {
-        self.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: %@", bssid];
-    } else {
-        self.wifiDiagLabel.text = @"WiFi: 未连接";
-    }
     if (!bssid.length) {
-        [self removeWifiAnnotationIfExists]; // 未连接：清除残留标注（真实状态可视化）
+        [self removeWifiAnnotationIfExists];
         return;
     }
     NSUInteger seq = ++self.wifiQuerySeq;
-    [self _queryWifiAnnoWithBssids:@[bssid] seq:seq]; // 复用既有 wloc 反查标注（坐标+AP 数气泡）
+    [self _queryWifiAnnoWithBssids:@[bssid] seq:seq];
 }
 
 /// 用给定 BSSID 集合反查并更新 wifi 标注（动态反查与真实扫描共用；seq 竞态防护，丢弃过期回调）
@@ -573,30 +552,24 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
                     centroid.latitude, centroid.longitude, (unsigned long)result.count];
         ann.subtitle = ann.info;
         [strongSelf.mapView addAnnotation:ann];
+        // 更新状态栏的 AP 位置（wloc 反查成功）
+        [strongSelf _updateWifiStatusBar];
     }];
 }
 
 /// 模拟开关切换后立即刷新 wifi 标注（用当前语义：模拟中→模拟位置，停止→真实位置）
 - (void)refreshWifiAnnotation {
     if (!self.locating) {
-        // 停止态：请求 daemon 立即重扫（不等 8s 周期，关模拟瞬间拿到最新真实 BSSID）+
-        // 先消费当前缓存立即显示（wloc 反查），随后新扫描 notify 到达再刷新
-        notify_post(kTRWifiScanRequestNotification.UTF8String);
-        // 消费 daemon 主动扫描真实 BSSID → wloc 反查标注（回到真实 wifi 位置）。
-        // 唯一数据源 = 主动扫描 JSON（不做 NEHotspotHelper 回退——用户定案：唯一实现可靠工作）。
-        // JSON 缺失/空：清除残留标注，待主动扫描下一次产出数据（notify 回调）恢复。
-        NSArray<NSString *> *bssids = [self _readActiveScanBssids];
-        if (bssids.count) {
-            NSUInteger seq = ++self.wifiQuerySeq;
-            [self _queryWifiAnnoWithBssids:bssids seq:seq]; // 真实 BSSID wloc 反查标注（回到真实位置）
-        } else {
-            [self _refreshWifiAnnoFromCurrentConnection]; // 停止态：同样读当前连接反查（职责统一）
-        }
+        // 停止态：读当前连接 WiFi 反查标注（回到真实位置，2026-08-30 替代旧主动扫描）
+        [self _updateWifiStatusBar]; // 状态栏刷新
+        [self _refreshWifiAnnoFromCurrentConnection]; // 水滴标注更新
         self.wifiLastTileKey = 0; // 重置瓦片 key：下次开启模拟强制重新反查
         self.wifiTileAps = nil;   // 清瓦片 AP 池（停止态不保留模拟指纹，2026-08-28）
         return;
     }
-    [self _refreshWifiAnnoFromCurrentConnection]; // 模拟态：当前连接 BSSID 反查（与模拟坐标解耦）
+    // 模拟态：当前连接 BSSID 反查（不跟随模拟坐标）
+    [self _updateWifiStatusBar]; // 状态栏刷新
+    [self _refreshWifiAnnoFromCurrentConnection]; // 水滴标注更新
 }
 
 /// 移除地图上已有的 WiFi 定位标注（按类型匹配，防重复标注累积）
@@ -629,6 +602,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         [self _updateDropletMode];     // 确保 MKUserLocation 跟随
     }
     self.locating = NO;   // 不恢复定位中；初始视野/聚焦以 locationd（真实）为准
+    [self _updateWifiStatusBar]; // wifi 状态栏：启动时显示当前连接 AP
     [self updateStatus];
 }
 
@@ -1025,7 +999,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随：MapKit 内部位置源持续订阅 locationd → 水滴跟随模拟位置（单一数据源）
         [self refreshWifiAnnotation];                            // 开启：立即切到模拟位置 wifi 标注（不等下次系统扫描回调）
     }
-    [self _updateDropletMode]; // 水滴模式统一切换（定位开关变更后：系统定位开=MKUserLocation / 关=自驱水滴）
+    [self _updateDropletMode]; // 水滴模式统一切换
+    [self _updateWifiStatusBar]; // wifi 状态栏刷新（切换模拟/真实 AP 显示）
     [self updateStatus];
 }
 
@@ -1490,7 +1465,8 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.lastFix = loc; // 记录回调 fix（坐标/速度真相源，不读属性缓存）
         self.cur = [CoordTransform wgs84ToGcj02:loc.coordinate];
         [self _syncSelfDrivenDroplet]; // 定位关时自驱水滴跟编排推进（定位开时不显示自驱水滴，无影响）
-        [self _refreshWifiAnnoFromCurrentConnection]; // wifi 水滴驱动：读当前连接 BSSID 反查（不随 fix tick 跟随模拟坐标）
+        [self _updateWifiStatusBar]; // wifi 状态栏刷新（模拟位置/模拟AP）
+        [self _refreshWifiAnnoFromCurrentConnection]; // wifi 水滴标注更新
         [self updateAnchorPassStateWithLiveWGS:loc.coordinate]; // 先更新段速度/经过态，状态栏立即反映
         [self updateStatus];
         // 自动聚焦：Follow 原生已跟随无需重复；用户拖动退出 Follow 后模拟位置距上次聚焦点超阈值则拉回
