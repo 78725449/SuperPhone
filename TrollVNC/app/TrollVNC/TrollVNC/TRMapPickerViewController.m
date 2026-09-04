@@ -598,10 +598,9 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [self commitSimPrefs:^(NSUserDefaults *d) {
         [d setObject:@"off" forKey:@"SimLocationMode"];
     }];
-    }
     // 2026-08-30 定案：不再从 SimCurrentLat/Lon 恢复 self.cur——该值可能残留旧坐标系（GCJ-02）
     // 致绿点偏移（实测 SimLocationLat 与 SimCurrentLat 差 538m 东南 = GCJ 偏移特征）。
-    // 当前位置唯一真相 = locationd 广播 fix（handleLocationUpdate → self.cur = loc.coordinate，WGS-84）；
+    // 当前位置唯一真相 = locationd 广播 fix（handleLocationUpdate → self.cur = loc.coordinate，瓦片系）；
     // 启动后首个 fix 到达即建立 self.cur/绿点，无需历史恢复。
     self.locating = NO;   // 不恢复定位中；初始视野/聚焦以 locationd（真实）为准
     [self _updateWifiStatusBar]; // wifi 状态栏：启动时显示当前连接 AP
@@ -1810,10 +1809,10 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 }
 
 - (void)commitStop {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     [self commitSimPrefs:^(NSUserDefaults *d) {
         [d setObject:@"off" forKey:@"SimLocationMode"];
     }];
+}
 
 /// 轨迹播完复位（daemon kTRSimPlaybackFinishedNotification 通知，2026-09-04 治理）：
 /// daemon 播完分支已单方复位三方（_currentMode=off + plist 写 off/终点坐标）——App 仅做 UI 复位，
