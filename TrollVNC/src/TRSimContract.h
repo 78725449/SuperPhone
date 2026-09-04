@@ -20,4 +20,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 共享轨迹点序列 JSON 路径（App 写：编辑/上传轨迹；daemon 读：itinerary 注入）
 extern NSString *const kTRSimTrackFilePath;
 
+/// 轨迹播完通知（daemon notify_post → App notify_register_dispatch 订阅，2026-09-04）：
+/// 播放态订阅终止信号——App 收到后执行与手动停止一致的复位（stopPlayback：locating=NO +
+/// commitStop 写 off，App/daemon/plist 三方一致归停止态；位置订阅 locationd 不变，终点微动继续）
+extern NSString *const kTRSimPlaybackFinishedNotification;
+
 NS_ASSUME_NONNULL_END

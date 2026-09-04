@@ -20,7 +20,7 @@ NS_ASSUME_NONNULL_BEGIN
 extern NSString *const kTRWifiScanJsonPath;
 /// 扫描更新 Darwin 通知名（daemon notify_post → App notify_register_dispatch 订阅）
 extern NSString *const kTRWifiScanUpdatedNotification;
-/// 立即重扫请求通知名（App 关模拟时 notify_post → daemon requestScanNow）
-extern NSString *const kTRWifiScanRequestNotification;
+/// （2026-09-04 死代码清理：kTRWifiScanRequestNotification 立即重扫请求通知已删除——
+/// App 停止模拟后改走当前连接反查（2026-08-30），通道零发送方；git 历史可恢复）
 
 NS_ASSUME_NONNULL_END

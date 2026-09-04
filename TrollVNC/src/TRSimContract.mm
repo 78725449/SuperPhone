@@ -10,3 +10,5 @@
 #import "TRSimContract.h"
 
 NSString *const kTRSimTrackFilePath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.simloc.json";
+
+NSString *const kTRSimPlaybackFinishedNotification = @"com.82flex.trollvnc.simloc-finished";

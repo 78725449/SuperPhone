@@ -11,4 +11,4 @@
 
 NSString *const kTRWifiScanJsonPath = @"/var/mobile/Library/Caches/com.82flex.trollvnc.wifiscan.json";
 NSString *const kTRWifiScanUpdatedNotification = @"com.82flex.trollvnc.wifiscan-updated";
-NSString *const kTRWifiScanRequestNotification = @"com.82flex.trollvnc.wifiscan-request";
+// kTRWifiScanRequestNotification 已删除（2026-09-04 死代码清理：零发送方，App 改走当前连接反查）

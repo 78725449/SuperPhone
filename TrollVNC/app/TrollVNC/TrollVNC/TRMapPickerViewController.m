@@ -179,6 +179,15 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             [strongSelf _updateWifiStatusBar];       // 刷新状态栏（模拟 AP 信息）
             [strongSelf _refreshWifiAnnoFromCurrentConnection]; // 更新水滴标注
         });
+    // 订阅轨迹播完通知（2026-09-04，kTRSimPlaybackFinishedNotification daemon→App）：
+    // 播放态订阅终止——daemon 播完 → App 复位播放态（与手动停止一致，stopPlayback 内 commitStop 写 off）
+    int simFinishToken = 0;
+    notify_register_dispatch(kTRSimPlaybackFinishedNotification.UTF8String, &simFinishToken,
+        dispatch_get_main_queue(), ^(int token) {
+            __strong typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [strongSelf playbackDidFinish];
+        });
     [self _updateDropletMode]; // 水滴模式统一切换（系统定位开=MKUserLocation / 关=自驱水滴跟编排位置）
     // 启动：地图聚焦到当前所在位置（启动一律停止态=真实位置，取不到则回退默认视野）
     [self focusMapOnCurrentLocation];
@@ -980,17 +989,27 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [self focusMapOnCurrentLocation];
 }
 
+/// 停止播放（2026-09-04 抽取：手动停止 toggleLocate 与轨迹播完复位 playbackDidFinish 共用同一路径——
+/// 用户定案"播完=复位=与手动停止一致"）：复位播放态 UI + commitStop 写 off 通知 daemon，
+/// App/daemon/plist 三方一致归停止态；位置订阅 locationd 不变（off 分支终点微动继续，注入始终运行）
+- (void)stopPlayback {
+    self.locating = NO;
+    self.pendingEditAction = nil;    // 放弃生成中挂起的编辑（停止后不再生长/复活设备）
+    self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 停止时刻：只认晚于此的 fix（过滤停止前的旧 fix）
+    [self commitStop];
+    self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随（水滴随 locationd 当前位置）
+    [self refreshUserLocationView];                          // 当前位置水滴去图标（未定位=纯绿点）
+    [self resetFocusBaseline];                              // 重置自动聚焦基线（下一个 fix 触发聚焦）
+    [self refreshWifiAnnotation];                            // 停止：立即更新 wifi 标注（不等下次系统扫描回调）
+    [self _updateDropletMode]; // 水滴模式统一切换
+    [self _updateWifiStatusBar]; // wifi 状态栏刷新（切换模拟/真实 AP 显示）
+    [self updateStatus];
+}
+
 - (void)toggleLocate:(UIButton *)sender {
     if (self.locating) {
         // 停止定位：位置停编排最后坐标（App 内保留显示），daemon 停 tick
-        self.locating = NO;
-        self.pendingEditAction = nil;    // 放弃生成中挂起的编辑（停止后不再生长/复活设备）
-        self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 停止时刻：只认晚于此的 fix（过滤停止前的旧 fix）
-        [self commitStop];
-        self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随（水滴随 locationd 当前位置）
-        [self refreshUserLocationView];                          // 当前位置水滴去图标（未定位=纯绿点）
-        [self resetFocusBaseline];                              // 重置自动聚焦基线（下一个 fix 触发聚焦）
-        [self refreshWifiAnnotation];                            // 停止：立即更新 wifi 标注（不等下次系统扫描回调）
+        [self stopPlayback];
     } else {
         // 开启：有起点则 anchor，否则提示先设起点
         if (!self.hasStart) {
@@ -1024,10 +1043,11 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         self.lastAutoFocusWGS = self.cur; // 自动聚焦基线=模拟位置（WGS-84，拖动退出 Follow 后模拟位置超阈值才拉回）
         self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随：MapKit 内部位置源持续订阅 locationd → 水滴跟随模拟位置（单一数据源）
         [self refreshWifiAnnotation];                            // 开启：立即切到模拟位置 wifi 标注（不等下次系统扫描回调）
+        [self _updateDropletMode]; // 水滴模式统一切换
+        [self _updateWifiStatusBar]; // wifi 状态栏刷新（切换模拟/真实 AP 显示）
+        [self updateStatus];
     }
-    [self _updateDropletMode]; // 水滴模式统一切换
-    [self _updateWifiStatusBar]; // wifi 状态栏刷新（切换模拟/真实 AP 显示）
-    [self updateStatus];
+    // 停止分支的刷新由 stopPlayback 统一执行（2026-09-04 抽取：手动停止与播完复位共用）
 }
 
 #pragma mark - 模式切换 / 搜索
@@ -1803,6 +1823,15 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [d setObject:@"off" forKey:@"SimLocationMode"];
     [d synchronize];
     notify_post(TVNC_NOTIFY_PREFS_CHANGED);
+}
+
+/// 轨迹播完复位（daemon kTRSimPlaybackFinishedNotification 通知，2026-09-04 定案"播完=复位=与手动停止一致"）：
+/// 播放态订阅终止——走与手动停止完全相同的 stopPlayback 路径（commitStop 写 off，App/daemon/plist 三方归停止态）；
+/// 位置订阅 locationd 不变（off 分支终点微动继续）。幂等守卫：未开启时忽略（daemon 重复通知/未开启播完防护）
+- (void)playbackDidFinish {
+    if (!self.locating) return;
+    TVLog(@"[locsim] playback finished (daemon notified) -> reset to stopped");
+    [self stopPlayback];
 }
 
 /// 重算期间让 daemon 驻留在当前位置（anchor 微动）：编辑（删除/重排）重算耗时期间，

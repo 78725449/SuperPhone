@@ -42,7 +42,6 @@
 #import "SimLocationController.h"
 #import "TRDailyTrajectory.h"
 #import "TRWifiActiveScanner.h" // WiFi 主动扫描（2026-08-27 root daemon Apple80211，见 start 区挂载）
-#import "TRWifiScanContract.h" // 跨端扫描契约常量（wifiscan-request 等）
 #import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 #import "libproc.h"
 
@@ -692,17 +691,6 @@ int main(int argc, const char *argv[]) {
                                dispatch_get_main_queue(), ^{
                     CFRunLoopStop(CFRunLoopGetMain());   // 优雅退出 → launchd KeepAlive 拉起新 manager
                 });
-            });
-    }
-    {
-        // WiFi 立即扫描请求订阅（2026-08-27 通道；⚠️ 当前无发送方——App 停止模拟后改走
-        // _refreshWifiAnnoFromCurrentConnection（读当前连接反查，2026-08-30），不再 notify 本请求；订阅保留供未来/诊断）
-        int wifiScanReqToken = 0;
-        notify_register_dispatch(kTRWifiScanRequestNotification.UTF8String, &wifiScanReqToken,
-            dispatch_get_main_queue(), ^(int token) {
-                (void)token;
-                [[TRWifiActiveScanner sharedScanner] requestScanNow];
-                fprintf(stderr, "[manager] wifiscan-request notified -> immediate scan\n");
             });
     }
 

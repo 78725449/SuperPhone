@@ -631,6 +631,9 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
         // 播完回到拟人微动（真人不会一动不动，2026-08-30）：中心=终点坐标，继续小幅随机偏移
         [self _startMicroWanderWithCenter:CLLocationCoordinate2DMake(_currentLat, _currentLon) acc:_currentAcc];
         TVLog(@"[locsim] itinerary finished, keep final point + idle micro-wander");
+        // 播完通知 App 复位播放态（2026-09-04 定案"播完=复位=与手动停止一致"）：
+        // App 收到后走 stopPlayback（commitStop 写 off）——App/daemon/plist 三方一致归停止态
+        notify_post(kTRSimPlaybackFinishedNotification.UTF8String);
         return;
     }
     [self _updateCurrentFromPoint:_trackPoints[_trackIndex++]];
