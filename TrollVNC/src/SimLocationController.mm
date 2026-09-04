@@ -136,10 +136,9 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     // 注：itinerary 分支已在上方 return，此条件实际仅 anchor 可达（|| itinerary 为不可达残留，保留不动）
     if ([mode isEqualToString:@"anchor"] || [mode isEqualToString:@"itinerary"]) {
         // 预置 off 写回（防 _readPref 双域不一致）
-        NSMutableDictionary *mp = [NSMutableDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath] ?: [NSMutableDictionary dictionary];
+    [self writeMobilePrefsUsingBlock:^(NSMutableDictionary *mp) {
         mp[@"SimLocationMode"] = @"off";
-        [mp writeToFile:kSimMobilePrefsPath atomically:YES];
-        TVLog(@"[locsim] startup: residual mode %@ forced -> off (startup-stop contract)", mode);
+    }];
     }
     // 定位已在②关掉，无需额外动作
 }
@@ -381,14 +380,13 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     NSString *targetSSID = [self _generateCitySSIDForBSSID:nearest.bssid];
     // 写入 SimAP 信息（App wifi 状态栏消费：当前模拟 AP 的 SSID/BSSID/坐标/距离）
     {
-        NSMutableDictionary *mp = [NSMutableDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath]
-                                    ?: [NSMutableDictionary dictionary];
-        mp[@"SimAPSSID"] = targetSSID;
-        mp[@"SimAPBSSID"] = nearest.bssid;
-        mp[@"SimAPLat"] = @(nearest.coord.latitude);
-        mp[@"SimAPLon"] = @(nearest.coord.longitude);
-        mp[@"SimAPDistance"] = @(best);
-        [mp writeToFile:kSimMobilePrefsPath atomically:YES];
+        [self writeMobilePrefsUsingBlock:^(NSMutableDictionary *mp) {
+            mp[@"SimAPSSID"] = targetSSID;
+            mp[@"SimAPBSSID"] = nearest.bssid;
+            mp[@"SimAPLat"] = @(nearest.coord.latitude);
+            mp[@"SimAPLon"] = @(nearest.coord.longitude);
+            mp[@"SimAPDistance"] = @(best);
+        }];
     }
     static NSString *sLastAPBSSID = nil;
     if (sLastAPBSSID && [sLastAPBSSID isEqualToString:nearest.bssid]) return; // 同 AP 不重复下发
@@ -630,10 +628,17 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
         [self _stopTrack]; // 播完：停轨迹 timer（不调 stop——保持注入会话）
         // 播完回到拟人微动（真人不会一动不动，2026-08-30）：中心=终点坐标，继续小幅随机偏移
         [self _startMicroWanderWithCenter:CLLocationCoordinate2DMake(_currentLat, _currentLon) acc:_currentAcc];
-        TVLog(@"[locsim] itinerary finished, keep final point + idle micro-wander");
-        // 播完通知 App 复位播放态（2026-09-04 定案"播完=复位=与手动停止一致"）：
-        // App 收到后走 stopPlayback（commitStop 写 off）——App/daemon/plist 三方一致归停止态
-        notify_post(kTRSimPlaybackFinishedNotification.UTF8String);
+        // 播完单方复位（2026-09-04 治理，替代"通知 App 由 App commitStop"的竞速设计）：
+        // daemon 单点保证三方一致——_currentMode 归 off + plist 写 off/终点坐标（位置连续，
+        // 未来 reload 不跳回起点）；Darwin 通知可能丢失，故不依赖 App 回写
+        _currentMode = @"off";
+        [self writeMobilePrefsUsingBlock:^(NSMutableDictionary *mp) {
+            mp[@"SimLocationMode"] = @"off";
+            mp[@"SimLocationLat"] = @(_currentLat);
+            mp[@"SimLocationLon"] = @(_currentLon);
+        }];
+        TVLog(@"[locsim] itinerary finished, keep final point + idle micro-wander (mode reset to off)");
+        notify_post(kTRSimPlaybackFinishedNotification.UTF8String); // App 仅做 UI 复位（丢失无害，plist 已 off）
         return;
     }
     [self _updateCurrentFromPoint:_trackPoints[_trackIndex++]];
@@ -753,12 +758,19 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
 + (void)forceOffAndReload {
     // 写 off 到 mobile 域 plist（配置源）→ reloadFromPrefs 走 off 分支（停轨迹，保留注入会话）；
     // 系统定位关闭由重启后 _forceStopOnStartup ② 完成（宁无位置不漏真实）
-    NSMutableDictionary *mp = [NSMutableDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath]
-                                ?: [NSMutableDictionary dictionary];
-    mp[@"SimLocationMode"] = @"off";
-    [mp writeToFile:kSimMobilePrefsPath atomically:YES];
+    [[SimLocationController sharedController] writeMobilePrefsUsingBlock:^(NSMutableDictionary *mp) {
+        mp[@"SimLocationMode"] = @"off";
+    }];
     [[SimLocationController sharedController] reloadFromPrefs];
     TVLog(@"[locsim] forceOffAndReload done (daemon restarting)");
+}
+
+/// mobile 域 plist 原子写（唯一写入出口，2026-09-04 治理）：读现有键 → mutate → 原子落盘
+/// 所有 SimLocation*/SimAP* 写入必须走此 helper（启动契约/_handleAPList/播完复位/forceOffAndReload 收口）
+- (void)writeMobilePrefsUsingBlock:(void (^)(NSMutableDictionary *mp))mutate {
+    NSMutableDictionary *mp = [NSMutableDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath] ?: [NSMutableDictionary dictionary];
+    if (mutate) mutate(mp);
+    [mp writeToFile:kSimMobilePrefsPath atomically:YES];
 }
 
 #pragma mark - 参数读取（mobile 域 plist 优先 → root suite 仅兜底）

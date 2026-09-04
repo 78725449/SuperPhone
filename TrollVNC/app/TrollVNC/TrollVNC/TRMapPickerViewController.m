@@ -453,6 +453,18 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [self _updateWifiStatusBar]; // 立即刷新当前状态
 }
 
+/// 当前连接 WiFi 信息（CNCopyCurrentNetworkInfo 封装，2026-09-04 治理：2 处调用收口）。
+/// 注意：需系统定位服务开启才返回数据——定位关时返回 nil（wifi 标注触发模型依赖 fix 驱动，
+/// 定位关时 fix 不到达自然不触发，与本 helper 的 nil 返回语义一致）
+- (NSDictionary *)currentNetworkInfo {
+    NSArray *ifs = (__bridge_transfer NSArray *)CNCopySupportedInterfaces();
+    for (id ifname in ifs) {
+        NSDictionary *info = (__bridge_transfer NSDictionary *)CNCopyCurrentNetworkInfo((__bridge CFStringRef)ifname);
+        if (info) return info;
+    }
+    return nil;
+}
+
 /// wifi 状态栏更新（2026-08-30）：统一管理 wifiDiagLabel 显示，取代旧多处分散更新
 /// 模拟中 → 读 daemon 写入的 SimAP 数据（SSID/BSSID/坐标/距离）+ 当前位置
 /// 非模拟 → 读 CNCopy 当前连接 SSID/BSSID + wloc 反查坐标
@@ -474,12 +486,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         }
     } else {
         // 停止态：显示当前连接 WiFi 信息
-        NSDictionary *info = nil;
-        NSArray *ifs = (__bridge_transfer NSArray *)CNCopySupportedInterfaces();
-        for (id ifname in ifs) {
-            info = (__bridge_transfer NSDictionary *)CNCopyCurrentNetworkInfo((__bridge CFStringRef)ifname);
-            if (info) break;
-        }
+        NSDictionary *info = [self currentNetworkInfo];
         NSString *bssid = info[(__bridge NSString *)kCNNetworkInfoKeyBSSID];
         NSString *ssid = info[(__bridge NSString *)kCNNetworkInfoKeySSID];
         if (bssid.length && ssid.length) {
@@ -506,13 +513,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 停止态"获取中"死路的根治：daemon off 注入/播放会开定位，fix 到达即自动恢复反查链）
 /// 覆盖触发项：启动恢复（首个 fix）/ 软路由下发断网重连（BSSID 变化）/ 网络切换（同上）
 - (void)_refreshWifiAnnoFromCurrentConnection {
-    NSDictionary *info = nil;
-    NSArray *ifs = (__bridge_transfer NSArray *)CNCopySupportedInterfaces();
-    for (id ifname in ifs) {
-        info = (__bridge_transfer NSDictionary *)
-        CNCopyCurrentNetworkInfo((__bridge CFStringRef)ifname);
-        if (info) break;
-    }
+    NSDictionary *info = [self currentNetworkInfo];
     NSString *bssid = info[(__bridge NSString *)kCNNetworkInfoKeyBSSID];
     if (!bssid.length) {
         [self removeWifiAnnotationIfExists];
@@ -594,12 +595,9 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 残留的 anchor/itinerary 模式强制写 off（App 启动态=停止=执行契约，daemon 强制对齐停止、locationd 保持当前位置），
 /// 避免"启动即自动开启模拟 / 真实位置被当模拟位置 / 恢复态 Follow 干扰搜索聚焦"
 - (void)readCurrentStatus {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
-    NSString *mode = [d stringForKey:@"SimLocationMode"];
-    if ([mode isEqualToString:@"anchor"] || [mode isEqualToString:@"itinerary"]) {
+    [self commitSimPrefs:^(NSUserDefaults *d) {
         [d setObject:@"off" forKey:@"SimLocationMode"];
-        [d synchronize];
-        notify_post(TVNC_NOTIFY_PREFS_CHANGED);
+    }];
     }
     // 2026-08-30 定案：不再从 SimCurrentLat/Lon 恢复 self.cur——该值可能残留旧坐标系（GCJ-02）
     // 致绿点偏移（实测 SimLocationLat 与 SimCurrentLat 差 538m 东南 = GCJ 偏移特征）。
@@ -993,6 +991,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     self.locating = NO;
     self.pendingEditAction = nil;    // 放弃生成中挂起的编辑（停止后不再生长/复活设备）
     self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 停止时刻：只认晚于此的 fix（过滤停止前的旧 fix）
+    self.startupLockedToAnchor = NO; // 停止即解锁（2026-09-04 治理：锁生命周期限定播放会话内，防跨状态残留）
     [self commitStop];
     self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随（水滴随 locationd 当前位置）
     [self refreshUserLocationView];                          // 当前位置水滴去图标（未定位=纯绿点）
@@ -1017,13 +1016,12 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         self.startupLockedToAnchor = YES; // 开启瞬间到注入落地前：锁定锚点位置显示，忽略旧 fix（防"旧→锚点"横跳）
         // 原子写入：坐标 + 模式，一次 notify（daemon 模式切换已跳过 500ms 合并，立即执行）
         {
-            NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
-            BOOL hasRoute = [[NSFileManager defaultManager] fileExistsAtPath:kTRSimTrackFilePath];
-            [d setDouble:self.cur.latitude forKey:@"SimLocationLat"];
-            [d setDouble:self.cur.longitude forKey:@"SimLocationLon"];
-            [d setObject:hasRoute ? @"itinerary" : @"anchor" forKey:@"SimLocationMode"];
-            [d synchronize];
-            notify_post(TVNC_NOTIFY_PREFS_CHANGED);
+    [self commitSimPrefs:^(NSUserDefaults *d) {
+        BOOL hasRoute = [[NSFileManager defaultManager] fileExistsAtPath:kTRSimTrackFilePath];
+        [d setDouble:self.cur.latitude forKey:@"SimLocationLat"];
+        [d setDouble:self.cur.longitude forKey:@"SimLocationLon"];
+        [d setObject:hasRoute ? @"itinerary" : @"anchor" forKey:@"SimLocationMode"];
+    }];
         }
         [self refreshUserLocationView];       // 当前位置水滴恢复出行图标
         // 停止后再开启：之前模拟位置（cur）距当前实际位置（lastFix=真实或残留）>500m → 瞬间跳回停止前位置（复用首锚点视野行为）；
@@ -1791,31 +1789,49 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 
 #pragma mark - 落盘自治（App=配置源，manager=注入执行器）
 
+/// mobile 域命令提交（唯一出口，2026-09-04 治理）：写键 → synchronize（防 cfprefsd 懒落盘竞态，
+/// 2026-08-27 教训）→ notify_post。所有 SimLocation*/SimAP* 写入必须走此 helper
+/// （readCurrentStatus/toggleLocate/commitAnchor/commitStop/holdAtCurrentPosition 收口）
+- (void)commitSimPrefs:(void (^)(NSUserDefaults *d))mutate {
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
+    if (mutate) mutate(d);
+    [d synchronize];
+    notify_post(TVNC_NOTIFY_PREFS_CHANGED);
+}
+
 - (void)commitAnchor {
     // 2026-08-29 定案：只写坐标，不写模式——daemon off 分支检测坐标变化后注入+开定位，保持模式为 off
 // self.cur 统一瓦片系（2026-09-04 治理），直接写 plist——daemon injectPoint 出口统一 GCJ→WGS
-    CLLocationCoordinate2D wgs = self.cur;
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
-    [d setDouble:wgs.latitude forKey:@"SimLocationLat"];
-    [d setDouble:wgs.longitude forKey:@"SimLocationLon"];
-    [d synchronize];
-    notify_post(TVNC_NOTIFY_PREFS_CHANGED);
+    [self commitSimPrefs:^(NSUserDefaults *d) {
+        CLLocationCoordinate2D wgs = self.cur;
+        [d setDouble:wgs.latitude forKey:@"SimLocationLat"];
+        [d setDouble:wgs.longitude forKey:@"SimLocationLon"];
+    }];
 }
 
 - (void)commitStop {
     NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
-    [d setObject:@"off" forKey:@"SimLocationMode"];
-    [d synchronize];
-    notify_post(TVNC_NOTIFY_PREFS_CHANGED);
-}
+    [self commitSimPrefs:^(NSUserDefaults *d) {
+        [d setObject:@"off" forKey:@"SimLocationMode"];
+    }];
 
-/// 轨迹播完复位（daemon kTRSimPlaybackFinishedNotification 通知，2026-09-04 定案"播完=复位=与手动停止一致"）：
-/// 播放态订阅终止——走与手动停止完全相同的 stopPlayback 路径（commitStop 写 off，App/daemon/plist 三方归停止态）；
-/// 位置订阅 locationd 不变（off 分支终点微动继续）。幂等守卫：未开启时忽略（daemon 重复通知/未开启播完防护）
+/// 轨迹播完复位（daemon kTRSimPlaybackFinishedNotification 通知，2026-09-04 治理）：
+/// daemon 播完分支已单方复位三方（_currentMode=off + plist 写 off/终点坐标）——App 仅做 UI 复位，
+/// 不再 commitStop（避免与 daemon 单方复位的反向竞速；Darwin 通知丢失也无害，plist 已 off）。
+/// 幂等守卫：未开启时忽略。
 - (void)playbackDidFinish {
     if (!self.locating) return;
     TVLog(@"[locsim] playback finished (daemon notified) -> reset to stopped");
-    [self stopPlayback];
+    self.locating = NO;
+    self.pendingEditAction = nil;
+    self.stopTimestamp = [[NSDate date] timeIntervalSince1970];
+    self.startupLockedToAnchor = NO; // 解锁（防御性重置）
+    self.mapView.userTrackingMode = MKUserTrackingModeNone;
+    [self refreshUserLocationView];
+    [self resetFocusBaseline];
+    [self refreshWifiAnnotation];
+    [self _updateWifiStatusBar];
+    [self updateStatus];
 }
 
 /// 重算期间让 daemon 驻留在当前位置（anchor 微动）：编辑（删除/重排）重算耗时期间，
@@ -1824,11 +1840,10 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 - (void)holdAtCurrentPosition:(CLLocationCoordinate2D)curW {
     if (!self.locating) return;
     // 2026-08-29 定案：只写坐标，不写模式——编辑时保持当前模式不变
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
-    [d setDouble:curW.latitude forKey:@"SimLocationLat"];
-    [d setDouble:curW.longitude forKey:@"SimLocationLon"];
-    [d synchronize];
-    notify_post(TVNC_NOTIFY_PREFS_CHANGED);
+    [self commitSimPrefs:^(NSUserDefaults *d) {
+        [d setDouble:curW.latitude forKey:@"SimLocationLat"];
+        [d setDouble:curW.longitude forKey:@"SimLocationLon"];
+    }];
 }
 
 /// 编辑动作统一入口（联动性：编辑不丢）——生成中挂起（最后一次生效），否则立即执行
