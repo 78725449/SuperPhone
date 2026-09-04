@@ -23,7 +23,7 @@
 #import <notify.h>
 // CoordTransform 已删除（2026-08-30 坐标统一：MKMapView 层全程 WGS-84，无 GCJ/WGS 手动转换）
 // TRWpsTile import 已移除（2026-09-04 死代码清理：App 标注走 TRWpsClient 当前连接反查，不经 TRWpsTile 原语）
-#import "../../../src/TRWifiScanContract.h" // 跨端扫描契约常量（单一真相源，2026-08-28）
+// TRWifiScanContract import 已移除（2026-09-04：TRWifiActiveScanner 死链删除，App 不消费 wifiscan.json/updated）
 #import "../../../src/TRSimContract.h" // 跨端定位契约（轨迹文件路径单一真相源，2026-08-28）
 #import "../../../src/TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 #import "RegionSimulator.h"

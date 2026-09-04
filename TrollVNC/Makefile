@@ -154,8 +154,6 @@ trollvncmanager_FILES += src/RegionSimulator.mm
 trollvncmanager_FILES += src/TRDataFiller.mm
 trollvncmanager_FILES += src/TRWpsTile.mm
 trollvncmanager_FILES += src/TRWpsProto.mm
-trollvncmanager_FILES += src/TRWifiActiveScanner.mm
-trollvncmanager_FILES += src/TRWifiScanContract.mm
 trollvncmanager_FILES += src/TRSimContract.mm
 # 每日轨迹（2026-08-26）：manager daemon 自治的每日通话/短信/未接 + 每周联系人（真人行为模拟）
 trollvncmanager_FILES += src/TRDailyTrajectory.mm

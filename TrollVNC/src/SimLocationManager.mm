@@ -21,6 +21,9 @@
  * CLSimulationManager 私有接口声明（自写，参考逆向公开知识；不复制 GPL 源码）。
  * 接口事实来源：Geranium/Andromeda/TrollBox 均使用同一声明（udevs 头文件）。
  * 依赖 entitlement：com.apple.locationd.simulation（见 TrollVNC.entitlements）。
+ * （2026-09-04 死声明清理：loadScenarioFromURL/setSimulatedCell/startCellSimulation/
+ *  stopCellSimulation/setWifiScanResults/startWifiSimulation 已删——零调用，
+ *  cell 模拟与扫描结果注入从未启用；仅保留 GPS 注入 + wifi 扫描停止实际用到的声明）
  */
 @interface CLSimulationManager : NSObject
 @property (assign, nonatomic) uint8_t locationDeliveryBehavior;
@@ -33,14 +36,8 @@
 - (void)stopLocationSimulation;
 - (void)appendSimulatedLocation:(id)location;
 - (void)flush;
-- (void)loadScenarioFromURL:(id)url;
-- (void)setWifiScanResults:(id)scanResults;
 - (void)setSimulatedWifiPower:(BOOL)p;
-- (void)startWifiSimulation;
 - (void)stopWifiSimulation;
-- (void)setSimulatedCell:(id)cell;
-- (void)startCellSimulation;
-- (void)stopCellSimulation;
 @end
 
 static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNeeded";

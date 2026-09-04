@@ -41,7 +41,6 @@
 #import "SimLocationManager.h"
 #import "SimLocationController.h"
 #import "TRDailyTrajectory.h"
-#import "TRWifiActiveScanner.h" // WiFi 主动扫描（2026-08-27 root daemon Apple80211，见 start 区挂载）
 #import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 #import "libproc.h"
 
@@ -591,10 +590,8 @@ int main(int argc, const char *argv[]) {
 
         // 每日轨迹（2026-08-26）：每日通话/短信/未接 + 每周新增联系人（真人行为模拟，默认开启）
         [TRDailyTrajectory start];
-
-        // WiFi 主动扫描（2026-08-27）：root daemon Apple80211 周期扫周边 BSSID → 共享 JSON + Darwin 通知。
-        // 目的：真实 wifi 定位标注不再依赖「打开系统 Wi-Fi 设置页触发被动扫描」——App 启动即自动获取。
-        [[TRWifiActiveScanner sharedScanner] start];
+        // （TRWifiActiveScanner 8s 主动扫描已删除 2026-09-04：消费链死——App 真实 wifi 标注
+        //  2026-08-30 起改走当前连接反查，wifiscan.json/wifiscan-updated 无任何消费方）
     }
 
     {
