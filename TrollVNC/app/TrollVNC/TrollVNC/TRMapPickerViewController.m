@@ -86,6 +86,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, strong) UIView *statusDot;                     // 状态圆点（定位中绿/停止灰）
 @property (nonatomic, strong) UILabel *wifiDiagLabel;                // WiFi 链路诊断标签（注册/回调/列表/BSSID/反查 5 环）
 @property (nonatomic, assign) NSUInteger wifiQuerySeq;  // wifi 反查请求序号（丢弃过期回调，防模拟/真实切换竞态）
+@property (nonatomic, copy) NSString *lastWifiBSSID;  // 上次反查的当前连接 BSSID（fix 驱动增量：BSSID 未变不重复反查，2026-09-04 触发模型治理）
 // wifiLastTileKey/wifiTileAps 已删除（2026-09-04 死代码清理：窗口质心标注废弃，标注走当前连接反查）
 @property (nonatomic, assign) CLLocationCoordinate2D wifiCurWGS; // 最近一次 wifi 反查质心（WGS；真实 wifi 位置，供启动聚焦兜底/状态显示——GPS 优先、无 GPS 用 wifi 聚焦）
 @property (nonatomic, strong) UITableView *stepTable;        // 步骤列表（状态条展开；删除 + 拖拽排序）
@@ -499,21 +500,28 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 不跟随模拟坐标——它是软路由切换效果的可视化验证（真实 BSSID 被定位到哪 = 切换是否生效），
 /// 与 GPS 轨迹/模拟位置完全解耦。旧「瓦片检测 + 缓存池质心跟随」逻辑已删。
 /// 数据源 = CNCopyCurrentNetworkInfo（App 有定位授权可用；daemon 才需要 ipconfig 通道）。
+/// wifi 标注触发模型（2026-09-04 治理，与订阅定位同构）：didUpdateLocations 为唯一时钟——
+/// 每次 fix 到达时读当前连接 BSSID，与缓存比对：变化/首次 → wloc 反查更新标注；未变 → 跳过（零开销）。
+/// 定位关时 fix 不到达 → 不触发（CNCopyCurrentNetworkInfo 需系统定位开启才返回数据——
+/// 停止态"获取中"死路的根治：daemon off 注入/播放会开定位，fix 到达即自动恢复反查链）
+/// 覆盖触发项：启动恢复（首个 fix）/ 软路由下发断网重连（BSSID 变化）/ 网络切换（同上）
 - (void)_refreshWifiAnnoFromCurrentConnection {
-    // 2026-08-30：此方法只负责 WiFi 水滴标注更新（wloc 反查 BSSID→坐标→地图显示）
-    // wifiDiagLabel 状态栏由 _updateWifiStatusBar 统一管理
     NSDictionary *info = nil;
     NSArray *ifs = (__bridge_transfer NSArray *)CNCopySupportedInterfaces();
     for (id ifname in ifs) {
         info = (__bridge_transfer NSDictionary *)
-            CNCopyCurrentNetworkInfo((__bridge CFStringRef)ifname);
+        CNCopyCurrentNetworkInfo((__bridge CFStringRef)ifname);
         if (info) break;
     }
     NSString *bssid = info[(__bridge NSString *)kCNNetworkInfoKeyBSSID];
     if (!bssid.length) {
         [self removeWifiAnnotationIfExists];
+        self.lastWifiBSSID = nil;
         return;
     }
+    // fix 驱动增量：BSSID 未变化 → 跳过（同 AP 反查结果稳定，无重复网络请求）
+    if ([bssid isEqualToString:self.lastWifiBSSID]) return;
+    self.lastWifiBSSID = bssid;
     NSUInteger seq = ++self.wifiQuerySeq;
     [self _queryWifiAnnoWithBssids:@[bssid] seq:seq];
 }
@@ -1277,6 +1285,22 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         [self setHint:@"该锚点正在消费中（绿色，含终点），暂不可删除"];
         return;
     }
+    // 播放中：消费中路线的前后锚点一并禁删（2026-09-04 用户决策）——
+    // 消费中段（绿锚点所在段）正在播放推进，删除其出发/终点锚点会打断当前段重算，
+    // 触发 hold 驻留致播放中断感；停止态编辑自由不受限
+    if (self.locating) {
+        TRAnchorAnnotation *consumingAnchor = nil;
+        for (TRAnchorAnnotation *a in self.anchors) {
+            if (a.consuming && !a.passed) { consumingAnchor = a; break; }
+        }
+        if (consumingAnchor) {
+            NSInteger sC = consumingAnchor.segmentIndex;
+            if (idx == sC || idx == sC - 1) {
+                [self setHint:@"播放中不可删除当前消费中路线的前后锚点（绿及其出发锚点）"];
+                return;
+            }
+        }
+    }
     // 红（已消费路线走完）/ 蓝（未消费）：可删——蓝走补插位逻辑（下方删锚 k 只重算前驱→后继段）
     NSDictionary *removed = self.segments[idx];
     if ([removed[@"type"] isEqualToString:@"region"]) {
@@ -1306,6 +1330,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         [self setHint:@"已清空行程 · 停止模拟定位"];
         [self updateStatus];
         [self syncSegmentsUI];
+    [self writeTrackFile:@[]]; // 删光同步清编排契约文件——否则重开 App restoreSession 恢复出幽灵锚点（2026-09-04 实测修复）
         return;
     }
     // 跨过被删锚点的合并段标记待生成；删链尾则无（轨迹截断到上一锚点）
@@ -1516,6 +1541,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     // 更新当前位置（首锚点注入落地后，self.cur 跟随 locationd 注入位置；瓦片系统一存储）
     self.cur = mapCoord;
     [self updateAnchorPassStateWithLiveWGS:mapCoord]; // 停止态也更新三态（passed 单调：红锚点保持红，仅反映位置新经过）
+[self _refreshWifiAnnoFromCurrentConnection]; // wifi 标注 fix 驱动刷新（BSSID 增量比对）
     [self updateStatus];
     // 自动聚焦（距离阈值）：fix 距停止瞬间基线超阈值才聚焦——
     // 旧 fix（≈基线）不触发、新 fix（画布外）必触发；GPS 收敛渐进超阈值再拉回
