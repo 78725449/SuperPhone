@@ -16,7 +16,6 @@
 static const int kTRWpsTileLevel = 13;
 static const NSUInteger kTRWpsTileCacheLimit = 32;
 
-const NSUInteger kTRWpsWindowSize = 30; // 可见窗口大小（daemon 注入与 App 标注共用，2026-08-28）
 
 static const double kTRWpsMinLat = -85.05112878;
 static const double kTRWpsMaxLat = 85.05112878;
@@ -365,52 +364,8 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
     return (key != previous);
 }
 
-+ (NSArray<NSString *> *)sampleBssidsFromAPs:(NSArray<TRWpsTileAP *> *)aps max:(NSUInteger)max {
-    NSMutableArray *bssids = [NSMutableArray arrayWithCapacity:MIN(max, aps.count)];
-    NSUInteger n = MIN(max, aps.count);
-    for (NSUInteger i = 0; i < n; i++) [bssids addObject:aps[i].bssid];
-    return bssids;
-}
-
-// ---------- 距离窗口 + RSSI 加权质心（2026-08-28：模拟真实设备移动时可见 AP 渐变） ----------
-
-+ (NSArray<TRWpsTileAP *> *)windowApsByDistance:(NSArray<TRWpsTileAP *> *)aps
-                                         center:(CLLocationCoordinate2D)center
-                                         window:(NSUInteger)window {
-    if (aps.count == 0) return @[];
-    NSUInteger win = MAX(window, (NSUInteger)1);
-    // 平面近似距离排序（窗口内 ≤4.9km，经纬度线性足够；经度按 cos 纬度缩放）
-    double cosLat = cos(center.latitude * M_PI / 180.0);
-    NSArray *sorted = [aps sortedArrayUsingComparator:^NSComparisonResult(TRWpsTileAP *a, TRWpsTileAP *b) {
-        double dLatA = a.coord.latitude - center.latitude;
-        double dLonA = (a.coord.longitude - center.longitude) * cosLat;
-        double dLatB = b.coord.latitude - center.latitude;
-        double dLonB = (b.coord.longitude - center.longitude) * cosLat;
-        double da = dLatA * dLatA + dLonA * dLonA;
-        double db = dLatB * dLatB + dLonB * dLonB;
-        return da < db ? NSOrderedAscending : (da > db ? NSOrderedDescending : NSOrderedSame);
-    }];
-    NSUInteger n = MIN(win, sorted.count);
-    return [sorted subarrayWithRange:NSMakeRange(0, n)];
-}
-
-+ (CLLocationCoordinate2D)rssiWeightedCentroidOfAps:(NSArray<TRWpsTileAP *> *)aps {
-    if (aps.count == 0) return kCLLocationCoordinate2DInvalid;
-    // 相对首点（窗口内小范围）算米制距离，权重 1/(1+d) 近强远弱——模拟定位偏向强信号 AP
-    TRWpsTileAP *ref = aps[0];
-    double cosRef = cos(ref.coord.latitude * M_PI / 180.0);
-    double wlat = 0, wlon = 0, wsum = 0;
-    for (TRWpsTileAP *ap in aps) {
-        double dLat = (ap.coord.latitude - ref.coord.latitude) * 111320.0;
-        double dLon = (ap.coord.longitude - ref.coord.longitude) * 111320.0 * cosRef;
-        double d = sqrt(dLat * dLat + dLon * dLon);
-        double w = 1.0 / (1.0 + d);
-        wlat += ap.coord.latitude * w;
-        wlon += ap.coord.longitude * w;
-        wsum += w;
-    }
-    return CLLocationCoordinate2DMake(wlat / wsum, wlon / wsum);
-}
+// （2026-09-04 死代码清理：sampleBssidsFromAPs / windowApsByDistance / rssiWeightedCentroidOfAps 已删除——
+//  2026-08-29 软路由联动模型后两端零调用，wifi 标注改走"当前连接 BSSID 反查"；git 历史可恢复）
 
 // ---------- 空洞瓦片螺旋回退（远程伪装起点即空洞，2026-08-28 定案；社区 acheong08 demo-api 同款） ----------
 // 场景：模拟坐标所在瓦片为 Apple 数据空洞（404）且从未注入成功——不注入会让 locationd 的 wifi 源

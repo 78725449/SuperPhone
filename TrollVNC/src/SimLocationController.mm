@@ -72,8 +72,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     uint64_t _lastWifiTileKey;   // 上次 wifi 反查的瓦片 key（跨瓦片才重反查，轨迹跟随）
     NSString *_wifiTargetBSSID;   // WiFi 重连监听目标 BSSID（SCDynamicStore 键变化比对，匹配即清理，2026-08-30 去兜底）
     TVSCDynamicStoreRef _wifiStore; // WiFi 重连监听 store（SCDynamicStore 键变化回调，2026-08-30 替代 1s 轮询）
-    NSArray<TRWpsTileAP *> *_wifiTileAps; // 当前瓦片 AP 池（窗口注入源；跨瓦片/首点反查时刷新，2026-08-28）
-    NSArray<NSString *> *_lastWifiWindowBssids; // 上次注入的可见 AP BSSID 集（变化才重注入，2026-08-28）
+    // （2026-09-04 死代码清理：_wifiTileAps/_lastWifiWindowBssids 已删除——窗口注入随软路由联动模型废弃，两 ivar 零读写）
 }
 
 + (instancetype)sharedController {

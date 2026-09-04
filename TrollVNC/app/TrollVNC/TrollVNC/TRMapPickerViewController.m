@@ -22,7 +22,7 @@
 #import <SystemConfiguration/CaptiveNetwork.h> // 当前连接 WiFi SSID/BSSID（WiFi 水滴数据源，2026-08-29）
 #import <notify.h>
 // CoordTransform 已删除（2026-08-30 坐标统一：MKMapView 层全程 WGS-84，无 GCJ/WGS 手动转换）
-#import "TRWpsTile.h" // 坐标→BSSID 动态反查（模拟分支按当前位置反查，与 daemon 注入同源；轨迹跟随）
+// TRWpsTile import 已移除（2026-09-04 死代码清理：App 标注走 TRWpsClient 当前连接反查，不经 TRWpsTile 原语）
 #import "../../../src/TRWifiScanContract.h" // 跨端扫描契约常量（单一真相源，2026-08-28）
 #import "../../../src/TRSimContract.h" // 跨端定位契约（轨迹文件路径单一真相源，2026-08-28）
 #import "../../../src/TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
@@ -90,8 +90,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, strong) UIView *statusDot;                     // 状态圆点（定位中绿/停止灰）
 @property (nonatomic, strong) UILabel *wifiDiagLabel;                // WiFi 链路诊断标签（注册/回调/列表/BSSID/反查 5 环）
 @property (nonatomic, assign) NSUInteger wifiQuerySeq;  // wifi 反查请求序号（丢弃过期回调，防模拟/真实切换竞态）
-@property (nonatomic, assign) uint64_t wifiLastTileKey;        // 模拟态 wifi 标注瓦片 key（对齐 daemon _checkWifiTileChangedAndReinject：跨瓦片才重新反查标注，同瓦片跳过）
-@property (nonatomic, strong) NSArray<TRWpsTileAP *> *wifiTileAps;   // 当前瓦片 AP 池缓存（窗口质心刷新源；跨瓦片反查时刷新，2026-08-28）
+// wifiLastTileKey/wifiTileAps 已删除（2026-09-04 死代码清理：窗口质心标注废弃，标注走当前连接反查）
 @property (nonatomic, assign) CLLocationCoordinate2D wifiCurWGS; // 最近一次 wifi 反查质心（WGS；真实 wifi 位置，供启动聚焦兜底/状态显示——GPS 优先、无 GPS 用 wifi 聚焦）
 @property (nonatomic, strong) UITableView *stepTable;        // 步骤列表（状态条展开；删除 + 拖拽排序）
 
@@ -566,8 +565,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         // 停止态：读当前连接 WiFi 反查标注（回到真实位置，2026-08-30 替代旧主动扫描）
         [self _updateWifiStatusBar]; // 状态栏刷新
         [self _refreshWifiAnnoFromCurrentConnection]; // 水滴标注更新
-        self.wifiLastTileKey = 0; // 重置瓦片 key：下次开启模拟强制重新反查
-        self.wifiTileAps = nil;   // 清瓦片 AP 池（停止态不保留模拟指纹，2026-08-28）
         return;
     }
     // 模拟态：当前连接 BSSID 反查（不跟随模拟坐标）
