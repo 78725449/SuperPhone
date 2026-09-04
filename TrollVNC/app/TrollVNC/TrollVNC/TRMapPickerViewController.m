@@ -1015,8 +1015,10 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         // 且已离开起点 = 路线已播完卡在终点，无可继续播放的路径 → 播放按钮禁用（不切换状态）。
         // 往返路线（起终点重合）不受影响：位置距起点也近 → 判定不触发，可反复播放
         if (self.anchors.count >= 2) {
-            CLLocationCoordinate2D startW = self.anchors.firstObject.coordinate;
-            CLLocationCoordinate2D endW = self.anchors.lastObject.coordinate;
+            TRAnchorAnnotation *startAnno = self.anchors.firstObject;
+            TRAnchorAnnotation *endAnno = self.anchors.lastObject;
+            CLLocationCoordinate2D startW = startAnno.coordinate;
+            CLLocationCoordinate2D endW = endAnno.coordinate;
             double dEnd = [SimRouteCalculator haversineMeters:self.cur to:endW];
             double dStart = [SimRouteCalculator haversineMeters:self.cur to:startW];
             if (dEnd <= 25.0 && dStart > 25.0) {
