@@ -1010,6 +1010,19 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
             [self setHint:@"请先点击地图设定模拟位置起点"];
             return;
         }
+        // 可播放性判定（2026-09-04 设计层治理，纯几何派生无存储）：位置已在轨迹尽头
+        // 且已离开起点 = 路线已播完卡在终点，无可继续播放的路径 → 播放按钮禁用（不切换状态）。
+        // 往返路线（起终点重合）不受影响：位置距起点也近 → 判定不触发，可反复播放
+        if (self.anchors.count >= 2) {
+            CLLocationCoordinate2D startW = self.anchors.firstObject.coordinate;
+            CLLocationCoordinate2D endW = self.anchors.lastObject.coordinate;
+            double dEnd = [SimRouteCalculator haversineMeters:self.cur to:endW];
+            double dStart = [SimRouteCalculator haversineMeters:self.cur to:startW];
+            if (dEnd <= 25.0 && dStart > 25.0) {
+                [self setHint:@"已在轨迹终点，无可继续播放的路径（编辑路线或重设锚点后可再播放）"];
+                return;
+            }
+        }
         self.locating = YES;
         self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 开启时刻：只认晚于此的 fix（过滤开启前的旧 fix）
         self.startupLockedToAnchor = YES; // 开启瞬间到注入落地前：锁定锚点位置显示，忽略旧 fix（防"旧→锚点"横跳）

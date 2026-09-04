@@ -241,6 +241,15 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     } else if ([mode isEqualToString:@"itinerary"]) {
         // 动作序列：轨迹文件逐秒推进（续播见 _startTrack：版本一致 seq 精确定位 / 不一致几何兜底，不从头重放）
         [self _stopAnchor];
+        // App 点播放时写入的当前位置（SimLocationLat/Lon，瓦片系）→ 恢复 daemon 内部位置：
+        // daemon 重启后 _currentLat=0（无 simstate 进度），若不读回则 _startTrack 从头播（回起点，
+        // 2026-09-04 用户裁决"播放从当前位置继续"）——从 App 当前位置续播
+        double playLat = [self _readDouble:@"SimLocationLat" def:0.0];
+        double playLon = [self _readDouble:@"SimLocationLon" def:0.0];
+        if (playLat != 0 || playLon != 0) {
+            _currentLat = playLat;
+            _currentLon = playLon;
+        }
         [self _startTrack];
     } else {
         TVLog(@"[locsim] unknown mode=%@ -> off", mode);
