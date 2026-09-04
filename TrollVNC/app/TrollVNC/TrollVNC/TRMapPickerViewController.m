@@ -95,7 +95,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, assign) BOOL segmentZeroPending;                     // 删首锚点后"当前位置→新首锚"段 0 待生成（段 0 特殊机制：正常链段 0=首锚点仅起点恒有效）
 @property (nonatomic, strong) NSMutableArray *anchors;       // 每段对应的锚点标注（TRAnchorAnnotation）
 @property (nonatomic, strong) NSMutableArray *waypointAnns;          // 区域漫游途经点标注（TRWaypointAnnotation，随区域段生成/重建）
- cur;    // 当前模拟位置（瓦片系=MapKit 显示系，2026-09-04 治理：详见 handleLocationUpdate 边界转换）
+@property (nonatomic, assign) CLLocationCoordinate2D cur;    // 当前模拟位置（瓦片系=MapKit 显示系，2026-09-04 治理：详见 handleLocationUpdate 边界转换）
 @property (nonatomic, assign) BOOL hasStart;
 @property (nonatomic, assign) BOOL locating;                // 定位开关状态
 @property (nonatomic, copy) NSString *currentLegMode;       // 当前位置水滴的出行方式（当前段目标锚点的，walk/drive）
