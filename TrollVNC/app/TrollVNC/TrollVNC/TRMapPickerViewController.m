@@ -37,6 +37,7 @@
 // prefs suite 名 → kTRAppPrefsSuiteName（TRAppDomain.h 跨端单一真相源，2026-08-28）
 // WiFi 主动扫描契约常量 → TRWifiScanContract.h（共享模块单一真相源，2026-08-28 收敛；不再本地 static 字面量）
 static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：fix 距上次聚焦点 ≥500m 才拉回（GPS 抖动 <50m 不打扰）
+static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距锚点（或轨迹端点/注入基线）25m 内视为已到达——锚点经过判定、25m 锁解锁、播放禁用判定共用（单一真相源）
 
 /// 锚点标注（关联编排段索引，点击删除该段；水滴图钉状态分类：未消费=蓝/消费中=绿/已消费=红，当前位置=绿；
 /// 水滴内嵌该锚点生成时所使用的出行方式图标 🚶/🚗）
@@ -1162,10 +1163,14 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         : [NSString stringWithFormat:@"   %.5f, %.5f", showWgs.latitude, showWgs.longitude];
     NSString *speedTxt = @"0.0 m/s";
     // 2026-08-30：注入始终跑，无"停止"——移动中=路线播放，模拟中=静止注入
-    NSString *modeTxt = self.locating ? @"移动中" : @"模拟中";
+    // 状态文案订阅真实移动（2026-09-04 治理）：lastFix.speed 为 locationd 广播的实际速度
+    // （daemon 注入轨迹点自带 speed 字段）——速度 >0.1 = 移动中；播放但速度≈0 = 驻留微动
+    BOOL isMoving = self.lastFix && self.lastFix.speed > 0.1;
+    NSString *modeTxt = self.locating ? (isMoving ? @"移动中" : @"驻留中") : @"模拟中";
     if (self.locating) {
-        // 速度 = 当前所在路线（出发锚点段）的生成速度——updateAnchorPassStateWithLiveWGS 已从段缓存更新 currentLegSpeed
-        speedTxt = [NSString stringWithFormat:@"%.1f m/s", self.currentLegSpeed];
+        // 速度 = lastFix.speed（locationd 广播的实际速度，daemon 注入轨迹点自带 speed 字段）
+        // （currentLegSpeed 为段配置速度，仅用于锚点图标，不作为实际移动速度显示）
+        speedTxt = [NSString stringWithFormat:@"%.1f m/s", self.lastFix ? self.lastFix.speed : self.currentLegSpeed];
     }
     // 富文本：模式加粗 + 速度等宽灰 + 坐标等宽灰（对齐原型 stat .m/.spd/.c）
     NSMutableAttributedString *as = [[NSMutableAttributedString alloc] init];
