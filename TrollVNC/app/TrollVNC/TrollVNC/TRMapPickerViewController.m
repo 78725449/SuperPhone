@@ -1381,6 +1381,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 - (CLLocationCoordinate2D)currentSimPosition {
     // lastFix 为 WGS fix（locationd 语义）→ 转瓦片系与 segments 同系；self.cur 已是瓦片系
     if (self.lastFix) return [CoordTransform wgs84ToGcj02:self.lastFix.coordinate];
+    return self.cur;
 }
 
 /// 停止定位后只记录自动聚焦基线（停止瞬间位置=模拟残留）——不主动聚焦：
