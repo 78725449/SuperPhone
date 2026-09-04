@@ -58,12 +58,6 @@ static void _offset(double lat, double lon, double *dLatOut, double *dLonOut) {
     return lon < 72.004 || lon > 137.8347 || lat < 0.8293 || lat > 55.8271;
 }
 
-+ (BOOL)isValidSimCoordinate:(CLLocationCoordinate2D)coord {
-    if (coord.latitude == 0 && coord.longitude == 0) return NO;  // 无效基线
-    if ([self outOfChinaLatitude:coord.latitude longitude:coord.longitude]) return NO;  // 越界（含 lat≈0 赤道类坏数据）
-    return YES;
-}
-
 + (CLLocationCoordinate2D)gcj02ToWgs84:(CLLocationCoordinate2D)gcj {
     if ([self outOfChinaLatitude:gcj.latitude longitude:gcj.longitude]) return gcj;
     double dLat = 0, dLon = 0;

@@ -15,7 +15,6 @@
 #import <notify.h> // notify_post（WiFi 重连通知 App 更新水滴，2026-08-29）
 // SCDynamicStore 动态符号解析由 TRWifiKnownNetworks.mm 兼容层提供（TVLoadSCDynamicStore；SDK 头标记 iOS 不可用但真机 dyld cache 存在，2026-08-30）
 #import "TRWpsTile.h" // 坐标→BSSID 动态反查（daemon 注入 wifi 模拟源）
-#import "CoordTransform.h" // GCJ↔WGS + isValidSimCoordinate（编排/注入边界守卫）
 #import "TRSimContract.h" // 跨端定位契约（轨迹文件路径单一真相源，2026-08-28）
 #import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 #import "Logging.h"
@@ -194,7 +193,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         if (acc < 3.0) acc = 3.0;
         if (acc > 15.0) acc = 15.0;
         BOOL coordChanged = (fabs(_currentLat - lat) > 0.000001 || fabs(_currentLon - lon) > 0.000001);
-        if (coordChanged && [CoordTransform isValidSimCoordinate:CLLocationCoordinate2DMake(lat, lon)]) { // 有效性守卫（2026-09-04 治理：lon 残留不再放行 lat=0 破碎对）
+        if (coordChanged && (lat != 0 || lon != 0)) {
             _currentLat = lat;
             _currentLon = lon;
             _currentAcc = acc;

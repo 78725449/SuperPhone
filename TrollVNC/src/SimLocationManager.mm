@@ -9,7 +9,6 @@
 
 #import "SimLocationManager.h"
 #import "CoordTransform.h" // GCJ-02 ↔ WGS-84（注入出口边界转换）
-#import "Logging.h" // TVLog（拒绝注入日志）
 
 #import <CoreLocation/CoreLocation.h>
 
@@ -75,10 +74,6 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     // locationd/对外 App 消费 WGS-84 语义——注入出口统一 GCJ→WGS，对外拿到真实地理位置
     // （根治"GCJ 数值冒充 WGS"的东南 ~500m 偏移）；daemon 内部进度（simstate）保持瓦片系与轨迹文件同系
     coord = [CoordTransform gcj02ToWgs84:coord];
-    if (![CoordTransform isValidSimCoordinate:coord]) {
-        TVLog(@"[locsim] reject invalid coordinate (lat %.6f lon %.6f) — not injecting", coord.latitude, coord.longitude);
-        return;  // 无效/境外坐标拒绝注入（定位跑澳洲的根治防线，2026-09-04）
-    }
     CLLocation *location = [[CLLocation alloc] initWithCoordinate:coord
                                                          altitude:alt
                                                horizontalAccuracy:acc
