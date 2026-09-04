@@ -1522,17 +1522,12 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     // （与锚点/锁/经过判定/聚焦同系；水滴 MKUserLocation 由 MapKit 自动偏移，不走此路径）
     CLLocationCoordinate2D mapCoord = [CoordTransform wgs84ToGcj02:loc.coordinate];
     if (self.locating) {
-        // 播放态：只认晚于开启时刻的 fix——过滤开启前的旧 fix
-        if ([loc.timestamp timeIntervalSince1970] < self.startTimestamp) return;
-        // 开启锁定：注入落地前 locationd 广播的还是旧位置——距锚点 >25m 的 fix 忽略（保持锚点显示，防"旧→锚点"横跳）；
-        // 注入落地后 fix≈锚点（<25m）→ 解锁，恢复 fix 驱动。
-        // self.cur 无效（0,0，新装未收到过任何 fix）时跳过锁定——无效基线无"横跳"可言，否则永锁（2026-09-04 实测死锁修复）
-        if (self.startupLockedToAnchor
-            && (self.cur.latitude != 0 || self.cur.longitude != 0)) {
-            double d = [SimRouteCalculator haversineMeters:mapCoord to:self.cur];
-            if (d > 25.0) return;
-            self.startupLockedToAnchor = NO;
-        }
+        // 播放态：只认晚于开启时刻的 fix——过滤开启前的旧 fix（时间戳过滤已足够防"旧→锚点"横跳：
+        // 注入 fix 时间戳恒新于 startTimestamp 必过、旧真实 fix 恒旧必滤）。
+        // 距离锁已删除（2026-09-04 实测定案）：停止态微动使 self.cur 偏离轨迹 ±20m，点播放后轨迹从
+        // 起点（锚点）推进，首个 fix 距微动基线可超 25m → 距离锁把整段播放的 fix 全丢弃 → self.cur
+        // 冻结（状态栏"驻留中"+经纬度不变）——锁基线语义无法覆盖"用户显式命令的位置重置"
+        self.startupLockedToAnchor = NO;
         self.lastFix = loc; // 记录回调 fix（原始 WGS 对象；坐标/速度真相源，不读属性缓存）
         self.cur = mapCoord; // self.cur 统一存瓦片系（与锚点/路线/算路同系，2026-09-04 治理）
         [self _updateWifiStatusBar]; // wifi 状态栏刷新（模拟位置/模拟AP）
