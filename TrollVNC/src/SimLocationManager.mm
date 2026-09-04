@@ -8,6 +8,7 @@
 */
 
 #import "SimLocationManager.h"
+#import "CoordTransform.h" // GCJ-02 ↔ WGS-84（注入出口边界转换）
 
 #import <CoreLocation/CoreLocation.h>
 
@@ -69,6 +70,10 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
            accuracy:(double)acc
              course:(double)course
               speed:(double)speed {
+    // 坐标系边界转换（2026-09-04 治理）：编排层（锚点/轨迹/self.cur，来自地图瓦片系）传 GCJ 语义数值，
+    // locationd/对外 App 消费 WGS-84 语义——注入出口统一 GCJ→WGS，对外拿到真实地理位置
+    // （根治"GCJ 数值冒充 WGS"的东南 ~500m 偏移）；daemon 内部进度（simstate）保持瓦片系与轨迹文件同系
+    coord = [CoordTransform gcj02ToWgs84:coord];
     CLLocation *location = [[CLLocation alloc] initWithCoordinate:coord
                                                          altitude:alt
                                                horizontalAccuracy:acc

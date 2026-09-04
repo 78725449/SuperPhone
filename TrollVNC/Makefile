@@ -146,6 +146,7 @@ trollvncmanager_FILES += src/TRDaemonBridgeManager.mm
 trollvncmanager_FILES += src/TRSelfSignedCert.mm
 # 全系统改定位：注入原语 + 自治控制器 + Apple 地图算路 + 区域漫游（MKDirections 两点沿真实道路轨迹）
 trollvncmanager_FILES += src/SimLocationManager.mm
+trollvncmanager_FILES += src/CoordTransform.mm
 trollvncmanager_FILES += src/SimLocationController.mm
 trollvncmanager_FILES += src/TRWifiKnownNetworks.mm   # 已知网络条目修改（软路由切换联动，2026-08-29）
 trollvncmanager_FILES += src/SimRouteCalculator.mm

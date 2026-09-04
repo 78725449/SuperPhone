@@ -21,13 +21,14 @@
 #import <CoreLocation/CoreLocation.h> // 真实定位（未模拟定位时显示系统蓝点并聚焦）
 #import <SystemConfiguration/CaptiveNetwork.h> // 当前连接 WiFi SSID/BSSID（WiFi 水滴数据源，2026-08-29）
 #import <notify.h>
-// CoordTransform 已删除（2026-08-30 坐标统一：MKMapView 层全程 WGS-84，无 GCJ/WGS 手动转换）
+// CoordTransform 曾于 2026-08-30 误删（当时误断言"MKMapView 层全程 WGS-84"）；2026-09-04 治理恢复为编排瓦片系/注入 WGS 的边界转换器
 // TRWpsTile import 已移除（2026-09-04 死代码清理：App 标注走 TRWpsClient 当前连接反查，不经 TRWpsTile 原语）
 // TRWifiScanContract import 已移除（2026-09-04：TRWifiActiveScanner 死链删除，App 不消费 wifiscan.json/updated）
 #import "../../../src/TRSimContract.h" // 跨端定位契约（轨迹文件路径单一真相源，2026-08-28）
 #import "../../../src/TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 #import "RegionSimulator.h"
 #import "SimRouteCalculator.h"
+#import "../../../src/CoordTransform.h" // GCJ-02 ↔ WGS-84（fix 入口/注入出口边界转换，2026-09-04 治理）
 #import "TRWpsClient.h"
 #import "TVNCUtil.h" // TVNC_NOTIFY_PREFS_CHANGED（prefs-changed 通知名宏，2026-08-28 收敛）
 #import "../../../src/Logging.h" // TVLog 宏（restoreSession 恢复日志用；符号定义在 TRAppLogging.m，2026-08-31 起 App 引用共享模块日志）
@@ -63,11 +64,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @implementation TRWifiAnnotation
 @end
 
-/// 自驱当前位置水滴（定位关闭时替代 MKUserLocation——跟编排位置 self.cur，无 locationd 广播时的当前位置观感）
-@interface TRSelfDrivenDroplet : MKPointAnnotation
-@end
-@implementation TRSelfDrivenDroplet
-@end
 
 /// 生长轨迹线（对齐原型 growPath/addedPath：区域自生长逐段可视化 + 完成后常显；与预览虚线区分）
 /// 分段式渲染：每个覆盖层挂所属编排段索引，增删/重算只动受影响段
@@ -99,7 +95,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, assign) BOOL segmentZeroPending;                     // 删首锚点后"当前位置→新首锚"段 0 待生成（段 0 特殊机制：正常链段 0=首锚点仅起点恒有效）
 @property (nonatomic, strong) NSMutableArray *anchors;       // 每段对应的锚点标注（TRAnchorAnnotation）
 @property (nonatomic, strong) NSMutableArray *waypointAnns;          // 区域漫游途经点标注（TRWaypointAnnotation，随区域段生成/重建）
-@property (nonatomic, assign) CLLocationCoordinate2D cur;    // 当前模拟位置（统一 WGS-84，2026-08-30 坐标统一：MKMapView 层全程 WGS-84，不再存 GCJ-02）
+ cur;    // 当前模拟位置（瓦片系=MapKit 显示系，2026-09-04 治理：详见 handleLocationUpdate 边界转换）
 @property (nonatomic, assign) BOOL hasStart;
 @property (nonatomic, assign) BOOL locating;                // 定位开关状态
 @property (nonatomic, copy) NSString *currentLegMode;       // 当前位置水滴的出行方式（当前段目标锚点的，walk/drive）
@@ -128,10 +124,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, assign) CGPoint regionTouchOffset; // 手势起点-中心（像素偏移，拖移用）
 @property (nonatomic, strong) UIView *regionPanel;               // 区域配置菜单（底部卡片，对齐原型 param）
 @property (nonatomic, strong) MKCircle *regionOverlay;
-@property (nonatomic, weak) TRSelfDrivenDroplet *selfDrivenDroplet;               // 定位关闭时的自驱当前位置水滴（weak：生命周期由 mapView annotations 持有）
 - (BOOL)_systemLocationAvailable;
-- (void)_updateDropletMode;
-- (void)_syncSelfDrivenDroplet;
 @end
 
 @implementation TRMapPickerViewController
@@ -188,7 +181,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             if (!strongSelf) return;
             [strongSelf playbackDidFinish];
         });
-    [self _updateDropletMode]; // 水滴模式统一切换（系统定位开=MKUserLocation / 关=自驱水滴跟编排位置）
     // 启动：地图聚焦到当前所在位置（启动一律停止态=真实位置，取不到则回退默认视野）
     [self focusMapOnCurrentLocation];
     // App 回前台：地图聚焦到当前所在位置（更直观成熟）
@@ -219,7 +211,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     MKMapView *mv = [[MKMapView alloc] initWithFrame:self.view.bounds];
     mv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     mv.delegate = self;
-    mv.showsUserLocation = YES; // 原生当前位置：数据源头=locationd（播放时=模拟位置/停止时=当前位置），与自驱水滴同源
+    mv.showsUserLocation = YES; // 原生当前位置：数据源=locationd（播放时=模拟位置/停止时=当前位置）；恒 YES（2026-09-04 治理：单 MKUserLocation，自驱水滴已删）
     mv.showsCompass = YES;
     [self.view addSubview:mv];
     self.mapView = mv;
@@ -555,7 +547,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         }
         // 更新/创建 wifi 标注（先移除旧的再添加新的，避免重复）
         [strongSelf removeWifiAnnotationIfExists];
-        // centroid 为 WGS-84（wloc 反查质心），MKMapView 层统一 WGS-84（2026-08-30 坐标统一）
+// centroid 为 wloc 反查质心（坐标系悬案：gs-loc-cn 中国节点返回 GCJ/WGS 待真机裁决，2026-09-04）——现状直画
         TRWifiAnnotation *ann = [[TRWifiAnnotation alloc] init];
         ann.coordinate = centroid;
         ann.title = strongSelf.locating ? @"WiFi 定位（模拟位置）" : @"WiFi 定位（wloc 反查）";
@@ -649,7 +641,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     CGPoint pt = [g locationInView:self.mapView];
     // 点击锚点水滴的拦截由 shouldReceiveTouch 在 touch 阶段完成（早于 didSelect 删除时序，无竞态）。
     // 此处不再做 ended 检测兜底——删除重建后 annotations 已变，兜底检测本身会产生竞态误判（单机制原则）
-    // convertPoint 返回 WGS-84（MKMapView API 契约；2026-08-30 坐标统一：segments 全程存 WGS-84）
+// convertPoint 返回瓦片系（MapKit 显示层语义=GCJ，2026-09-04 治理纠正），segments 全程存瓦片系
     CLLocationCoordinate2D wgs = [self.mapView convertPoint:pt toCoordinateFromView:self.mapView];
     NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
     [self.segments addObject:@{@"type": @"anchor", @"lat": @(wgs.latitude), @"lon": @(wgs.longitude), @"mode": mode}];
@@ -660,12 +652,11 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         if (hasCurPos) {
             // 有当前位置（持久化恢复）：基于当前位置创建锚点（起点，消费），点击位置作为终点 → 生成路线
             // 当前位置锚点插到点击位置前面（segments[0]=起点，segments[1]=终点）
-            // curPos 为 WGS-84（currentSimPosition 契约），segments 统一存 WGS-84（2026-08-30 坐标统一）
+// curPos 为瓦片系（currentSimPosition 已转），segments 统一存瓦片系（2026-09-04 治理）
             [self.segments insertObject:@{@"type": @"anchor", @"lat": @(curPos.latitude), @"lon": @(curPos.longitude), @"mode": mode}
                                 atIndex:0];
             self.hasStart = YES;
             self.cur = curPos; // 保持当前位置（不跳到点击位置）
-            [self _syncSelfDrivenDroplet];
             [self runEdit:^{ [self commitItinerary]; }];  // 生成 当前位置 → 点击位置 路线
             [self setHint:@"已基于当前位置创建锚点 · 路线从当前位置生长"];
         } else {
@@ -673,12 +664,10 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             self.hasStart = YES;
             self.cur = wgs;
             // 不设 self.locating（保持 OFF）——首锚点只设位置，不开启模拟播放
-            [self _syncSelfDrivenDroplet]; // 自驱水滴跟随新首锚点（cur 已就绪）
             [self commitAnchor];
             // 启用 MKUserLocation 跟随注入位置（daemon off 分支已开定位）
-            [self _updateDropletMode];
             [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(wgs, 3000, 3000) animated:YES]; // 立即聚焦锚点
-            self.lastAutoFocusWGS = wgs; // 自动聚焦基线（WGS-84，2026-08-30 坐标统一）
+self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治理）
             self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（MKUserLocation 跟随 locationd 注入位置）
             [self refreshWifiAnnotation];                            // 首锚点：wifi 标注切到锚点位置
             [self setHint:@"已设定位点 · 继续点击添加锚点生长路线"];
@@ -698,7 +687,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 长按区域：出现遮罩（原生半透明圆）→ 圆内拖动移动中心 / 圆边拖动调覆盖范围 → 松开弹配置菜单（对齐原型 ring+ringHandle+param）
 - (void)handleLongPress:(UILongPressGestureRecognizer *)g {
     CGPoint pt = [g locationInView:self.mapView];
-    // convertPoint 返回 WGS-84（2026-08-30 坐标统一：regionCenter 存 WGS-84）
+// convertPoint 返回瓦片系（MapKit 显示层语义=GCJ，2026-09-04 治理纠正 8-30 误断言）
     CLLocationCoordinate2D wgs = [self.mapView convertPoint:pt toCoordinateFromView:self.mapView];
     switch (g.state) {
         case UIGestureRecognizerStateBegan: {
@@ -723,7 +712,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
                 self.regionCenter = newCenter;
             } else {
                 // 圆边/外拖动 → 调节覆盖范围（手势点到中心距离）
-                // wgs/regionCenter 均为 convertPoint 返回（WGS-84），MKMapView 层统一 WGS-84，无需转换（2026-08-30）
+// wgs/regionCenter 均为 convertPoint 返回（瓦片系），与区域配置同系无需转换（2026-09-04 治理）
                 self.regionRadiusM = MAX(50, MIN(5000, [SimRouteCalculator haversineMeters:self.regionCenter to:wgs]));
             }
             [self addRegionOverlay];
@@ -957,7 +946,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             self.cur = curPos;
         } else {
             // 无当前位置（新设备第一次）：随机生成区域内入口锚点
-            // regionCenter 为 convertPoint 返回（WGS-84），MKMapView 层统一 WGS-84，无需转换（2026-08-30）
+// regionCenter 为 convertPoint 返回（瓦片系），与区域逻辑同系无需转换（2026-09-04 治理）
             double ang = (double)(arc4random_uniform(62832)) / 10000.0; // 0~2π
             double distM = self.regionRadiusM * (0.3 + (double)(arc4random_uniform(50)) / 100.0);
             double cosLat = cos(self.regionCenter.latitude * M_PI / 180.0);
@@ -1001,7 +990,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [self refreshUserLocationView];                          // 当前位置水滴去图标（未定位=纯绿点）
     [self resetFocusBaseline];                              // 重置自动聚焦基线（下一个 fix 触发聚焦）
     [self refreshWifiAnnotation];                            // 停止：立即更新 wifi 标注（不等下次系统扫描回调）
-    [self _updateDropletMode]; // 水滴模式统一切换
     [self _updateWifiStatusBar]; // wifi 状态栏刷新（切换模拟/真实 AP 显示）
     [self updateStatus];
 }
@@ -1033,17 +1021,16 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         // 停止后再开启：之前模拟位置（cur）距当前实际位置（lastFix=真实或残留）>500m → 瞬间跳回停止前位置（复用首锚点视野行为）；
         // 距离近（位置本就在附近/残留）不跳——维持"开启不主动聚焦"的常规语义
         if (self.lastFix) {
-            // self.cur 为 WGS-84（2026-08-30 坐标统一），lastFix 亦 WGS-84，直接比较
+// self.cur 为瓦片系（2026-09-04 治理），lastFix 为 WGS fix → 转瓦片系后比较（同系）
             CLLocationCoordinate2D curW = self.cur;
-            if ((curW.latitude != 0 || curW.longitude != 0)
-                && [SimRouteCalculator haversineMeters:curW to:self.lastFix.coordinate] > kAutoFocusThresholdM) {
+if ((curW.latitude != 0 || curW.longitude != 0)
+                && [SimRouteCalculator haversineMeters:curW to:[CoordTransform wgs84ToGcj02:self.lastFix.coordinate]] > kAutoFocusThresholdM) {
                 [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(self.cur, 3000, 3000) animated:YES];
             }
         }
-        self.lastAutoFocusWGS = self.cur; // 自动聚焦基线=模拟位置（WGS-84，拖动退出 Follow 后模拟位置超阈值才拉回）
+self.lastAutoFocusWGS = self.cur; // 自动聚焦基线=模拟位置（瓦片系，拖动退出 Follow 后模拟位置超阈值才拉回）
         self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随：MapKit 内部位置源持续订阅 locationd → 水滴跟随模拟位置（单一数据源）
         [self refreshWifiAnnotation];                            // 开启：立即切到模拟位置 wifi 标注（不等下次系统扫描回调）
-        [self _updateDropletMode]; // 水滴模式统一切换
         [self _updateWifiStatusBar]; // wifi 状态栏刷新（切换模拟/真实 AP 显示）
         [self updateStatus];
     }
@@ -1103,7 +1090,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 搜索选中结果 → 添加锚点（与地图点击同构，无起点差别）
 /// 第一个锚点无前驱 → 直接作为当前定位；后续锚点 → 从上一锚点生长路线
 - (void)applySearchResult:(MKMapItem *)item {
-    // placemark.coordinate 为 WGS-84（MKMapView 层统一 WGS-84，2026-08-30 坐标统一，segments 存 WGS-84）
+// placemark.coordinate 为瓦片系（MKLocalSearch 与瓦片同系，2026-09-04 治理纠正），segments 存瓦片系
     CLLocationCoordinate2D wgs = item.placemark.coordinate;
     NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
     [self.segments addObject:@{@"type": @"anchor", @"lat": @(wgs.latitude), @"lon": @(wgs.longitude), @"mode": mode}];
@@ -1118,7 +1105,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
                                 atIndex:0];
             self.hasStart = YES;
             self.cur = curPos;   // 保持当前位置
-            [self _syncSelfDrivenDroplet];
             [self runEdit:^{ [self commitItinerary]; }];  // 生成 当前位置 → 搜索位置 路线
             [self setHint:@"已基于当前位置创建锚点 · 路线从当前位置生长"];
         } else {
@@ -1128,11 +1114,9 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻：过滤旧 fix
             self.startupLockedToAnchor = YES; // 锁定锚点显示，忽略旧位置（防"旧→新"横跳）
             // 不设 self.locating（保持 OFF）——首锚点只设位置，不开启模拟播放
-            [self _syncSelfDrivenDroplet]; // 自驱水滴跟随新首锚点（cur 已就绪）
             [self commitAnchor];
-            [self _updateDropletMode]; // 确保 MKUserLocation 跟随注入位置
             [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(wgs, 3000, 3000) animated:YES];
-            self.lastAutoFocusWGS = wgs; // 自动聚焦基线（WGS-84，2026-08-30 坐标统一）
+self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治理）
             self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随（MKUserLocation 跟随 locationd 注入位置）
         }
     } else {
@@ -1263,7 +1247,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 }
 
 /// 段目标锚点坐标（WGS；anchor 用 lat/lon，旧 route 兼容 to）
-/// segments 统一存 WGS-84（2026-08-30 坐标统一），直接返回不再转 GCJ→WGS（曾多转一次致算路起点偏移）
+/// segments 统一存瓦片系（与算路 API 同系，2026-09-04 治理），直接喂 MKDirections 不转换
 - (CLLocationCoordinate2D)anchorWGSOfSegment:(NSDictionary *)seg {
     if ([seg[@"type"] isEqualToString:@"region"]) {
         // region 段目标锚点 = 区域中心（region 段无 lat/lon，缺失此分支会取到 (0,0) → 涉及 region 段的编辑路线乱连）
@@ -1393,10 +1377,10 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 #pragma mark - 基于当前位置的局部重算（manager 注入写回 mobile plist 为当前位置真相）
 
 /// 读当前位置（WGS）——权威 = 最近一次通过过滤的回调 fix（lastFix，locationd 广播值，不读 locationManager 属性缓存）；
-/// 播放/停止同一来源（注入位置），无 fix 时回退 self.cur（统一 WGS-84，2026-08-30 坐标统一）
+/// 播放/停止同一来源（注入位置），无 fix 时回退 self.cur（统一瓦片系，2026-09-04 治理）
 - (CLLocationCoordinate2D)currentSimPosition {
-    if (self.lastFix) return self.lastFix.coordinate;
-    return self.cur;
+    // lastFix 为 WGS fix（locationd 语义）→ 转瓦片系与 segments 同系；self.cur 已是瓦片系
+    if (self.lastFix) return [CoordTransform wgs84ToGcj02:self.lastFix.coordinate];
 }
 
 /// 停止定位后只记录自动聚焦基线（停止瞬间位置=模拟残留）——不主动聚焦：
@@ -1405,14 +1389,14 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     self.lastAutoFocusWGS = [self currentSimPosition];
 }
 
-/// 自动聚焦（距离阈值）：fix 距上次自动聚焦点 ≥ 阈值才聚焦一次并更新基线。
-/// 基线未初始化（启动时 lastAutoFocusWGS=(0,0)）→ 首个 fix 建立基线并聚焦（打开 APP 聚焦当前位置）；
-/// 已初始化 → 残留 fix（≈基线）不触发、大幅位移（停止回真实/模拟出视野）必触发、GPS 抖动（<50m）不打扰
+/// 自动聚焦（距离阈值）：当前位置距上次自动聚焦点 ≥ 阈值才聚焦一次并更新基线。
+/// 基线未初始化（启动时 lastAutoFocusWGS=(0,0)）→ 首个位置建立基线并聚焦（打开 APP 聚焦当前位置）；
+/// 已初始化 → 残留位置（≈基线）不触发、大幅位移（模拟出视野）必触发、GPS 抖动（<50m）不打扰
 - (void)maybeAutoFocus:(CLLocationCoordinate2D)wgs {
     BOOL uninitialized = (self.lastAutoFocusWGS.latitude == 0 && self.lastAutoFocusWGS.longitude == 0);
     if (!uninitialized && [SimRouteCalculator haversineMeters:wgs to:self.lastAutoFocusWGS] < kAutoFocusThresholdM) return;
-    self.lastAutoFocusWGS = wgs;
-    // wgs 为 WGS-84，MKMapView 层统一 WGS-84（2026-08-30 坐标统一，去掉多余 GCJ 转换）
+// 参数为瓦片系（2026-09-04 治理：调用方传 mapCoord），setRegion 为 MapKit 显示层 API 同系直接用
+// 参数为瓦片系（2026-09-04 治理：调用方传 mapCoord），setRegion 为 MapKit 显示层 API 同系直接用
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(wgs, 3000, 3000) animated:YES];
 }
 
@@ -1423,7 +1407,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 
 /// 地图立即聚焦到当前位置（首锚点/启动定位/停止/回前台时调用）
 /// 定位中=聚焦 self.cur（模拟位置，App 已知锚点）；未定位=GPS 活跃订阅真实位置优先，无 GPS 用 wifi 真实位置兜底
-/// 全程 WGS-84（2026-08-30 坐标统一）：currentSimPosition/wifiCurWGS 均为 WGS-84，MKMapView 层直接用
+/// 瓦片系口径（2026-09-04 治理）：currentSimPosition 已转瓦片系；wifiCurWGS 系别悬案待真机裁决
 - (void)focusMapOnCurrentLocation {
     CLLocationCoordinate2D center = self.locating ? self.cur : [self currentSimPosition];
     // GPS 无 fix（locationd 未就绪）→ wifi 位置兜底（wifiCurWGS，真实 wifi 反查质心）
@@ -1450,38 +1434,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     return (st == kCLAuthorizationStatusAuthorizedWhenInUse || st == kCLAuthorizationStatusAuthorizedAlways);
 }
 
-/// 水滴模式统一切换（viewDidLoad/toggleLocate/locationManagerDidChangeAuthorization 调用）：
-/// 系统定位开 → showsUserLocation=YES（MKUserLocation 跟 locationd，模拟/真实同源）+ 移除自驱水滴；
-/// 系统定位关 → showsUserLocation=NO（locationd 无广播）+ 自驱水滴跟编排位置 self.cur
-- (void)_updateDropletMode {
-    if ([self _systemLocationAvailable]) {
-        self.mapView.showsUserLocation = YES; // 系统定位开：MKUserLocation 走 locationd（模拟/真实同源）
-    } else {
-        self.mapView.showsUserLocation = NO; // 系统定位关：locationd 无广播，由自驱水滴替代
-    }
-    [self _syncSelfDrivenDroplet];
-}
 
-/// 自驱当前位置水滴维护（幂等）：系统定位关且定位开关开启且 self.cur 有效 → 创建/跟随 self.cur（编排位置真相源）；
-/// 否则移除（定位开时不显示自驱水滴，避免与 MKUserLocation 双层重复）。self.cur 全部赋值点与定位开关切换后调用
-- (void)_syncSelfDrivenDroplet {
-    TRSelfDrivenDroplet *drop = self.selfDrivenDroplet;
-    // 2026-08-29 定案：只要有有效位置就显示绿色水滴（不依赖 self.locating——首锚点后 locating=NO 也显示）
-    if (![self _systemLocationAvailable] && (self.cur.latitude != 0 || self.cur.longitude != 0)) {
-        if (!drop) {
-            drop = [[TRSelfDrivenDroplet alloc] init];
-            drop.title = @"当前位置";
-            [self.mapView addAnnotation:drop];
-            self.selfDrivenDroplet = drop;
-        }
-        drop.coordinate = self.cur; // WGS-84（2026-08-30 坐标统一），MKAnnotationView coordinate 直接使用（KVO 自动移动视图）
-    } else {
-        if (drop) {
-            [self.mapView removeAnnotation:drop];
-            self.selfDrivenDroplet = nil;
-        }
-    }
-}
 
 #pragma mark - CLLocationManagerDelegate（真实定位）
 
@@ -1507,7 +1460,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
         [self presentViewController:ac animated:YES completion:nil];
     }
-    [self _updateDropletMode]; // 授权变化：水滴模式统一切换（开→MKUserLocation / 拒绝→自驱水滴跟编排位置）
 }
 
 /// 定位失败回调（原生能力利用）：定位错误（权限拒绝/无定位源/模拟注入异常）不再静默——
@@ -1522,46 +1474,51 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 每个 fix 自带出生时间（CLLocation.timestamp，系统盖章），只认晚于对应切换时刻的 fix——旧货当没看见
 - (void)handleLocationUpdate:(CLLocation *)loc {
     if (!loc) return;
+    // 坐标系边界转换（2026-09-04 治理）：locationd 广播 = WGS-84 语义（注入出口已转 WGS/真实 GPS 亦 WGS），
+    // 编排世界（锚点/路线/25m 锁基线/self.cur）= 地图瓦片系——入口统一 WGS→GCJ，函数内全部用 mapCoord
+    // （与锚点/锁/经过判定/聚焦同系；水滴 MKUserLocation 由 MapKit 自动偏移，不走此路径）
+    CLLocationCoordinate2D mapCoord = [CoordTransform wgs84ToGcj02:loc.coordinate];
     if (self.locating) {
         // 播放态：只认晚于开启时刻的 fix——过滤开启前的旧 fix
         if ([loc.timestamp timeIntervalSince1970] < self.startTimestamp) return;
         // 开启锁定：注入落地前 locationd 广播的还是旧位置——距锚点 >25m 的 fix 忽略（保持锚点显示，防"旧→锚点"横跳）；
-        // 注入落地后 fix≈锚点（<25m）→ 解锁，恢复 fix 驱动
-        if (self.startupLockedToAnchor) {
-            // loc.coordinate/self.cur 均为 WGS-84（2026-08-30 坐标统一，去掉多余转换）
-            double d = [SimRouteCalculator haversineMeters:loc.coordinate to:self.cur];
+        // 注入落地后 fix≈锚点（<25m）→ 解锁，恢复 fix 驱动。
+        // self.cur 无效（0,0，新装未收到过任何 fix）时跳过锁定——无效基线无"横跳"可言，否则永锁（2026-09-04 实测死锁修复）
+        if (self.startupLockedToAnchor
+            && (self.cur.latitude != 0 || self.cur.longitude != 0)) {
+            double d = [SimRouteCalculator haversineMeters:mapCoord to:self.cur];
             if (d > 25.0) return;
             self.startupLockedToAnchor = NO;
         }
-        self.lastFix = loc; // 记录回调 fix（坐标/速度真相源，不读属性缓存）
-        self.cur = loc.coordinate; // fix 为 WGS-84，self.cur 统一存 WGS-84（2026-08-30 坐标统一）
-        [self _syncSelfDrivenDroplet]; // 定位关时自驱水滴跟编排推进（定位开时不显示自驱水滴，无影响）
+        self.lastFix = loc; // 记录回调 fix（原始 WGS 对象；坐标/速度真相源，不读属性缓存）
+        self.cur = mapCoord; // self.cur 统一存瓦片系（与锚点/路线/算路同系，2026-09-04 治理）
         [self _updateWifiStatusBar]; // wifi 状态栏刷新（模拟位置/模拟AP）
         [self _refreshWifiAnnoFromCurrentConnection]; // wifi 水滴标注更新
-        [self updateAnchorPassStateWithLiveWGS:loc.coordinate]; // 先更新段速度/经过态，状态栏立即反映
+        [self updateAnchorPassStateWithLiveWGS:mapCoord]; // 先更新段速度/经过态，状态栏立即反映
         [self updateStatus];
         // 自动聚焦：Follow 原生已跟随无需重复；用户拖动退出 Follow 后模拟位置距上次聚焦点超阈值则拉回
-        if (self.mapView.userTrackingMode != MKUserTrackingModeFollow) [self maybeAutoFocus:loc.coordinate];
+        if (self.mapView.userTrackingMode != MKUserTrackingModeFollow) [self maybeAutoFocus:mapCoord];
         return;
     }
     // 停止态：只认晚于停止时刻的 fix——过滤停止前的旧 fix
     if ([loc.timestamp timeIntervalSince1970] <= self.stopTimestamp) return;
     // 首锚点锁定（2026-08-30）：创建锚点后注入落地前，locationd 广播的还是旧位置——
-    // 距新锚点 >25m 的 fix 忽略（保持锚点位置显示，防"旧→新"横跳）；注入落地后 fix≈锚点（<25m）→ 解锁
-    if (self.startupLockedToAnchor) {
-        double d = [SimRouteCalculator haversineMeters:loc.coordinate to:self.cur];
+    // 距新锚点 >25m 的 fix 忽略（保持锚点位置显示，防"旧→新"横跳）；注入落地后 fix≈锚点（<25m）→ 解锁。
+    // self.cur 无效（0,0）时跳过锁定（同播放态死锁修复）
+    if (self.startupLockedToAnchor
+        && (self.cur.latitude != 0 || self.cur.longitude != 0)) {
+        double d = [SimRouteCalculator haversineMeters:mapCoord to:self.cur];
         if (d > 25.0) return;
         self.startupLockedToAnchor = NO;
     }
     self.lastFix = loc; // 记录回调 fix
-    // 更新当前位置（首锚点注入落地后，self.cur 跟随 locationd 注入位置；fix 为 WGS-84，直接存）
-    self.cur = loc.coordinate;
-    [self _syncSelfDrivenDroplet]; // 定位关时自驱水滴跟随
-    [self updateAnchorPassStateWithLiveWGS:loc.coordinate]; // 停止态也更新三态（passed 单调：红锚点保持红，仅反映位置新经过）
+    // 更新当前位置（首锚点注入落地后，self.cur 跟随 locationd 注入位置；瓦片系统一存储）
+    self.cur = mapCoord;
+    [self updateAnchorPassStateWithLiveWGS:mapCoord]; // 停止态也更新三态（passed 单调：红锚点保持红，仅反映位置新经过）
     [self updateStatus];
     // 自动聚焦（距离阈值）：fix 距停止瞬间基线超阈值才聚焦——
     // 旧 fix（≈基线）不触发、新 fix（画布外）必触发；GPS 收敛渐进超阈值再拉回
-    [self maybeAutoFocus:loc.coordinate];
+    [self maybeAutoFocus:mapCoord];
 }
 
 /// App 自己的活跃订阅回调（locationd 广播）：唯一驱动
@@ -1577,7 +1534,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 绿=消费中禁删统一覆盖"终点禁删"（删除规则只需判 consuming，无特例）
 /// 锚点红蓝绿 + 当前位置水滴出行图标切换。轨迹单向推进（算路生成），无需按轨迹索引判定——
 /// 旧实现每刷新对每个锚点全量遍历 submittedPoints 找最近索引（区域轨迹可达数万点 → 主线程 O(A×P) haversine 卡死）
-/// liveW 为当前位置（WGS）；仅定位中生效（停止态颜色定格）
+/// liveW 为当前位置（瓦片系，调用方 handleLocationUpdate 已转）；仅定位中生效（停止态颜色定格）
 - (void)updateAnchorPassStateWithLiveWGS:(CLLocationCoordinate2D)liveW {
     // 2026-08-30：不依赖 locating——有当前位置即更新锚点三态（首锚点后 locating=NO 也生效：
     // 基于当前位置创建的锚点立即标红=已消费，点击位置锚点保持蓝=待消费）
@@ -1585,7 +1542,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     static const double kPassedThresholdM = 25.0; // 距锚点 25m 内视为到达（停留微动 ±1m 远小于阈值，锚点间距通常 >50m）
     // 第一遍：passed 单调置位（到达过即到达过，不回退——防播放远离后红锚点消失）
     for (TRAnchorAnnotation *a in self.anchors) {
-        // a.coordinate 来自 rebuildAnchors（segments WGS-84），直接使用（2026-08-30 坐标统一）
+// a.coordinate 来自 rebuildAnchors（segments 瓦片系），直接使用（2026-09-04 治理）
         CLLocationCoordinate2D aW = a.coordinate;
         BOOL reached = [SimRouteCalculator haversineMeters:liveW to:aW] < kPassedThresholdM;
         if (reached) a.passed = YES; // 单调：只置 YES，不回退
@@ -1701,7 +1658,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     NSString *sub = @"";
     if ([type isEqualToString:@"anchor"]) {
         title = @"锚点";
-        // segments 存 WGS-84（2026-08-30 坐标统一），直接取值显示
+// segments 存瓦片系（2026-09-04 治理），直接取值显示
         CLLocationCoordinate2D w = CLLocationCoordinate2DMake([seg[@"lat"] doubleValue], [seg[@"lon"] doubleValue]);
         sub = [NSString stringWithFormat:@"%.4f, %.4f", w.latitude, w.longitude];
     } else {
@@ -1764,7 +1721,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     // 状态栏行程列表：点击聚焦到该行锚点（anchor=锚点坐标，region=区域中心）
     if (tableView == self.stepTable && indexPath.row >= 0 && indexPath.row < (NSInteger)self.segments.count) {
         CLLocationCoordinate2D wgs = [self anchorWGSOfSegment:self.segments[indexPath.row]];
-        // wgs 为 WGS-84，MKMapView 层统一 WGS-84（2026-08-30 坐标统一）
+// wgs 为瓦片系（self.cur 同系），plist 写瓦片系数值——daemon injectPoint 出口统一 GCJ→WGS（2026-09-04）
         [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(wgs, 2000, 2000) animated:YES];
     }
 }
@@ -1809,7 +1766,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 
 - (void)commitAnchor {
     // 2026-08-29 定案：只写坐标，不写模式——daemon off 分支检测坐标变化后注入+开定位，保持模式为 off
-    // self.cur 统一 WGS-84（2026-08-30 坐标统一），daemon 注入只收 WGS-84，直接写
+// self.cur 统一瓦片系（2026-09-04 治理），直接写 plist——daemon injectPoint 出口统一 GCJ→WGS
     CLLocationCoordinate2D wgs = self.cur;
     NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     [d setDouble:wgs.latitude forKey:@"SimLocationLat"];
@@ -1874,7 +1831,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [self syncChainAndGenerate];
 }
 
-/// 生长可视化：每段算路点序列追加为生长轨迹线（算路点/segments 均为 WGS-84，MKMapView 层统一 WGS-84——
+/// 生长可视化：每段算路点序列追加为生长轨迹线（算路点/segments 均为瓦片系，与显示同系——
 /// 2026-08-30 坐标统一：曾"画图转 GCJ-02"系早期自定义 GCJ 瓦片时代的经验，标准 MKMapView 契约下已多余）
 /// 分段式渲染：生长线挂所属编排段索引，增删/重算只动受影响段，不重画整条链
 /// 显示层降采样：轨迹点按 1 点/秒生成（步行 1.4m/点），长路线（区域段可达数千点）整条 polyline
@@ -1894,7 +1851,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     CLLocationCoordinate2D *cs = malloc(disp.count * sizeof(CLLocationCoordinate2D));
     for (NSUInteger i = 0; i < disp.count; i++) {
         NSDictionary *p = disp[i];
-        // 算路点 WGS-84，直接画（2026-08-30 坐标统一）
+// 算路点瓦片系，直接画（2026-09-04 治理）
         cs[i] = CLLocationCoordinate2DMake([p[@"lat"] doubleValue], [p[@"lon"] doubleValue]);
     }
     TRGrowPolyline *line = [TRGrowPolyline polylineWithCoordinates:cs count:disp.count];
@@ -2010,7 +1967,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// （<30m/算路失败 → 忽略该中间途经点，直接进入下一途经点）+ 停留微动；回调整段点序列（不再递归后续段）
 - (void)generateRegionSegment:(NSInteger)i completion:(void (^)(NSArray<NSDictionary *> *pts))completion {
     NSDictionary *seg = self.segments[i];
-    // segments 存 WGS-84（2026-08-30 坐标统一），center 直接取，无需 GCJ→WGS 转换
+// segments 存瓦片系（2026-09-04 治理），center 直接取，无需转换
     CLLocationCoordinate2D centerW = CLLocationCoordinate2DMake([seg[@"center"][@"lat"] doubleValue], [seg[@"center"][@"lon"] doubleValue]);
     double radius = [seg[@"radius"] doubleValue];
     double durationMin = [seg[@"durationMin"] doubleValue];
@@ -2034,7 +1991,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     [self.waypointAnns removeAllObjects];
     for (NSUInteger k = 0; k < wps.count; k++) {
         TRWaypointAnnotation *w = [[TRWaypointAnnotation alloc] init];
-        // 途经点坐标：plan 返回 WGS-84，MKMapView 层统一 WGS-84，直接使用（2026-08-30 坐标统一，曾转 GCJ-02 致双重偏移）
+// 途经点坐标：plan 返回瓦片系（与瓦片显示同系，2026-09-04 治理纠正 8-30 误断言），直接使用
         w.coordinate = [wps[k] MKCoordinateValue];
         [self.waypointAnns addObject:w];
         [self.mapView addAnnotation:w];
@@ -2303,27 +2260,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         v.frame = CGRectMake(0, 0, 22, 28);
         return v;
     }
-    if ([annotation isKindOfClass:[TRSelfDrivenDroplet class]]) {
-        // 自驱当前位置水滴（定位关闭时替代 MKUserLocation）：绿色水滴+出行图标，外观/光晕对齐原生 MKUserLocation
-        static NSString *rid = @"SelfDrivenCurPin";
-        MKAnnotationView *v = [mapView dequeueReusableAnnotationViewWithIdentifier:rid];
-        if (!v) {
-            v = [[MKAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:rid];
-            v.canShowCallout = NO;
-            v.userInteractionEnabled = YES; // 供 shouldReceiveTouch 拦截，防 tap 误加锚点
-        }
-        v.annotation = annotation;
-        NSString *mode = self.currentLegMode ?: (self.modeSeg.selectedSegmentIndex == 1 ? @"drive" : @"walk");
-        UIColor *green = [UIColor colorWithRed:0.11 green:0.79 blue:0.51 alpha:1.0];
-        v.image = [self waterdropImageWithColor:green size:24 emoji:[self emojiForMode:mode]];
-        v.centerOffset = CGPointMake(0, -15); // 尖对准坐标点
-        v.frame = CGRectMake(0, 0, 24, 30);
-        v.layer.shadowColor = green.CGColor; // 光晕（对齐原生 MKUserLocation）
-        v.layer.shadowOpacity = 0.6;
-        v.layer.shadowRadius = 6;
-        v.layer.shadowOffset = CGSizeMake(0, 0);
-        return v;
-    }
     if ([annotation isKindOfClass:[MKUserLocation class]]) {
         // 当前位置（原生管线）：数据源头=locationd（模拟开启=模拟位置/关闭=真实位置）；绿色水滴+出行方式图标外观
         static NSString *rid = @"CurPin";
@@ -2372,7 +2308,6 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
                 if ([av.annotation isKindOfClass:[TRAnchorAnnotation class]]) return NO;
                 if ([av.annotation isKindOfClass:[TRWaypointAnnotation class]]) return NO; // 途经点同锚点：不触发 tap 加锚点
                 if ([av.annotation isKindOfClass:[TRWifiAnnotation class]]) return NO; // WiFi 标注同锚点：不触发 tap 加锚点
-                if ([av.annotation isKindOfClass:[TRSelfDrivenDroplet class]]) return NO; // 自驱当前位置水滴：不触发 tap 加锚点
             }
             v = v.superview;
         }
