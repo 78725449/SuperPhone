@@ -13,14 +13,15 @@
 NS_ASSUME_NONNULL_BEGIN
 
 /**
- * SimLocationManager - 全系统改定位注入原语（实验 A 最小实现）
+ * SimLocationManager - 定位注入原语（CLSimulationManager 私有 API 封装）
  *
  * 职责：封装 CLSimulationManager（私有 API，TrollStore entitlement
  * `com.apple.locationd.simulation` 授权）的单点注入/停止原语。
- * 本类只做注入，不做状态机/持久化（由后续 SimLocationController 负责）。
+ * 本类只做注入原语，不做状态机/持久化（由 SimLocationController 负责）。
  *
  * 注入序列（Andromeda/Geranium 实证）：stop → clear → append → flush → start，
- * 再发时区更新通知（节流由 Controller 负责，本类每次注入都会发）。
+ * 再发时区更新通知。GPS 注入（injectPoint:）当前唯一活跃链路；
+ * wifi 扫描结果注入系列方法已于 2026-09-04 死代码清理中移除（2026-08-29 软路由联动模型替代）。
  */
 @interface SimLocationManager : NSObject
 
@@ -38,40 +39,17 @@ NS_ASSUME_NONNULL_BEGIN
              course:(double)course
               speed:(double)speed;
 
-/// 停止注入：stop → clear → flush + 时区通知（恢复真实定位）
-- (void)stop;
+/// 只停轨迹播放（停 wifi 扫描播放），不清 locationd 会话（2026-08-29）——
+/// 当前活跃调用（SimLocationController off/空轨迹分支）
+- (void)stopPlaybackOnly;
 
-/// 总停止：GPS + wifi 模拟一并停止（总开关关闭时调用，恢复真实定位与真实扫描源）
-- (void)stopAll;
-- (void)stopPlaybackOnly;    // 只停播放，不清 locationd 会话（2026-08-29）
-
-/// WiFi 扫描模拟注入（输入层）：setWifiScanResults + setSimulatedWifiPower + startWifiSimulation
-/// @param scanResults  NSArray<NSDictionary *>，每项含 bssid/ssid/rssi/channel/age/timestamp
-/// 键名按初始猜想 + XPC 载荷取证校准；已真机投产（buildScanResultsFromBssidStrings 生成方与此消费方同构）
-/// 与 GPS 注入（injectPoint:）并发不互斥——GPS 喂结果层、wifi 喂输入层，叠加自洽
-- (void)injectWifiScanResults:(NSArray<NSDictionary *> *)scanResults;
-
-/// 停止 wifi 扫描模拟：stopWifiSimulation + setSimulatedWifiPower:NO（恢复真实扫描源）
-- (void)stopWifiScanSimulation;
-
-/// 构建 setWifiScanResults: 的字典数组（NSString 版——规避 C 字符串生命周期，动态反查用）
-/// 输入：NSString BSSID 数组；每项含 bssid/ssid/rssi/channel/age/timestamp（键名待 XPC 取证校准）
-/// rssi 随机 -40~-85 dBm（决定 wifi 源精度 10-100m，与 GPS 源 5-30m 区分）
-+ (NSArray<NSDictionary *> *)buildScanResultsFromBssidStrings:(NSArray<NSString *> *)bssids;
-
-/// 当前 wifi 模拟是否开启
-@property(nonatomic, assign, readonly) BOOL isWifiSimulating;
-
-/// wifi 模拟是否"曾成功注入过"（单调不回退；供巡检区分"曾成功但丢失→重反查" vs
-/// "从未成功（空洞瓦片）→安静等待跨瓦片换源"——2026-08-27 定案，防自我锁死循环）
+/// wifi 模拟是否"曾成功注入过"（单调不回退；供空洞螺旋区分"曾成功但丢失→重反查" vs
+/// "从未成功（空洞瓦片）→安静等待跨瓦片换源"——2026-08-27 定案，防自我锁死循环；唯一消费点 SimLocationController._handleAPSwitchForCurrentLocation）
 @property(nonatomic, assign, readonly) BOOL wasWifiSimulatingOnce;
-
-/// 当前是否处于注入中（供后续失效巡检使用）
-@property(nonatomic, assign, readonly) BOOL isSimulating;
 
 /// 系统定位服务总开关（私有 CLLocationManager setLocationServicesEnabled:，TrollStore root 可用；
 /// LocationServicesSwitcher 开源先例。2026-08-28 定位对抗编排核心：
-/// 开模拟=注入确认后开开关；关模拟/失效=先关开关再停注入——宁无位置不漏真实）
+/// 注入确认后开开关；启动安全基底/异常失效=先关开关再注入——宁无位置不漏真实）
 + (BOOL)setSystemLocationServices:(BOOL)on;
 + (BOOL)systemLocationServicesEnabled;
 

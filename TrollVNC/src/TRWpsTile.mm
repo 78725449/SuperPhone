@@ -243,7 +243,7 @@ static NSArray<TRWpsTileAP *> *parseWifiTile(const uint8_t *buf, NSUInteger len)
                 dispatch_async(dispatch_get_main_queue(), ^{ completion(cached, nil); });
                 return;
             }
-            // 无失败负缓存：失败重试节奏由调用方（SimLocationController 10s 巡检 + 跨瓦片检测）天然控制，
+            // 无失败负缓存：失败重试节奏由调用方（SimLocationController 跨瓦片检测 + 首点反查）天然控制，
             // 不做 30s 锁死——避免空洞瓦片"自我锁死循环"（用户定案 2026-08-27）
         }
     }

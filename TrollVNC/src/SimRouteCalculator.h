@@ -19,7 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
  * 按速度重采样（步长=speed×1s）→ 拟人参数。
  * 本类只返回/生成点序列（纯算路，不落盘、不切 mode）——供 App 定位 UI（TRMapPickerViewController）
  * 逐段算路拼接使用（2026-08-26 起外部 sim.* 能力已收敛，注册表/0x50/5802 不再调用）；
- * 落盘由调用方负责（App 本地写文件 / SimLocationController.uploadTrackPoints）。
+ * 落盘由调用方负责（App writeTrackFile 直写 simloc.json）。
  *
  * 模式（Apple transportType 公开档，仅两个稳定真实档）：
  * - walk → MKDirectionsTransportTypeWalking（1.4m/s）

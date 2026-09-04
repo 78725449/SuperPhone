@@ -26,10 +26,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// @return YES 修改成功；NO 失败（条目不存在/写盘失败/文件不可读）
 + (BOOL)renameKnownNetworkSSID:(NSString *)oldSSID to:(NSString *)newSSID error:(NSError *_Nullable *_Nullable)error;
 
-/// 读当前连接 WiFi 的 SSID（CNCopyCurrentNetworkInfo；iOS15+ 定位权限已给则可用）
+/// 读当前连接 WiFi 的 SSID（SCDynamicStore + dlsym 兼容层；2026-08-30 真机验证，替代 CNCopyCurrentNetworkInfo/popen）
 + (nullable NSString *)currentSSID;
 
-/// 读当前连接 WiFi 的 BSSID（软路由双定位校验用：SSID+MAC 防 2.4G/5G 同名歧义）
+/// 读当前连接 WiFi 的 BSSID（SCDynamicStore + dlsym 兼容层；软路由双定位校验用：SSID+MAC 防 2.4G/5G 同名歧义）
 + (nullable NSString *)currentBSSID;
 
 @end

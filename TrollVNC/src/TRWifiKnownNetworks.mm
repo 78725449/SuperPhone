@@ -76,11 +76,13 @@ static NSString *const kKnownNetworksPath = @"/var/preferences/com.apple.wifi.kn
         for (NSString *k in [plist allKeys]) {
             NSDictionary *e = plist[k];
             NSData *sd = e[@"SSID"];
-            if ([sd isKindOfClass:[NSData class]] &&
-                [[NSString alloc] initWithData:sd encoding:NSUTF8StringEncoding] == oldSSID) {
-                entry = [e mutableCopy];
-                oldKey = k;
-                break;
+            if ([sd isKindOfClass:[NSData class]]) {
+                NSString *sdStr = [[NSString alloc] initWithData:sd encoding:NSUTF8StringEncoding];
+                if ([sdStr isEqualToString:oldSSID]) {
+                    entry = [e mutableCopy];
+                    oldKey = k;
+                    break;
+                }
             }
         }
     }

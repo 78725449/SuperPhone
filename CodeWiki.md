@@ -1,7 +1,7 @@
 # SuperPhone Code Wiki
 
-> 本文档是 SuperPhone 项目的代码级百科，基于实际源码提炼（2026-08-17 生成）。涵盖整体架构、模块职责、关键类与函数、依赖关系、协议契约与运行方式。
-> **真相源**：代码始终优先。本文档描述代码中实际存在的机制；与 `说明文档.md`（项目知识库）和 `AGENTS.md`（工作区指令）存在数量差异处，以代码为准并在文中标注。
+> 本文档是 SuperPhone 项目的代码结构地图（模块/类/函数职责、依赖、协议），基于实际源码提炼（2026-08-17 生成，2026-09-04 归一化：**删除全部行号引用与 §11 文档差异核对表**——行号是派生值必腐，定位用 grep；数量差异不再跨文档人工校准）。涵盖整体架构、模块职责、关键类与函数、依赖关系、协议契约与运行方式。
+> **真相源**：代码始终优先。机制/时序/实现真相 = `说明文档.md`；数量/枚举真相 = 代码 + `caps-test.js` 断言，本文档不承载可断言数字。
 > **配套文档**：`说明文档.md`（架构/时序/实现真相）、`AGENTS.md`（工作区规则）、`TrollVNC/README.md`（设备端快速开始）、`trollvnc-farm/README.md`（网关启动）。
 
 ---
@@ -26,7 +26,6 @@
 8. [依赖关系全景](#8-依赖关系全景)
 9. [项目运行方式](#9-项目运行方式)
 10. [已知边界与约束](#10-已知边界与约束)
-11. [文档差异核对](#11-文档差异核对)
 
 ---
 
@@ -130,7 +129,7 @@
 ## 3. 目录结构
 
 ```
-New project/
+superphone/
 ├── .github/workflows/build.yml          # CI（macOS 编译 4 scheme）
 ├── AGENTS.md                            # 工作区指令
 ├── 说明文档.md                          # 项目知识库（真相文档）
@@ -152,7 +151,7 @@ New project/
 │   └── CHANGELOG.md / README.md / COPYING
 │
 ├── trollvnc-farm/                       # 网关 Node.js ESM
-│   ├── server/index.js                  # 单入口（1574 行）
+│   ├── server/index.js                  # 单入口
 │   ├── web/                             # 前端（无构建）
 │   │   ├── index.html / app.js / style.css
 │   │   ├── caps.js                      # 前端契约唯一真相源
@@ -178,24 +177,24 @@ New project/
 
 #### 4.1.1 trollvncserver.mm — VNC 服务主进程
 
-**文件**：`TrollVNC/src/trollvncserver.mm`（~4873 行，无 ObjC 类，全 C 函数）
-**入口**：`main(argc, argv)` (L5951)
+**文件**：`TrollVNC/src/trollvncserver.mm`（无 ObjC 类，全 C 函数）
+**入口**：`main(argc, argv)`
 
 **核心职责**：基于 libvncserver 暴露 5901 RFB + 5801 HTTP + Bonjour mDNS（**2026-08-28 起 mDNS 默认关闭**——`gBonjourEnabled` 默认 NO 不广播，风控收敛；CLI `-B on` 或配置显式开启）；通过 RFB 扩展消息 0x50/0x80 暴露设备能力通道；**采集惰性启动（2026-08-22，隧道握手成功 tunnel-connected 通知触发，CaptureFps 低频驱动；客户端连接只升降频 FrameRateSpec，不再启停采集）**；管理客户端连接/黑名单；接收命令注入 IOHID 触控/键盘事件；提供配置热重载入口 `tvReloadConfigForKey`。
 
 **关键函数**：
 
-| 函数 | 行号 | 作用 |
-|---|---|---|
-| `main(argc, argv)` | L5951 | 进程入口：dropPrivileges → parseCLI → setupGeometry → setupRfbScreen → initializeAndRunRfbServer → installSignalHandlers |
-| `tvExtHandleMessage(cl, data, message)` | L3666 | RFB 扩展消息分发入口；拦截 `message->type == 0x50`，按 op 路由到 14 个子 handler |
-| `tvExtReadMessage(cl)` | L3607 | 从 rfbClientPtr 读 7B 剩余帧头 + 4B BE payloadLen + JSON payload，反序列化为 NSDictionary |
-| `tvExtWriteResponse(cl, resp)` | L3625 | 构造 0x80 响应帧（8B 头 + JSON），在 `cl->sendMutex` 锁内整帧写出（防与 FBU 帧交错） |
-| `tvExtHandleCapHello(cl, params)` | L3764 | 管理客户端豁免：`mgmt=YES` 时 `isMgmtClient=YES`、`gClientCount--`、`viewOnly=TRUE` |
-| `tvExtHandleTypePaste(cl, params)` | L3819 | 剪贴板写入 + Cmd+V 注入：setStringForPasteInput → releaseEveryKeys → COMMAND↓ → v↓ → v↑ → COMMAND↑ |
-| `tvReloadConfigForKey(key)` | L3310 | 配置热重载：支持 Scale/FrameRateSpec/OrientationSync/DeferWindowSec/MaxInflight/KeepAliveSec/WheelStepPx/ModifierMap/FullscreenThresholdPercent；**2026-08-20 改按 suite `com.82flex.trollvnc` 读取**（原 standardUserDefaults 无 bundle 进程读不到设置页值）；返回 0=成功 / -1=未知 / -2=无效 |
-| `tvApplyPrefsChanged` / `tvInstallPrefsChangedListener` | L3371 / L3423 | **设置页热重载通道（2026-08-20）**：notify 监听 `com.82flex.trollvnc.prefs-changed` → 重读 suite 热重载 hot/instant 配置（含 Notifications 映射底层开关、OrientationPadFix 重建 framebuffer、NaturalScroll/AutoAssistEnabled/KeyLogging 全局变量） |
-| `tvGetInflightStats(void)` / `tvGetBonjourTXT(void)` | L3289 / L3294 | 公开统计访问，供 sys.* 能力调用 |
+| 函数 | 作用 |
+|---|---|
+| `main(argc, argv)` | 进程入口：dropPrivileges → parseCLI → setupGeometry → setupRfbScreen → initializeAndRunRfbServer → installSignalHandlers |
+| `tvExtHandleMessage(cl, data, message)` | RFB 扩展消息分发入口；拦截 `message->type == 0x50`，按 op 路由到 14 个子 handler |
+| `tvExtReadMessage(cl)` | 从 rfbClientPtr 读 7B 剩余帧头 + 4B BE payloadLen + JSON payload，反序列化为 NSDictionary |
+| `tvExtWriteResponse(cl, resp)` | 构造 0x80 响应帧（8B 头 + JSON），在 `cl->sendMutex` 锁内整帧写出（防与 FBU 帧交错） |
+| `tvExtHandleCapHello(cl, params)` | 管理客户端豁免：`mgmt=YES` 时 `isMgmtClient=YES`、`gClientCount--`、`viewOnly=TRUE` |
+| `tvExtHandleTypePaste(cl, params)` | 剪贴板写入 + Cmd+V 注入：setStringForPasteInput → releaseEveryKeys → COMMAND↓ → v↓ → v↑ → COMMAND↑ |
+| `tvReloadConfigForKey(key)` | 配置热重载：支持 Scale/FrameRateSpec/OrientationSync/DeferWindowSec/MaxInflight/KeepAliveSec/WheelStepPx/ModifierMap/FullscreenThresholdPercent；**2026-08-20 改按 suite `com.82flex.trollvnc` 读取**（原 standardUserDefaults 无 bundle 进程读不到设置页值）；返回 0=成功 / -1=未知 / -2=无效 |
+| `tvApplyPrefsChanged` / `tvInstallPrefsChangedListener` | **设置页热重载通道（2026-08-20）**：notify 监听 `com.82flex.trollvnc.prefs-changed` → 重读 suite 热重载 hot/instant 配置（含 Notifications 映射底层开关、OrientationPadFix 重建 framebuffer、NaturalScroll/AutoAssistEnabled/KeyLogging 全局变量） |
+| `tvGetInflightStats(void)` / `tvGetBonjourTXT(void)` | 公开统计访问，供 sys.* 能力调用 |
 
 **0x50/0x80 扩展操作（14 个 op）**：`cap.hello` / `cap.list` / `screen.hash` / `screen.diff` / `screen.waitStable` / `clients.count` / `clients.list` / `clients.disconnect` / `clients.block` / `clients.unblock` / `clients.blocked.list` / `clipboard.get` / `type.paste` / `config.get`
 
@@ -205,22 +204,22 @@ New project/
 
 #### 4.1.2 trollvncmanager.mm — 守护进程主程序
 
-**文件**：`TrollVNC/src/trollvncmanager.mm`（474 行）
-**入口**：`main(argc, argv)` (L228)
+**文件**：`TrollVNC/src/trollvncmanager.mm`
+**入口**：`main(argc, argv)`
 
 **核心职责**：用文件锁实现单例；监控自身可执行文件 vnode 删除事件（被升级覆盖时 exit 让 launchd 重启）；启动 `TRWatchDog` 守护 `trollvncserver`；启动 `TRGatewayClient` 注册到网关 18081；监听 SIGCHLD/SIGHUP/SIGINT/SIGTERM；在 127.0.0.1:46751 打开哑服务端口供探测；启动时 sysctl 清理孤儿 trollvncserver；**双通知自治（2026-08-20，替代 App kill 通路——mobile 沙盒 kill root 恒 EPERM）**：订阅 `prefs-changed`（桥接模式自退 / GatewayClient 重发 register / watchdog 热调，双域读取）与 `restart-service`（watchdog 重启 trollvncserver，root 杀 root）。
 
 **关键函数**：
 
-| 函数 | 行号 | 作用 |
-|---|---|---|
-| `main(argc, argv)` | L228 | 单例锁 → killStaleVncServer 清孤儿 → 探测越狱根 → 创建 TRWatchDog → 配置可执行文件/环境/用户 → start → 注入 restartHandler → 启动 TRGatewayClient → 信号注册 → openLocalDummyService → 订阅双通知（prefs-changed / restart-service）→ bridge 启动守卫 → CFRunLoopRun → 清理（watchdog stop + 等子进程退出） |
-| `monitorSelfAndRestartIfVnodeDeleted(executable)` | L101 | dispatch_source 监听 `DISPATCH_VNODE_DELETE`，文件被删除时 exit(EXIT_SUCCESS) |
-| `killStaleVncServer()` | L71 | sysctl KERN_PROC_ALL + KERN_PROCARGS2 枚举（root 可读任意进程 argv），SIGKILL 残留 trollvncserver（释放 5901/5801/5802） |
-| `tvManagerReadPref(defaults, key)` | L126 | 双域配置读取：root defaults 优先，mobile 域 plist 文件兜底（App 设置页写 mobile 域、root 进程读不到） |
-| `tvManagerIsBridgeMode()` | L136 | ConnectionMode=bridge 判定（未设置/非 bridge 均 relay） |
-| `openLocalDummyService(port)` | L145 | 在 127.0.0.1:port 监听 TCP，accept 后立即 close 不响应 |
-| `mSignalAction` / `mSignalHandler` | L49-65 | SIGCHLD 调 waitpid(WNOHANG) 收尸；SIGHUP/SIGINT 停 run loop；SIGTERM 直接退出 |
+| 函数 | 作用 |
+|---|---|
+| `main(argc, argv)` | 单例锁 → killStaleVncServer 清孤儿 → 探测越狱根 → 创建 TRWatchDog → 配置可执行文件/环境/用户 → start → 注入 restartHandler → 启动 TRGatewayClient → 信号注册 → openLocalDummyService → 订阅双通知（prefs-changed / restart-service）→ bridge 启动守卫 → CFRunLoopRun → 清理（watchdog stop + 等子进程退出） |
+| `monitorSelfAndRestartIfVnodeDeleted(executable)` | dispatch_source 监听 `DISPATCH_VNODE_DELETE`，文件被删除时 exit(EXIT_SUCCESS) |
+| `killStaleVncServer()` | sysctl KERN_PROC_ALL + KERN_PROCARGS2 枚举（root 可读任意进程 argv），SIGKILL 残留 trollvncserver（释放 5901/5801/5802） |
+| `tvManagerReadPref(defaults, key)` | 双域配置读取：root defaults 优先，mobile 域 plist 文件兜底（App 设置页写 mobile 域、root 进程读不到） |
+| `tvManagerIsBridgeMode()` | ConnectionMode=bridge 判定（未设置/非 bridge 均 relay） |
+| `openLocalDummyService(port)` | 在 127.0.0.1:port 监听 TCP，accept 后立即 close 不响应 |
+| `mSignalAction` / `mSignalHandler` | SIGCHLD 调 waitpid(WNOHANG) 收尸；SIGHUP/SIGINT 停 run loop；SIGTERM 直接退出 |
 
 **关键常量**：`SINGLETON_MARKER_PATH = "/var/mobile/Library/Caches/com.82flex.trollvnc.manager.pid"`、`kTvAlivePort = 46751`、stdout/stderr 重定向到 `<jbroot>/tmp/trollvnc-stdout.log` / `trollvnc-stderr.log`
 
@@ -228,7 +227,7 @@ New project/
 
 #### 4.1.3 TRCapabilityRegistry — 能力注册表
 
-**文件**：`TrollVNC/src/TRCapabilityRegistry.h`（94 行）+ `.mm`（1751 行）
+**文件**：`TrollVNC/src/TRCapabilityRegistry.h` + `.mm`
 **类名**：`TRCapabilityRegistry`（单例）
 
 **核心职责**：能力即服务注册表，数据驱动统一管理所有设备能力（控制型 + 配置型）；提供 `invoke:` 统一执行入口（按 route 分发 HID/Touch/LocalCmd/Native）和 `setConfig:` 统一配置下发入口；经 5901 RFB 扩展消息桥接本地命令；自签 CA 证书生成；局域网网关搜索。
@@ -241,10 +240,10 @@ New project/
 | `- invoke:params:error:` | 查 `_controlCaps[capId]` → 调 `cap.executor(params, error)`；route 类型仅作元数据标记 |
 | `- setConfig:value:error:` | 类型/范围校验 → 写 NSUserDefaults → 按 reload 分发（hot: tvReloadConfigForKey / restart: wd restart / gateway/instant: NSUserDefaultsDidChangeNotification） |
 | `- allControlMetadata` / `- allConfigSchema` / `- currentConfigs` | 供 query 命令返回能力清单/配置 schema/当前值（含 hasPassword 标记） |
-| `- _registerAllCapabilities` | 注册 9 大类：HID/Touch/Native/SettingsActions/LocalCmd/SystemQuery/Gateway/ScreenHash/**Vision** + ConfigSchemas（`_registerConfigSchemas` **35 项**——前端 CONFIG_DEFS 33 项 + BonjourEnabled/ViewOnlyPassword 保留注册不暴露 UI，2026-08-23 定位 +5 SimLocation*）；Vision 类（2026-08-28 +vision.ocr/vision.find_text/vision.find_image，LocalCmd 桥接 timeout 12s）+ identity.reset（2026-08-28，Native 直调 TRIdentityReset） |
-| `- _rfbCommand:params:timeoutMs:error:` (L1615) | 以 JSON {op, params} 封装为 0x50 帧发送到 127.0.0.1:5901，读 0x80 响应 |
-| `static tvRfbConnect(NSError **)` (L1523) | RFB 3.8 握手 + 发送 `cap.hello {mgmt:YES}` 标记管理客户端 |
-| `static TRGenerateSelfSignedCert(...)` (L123) | RSA2048 自签 CA 证书（pathLen=0、keyUsage/EKU 齐全） |
+| `- _registerAllCapabilities` | 注册 9 大类：HID/Touch/Native/SettingsActions/LocalCmd/SystemQuery/Gateway/ScreenHash/**Vision** + ConfigSchemas（`_registerConfigSchemas` **35 项** = 前端 CONFIG_DEFS 28 项 + SimLocation* 5 项 + BonjourEnabled/ViewOnlyPassword 2 项保留注册不暴露 UI）；Vision 类（2026-08-28 +vision.ocr/vision.find_text/vision.find_image，LocalCmd 桥接 timeout 12s）+ identity.reset（2026-08-28，Native 直调 TRIdentityReset） |
+| `- _rfbCommand:params:timeoutMs:error:` | 以 JSON {op, params} 封装为 0x50 帧发送到 127.0.0.1:5901，读 0x80 响应 |
+| `static tvRfbConnect(NSError **)` | RFB 3.8 握手 + 发送 `cap.hello {mgmt:YES}` 标记管理客户端 |
+| `static TRGenerateSelfSignedCert(...)` | RSA2048 自签 CA 证书（pathLen=0、keyUsage/EKU 齐全） |
 
 **能力分类与路由**：
 - `TRCapCategory`：Control=0（一级菜单）/ Config=1（二级菜单）
@@ -259,23 +258,23 @@ New project/
 
 #### 4.1.4 TRGatewayClient — 网关注册/心跳客户端
 
-**文件**：`TrollVNC/src/TRGatewayClient.h`（47 行）+ `.mm`（613 行）
+**文件**：`TrollVNC/src/TRGatewayClient.h` + `.mm`
 **类名**：`TRGatewayClient`（单例）
 
 **核心职责**：内网群控网关注册/心跳客户端（BSD socket / TCP JSON 行协议）；读取 `GatewayHost/GatewayToken` 配置生成并持久化设备 UUID；连接网关 18081 发送 register，定时 30s 发 hello；处理网关下发的 cmd 命令（ping/query/set/invoke/restart）；收到 ack 后启动 18181 隧道客户端并注入 commandHandler；设置变更时标记 `_needsReregister` 由 worker 线程重发 register；跨用户域镜像 DeviceUUID 到 mobile 域供 App 读取。
 
 **关键方法**：
 
-| 方法 | 行号 | 作用 |
-|---|---|---|
-| `+ sharedClient` | — | dispatch_once 单例；init 时监听 NSUserDefaultsDidChangeNotification |
-| `- start` / `- stop` | — | 启动/停止 worker thread |
-| `- _connectAndRun` | L324 | socket + gethostbyname + connect → 发 _registerData → 重置 _retryDelay=2s → 进入 select 读循环（5s 超时） |
-| `- _registerData` | L240 | 构造 register JSON `{type, deviceId, name, vncPort:5901, configs, screen:{width,height}, httpPort:5801}` + `\n` |
-| `- _handleServerLine:fd:` | L453 | 解析 JSON 行；type=="ack" → 同步启动隧道（防重）；type=="cmd" → _buildAckForCommand |
-| `- _buildAckForCommand:` | L480 | 分发 ping/query/set/invoke/restart（query target=caps/configs/schema/status） |
-| `- _startTunnel` | L599 | 创建 TRTunnelClient，注入 commandHandler block（复用 query/set/invoke/restart 通道） |
-| `- _mirrorDeviceIdToMobileDomain:` | L172 | 经 CFPreferencesSetValue 写 mobile 用户域；回退直接写 plist；写后读回验证 |
+| 方法 | 作用 |
+|---|---|
+| `+ sharedClient` | dispatch_once 单例；init 时监听 NSUserDefaultsDidChangeNotification |
+| `- start` / `- stop` | 启动/停止 worker thread |
+| `- _connectAndRun` | socket + gethostbyname + connect → 发 _registerData → 重置 _retryDelay=2s → 进入 select 读循环（5s 超时） |
+| `- _registerData` | 构造 register JSON `{type, deviceId, name, vncPort:5901, configs, screen:{width,height}, httpPort:5801}` + `\n` |
+| `- _handleServerLine:fd:` | 解析 JSON 行；type=="ack" → 同步启动隧道（防重）；type=="cmd" → _buildAckForCommand |
+| `- _buildAckForCommand:` | 分发 ping/query/set/invoke/restart（query target=caps/configs/schema/status） |
+| `- _startTunnel` | 创建 TRTunnelClient，注入 commandHandler block（复用 query/set/invoke/restart 通道） |
+| `- _mirrorDeviceIdToMobileDomain:` | 经 CFPreferencesSetValue 写 mobile 用户域；回退直接写 plist；写后读回验证 |
 
 **关键常量**：`kHelloInterval=30.0`、`kReadTimeout=5.0`、`kMinRetryDelay=2.0`、`kMaxRetryDelay=30.0`；端口硬编码 `_gatewayPort=18081` / `_vncPort=5901` / `_httpPort=5801`
 
@@ -285,24 +284,24 @@ New project/
 
 #### 4.1.5 TRTunnelClient — 隧道客户端
 
-**文件**：`TrollVNC/src/TRTunnelClient.h`（38 行）+ `.mm`（~740 行）
+**文件**：`TrollVNC/src/TRTunnelClient.h` + `.mm`
 **类名**：`TRTunnelClient`（单例）
 
 **核心职责**：设备侧隧道客户端（BSD socket / TCP + 帧封装）；注册到网关成功后由 TRGatewayClient._startTunnel 启动，建立到网关 18181 的隧道连接；握手后进入帧封装透传模式（proto:2 通道复用），让多路 RFB 连接（chan 0 缩略图 + 会话通道）与 JSON 心跳/命令在同一隧道上共存；通过 select() 多路复用隧道与全部通道 fd 的双向数据流；每 30s 发 PING 心跳；CMD 帧复用 commandHandler；独立线程运行，断线退避重连。
 
 **关键方法**：
 
-| 方法 | 行号 | 作用 |
-|---|---|---|
-| `- startWithHost:port:deviceId:token:` | L132 | 参数校验 + 已启动时参数变化则先 stop 再重启，否则幂等返回 |
-| `- _connectAndRun` | L205 | TCP connect → _sendHandshakeHello（proto:2）→ _recvHandshakeAck → 等待网关 CHAN_OPEN → _passthroughLoop |
-| `- _passthroughLoop:` | L361 | select 多路复用——tunnel 可读 → _appendFrameData → _processFramesTunnel；通道 fd 可读 → 反查 chanId 封装 CHAN_DATA 写隧道；通道 EOF 仅清理该通道（_closeChannel） |
-| `- _processFramesTunnel:` | L479 | 循环解析帧——CHAN_OPEN 同步 connect 5901 + 主动写版本 + 回 CHAN_ACK；CHAN_DATA 写对应通道 fd（未知通道丢弃+回 CHAN_CLOSE）；CHAN_CLOSE 关通道；FT_PONG 标记存活；FT_PING 回 FT_PONG；FT_CMD 委托 commandHandler |
-| `- _closeChannel:reason:` | L~665 | 关通道 fd、清表项、会话通道归零时降频+上报被控结束、EOF 时回 CHAN_CLOSE 通知网关 |
-| `- _writeFrame:fd:type:data:length:` | L~700 | 写 5 字节头（1B type + 4B BE length）+ payload，处理部分写 |
-| `- _appendFrameData:length:` | L436 | 动态扩容帧缓冲（初始 8KB，倍增到 16MB 上限） |
+| 方法 | 作用 |
+|---|---|
+| `- startWithHost:port:deviceId:token:` | 参数校验 + 已启动时参数变化则先 stop 再重启，否则幂等返回 |
+| `- _connectAndRun` | TCP connect → _sendHandshakeHello（proto:2）→ _recvHandshakeAck → 等待网关 CHAN_OPEN → _passthroughLoop |
+| `- _passthroughLoop:` | select 多路复用——tunnel 可读 → _appendFrameData → _processFramesTunnel；通道 fd 可读 → 反查 chanId 封装 CHAN_DATA 写隧道；通道 EOF 仅清理该通道（_closeChannel） |
+| `- _processFramesTunnel:` | 循环解析帧——CHAN_OPEN 同步 connect 5901 + 主动写版本 + 回 CHAN_ACK；CHAN_DATA 写对应通道 fd（未知通道丢弃+回 CHAN_CLOSE）；CHAN_CLOSE 关通道；FT_PONG 标记存活；FT_PING 回 FT_PONG；FT_CMD 委托 commandHandler |
+| `- _closeChannel:reason:` | 关通道 fd、清表项、会话通道归零时降频+上报被控结束、EOF 时回 CHAN_CLOSE 通知网关 |
+| `- _writeFrame:fd:type:data:length:` | 写 5 字节头（1B type + 4B BE length）+ payload，处理部分写 |
+| `- _appendFrameData:length:` | 动态扩容帧缓冲（初始 8KB，倍增到 16MB 上限） |
 
-**FT_ 帧类型常量**（L35-46）：
+**FT_ 帧类型常量**：
 - `FT_PING=0x02` 心跳请求（设备→网关，每 30s）
 - `FT_PONG=0x03` 心跳响应（双向）
 - `FT_CMD=0x04` 命令 JSON（网关→设备）
@@ -340,8 +339,8 @@ New project/
 | `- dragLinearWithStartPoint:endPoint:duration:` / `- dragCurveWithStartPoint:endPoint:duration:` | 线性/曲线拖拽（humanize 时走 minimum-jerk + OU 噪声整形） |
 | `- dragLinearPlainWithStartPoint:endPoint:duration:` | 显式裸拖（永不整形，画布滚轮 wheelFlush 专用） |
 | `- _humanizedTaps/_humanizedDragFrom/_humanizeOffsetForTarget` | **HumanizeTouch（2026-08-28 风控对抗）**：`humanizeEnabled` 粘性开关（默认 NO；注册表 `_registerTouchCapabilities` 与 5802 touch handler 置 YES）——Fitts 偏置误差（σ=clamp(0.12×距离,2,12)px 接近轴 1.4×）、对数正态按压 45~220ms（中位 90ms）、双击间隔安全窗 80-160ms、连点重尾中位 280ms + 6% 犹豫、OU 平滑噪声（θ=8/s std≈0.8px）、down→up 微滑移 ±1.5px；裸原语（ptrAddEvent 路径）永不整形 |
-| `- pinchLinearInBounds:scale:angle:duration:` (L945) | 在 bounds 矩形内执行线性 pinch（scale 0.5~2.0 + angle 弧度） |
-| `- keyDown:` / `- keyUp:` / `- keyPress:` (L1197) | ASCII 键盘（c<128）→ HID usage code 映射（含 Shift 包装判断） |
+| `- pinchLinearInBounds:scale:angle:duration:` | 在 bounds 矩形内执行线性 pinch（scale 0.5~2.0 + angle 弧度） |
+| `- keyDown:` / `- keyUp:` / `- keyPress:` | ASCII 键盘（c<128）→ HID usage code 映射（含 Shift 包装判断） |
 | `- menuPress/menuDoublePress/menuLongPress` | Home 键组合 |
 | `- powerPress/powerDoublePress/powerTriplePress/powerLongPress` | Power 键组合 |
 | `- snapshotPress` | Home+Power 截图 |
@@ -379,7 +378,7 @@ New project/
 
 #### 4.1.8 ClipboardManager — 剪贴板访问点
 
-**文件**：`TrollVNC/src/ClipboardManager.h`（54 行）+ `.mm`（66 行，单例）
+**文件**：`TrollVNC/src/ClipboardManager.h` + `.mm`（单例）
 
 **核心职责**：轻量级剪贴板访问点（仅 UTF-8 文本），包装 `UIPasteboard generalPasteboard`，供 `clipboard.get`（复制按钮显式拉取）、`type.paste`（粘贴数据载体写入）、RFB Extended Clipboard 协议共用。
 
@@ -401,27 +400,27 @@ New project/
 - `updateSingleBannerWithContent:badgeCount:userInfo:` 单条持续横幅（interruptionLevel=Passive，0.33s 延迟 trigger）
 - iOS 16+ `setBadgeCount:` 重置徽章
 
-**TRWatchDog**（`TRWatchDog.h` 159 行 + `.mm` 990 行）
+**TRWatchDog**（`TRWatchDog.h` + `.mm`）
 - 基于 `TRTask`（Swift）启动/停止/重启子进程，状态机驱动（Stopped/Starting/Running/Stopping/Crashed/Throttled）
 - 串行 dispatch_queue 保证线程安全；keepAlive 条件重启（BOOL 或 NSDictionary 含 Crashed/SuccessfulExit 条件）
 - throttle interval 防止快速重启循环；exit timeout 超时后 SIGKILL 强制终止
 - 默认值：`exitTimeOut=3.0`、`throttleInterval=30.0`、`keepAlive=@YES`
 
-**TRDaemonBridgeManager.mm**（34 行，C 函数 stub）
+**TRDaemonBridgeManager.mm**（C 函数 stub）
 - 守护进程桥接函数的 Manager 降级实现：bootstrap 构建中 TRCapabilityRegistry 编译进 trollvncmanager，调用 `tvGetInflightStats / tvGetBonjourTXT / tvReloadConfigForKey` 时本文件提供 stub 返回空数据 / -1
 - 调用方对非 0 返回值做 Watchdog/HID 属性兜底处理
 
-**OhMyJetsam.mm**（80 行，C 函数 + constructor(101)）
+**OhMyJetsam.mm**（C 函数 + constructor(101)）
 - Jetsam 内存压力绕过：进程启动时调 `memorystatus_control` 私有 API 提升到 `JETSAM_PRIORITY_CRITICAL`
 - 设置高水位标记 -1（无限）、task limit=0x400、PROCESS_IS_MANAGED=0、PROCESS_IS_FREEZABLE=0、proc_track_dirty(0)
 - simulator 不编译
 
-**Logging.h**（34 行，宏）
+**Logging.h**（宏）
 - 定义 `tvncLoggingEnabled`（默认 YES）/ `tvncVerboseLoggingEnabled`（默认 NO）
 - `TVLog(fmt, ...)` / `TVLogVerbose(fmt, ...)` 宏封装 NSLog + `__PRETTY_FUNCTION__` + `__LINE__`
 - 用 `\r` 行尾让日志在 iOS Console 中紧贴前一行显示
 
-**Control.h**（22 行，软链到 app/.../Control.h）
+**Control.h**（软链到 app/.../Control.h）
 - `FOUNDATION_EXTERN int gOrientationFixQuad`：方向修正象限（0=0°、1=90°CW、2=180°、3=270°CW）
 - `static const int kTvAlivePort = 46751`：trollvncmanager 哑服务端口
 
@@ -653,7 +652,7 @@ TRMainTabBarController.m       四 Tab 容器（紫色调 RGB 107/78/255，所�
 
 ### 5.1 服务端（server/index.js）
 
-**文件**：`trollvnc-farm/server/index.js`（1567 行，单入口）
+**文件**：`trollvnc-farm/server/index.js`（单入口）
 
 **核心职责**：在一个 Node 进程内同时承担 REST API、静态资源服务、WebSocket↔VNC 桥接、mDNS 发现、TCP 存活探测、注册通道（TCP JSON 行）、隧道通道（TCP 帧协议）、广播群控、TLS 自签证书与同端口协议自适应。还内置对 noVNC `rfb.js` / `gesturehandler.js` 的内存 patch（不修改 node_modules）。
 
@@ -811,7 +810,7 @@ tun = {
 
 #### 5.2.1 web/app.js — 前端主逻辑
 
-**文件**：`trollvnc-farm/web/app.js`（2804 行）
+**文件**：`trollvnc-farm/web/app.js`
 
 **核心职责**：浏览器/WKWebView 单页应用，承担卡片墙渲染、聚焦大屏控制、操作列与移动端 FAB、布局切换、批量操作、直控模式、同步控制、剪贴板显式双向搬运、iOS 软键盘双通道输入、容器模式（?container=ipa）。
 
@@ -861,7 +860,7 @@ kbdShiftHeld, kbdShiftTimer, kbdComposing, kbdJustComposed, kbdLastLen
 
 #### 5.2.2 web/caps.js — 前端契约唯一真相源
 
-**文件**：`trollvnc-farm/web/caps.js`（212 行）
+**文件**：`trollvnc-farm/web/caps.js`
 
 **核心职责**：自包含定义按键/批量能力/手势/配置表单契约，封装网关 invoke/configs API。原则：无上报、无元数据表、无运行时发现；新增能力 = 设备端注册 executor + 此处加一条。
 
@@ -872,7 +871,7 @@ kbdShiftHeld, kbdShiftTimer, kbdComposing, kbdJustComposed, kbdLastLen
 | `KEY_DEFS` | 10 | 右侧按键直发（power/home/volup/mute/voldn/briup/bridn/snapshot/spotlight/keyboard） | RFB 直发（ks keysym / code DOM code / ptr 指针掩码）；每项 events:{click,long} 或 {click,down,up}（双击/三击=自然连点，显式 double/triple 走 BATCH_CAPS） |
 | `BATCH_CAPS` | 20 | 批量调用菜单（17 hid + service.restart + settings.generateKeys + settings.searchGateway） | invoke API；按 category 分组（hid/service/native） |
 | `GESTURE_DEFS` | 3 | 画布多点手势（pinch→touch.pinch / twotap→touch.twoFingerTap / threetap→touch.threeFingerTap） | invoke API（坐标 0-1 归一化） |
-| `CONFIG_DEFS` | **33 项** | 配置表单契约（2026-08-22 统一到 RFB：+CaptureFps/HeartbeatIntervalSec、-ThumbPushEnabled/ThumbInterval/BonjourEnabled/ViewOnlyPassword UI；按能力板块 group 分组 connection/direct/display/interaction/keepalive/about/locsim，null=UI 隐藏；**2026-08-23 +5 SimLocation*（group:locsim，定位模拟自治参数）**） | set API；每项含 reload: hot/restart/instant/gateway |
+| `CONFIG_DEFS` | 28 项 | 配置表单契约（数量与各 key 以 caps.js + `caps-test.js` 断言为准；2026-08-26 起 locsim 定位组已随直控 App UI 移除，SimLocation* 5 项仅设备端保留注册；按能力板块 group 分组 connection/direct/display/interaction/keepalive/about，null=UI 隐藏） | set API；每项含 reload: hot/restart/instant/gateway |
 | `CONFIG_BY_KEY` | Map | 按 key 索引 schema | — |
 | `CATEGORY_LABELS` | 8 类 | 批量菜单分组标题 | hid/touch/stylus/system/native/service/gateway/control |
 
@@ -893,7 +892,7 @@ kbdShiftHeld, kbdShiftTimer, kbdComposing, kbdJustComposed, kbdLastLen
 
 #### 5.2.3 web/press.js — 按压语义识别
 
-**文件**：`trollvnc-farm/web/press.js`（76 行）
+**文件**：`trollvnc-farm/web/press.js`
 
 **核心职责**：把 keyDef.events 声明的按压模式（click/double/triple/long/down/up）翻译为能力 id 调用。常量 `DOUBLE_MS=300`、`LONG_MS=800`。
 
@@ -908,7 +907,7 @@ kbdShiftHeld, kbdShiftTimer, kbdComposing, kbdJustComposed, kbdLastLen
 
 #### 5.2.4 web/gesture.js — 画布多点手势识别
 
-**文件**：`trollvnc-farm/web/gesture.js`（78 行）
+**文件**：`trollvnc-farm/web/gesture.js`
 
 **核心职责**：消费 server patch 的 rfb.js 在 pinch/twotap/threetap 手势上派发的 `farmgesture` CustomEvent，译为 `{cap, params}` 调用 touch.* 能力。
 
@@ -972,7 +971,7 @@ script app.js?v=170（type=module）
 | 2 | `tunnel-test.js` | 隧道通道复用（proto:2）：FakeDevice（register + openTunnel 握手 proto:2 + 帧解析 + CHAN_OPEN 自动 ack）；viewOnly 会话收 CHAN_OPEN + 收到 CHAN_DATA；viewOnly 上行→CHAN_DATA；ctrl 输入→CHAN_DATA；新 ctrl 顶掉旧 ctrl（4001）；broadcast 输入→目标设备会话通道 |
 | 3 | `register-test.js` | P0 注册/心跳/命令：WS /ws/register 已废弃（4000）；TCP 注册带 manifest，能力字段被网关剥离不入库；invoke ack 往返；不 ack 设备 invoke→504；configs set ack；断开→离线→离线 invoke 504；TCP hello 保活；batch 端点可达 |
 | 4 | `dedupe-test.js` | 去重/身份合并：同 deviceId 重复注册仍 1 条、旧连接被关；manual+register 同 host:port 合并为 deviceId；已注册设备不被 manual 降级 |
-| 5 | `caps-test.js` | caps.js 自包含定义契约：BATCH_CAPS=22（2026-08-25 +data.fill/data.clear）且每项含 id/title/icon/category/params、含 service.restart；CONFIG_DEFS=33（2026-08-23 定位 +5 SimLocation*，七板块 group 均非空、仅 FabAutoCollapse 为 null、不含 BonjourEnabled/ViewOnlyPassword）且不含 Port$ 项且每项含 reload；KEY_DEFS=10；groupByCategory=3 组；GESTURE_DEFS=3 |
+| 5 | `caps-test.js` | caps.js 自包含定义契约（数量以 caps-test.js 实际断言为准）：BATCH_CAPS=20（data.fill/data.clear 已随 2026-08-26 直控 App UI 移除）且每项含 id/title/icon/category/params、含 service.restart；CONFIG_DEFS=28（locsim 定位组已移除）且不含 Port$ 项且每项含 reload、group 板块均非空、仅 FabAutoCollapse 为 null、不含 BonjourEnabled/ViewOnlyPassword；KEY_DEFS=10；groupByCategory=3 组；GESTURE_DEFS=3 |
 | 6 | `gesture-test.js` | gesture.js 契约：GESTURE_DEFS 与 resolveGesture 三态覆盖一致；normalizePoint 中心/越界钳制/无 rect 兜底；pinch scale>1/<1/钳制 [0.5,2.0]/≈1 跳过 null；未知类型 null |
 | 7 | `pending-replay-test.js` | 回归（proto:2 通道隔离）：会话 A 建立收 CHAN_OPEN + 画面帧；A 关闭网关下发 CHAN_CLOSE；设备推旧通道残留帧 → 按 chanId 分发无订阅者丢弃；重进会话 B 新通道号 ≠ A；会话 B 600ms 窗口内不得收到旧残留数据 |
 | 8 | `press-test.js` | press.js 时序：volup 按下 down、抬起 up、不补 click；home 双击→home.double；单击窗口超时→click；按住 900ms→home.long；power 三击→power.triple |
@@ -1027,7 +1026,7 @@ CMD ["node", "server/index.js"]
 
 #### 5.4.4 scripts/gen-cert.mjs — 自签证书生成
 
-**文件**：`trollvnc-farm/scripts/gen-cert.mjs`（116 行）
+**文件**：`trollvnc-farm/scripts/gen-cert.mjs`
 
 **核心职责**：为网关自动生成自签 TLS 证书（RSA2048，3650 天），SAN 含 DNS:localhost + 全部本机 IPv4。
 
@@ -1333,20 +1332,4 @@ node scripts/wait-ipa.mjs <runId>
 - **私有 API**：随 iOS 升级可能失效，锁定 TrollStore 支持范围，升级前灰度
 - **多设备端到端同步验证**：单台真机链路已大量联调；群控（广播/批量/同步）多设备端到端验证待第二台实体设备
 
----
-
-## 11. 文档差异核对
-
-> 本节记录 Code Wiki（基于代码真相源）与 `AGENTS.md` / `说明文档.md` 的数量校准结果。已校准项如下（2026-08-17 修正 8→9 套件；2026-08-18 因 ServerCursor 移除 38→37，三方一致；2026-08-21 采集架构升级校准 CONFIG_DEFS 30 项与测试套件 11 个）。
-
-| 项 | 修复前 | 代码真相源 | 修复状态 |
-|---|---|---|---|
-| 测试套件数 | 8（AGENTS.md / 说明文档.md） | **11**（package.json 串行 11 个：…/events-test.js + `tunnel-thumb-test.js`，2026-08-22 改测缩略图 RFB 流） | ✅ 已修复：说明文档.md 已同步为 11 套件，套件列表补 `events`、`tunnel-thumb`。**AGENTS.md 需同步**（仍写 10 套件） |
-| CONFIG_DEFS 项数 | 38（2026-08-17 校准）/ 37 | **33 项**（caps.js 实际 33，`caps-test.js` 断言 `=== 33`；2026-08-20 配置治理 37→29；2026-08-21 采集架构升级 29→30；2026-08-22 统一到 RFB 30→28：-ThumbPushEnabled/ThumbInterval；**2026-08-23 定位 +5 SimLocation* 28→33**，设备端 `_registerConfigSchemas` 35 项） | ✅ 已修复：说明文档.md、CodeWiki 同步为 33。**AGENTS.md 需同步**（仍写 30 项相关描述） |
-| BATCH_CAPS | 22（两文档一致，2026-08-25 +data.fill/data.clear） | 22（一致） | ✅ 已修复：说明文档.md §4.1 同步为 22 |
-| KEY_DEFS | 10（两文档一致） | 10（一致） | — 无需修复 |
-| GESTURE_DEFS | 3（两文档一致） | 3（一致） | — 无需修复 |
-
----
-
-**文档完。** 所有信息均从源码提取，关键行号已标注便于回溯。如需补充特定文件细节或新增模块，请同步更新本 Wiki 与 `说明文档.md`。
+**文档完。** 所有信息均从源码提取。本文档为代码结构地图（谁在哪、依赖谁），不含行号（派生值，读时 grep 即得）；机制与决策真相见 `说明文档.md`。如需补充特定文件细节或新增模块，请同步更新本 Wiki 与 `说明文档.md`。

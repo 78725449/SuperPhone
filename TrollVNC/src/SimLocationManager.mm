@@ -12,7 +12,7 @@
 #import <CoreLocation/CoreLocation.h>
 
 // 私有类方法（classdump 实证，iOS 15/17 均在；LocationServicesSwitcher 同款用法）：
-// 系统定位总开关——定位对抗编排的防御位（关模拟/失效时关开关，宁无位置不漏真实）
+// 系统定位总开关——定位对抗编排的防御位（启动安全基底/异常失效时先关，宁无位置不漏真实）
 @interface CLLocationManager (TrollVNCLocationSwitch)
 + (void)setLocationServicesEnabled:(BOOL)enabled;
 @end
@@ -47,9 +47,7 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
 
 @implementation SimLocationManager {
     CLSimulationManager *_sim;
-    BOOL _simulating;
-    BOOL _wifiSimulating;
-    BOOL _wifiSimulatingOnce; // 曾成功注入过 wifi（单调不回退，供巡检/螺旋区分"曾成功 vs 从未成功"）
+    BOOL _wifiSimulatingOnce; // 曾成功注入过 wifi（单调不回退，供空洞螺旋区分"曾成功 vs 从未成功"，2026-08-27）
 }
 
 + (instancetype)sharedManager {
@@ -65,14 +63,8 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     self = [super init];
     if (self) {
         _sim = [[CLSimulationManager alloc] init];
-        _simulating = NO;
-        _wifiSimulating = NO;
     }
     return self;
-}
-
-- (BOOL)isSimulating {
-    return _simulating;
 }
 
 - (void)injectPoint:(CLLocationCoordinate2D)coord
@@ -101,31 +93,14 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     [_sim appendSimulatedLocation:location];
     [_sim flush];
     [_sim startLocationSimulation];
-    _simulating = YES;
     [SimLocationManager postTimezoneUpdate];
-}
-
-- (void)stop {
-    [_sim stopLocationSimulation];
-    [_sim clearSimulatedLocations];
-    [_sim flush];
-    _simulating = NO;
-    [SimLocationManager postTimezoneUpdate];
-}
-
-- (void)stopAll {
-    [self stop];                    // GPS：stopLocationSimulation + clear + flush
-    [self stopWifiScanSimulation]; // wifi：stopWifiSimulation + power NO
 }
 
 /// 只停播放，不清掉 locationd 模拟会话——注入持续活到最后位置（2026-08-29 定案）
 - (void)stopPlaybackOnly {
     [self stopWifiScanSimulation];
     // 不调 [self stop] —— 不清 locationd 会话（stopLocationSimulation + clear + flush 都不调）
-}
-
-- (BOOL)isWifiSimulating {
-    return _wifiSimulating;
+    // （2026-09-04 死代码清理：stop/stopAll（清模拟回真实）已删除——注入始终运行架构下无停止路径消费）
 }
 
 - (BOOL)wasWifiSimulatingOnce {
@@ -153,52 +128,15 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     return [CLLocationManager locationServicesEnabled];
 }
 
-- (void)injectWifiScanResults:(NSArray<NSDictionary *> *)scanResults {
-    if (!_sim) return;
-    if (scanResults.count == 0) {
-        NSLog(@"[locsim] wifi simulation inject skipped: empty scan results");
-        return;
-    }
-    // 每次注入完整重启（对齐 GPS 注入语义）：先停旧的再起新的，保证新数据被 locationd 消费
-    [_sim stopWifiSimulation];
-    [_sim setSimulatedWifiPower:NO];
-    [_sim setWifiScanResults:scanResults];
-    [_sim setSimulatedWifiPower:YES];
-    [_sim startWifiSimulation];
-    _wifiSimulating = YES;
-    _wifiSimulatingOnce = YES; // 曾成功注入过（单调不回退，供巡检区分曾成功/从未成功）
-    NSLog(@"[locsim] wifi simulation start, %lu APs", (unsigned long)scanResults.count);
-}
-
 - (void)stopWifiScanSimulation {
     if (!_sim) return;
     [_sim stopWifiSimulation];
     [_sim setSimulatedWifiPower:NO];
-    _wifiSimulating = NO;
     NSLog(@"[locsim] wifi simulation stopped");
 }
 
-+ (NSArray<NSDictionary *> *)buildScanResultsFromBssidStrings:(NSArray<NSString *> *)bssids {
-    if (bssids.count == 0) return @[];
-    NSMutableArray *results = [NSMutableArray arrayWithCapacity:bssids.count];
-    double now = [[NSDate date] timeIntervalSince1970];
-    for (NSString *bssid in bssids) {
-        if (bssid.length == 0) continue;                      // 空串兜底
-        double rssi = -40.0 - (double)(arc4random_uniform(4500)) / 100.0; // -40 ~ -85 dBm
-        [results addObject:@{
-            @"bssid"     : bssid,
-            @"ssid"      : @"",
-            @"rssi"      : @(rssi),
-            @"channel"   : @(1 + arc4random_uniform(13)),
-            @"age"       : @(0.5),
-            @"timestamp" : @(now),
-        }];
-    }
-    return results;
-}
-
 /// 通知系统刷新时区显示（模拟跨时区后地图/时间跟随）。
-/// 节流由上层（Controller）负责；实验 A 阶段每次注入直接发。
+/// 调用点：injectPoint: 每次注入后发送（原注释"节流由上层负责"已不准确——上层无节流，保留现状）
 + (void)postTimezoneUpdate {
     CFNotificationCenterPostNotificationWithOptions(
         CFNotificationCenterGetDarwinNotifyCenter(),

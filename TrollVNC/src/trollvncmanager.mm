@@ -585,8 +585,9 @@ int main(int argc, const char *argv[]) {
         [TRGatewayClient sharedClient].watchdog = gWatchDog;
         [[TRGatewayClient sharedClient] start];
 
-        // 改定位自治控制器：启动一律停止态（残留模式强制 off，对齐 App readCurrentStatus 契约，
-        // 防设备重启后自动恢复模拟注入——2026-08-28）+ 10s 巡检（离线自治，C3）
+        // 改定位注入控制器：启动契约（2026-08-28 起，App 与 daemon 不对称——App 重启=readCurrentStatus 强制
+        // off（宁停不漏）；daemon 重启=launchd/watchdog 拉起恢复：先关定位安全基底→注入上次位置（位置连续）→
+        // 残留 itinerary（崩溃前播放中）放行恢复播放；anchor/off 归停止态）
         [[SimLocationController sharedController] start];
 
         // 每日轨迹（2026-08-26）：每日通话/短信/未接 + 每周新增联系人（真人行为模拟，默认开启）
@@ -650,8 +651,8 @@ int main(int argc, const char *argv[]) {
                 }
                 // 网关地址/令牌/设备名变更 → 标记重发 register（host 变更由 worker 断开重连）
                 [[TRGatewayClient sharedClient] noteExternalPrefsChanged];
-                // 定位参数变更（App/5801 写 mobile 域后通知）→ 控制器合并窗口重读生效
-                //（一次编辑链连发多次通知合并为一次重载，防热重载风暴；巡检仍是兜底）
+                // 定位参数变更（App 写 mobile 域后通知）→ 控制器合并窗口重读生效
+                //（一次编辑链连发多次通知合并为一次重载，防热重载风暴；无巡检——notify 驱动全覆盖）
                 [[SimLocationController sharedController] scheduleReloadFromPrefs];
                 // watchdog 节流/退出超时：TRWatchDog 属性可热调，即时生效
                 //（2026-08-20 前为 manager 重启级；双域读取保证 mobile 域设置页写入可见）
@@ -684,7 +685,8 @@ int main(int argc, const char *argv[]) {
             dispatch_get_main_queue(), ^(int token) {
                 (void)token;
                 fprintf(stderr, "[manager] manager-restart notified -> graceful exit (launchd will respawn)\n");
-                // 停模拟（off 清理：注入会话+开关关闭——启动契约也会兜底，双保险）
+                // 升级重启前写 off（防新 manager 启动契约读到残留 itinerary 而恢复播放）；
+                // 系统定位关闭由新 manager 启动的 _forceStopOnStartup ② 完成（双保险）
                 [SimLocationController forceOffAndReload];
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
                                dispatch_get_main_queue(), ^{
@@ -693,8 +695,8 @@ int main(int argc, const char *argv[]) {
             });
     }
     {
-        // WiFi 立即扫描请求（2026-08-27）：App 关闭模拟定位时 notify_post →
-        // daemon 立即触发一次主动扫描（不等 8s 周期），关模拟瞬间拿到最新真实 BSSID 反查标注。
+        // WiFi 立即扫描请求订阅（2026-08-27 通道；⚠️ 当前无发送方——App 停止模拟后改走
+        // _refreshWifiAnnoFromCurrentConnection（读当前连接反查，2026-08-30），不再 notify 本请求；订阅保留供未来/诊断）
         int wifiScanReqToken = 0;
         notify_register_dispatch(kTRWifiScanRequestNotification.UTF8String, &wifiScanReqToken,
             dispatch_get_main_queue(), ^(int token) {

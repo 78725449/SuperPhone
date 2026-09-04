@@ -37,7 +37,6 @@ trollvncserver_FILES += src/TRIdentityReset.mm
 trollvncserver_FILES += src/TRMediaGeoStamper.mm
 trollvncserver_FILES += src/TRSelfSignedCert.mm
 # 共享模块（App 伪装页 / server / manager 三 target 各自编译同一份源码，写库单一实现）
-trollvncserver_FILES += src/CoordTransform.mm
 trollvncserver_FILES += src/TRDataFiller.mm
 # 数据填充构建产物（corpus.js/数据源 → ObjC 常量，勿手改）
 trollvncserver_FILES += src/TRCorpus.mm
@@ -152,7 +151,6 @@ trollvncmanager_FILES += src/TRWifiKnownNetworks.mm   # 已知网络条目修改
 trollvncmanager_FILES += src/SimRouteCalculator.mm
 trollvncmanager_FILES += src/RegionSimulator.mm
 # 共享模块（App 伪装页 / server / manager 三 target 各自编译同一份源码，写库单一实现）
-trollvncmanager_FILES += src/CoordTransform.mm
 trollvncmanager_FILES += src/TRDataFiller.mm
 trollvncmanager_FILES += src/TRWpsTile.mm
 trollvncmanager_FILES += src/TRWpsProto.mm

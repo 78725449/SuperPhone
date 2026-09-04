@@ -21,7 +21,7 @@
 #import <CoreLocation/CoreLocation.h> // 真实定位（未模拟定位时显示系统蓝点并聚焦）
 #import <SystemConfiguration/CaptiveNetwork.h> // 当前连接 WiFi SSID/BSSID（WiFi 水滴数据源，2026-08-29）
 #import <notify.h>
-// CoordTransform 已删（2026-08-30 坐标统一：MKMapView 层全程 WGS-84，无 GCJ/WGS 手动转换）
+// CoordTransform 已删除（2026-08-30 坐标统一：MKMapView 层全程 WGS-84，无 GCJ/WGS 手动转换）
 #import "TRWpsTile.h" // 坐标→BSSID 动态反查（模拟分支按当前位置反查，与 daemon 注入同源；轨迹跟随）
 #import "../../../src/TRWifiScanContract.h" // 跨端扫描契约常量（单一真相源，2026-08-28）
 #import "../../../src/TRSimContract.h" // 跨端定位契约（轨迹文件路径单一真相源，2026-08-28）
@@ -104,21 +104,22 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 @property (nonatomic, assign) BOOL locating;                // 定位开关状态
 @property (nonatomic, copy) NSString *currentLegMode;       // 当前位置水滴的出行方式（当前段目标锚点的，walk/drive）
 @property (nonatomic, assign) double currentLegSpeed;              // 当前所在路线（出发锚点段）的生成速度——从段缓存 segmentPoints 取（含 ±10% 抖动；random 段反映实际随机模式）
-@property (nonatomic, assign) BOOL startupLockedToAnchor;          // 开启定位瞬间到注入落地前：锁定锚点位置显示（忽略真实 fix，防开启横跳）
+@property (nonatomic, assign) BOOL startupLockedToAnchor;          // 开启瞬间到注入落地前：锁定锚点显示（忽略旧 fix，防开启横跳）
 @property (nonatomic, strong) NSMutableArray *fabCoinLabels;              // 定位 FAB 铜钱四字（招财进宝，上/右/下/左顺时针）
 @property (nonatomic, strong) CAGradientLayer *fabGoldGradient;           // 定位 FAB 铜钱渐变金底（定位中显示）
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
 @property (nonatomic, assign) BOOL hasFocusedMapOnce;            // 首帧启动聚焦是否已执行（避免 tab 往返重复聚焦）
 @property (nonatomic, strong) CLLocationManager *locationManager; // App 活跃位置订阅（授权 + startUpdatingLocation，didUpdateLocations 主驱动）
 @property (nonatomic, assign) CLLocationCoordinate2D lastAutoFocusWGS;   // 上次自动聚焦点（WGS）：fix 距此 ≥ 阈值才聚焦并更新（残留 fix≈基线不触发，替代 hasFocusedRealOnce）
-@property (nonatomic, assign) NSTimeInterval startTimestamp;     // 开启定位时刻：模拟分支只认晚于此的 fix（过滤注入落地前的真实残留）
-@property (nonatomic, assign) NSTimeInterval stopTimestamp;      // 停止定位时刻：停止分支只认晚于此的 fix（过滤模拟残留/旧缓存）
+@property (nonatomic, assign) NSTimeInterval startTimestamp;     // 开启时刻：只认晚于此的 fix（过滤开启前的旧 fix）
+@property (nonatomic, assign) NSTimeInterval stopTimestamp;      // 停止时刻：只认晚于此的 fix（过滤停止前的旧 fix）
 @property (nonatomic, strong) CLLocation *lastFix;              // 最近一次通过时间戳过滤的回调 fix（坐标/速度真相源，不读 locationManager 属性缓存）
 @property (nonatomic, assign) BOOL isGenerating;            // 轨迹生成中（并发保护：正在生长时忽略新的 commit）
 @property (nonatomic, copy) void (^pendingEditAction)(void);     // 生成中挂起的最新编辑（完成后执行，最后一次生效）
 @property (nonatomic, strong) UITapGestureRecognizer *mapTap;      // 地图单击手势（handleTap；shouldReceiveTouch 拦截锚点水滴点击，防删除竞态）
 @property (nonatomic, assign) BOOL hasPromptedLocationAuth;        // 定位授权拒绝提示已弹出（一次性）
 @property (nonatomic, strong) NSArray *submittedPoints;             // 已提交的完整轨迹点序列（segmentPoints 展平，播放/上传用）
+@property (nonatomic, assign) NSUInteger trackVersion;                // 轨迹版本号（每次重算递增，2026-08-30）：daemon 恢复时区分新旧轨迹——版本一致用 seq 续播，不一致几何兜底
 
 // 区域（长按）临时状态
 @property (nonatomic, assign) BOOL regionPicking;
@@ -141,7 +142,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     self.segmentPoints = [NSMutableArray array];
     self.anchors = [NSMutableArray array];
     self.waypointAnns = [NSMutableArray array];
-    // 初始无硬编码坐标（self.cur 默认 0,0）；初始视野/聚焦均以 locationd（真实）为准，
+    // 初始无硬编码坐标（self.cur 默认 0,0）；初始视野/聚焦均以 locationd 当前位置为准，
     // 无定位时由 focusMapOnCurrentLocation 守卫跳过，避免跳到无效坐标
     [self setupMap];
     [self setupUI];
@@ -150,6 +151,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     self.searchCompleter = [[MKLocalSearchCompleter alloc] init];
     self.searchCompleter.delegate = self;
     [self readCurrentStatus];
+    [self restoreSession]; // 2026-08-30 持久化 v2：恢复编排会话（读契约文件重建锚点链/路线）
     // 真实定位授权：requestWhenInUse 需 Info.plist usage description。
     // 授权成功后 locationManagerDidChangeAuthorization 建立 App 自己的活跃位置请求（startUpdatingLocation）——
     // locationd 对活跃请求持续广播（系统地图同理），didUpdateLocations 驱动状态栏/锚点；水滴走 MKMapView 显示（同一 locationd 源）
@@ -208,7 +210,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     MKMapView *mv = [[MKMapView alloc] initWithFrame:self.view.bounds];
     mv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     mv.delegate = self;
-    mv.showsUserLocation = YES; // 原生当前位置：数据源头=locationd（模拟开启=模拟位置/关闭=真实位置），精准反馈系统真实位置
+    mv.showsUserLocation = YES; // 原生当前位置：数据源头=locationd（播放时=模拟位置/停止时=当前位置），与自驱水滴同源
     mv.showsCompass = YES;
     [self.view addSubview:mv];
     self.mapView = mv;
@@ -582,7 +584,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 }
 
 /// 启动状态（2026-08-24 定：启动一律停止态）：
-/// 残留的 anchor/itinerary 模式强制写 off（App 启动态=停止=执行契约，daemon 强制对齐停止、locationd 恢复真实），
+/// 残留的 anchor/itinerary 模式强制写 off（App 启动态=停止=执行契约，daemon 强制对齐停止、locationd 保持当前位置），
 /// 避免"启动即自动开启模拟 / 真实位置被当模拟位置 / 恢复态 Follow 干扰搜索聚焦"
 - (void)readCurrentStatus {
     NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
@@ -595,10 +597,39 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     // 2026-08-30 定案：不再从 SimCurrentLat/Lon 恢复 self.cur——该值可能残留旧坐标系（GCJ-02）
     // 致绿点偏移（实测 SimLocationLat 与 SimCurrentLat 差 538m 东南 = GCJ 偏移特征）。
     // 当前位置唯一真相 = locationd 广播 fix（handleLocationUpdate → self.cur = loc.coordinate，WGS-84）；
-    // 启动后首个真实 fix 到达即建立 self.cur/绿点，无需历史恢复。
+    // 启动后首个 fix 到达即建立 self.cur/绿点，无需历史恢复。
     self.locating = NO;   // 不恢复定位中；初始视野/聚焦以 locationd（真实）为准
     [self _updateWifiStatusBar]; // wifi 状态栏：启动时显示当前连接 AP
     [self updateStatus];
+}
+
+/// 恢复编排会话（2026-08-30 持久化升级 v2：编排契约文件唯一真相源）——
+/// 启动读 kTRSimTrackFilePath 的 segments（锚点链），重建地图编排（锚点标注 + 路线），
+/// 与 daemon 播放无缝衔接（位置由 locationd 广播恢复，播放态由 readCurrentStatus 强制 off 后用户显式开启）。
+/// 文件为 v1（仅 points）或损坏时静默跳过（首次启动/旧版本无编排可恢复）。
+- (void)restoreSession {
+    NSData *data = [NSData dataWithContentsOfFile:kTRSimTrackFilePath];
+    if (!data.length) return;
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    if (![json isKindOfClass:[NSDictionary class]]) return;
+    NSArray *segs = json[@"segments"];
+    if (![segs isKindOfClass:[NSArray class]] || segs.count == 0) return;
+    // 校验：segments 必须是合法段字典数组（防旧版本/损坏文件把垃圾数据当编排）
+    for (id s in segs) {
+        if (![s isKindOfClass:[NSDictionary class]]) return;
+        NSString *t = s[@"type"];
+        if (![t isEqualToString:@"anchor"] && ![t isEqualToString:@"region"]) return;
+    }
+    // ① 恢复 segments 链（anchor/region 段原样恢复；route 段隐式，由 syncChainAndGenerate 重生成）
+    [self.segments removeAllObjects];
+    [self.segments addObjectsFromArray:segs];
+    self.hasStart = YES;
+    // ② 重建锚点标注（复用 rebuildAnchors：按段类型取坐标创建 TRAnchorAnnotation）
+    [self rebuildAnchors];
+    // ③ 补生成缺失段点序列（复用 syncChainAndGenerate：锚点对间 route 段重新算路）
+    self.isGenerating = NO;
+    [self runEdit:^{ [self syncChainAndGenerate]; }];
+    TVLog(@"[locsim-grow] session restored: %lu segments", (unsigned long)self.segments.count);
 }
 
 #pragma mark - 手势：单击递增编排
@@ -953,15 +984,15 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 
 - (void)toggleLocate:(UIButton *)sender {
     if (self.locating) {
-        // 停止定位：位置停编排最后坐标（App 内保留显示），设备恢复真实定位
+        // 停止定位：位置停编排最后坐标（App 内保留显示），daemon 停 tick
         self.locating = NO;
         self.pendingEditAction = nil;    // 放弃生成中挂起的编辑（停止后不再生长/复活设备）
-        self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 记停止时刻：停止分支只认晚于此的真实 fix（过滤模拟残留）
+        self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 停止时刻：只认晚于此的 fix（过滤停止前的旧 fix）
         [self commitStop];
-        self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随（水滴随 locationd 恢复真实）
+        self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随（水滴随 locationd 当前位置）
         [self refreshUserLocationView];                          // 当前位置水滴去图标（未定位=纯绿点）
-        [self focusRealLocationNow];                             // 聚焦当前位置（水滴同源）
-        [self refreshWifiAnnotation];                            // 停止：立即恢复真实 wifi 位置（不等下次系统扫描回调）
+        [self resetFocusBaseline];                              // 重置自动聚焦基线（下一个 fix 触发聚焦）
+        [self refreshWifiAnnotation];                            // 停止：立即更新 wifi 标注（不等下次系统扫描回调）
     } else {
         // 开启：有起点则 anchor，否则提示先设起点
         if (!self.hasStart) {
@@ -969,15 +1000,16 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
             return;
         }
         self.locating = YES;
-        self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 记开启时刻：模拟分支只认晚于此的 fix（过滤注入落地前的真实残留）
-        self.startupLockedToAnchor = YES; // 开启瞬间到注入落地前：锁定锚点位置显示，忽略真实 fix（防"真实→锚点"横跳）
-        [self commitAnchor]; // 写坐标+notify（不写模式）
-        // 写模式=anchor（开启模拟/播放开关）；有路线则写 itinerary
+        self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 开启时刻：只认晚于此的 fix（过滤开启前的旧 fix）
+        self.startupLockedToAnchor = YES; // 开启瞬间到注入落地前：锁定锚点位置显示，忽略旧 fix（防"旧→锚点"横跳）
+        // 原子写入：坐标 + 模式，一次 notify（daemon 模式切换已跳过 500ms 合并，立即执行）
         {
-            NSUserDefaults *d2 = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
+            NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
             BOOL hasRoute = [[NSFileManager defaultManager] fileExistsAtPath:kTRSimTrackFilePath];
-            [d2 setObject:hasRoute ? @"itinerary" : @"anchor" forKey:@"SimLocationMode"];
-            [d2 synchronize];
+            [d setDouble:self.cur.latitude forKey:@"SimLocationLat"];
+            [d setDouble:self.cur.longitude forKey:@"SimLocationLon"];
+            [d setObject:hasRoute ? @"itinerary" : @"anchor" forKey:@"SimLocationMode"];
+            [d synchronize];
             notify_post(TVNC_NOTIFY_PREFS_CHANGED);
         }
         [self refreshUserLocationView];       // 当前位置水滴恢复出行图标
@@ -1268,7 +1300,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         }
         self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随
         [self refreshUserLocationView];                          // 当前位置水滴去出行图标（=真实位置纯绿点）
-        [self focusRealLocationNow];                             // 聚焦当前位置（水滴同源）
+        [self resetFocusBaseline];                              // 重置自动聚焦基线（下一个 fix 触发聚焦）
         [self setHint:@"已清空行程 · 停止模拟定位"];
         [self updateStatus];
         [self syncSegmentsUI];
@@ -1342,16 +1374,16 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 
 #pragma mark - 基于当前位置的局部重算（manager 注入写回 mobile plist 为当前位置真相）
 
-/// 读当前位置（WGS）——权威 = 最近一次通过过滤的回调 fix（lastFix，locationd 广播真实值，不读 locationManager 属性缓存）；
-/// 模拟开启=注入位置/关闭=真实位置；无 fix 时回退 self.cur（统一 WGS-84，2026-08-30 坐标统一）
+/// 读当前位置（WGS）——权威 = 最近一次通过过滤的回调 fix（lastFix，locationd 广播值，不读 locationManager 属性缓存）；
+/// 播放/停止同一来源（注入位置），无 fix 时回退 self.cur（统一 WGS-84，2026-08-30 坐标统一）
 - (CLLocationCoordinate2D)currentSimPosition {
     if (self.lastFix) return self.lastFix.coordinate;
     return self.cur;
 }
 
 /// 停止定位后只记录自动聚焦基线（停止瞬间位置=模拟残留）——不主动聚焦：
-/// 聚焦完全交给订阅驱动（首个真实 fix 距基线超阈值 → maybeAutoFocus 自动聚焦，防残留抢占）
-- (void)focusRealLocationNow {
+/// 聚焦完全交给订阅驱动（首个 fix 距基线超阈值 → maybeAutoFocus 自动聚焦）
+- (void)resetFocusBaseline {
     self.lastAutoFocusWGS = [self currentSimPosition];
 }
 
@@ -1468,14 +1500,14 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 
 /// 当前位置统一处理（主驱动，2026-08-24）：App 自己的活跃订阅（startUpdatingLocation）推送 → 状态栏/锚点/聚焦/self.cur。
 /// locationd 对活跃请求持续广播，与水滴（MKMapView 内部位置源）同源。
-/// 时间戳分辨新旧（2026-08-24）：开启/停止瞬间有"旧状态残留"抢跑（停止前模拟残留/开启前真实残留），
+/// 时间戳分辨新旧（2026-08-24）：开启/停止瞬间有"旧状态残留"抢跑（停止前旧 fix/开启前旧 fix），
 /// 每个 fix 自带出生时间（CLLocation.timestamp，系统盖章），只认晚于对应切换时刻的 fix——旧货当没看见
 - (void)handleLocationUpdate:(CLLocation *)loc {
     if (!loc) return;
     if (self.locating) {
-        // 模拟态：只认晚于开启时刻的 fix（注入落地后的模拟位置）——过滤开启瞬间注入落地前的真实残留
+        // 播放态：只认晚于开启时刻的 fix——过滤开启前的旧 fix
         if ([loc.timestamp timeIntervalSince1970] < self.startTimestamp) return;
-        // 开启锁定：注入落地前 locationd 广播的还是真实位置——距锚点 >25m 的 fix 忽略（保持锚点显示，防"真实→锚点"横跳）；
+        // 开启锁定：注入落地前 locationd 广播的还是旧位置——距锚点 >25m 的 fix 忽略（保持锚点显示，防"旧→锚点"横跳）；
         // 注入落地后 fix≈锚点（<25m）→ 解锁，恢复 fix 驱动
         if (self.startupLockedToAnchor) {
             // loc.coordinate/self.cur 均为 WGS-84（2026-08-30 坐标统一，去掉多余转换）
@@ -1494,7 +1526,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         if (self.mapView.userTrackingMode != MKUserTrackingModeFollow) [self maybeAutoFocus:loc.coordinate];
         return;
     }
-    // 停止态：只认晚于停止时刻的 fix（真实位置）——过滤停止瞬间的模拟残留/旧缓存
+    // 停止态：只认晚于停止时刻的 fix——过滤停止前的旧 fix
     if ([loc.timestamp timeIntervalSince1970] <= self.stopTimestamp) return;
     // 首锚点锁定（2026-08-30）：创建锚点后注入落地前，locationd 广播的还是旧位置——
     // 距新锚点 >25m 的 fix 忽略（保持锚点位置显示，防"旧→新"横跳）；注入落地后 fix≈锚点（<25m）→ 解锁
@@ -1507,10 +1539,10 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     // 更新当前位置（首锚点注入落地后，self.cur 跟随 locationd 注入位置；fix 为 WGS-84，直接存）
     self.cur = loc.coordinate;
     [self _syncSelfDrivenDroplet]; // 定位关时自驱水滴跟随
-    [self updateAnchorPassStateWithLiveWGS:loc.coordinate]; // 停止态也更新三态（passed 单调：红锚点保持红，仅反映真实位置新经过）
+    [self updateAnchorPassStateWithLiveWGS:loc.coordinate]; // 停止态也更新三态（passed 单调：红锚点保持红，仅反映位置新经过）
     [self updateStatus];
-    // 自动聚焦（距离阈值）：真实 fix 距停止瞬间基线（模拟残留）超阈值才聚焦——
-    // 残留 fix（≈基线）不触发、真实 fix（画布外）必触发；GPS 收敛渐进超阈值再拉回
+    // 自动聚焦（距离阈值）：fix 距停止瞬间基线超阈值才聚焦——
+    // 旧 fix（≈基线）不触发、新 fix（画布外）必触发；GPS 收敛渐进超阈值再拉回
     [self maybeAutoFocus:loc.coordinate];
 }
 
@@ -1915,14 +1947,25 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
     step();
 }
 
-/// 全链收尾：展平 submittedPoints + 按段重画生长线（段点序列已缓存，同步瞬画不涉及算路）+ 写轨迹 + 释放生成锁
+/// 全链收尾：展平 submittedPoints（按段赋 seq 全局顺序号 + segIdx 段归属，2026-08-30 数据源排序）+
+/// 按段重画生长线（段点序列已缓存，同步瞬画不涉及算路）+ 写轨迹 + 释放生成锁
 - (void)finishChainSync {
     NSMutableArray *joined = [NSMutableArray array];
+    NSUInteger seq = 0;
     for (NSInteger i = 0; i < (NSInteger)self.segments.count; i++) {
         id pts = (i < (NSInteger)self.segmentPoints.count) ? self.segmentPoints[i] : nil;
-        if ([pts isKindOfClass:[NSArray class]]) [joined addObjectsFromArray:pts];
+        if ([pts isKindOfClass:[NSArray class]]) {
+            for (NSDictionary *p in pts) {
+                if (![p isKindOfClass:[NSDictionary class]]) continue;
+                NSMutableDictionary *np = [p mutableCopy];
+                np[@"seq"] = @(seq++);       // 全局递增顺序号（数据源排序，恢复 O(1) 定位）
+                np[@"segIdx"] = @(i);        // 所属段（恢复锚点颜色派生：seq→段→锚点 passed）
+                [joined addObject:np];
+            }
+        }
     }
     self.submittedPoints = joined;
+    self.trackVersion++; // 轨迹重算 → 版本递增（daemon 恢复时区分新旧轨迹）
     for (id o in [self.mapView.overlays copy]) {
         if ([o isKindOfClass:[TRGrowPolyline class]]) [self.mapView removeOverlay:o];
     }
@@ -2069,6 +2112,11 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
 /// 且用串行队列按提交顺序完整写盘——连续编辑并发写同一文件会覆盖/半截 → daemon 读到损坏轨迹跳点乱播
 - (void)writeTrackFile:(NSArray *)points {
     NSArray *snapshot = [points copy];
+    // 2026-08-30 持久化升级 v3：编排契约文件承载唯一真相——segments（锚点链）+ points（带 seq/segIdx 数据源排序）+ trackVersion（新旧轨迹区分）
+    // seq：全局顺序号，daemon 恢复 O(1) 定位续播（无几何歧义）；segIdx：所属段，恢复锚点颜色派生
+    // trackVersion：每次重算递增，daemon 恢复时版本一致用 seq、不一致几何兜底（编辑后新轨迹）
+    NSArray *segSnapshot = [self.segments copy];
+    NSUInteger trackVersion = self.trackVersion;
     BOOL locating = self.locating;
     static dispatch_queue_t sTrackWriteQueue;
     static dispatch_once_t once;
@@ -2076,7 +2124,7 @@ static const double kAutoFocusThresholdM = 500.0; // 自动聚焦距离阈值：
         sTrackWriteQueue = dispatch_queue_create("com.82flex.trollvnc.trackwrite", DISPATCH_QUEUE_SERIAL);
     });
     dispatch_async(sTrackWriteQueue, ^{
-        NSDictionary *payload = @{ @"version": @1, @"points": snapshot };
+        NSDictionary *payload = @{ @"version": @3, @"trackVersion": @(trackVersion), @"segments": segSnapshot, @"points": snapshot };
         NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
         if (!json) return;
         NSString *tmp = [kTRSimTrackFilePath stringByAppendingString:@".tmp"];
