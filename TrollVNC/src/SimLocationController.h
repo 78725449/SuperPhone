@@ -47,6 +47,15 @@ NS_ASSUME_NONNULL_BEGIN
 /// 读到残留 itinerary 恢复播放；系统定位关闭由重启后启动契约完成（宁无位置不漏真实）
 + (void)forceOffAndReload;
 
+/// UDS 双向通道（2026-09-05 权威架构）：命令/回执内核必达通道（Unix Domain Socket）。
+/// App 连接 sim.uds 后发命令 JSON 行（cmd=play/stop/anchor），daemon 执行后回执状态 JSON 行；
+/// 执行态任何变更（applyFromPrefs/播完复位）主动推送回执——App UI 由此对齐 daemon 真相。
+/// manager 启动时调用；plist+notify 命令路径保留并存（兜底），验证后退役。
++ (void)startSimUDSServer;
+
+/// 执行态变更时推送回执给已连接的 App（applyFromPrefs 完成/播完复位等所有状态变更点调用）
++ (void)pushSimStateToApp;
+
 @end
 
 NS_ASSUME_NONNULL_END

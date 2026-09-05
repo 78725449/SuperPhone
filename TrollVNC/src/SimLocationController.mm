@@ -19,6 +19,10 @@
 #import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 #import "Logging.h"
 #import <math.h>
+#import <sys/socket.h>
+#import <sys/un.h>
+#import <sys/stat.h>
+#import <unistd.h>
 
 // 轨迹文件路径常量已收敛至 TRSimContract.h（kTRSimTrackFilePath，App/daemon 共享，2026-08-28）
 // 配置 plist（mobile 域=配置源：App 写 mobile 命令参数；root 域仅兜底）
@@ -94,6 +98,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     // daemon 重启 = 恢复（App 可能仍在前台播放，崩溃恢复语义）。
     [self _forceStopOnStartup];
     [self reloadFromPrefs];
+    [SimLocationController startSimUDSServer]; // UDS 双向通道（命令/回执内核必达，2026-09-05）
 }
 
 /// 启动定位处理（2026-08-29 定案）：先关定位（安全基底）→ 注入上次位置 → 根据残留模式决定是否恢复播放
@@ -240,6 +245,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         _currentMode = @"off";
         _lastWifiTileKey = 0; // 防残留：off 后重启时首点必重新触发反查
     }
+    [SimLocationController pushSimStateToApp]; // 回执推送：执行态变更必达（App UI 对齐真相，2026-09-05）
 }
 
 - (void)_startAnchor {
@@ -639,6 +645,7 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
         }];
         TVLog(@"[locsim] itinerary finished, keep final point + idle micro-wander (mode reset to off)");
         notify_post(kTRSimPlaybackFinishedNotification.UTF8String); // App 仅做 UI 复位（丢失无害，plist 已 off）
+        [SimLocationController pushSimStateToApp]; // UDS 回执推送：播完复位必达（通知丢失的兜底，2026-09-05）
         return;
     }
     [self _updateCurrentFromPoint:_trackPoints[_trackIndex++]];
@@ -811,6 +818,140 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
             [self _readDouble:@"SimLocationAccuracy" def:5.0],
             [self _readPref:@"SimLocationSpeed"] ?: @"",
             trackStamp];
+}
+
+#pragma mark - UDS 双向通道（2026-09-05 权威架构：命令/回执内核必达通道）
+
+// Unix Domain Socket：App(mobile) ↔ daemon(root) 直连。协议 = 每行一个 JSON（\n 分隔）：
+//   App→daemon：{"cmd":"play"|"stop"|"anchor","lat":..,"lon":..,"acc":..}
+//   daemon→App：{"evt":"state","mode":"off|anchor|itinerary","seq":N,"lat":..,"lon":..,"acc":..}
+// notify 即发即弃（历次脱节根因），UDS 由内核保证送达；执行态任何变更主动推送回执，
+// App UI 由此对齐 daemon 真相（locating 派生自回执，不再自持）。
+static int g_simUDSListenFD = -1;
+static int g_simUDSClientFD = -1;
+static dispatch_source_t g_simUDSAcceptSource;
+static dispatch_source_t g_simUDSReadSource;
+static NSString *const kSimUDSPath = @"/var/mobile/Library/Caches/com.82flex.trollvnc/sim.uds";
+
++ (void)_simUDSSendLine:(NSString *)line {
+    if (g_simUDSClientFD < 0 || line.length == 0) return;
+    NSString *payload = [line stringByAppendingString:@"\n"];
+    NSData *data = [payload dataUsingEncoding:NSUTF8StringEncoding];
+    ssize_t n = write(g_simUDSClientFD, data.bytes, data.length);
+    if (n < 0) {
+        TVLog(@"[locsim] UDS write failed (client gone), closing");
+        close(g_simUDSClientFD);
+        g_simUDSClientFD = -1;
+    }
+}
+
++ (void)pushSimStateToApp {
+    [self _simUDSSendLine:[NSString stringWithFormat:
+        @"{\"evt\":\"state\",\"mode\":\"%@\",\"seq\":%lu,\"lat\":%.6f,\"lon\":%.6f,\"acc\":%.2f}",
+        self.sharedController->_currentMode ?: @"off",
+        (unsigned long)self.sharedController->_currentSeq,
+        self.sharedController->_currentLat,
+        self.sharedController->_currentLon,
+        self.sharedController->_currentAcc]];
+}
+
++ (void)_simUDSHandleCommand:(NSData *)data {
+    NSString *line = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (!line.length) return;
+    id json = [NSJSONSerialization JSONObjectWithData:[line dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    if (![json isKindOfClass:[NSDictionary class]]) return;
+    NSString *cmd = json[@"cmd"];
+    SimLocationController *selfer = self.sharedController;
+    TVLog(@"[locsim] UDS command: %@", cmd);
+    if ([cmd isEqualToString:@"play"]) {
+        // 等价 itinerary 分支（权威语义：接力棒 = _currentLat，不读 plist 坐标）
+        [selfer _stopAnchor];
+        [selfer _startTrack];
+    } else if ([cmd isEqualToString:@"stop"]) {
+        // 等价 off 分支（位置以 _currentLat 为准，微动接管）
+        [selfer _stopTrack];
+        [[SimLocationManager sharedManager] stopPlaybackOnly];
+        [selfer _teardownWifiStore];
+        selfer->_wifiTargetBSSID = nil;
+        selfer->_currentMode = @"off";
+        selfer->_lastWifiTileKey = 0;
+        if (selfer->_currentLat != 0 || selfer->_currentLon != 0) {
+            [selfer _startMicroWanderWithCenter:CLLocationCoordinate2DMake(selfer->_currentLat, selfer->_currentLon) acc:selfer->_currentAcc];
+        }
+    } else if ([cmd isEqualToString:@"anchor"]) {
+        // 显式位置命令（设锚点/hold）：读命令内坐标 → 注入+开定位+微动驻留
+        double lat = [json[@"lat"] doubleValue];
+        double lon = [json[@"lon"] doubleValue];
+        double acc = [json[@"acc"] doubleValue];
+        if (acc < 3.0) acc = 3.0;
+        if (acc > 15.0) acc = 15.0;
+        if (lat != 0 || lon != 0) {
+            selfer->_currentLat = lat;
+            selfer->_currentLon = lon;
+            selfer->_currentAcc = acc;
+            [selfer _stopTrack];
+            [selfer _startAnchor];
+        }
+    }
+    [self pushSimStateToApp]; // 回执：执行态必达（App UI 对齐真相）
+}
+
++ (void)startSimUDSServer {
+    if (g_simUDSListenFD >= 0) return;
+    NSString *dir = kSimUDSPath.stringByDeletingLastPathComponent;
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
+    unlink(kSimUDSPath.fileSystemRepresentation); // 清残留 socket 文件
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { TVLog(@"[locsim] UDS socket() failed"); return; }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, kSimUDSPath.fileSystemRepresentation, sizeof(addr.sun_path) - 1);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) { TVLog(@"[locsim] UDS bind failed"); close(fd); return; }
+    chmod(kSimUDSPath.fileSystemRepresentation, 0666); // App(mobile) 可连接
+    if (listen(fd, 2) < 0) { TVLog(@"[locsim] UDS listen failed"); close(fd); return; }
+    g_simUDSListenFD = fd;
+    g_simUDSAcceptSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, fd, 0, dispatch_get_main_queue());
+    dispatch_source_set_event_handler(g_simUDSAcceptSource, ^{
+        int cfd = accept(g_simUDSListenFD, NULL, NULL);
+        if (cfd < 0) return;
+        if (g_simUDSClientFD >= 0) close(g_simUDSClientFD); // 单客户端：新连接替换旧
+        g_simUDSClientFD = cfd;
+        TVLog(@"[locsim] UDS client connected (fd=%d)", cfd);
+        if (g_simUDSReadSource) { dispatch_source_cancel(g_simUDSReadSource); g_simUDSReadSource = nil; }
+        g_simUDSReadSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, cfd, 0, dispatch_get_main_queue());
+        NSMutableData *buf = [NSMutableData data];
+        dispatch_source_set_event_handler(g_simUDSReadSource, ^{
+            uint8_t chunk[1024];
+            ssize_t n = read(cfd, chunk, sizeof(chunk));
+            if (n <= 0) { // 断开
+                dispatch_source_cancel(g_simUDSReadSource);
+                return;
+            }
+            [buf appendBytes:chunk length:(NSUInteger)n];
+            // 按行拆分命令（\n 分隔），逐条处理
+            NSRange r;
+            while ((r = [buf rangeOfData:[NSData dataWithBytes:"\n" length:1] options:0 range:NSMakeRange(0, buf.length)]).location != NSNotFound) {
+                NSData *lineData = [buf subdataWithRange:NSMakeRange(0, r.location)];
+                [buf replaceBytesInRange:NSMakeRange(0, r.location + 1) withBytes:@"" length:0];
+                if (lineData.length) [self _simUDSHandleCommand:lineData];
+            }
+        });
+        dispatch_source_set_cancel_handler(g_simUDSReadSource, ^{
+            close(cfd);
+            if (g_simUDSClientFD == cfd) g_simUDSClientFD = -1;
+        });
+        dispatch_resume(g_simUDSReadSource);
+        [self pushSimStateToApp]; // 连接建立即推当前状态（App 启动对齐）
+    });
+    dispatch_source_set_cancel_handler(g_simUDSAcceptSource, ^{
+        if (g_simUDSClientFD >= 0) close(g_simUDSClientFD);
+        close(g_simUDSListenFD);
+        g_simUDSListenFD = -1;
+        g_simUDSClientFD = -1;
+    });
+    dispatch_resume(g_simUDSAcceptSource);
+    TVLog(@"[locsim] UDS server listening on %@", kSimUDSPath);
 }
 
 @end
