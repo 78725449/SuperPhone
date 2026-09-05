@@ -57,6 +57,10 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     // （2026-09-05 Q1：_reloadDebounce 已随 plist reload 状态机整套退役——UDS 是唯一命令通道）
     NSArray<NSDictionary *> *_trackPoints; // 轨迹点序列（内存缓存）
     NSUInteger _trackIndex;
+    NSArray<NSDictionary *> *_bssidPlan; // BSSID 计划缓存（2026-09-05 P-1 性能修复：_startTrack 装载一次，
+                                         // tick 零文件解析——曾每秒读盘+全量 JSON 解析数 MB 轨迹文件在主队列，
+                                         // 与 GPS 注入/SCDynamicStore/UDS 抢主队列致注入节拍抖动；
+                                         // 一致性 = play 重发每次 _startTrack 重装载，编辑后新计划自然生效）
     NSUInteger _currentSeq;          // 当前注入点的 seq（数据源排序，2026-08-30：恢复 O(1) 定位续播，独立维护非 _trackIndex）
     NSUInteger _currentTrackVersion; // 当前播放轨迹的版本号（trackVersion，区分新旧轨迹）
     NSUInteger _persistedSeq;        // 上次持久化的 seq（恢复时校验用）
@@ -443,6 +447,7 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
         return;
     }
     _trackPoints = points;
+    _bssidPlan = [self _loadBSSIDPlan]; // 计划随轨迹同装载（P-1：tick 零文件解析；play 重发=重装载，编辑后新计划生效）
     _currentMode = @"itinerary";
     // 记录当前轨迹版本（恢复续播校验：版本一致 → seq 精确定位；不一致 → 几何兜底）
     _currentTrackVersion = [self _loadTrackVersion];
@@ -533,7 +538,7 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
 /// BSSID 计划段查询+下发（2026-09-05 权威语义）：当前 seq 落在 bssidPlan 哪个覆盖段 →
 /// 段 bssid 与上次下发不同才下发（段内零下发，符合基站覆盖物理）。无 plan（旧轨迹）→ 退化瓦片反查路径。
 - (void)_dispatchBSSIDForSeq:(NSUInteger)seq {
-    NSArray *plan = [self _loadBSSIDPlan];
+    NSArray *plan = _bssidPlan; // 内存缓存（_startTrack 装载；tick 零文件解析，P-1）
     if (plan.count == 0) {
         [self _checkWifiTileChangedAndReinject]; // 兼容：旧轨迹无 plan → 瓦片变化临时反查（现状路径）
         return;
@@ -592,6 +597,7 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
         _trackSource = nil;
     }
     _trackPoints = nil;
+    _bssidPlan = nil; // 计划随轨迹生命周期释放（P-1）
     _trackIndex = 0;
 }
 
