@@ -93,7 +93,7 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
 @property (nonatomic, assign) NSUInteger wifiQuerySeq;  // wifi 反查请求序号（丢弃过期回调，防模拟/真实切换竞态）
 @property (nonatomic, copy) NSString *lastWifiBSSID;  // 上次反查的当前连接 BSSID（fix 驱动增量：BSSID 未变不重复反查，2026-09-04 触发模型治理）
 // wifiLastTileKey/wifiTileAps 已删除（2026-09-04 死代码清理：窗口质心标注废弃，标注走当前连接反查）
-@property (nonatomic, assign) CLLocationCoordinate2D wifiCurWGS; // 最近一次 wifi 反查质心（WGS；真实 wifi 位置，供启动聚焦兜底/状态显示——GPS 优先、无 GPS 用 wifi 聚焦）
+// wifiCurWGS 已删除（2026-09-05 断裂点 B：wifi 反查质心≠当前位置，聚焦兜底污染视野——空洞区 5km 外邻近 AP 抢占聚焦）
 @property (nonatomic, strong) UITableView *stepTable;        // 步骤列表（状态条展开；删除 + 拖拽排序）
 
 @property (nonatomic, strong) NSMutableArray *segments;      // 编排段 @[@{type,point/to/radius/durationMin/mode}]
@@ -177,14 +177,8 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
     // 已移除 NEHotspotHelper 被动订阅/水合——不做回退，保证主动扫描唯一数据源可靠工作。
     __weak typeof(self) weakSelf = self;
     // 订阅 WiFi 切换通知（daemon AP 下发成功 → 检测重连 → notify App）
-    int wifiSwitchToken = 0;
-    notify_register_dispatch("com.82flex.trollvnc.wifi-switched", &wifiSwitchToken,
-        dispatch_get_main_queue(), ^(int token) {
-            __strong typeof(self) strongSelf = weakSelf;
-            if (!strongSelf) return;
-            [strongSelf _updateWifiStatusBar];       // 刷新状态栏（模拟 AP 信息）
-            [strongSelf _refreshWifiAnnoFromCurrentConnection]; // 更新水滴标注
-        });
+    // wifi-switched notify 监听已删除（2026-09-05 断裂点 C）：daemon notify_post 发送方已退役
+    // （无感漫游模式，wifi 刷新由 evt=bssid UDS 推送驱动——内核必达，不依赖 Darwin 通知）
     // 订阅轨迹播完通知（2026-09-04，kTRSimPlaybackFinishedNotification daemon→App）：
     // 播放态订阅终止——daemon 播完 → App 复位播放态（与手动停止一致，stopPlayback 内 commitStop 写 off）
     int simFinishToken = 0;
@@ -541,13 +535,9 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
         strongSelf.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: 反查OK 定位(%.4f,%.4f)←%lu AP%@",
             centroid.latitude, centroid.longitude, (unsigned long)result.count,
             strongSelf.locating ? @"（模拟位置）" : @"（真实扫描）"];
-        // 缓存 wifi 真实位置（WGS）：启动聚焦兜底（无 GPS fix 时用 wifi 位置聚焦）
-        strongSelf.wifiCurWGS = centroid;
-        // 启动聚焦兜底：viewDidLoad 时 GPS/wifi 均未就绪 → 未聚焦过，wifi 位置到位后补聚焦一次
-        if (!strongSelf.hasFocusedMapOnce && ![strongSelf _systemLocationAvailable]) {
-            strongSelf.hasFocusedMapOnce = YES;
-            [strongSelf focusMapOnCurrentLocation];
-        }
+        // wifiCurWGS 聚焦兜底已删除（2026-09-05 断裂点 B）：此 centroid 是"当前连接 AP 的
+        // 物理位置"——空洞区螺旋回退时是 5km 外的邻近 AP，用它聚焦 = 地图视野被抢到 AP 位置
+        // （"当前位置被抢走"的根因）。当前位置聚焦只由 locationd/UDS 链负责，wifi 数据只画水滴。
         // 更新/创建 wifi 标注（先移除旧的再添加新的，避免重复）
         [strongSelf removeWifiAnnotationIfExists];
 // centroid 为 wloc 反查质心（坐标系悬案：gs-loc-cn 中国节点返回 GCJ/WGS 待真机裁决，2026-09-04）——现状直画
@@ -1240,6 +1230,10 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     // 同步位置回显（daemon 是唯一位置真相，simstate 序列化于此）
     double lat = [json[@"lat"] doubleValue], lon = [json[@"lon"] doubleValue];
     if (lat != 0 || lon != 0) self.cur = CLLocationCoordinate2DMake(lat, lon);
+    // wifi 状态栏刷新（2026-09-05 断裂点 A3）：state 回执到达 = daemon 侧刚完成注入/开定位，
+    // App 的 CNCopy 此时可能刚从"定位关抖动窗口"恢复——立即刷新状态栏（无网络开销，反查由
+    // daemon evt=bssid 驱动）。不放在 locating 判断内：locating 不变的 anchor→anchor 也需刷新。
+    [self _updateWifiStatusBar];
     if (daemonPlaying != self.locating) {
         self.locating = daemonPlaying;
         self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 状态切换时刻（过滤旧 fix）
@@ -1559,15 +1553,13 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 }
 
 /// 地图立即聚焦到当前位置（首锚点/启动定位/停止/回前台时调用）
-/// 定位中=聚焦 self.cur（模拟位置，App 已知锚点）；未定位=GPS 活跃订阅真实位置优先，无 GPS 用 wifi 真实位置兜底
-/// 瓦片系口径（2026-09-04 治理）：currentSimPosition 已转瓦片系；wifiCurWGS 系别悬案待真机裁决
+/// 定位中=聚焦 self.cur（模拟位置，App 已知锚点）；未定位=GPS 活跃订阅真实位置
+/// wifiCurWGS 兜底分支已删（2026-09-05 断裂点 B2）：wifi 数据是"环境 AP 位置"≠"当前位置"，
+/// 不再进入聚焦链——聚焦只由 locationd 驱动（位置无效就不聚焦，保持视野）
+/// 瓦片系口径（2026-09-04 治理）：currentSimPosition 已转瓦片系
 - (void)focusMapOnCurrentLocation {
     CLLocationCoordinate2D center = self.locating ? self.cur : [self currentSimPosition];
-    // GPS 无 fix（locationd 未就绪）→ wifi 位置兜底（wifiCurWGS，真实 wifi 反查质心）
-    if (center.latitude == 0 && center.longitude == 0) {
-        center = self.wifiCurWGS;
-    }
-    // 守卫：位置无效（从未设过且 locationd/wifi 均未就绪）→ 不聚焦，保持当前视野
+    // 守卫：位置无效（locationd 未就绪）→ 不聚焦，保持当前视野
     if (center.latitude == 0 && center.longitude == 0) return;
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(center, 3000, 3000) animated:YES];
 }

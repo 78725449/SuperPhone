@@ -426,6 +426,10 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     CFRelease(keyArr);
     setQueueFn(_wifiStore, dispatch_get_main_queue());
     TVLog(@"[locsim] BSSID change monitor started (persistent)");
+    // 初始状态推送（2026-09-05 断裂点 A1）：SCDynamicStore 只在"变化"时回调——
+    // App 重连/启动时 BSSID 无变化则永不推送，App 的 wifi 状态栏/水滴永挂初始态。
+    // 订阅建立 = 视为一次状态事件，立即推当前 BSSID 对齐。
+    [self _handleWifiStoreChanged];
 }
 
 static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef changedKeys, void *info) {
@@ -880,6 +884,10 @@ static NSString *const kSimUDSPath = @"/var/mobile/Library/Caches/com.82flex.tro
         }
     }
     [self pushSimStateToApp]; // 回执：执行态必达（App UI 对齐真相）
+    // 初始 BSSID 推送（2026-09-05 断裂点 A2）：anchor/play 会开定位——App 在"先关再开"抖动窗口里
+    // 的 CNCopy 必空（获取中挂死），state 回执不触发 wifi 链（locating 可能不变）。
+    // 命令完成后立即推当前 BSSID：App 收到即刷新状态栏+发起反查，无变化也完成对齐。
+    [self _handleWifiStoreChanged];
 }
 
 + (void)startSimUDSServer {
