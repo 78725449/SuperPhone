@@ -846,13 +846,14 @@ static NSString *const kSimUDSPath = @"/var/mobile/Library/Caches/com.82flex.tro
 }
 
 + (void)pushSimStateToApp {
+    SimLocationController *sc = self.sharedController; // 强类型：类方法里 self 是 Class，直接链式访问 ivar 报 id 错误
     [self _simUDSSendLine:[NSString stringWithFormat:
         @"{\"evt\":\"state\",\"mode\":\"%@\",\"seq\":%lu,\"lat\":%.6f,\"lon\":%.6f,\"acc\":%.2f}",
-        self.sharedController->_currentMode ?: @"off",
-        (unsigned long)self.sharedController->_currentSeq,
-        self.sharedController->_currentLat,
-        self.sharedController->_currentLon,
-        self.sharedController->_currentAcc]];
+        sc->_currentMode ?: @"off",
+        (unsigned long)sc->_currentSeq,
+        sc->_currentLat,
+        sc->_currentLon,
+        sc->_currentAcc]];
 }
 
 + (void)_simUDSHandleCommand:(NSData *)data {
@@ -933,7 +934,7 @@ static NSString *const kSimUDSPath = @"/var/mobile/Library/Caches/com.82flex.tro
             NSRange r;
             while ((r = [buf rangeOfData:[NSData dataWithBytes:"\n" length:1] options:0 range:NSMakeRange(0, buf.length)]).location != NSNotFound) {
                 NSData *lineData = [buf subdataWithRange:NSMakeRange(0, r.location)];
-                [buf replaceBytesInRange:NSMakeRange(0, r.location + 1) withBytes:@"" length:0];
+                [buf replaceBytesInRange:NSMakeRange(0, r.location + 1) withBytes:NULL length:0]; // 删除已消费行（含\n）
                 if (lineData.length) [self _simUDSHandleCommand:lineData];
             }
         });
