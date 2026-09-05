@@ -199,8 +199,8 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     if (![CLLocationManager locationServicesEnabled]) {
         [SimLocationManager setSystemLocationServices:YES];
     }
-    // ③ AP 跟随（驻留态同样下发：最近 AP → 无感漫游；X1 最初版"anchor 不下发"定性错误已撤销）
-    [self _handleAPSwitchForCurrentLocation];
+    // ③ AP 跟随（驻留态同样下发：最近 AP → 无感漫游；显式命令强制下发，F6 force 语义）
+    [self _handleAPSwitchForCurrentLocationForced:YES];
     // ④ 启动 anchor 微动游走（拟人化：真人不会一动不动）
     [self _startMicroWanderWithCenter:CLLocationCoordinate2DMake(lat, lon) acc:acc];
     TVLog(@"[locsim] anchor set (%.5f, %.5f) acc=%.1f (idle micro-wander)", lat, lon, acc);
@@ -273,13 +273,21 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
 /// 当前位置 WiFi 联动下发（2026-08-29 软路由联动模型，替代已废弃的"扫描结果注入"）：
 /// 坐标 → TRWpsTile 瓦片动态反查 BSSID → 最近 AP → 下发软路由改 SSID/BSSID → known-networks 改名 →
 /// SCDynamicStore 监听重连。调用时机：启动/锚点/轨迹 tick 仅瓦片变化才触发（不每 tick 下发，2026-08-30 用户定案）
-- (void)_handleAPSwitchForCurrentLocation {
-    // 2026-09-06 X1 定稿（用户裁决）：anchor 驻留态**同样下发**——位置在哪 AP 跟到哪（四层自洽：
-    // 驻留时不跟随 = wifi 层守在家庭 AP = wloc 拆穿 GPS 层）。本方法与 _startAnchorAtLat 的
-    // 时序契约：**注入→开定位之后**才调用（AP 反查/下发不打断 GPS 广播，且首次下发前位置已是模拟值）。
-    // （X1 最初版"anchor 不下发"是误读注释的错判，已撤销——错误注释"不触发下发"同步删除）
+/// AP 跟随下发（2026-09-06 X1 定稿+恢复首拍抑制 F6）：anchor 驻留态同样下发——位置在哪 AP 跟到哪。
+/// @param force 显式位置命令（UDS anchor）= YES：跳过首拍抑制，用户改位置必须跟随下发；
+///              恢复/微动自动触发 = NO：daemon 重启后 _lastWifiTileKey=0 时只建瓦片基线不下发
+///              （上一个 BSSID 会话本就生效中，重启即 reload = 设备断网风暴，真机日志实锤）
+- (void)_handleAPSwitchForCurrentLocationForced:(BOOL)force {
     CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
     if (coord.latitude == 0 && coord.longitude == 0) return;
+    if (_lastWifiTileKey == 0 && !force) {
+        _lastWifiTileKey = [TRWpsTile tileKeyForCoordinate:coord];
+        TVLog(@"[locsim] ap switch baseline seeded (tile %llu), no dispatch", (unsigned long long)_lastWifiTileKey);
+        return;
+    }
+    uint64_t key = [TRWpsTile tileKeyForCoordinate:coord];
+    if (key == _lastWifiTileKey && !force) return; // 同瓦片零开销（C4）；显式命令 force 仍下发（位置可能同瓦片内移动）
+    _lastWifiTileKey = key;
     [[TRWpsTile sharedClient] queryBssidsForCoordinate:coord force:NO completion:^(NSArray<TRWpsTileAP *> *aps, NSError *error) {
         if (error || aps.count == 0) {
             TVLog(@"[locsim] tile query skipped: %@", error.localizedDescription ?: @"no APs");
@@ -373,14 +381,8 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
 
 
 
-/// 统一注入动作（2026-08-29 改造）：GPS 直写为主；wifi 处理器改为"软路由联动下发"——
-/// ① wifi 处理器（新链路：反查 AP → 下发软路由改 {SSID,BSSID} → 改 known-networks → 设备重连）
-/// ② GPS 处理器（直写坐标：完整重启广播当前坐标）
-/// GPS 链路全程不受影响（anchor/itinerary 坐标注入独立保留）；wifi 注入扫描结果链路已移除
-- (void)_injectSimulationForCurrentLocation {
-    [self _handleAPSwitchForCurrentLocation];  // ① wifi 处理器：轨迹沿 AP 排列切换软路由（只改目标 BSSID，SSID 不变=无感漫游）
-    [self _injectGpsForCurrentLocation];            // ② GPS 处理器：当前坐标直写完整重启（收尾）
-}
+/// （2026-09-06：_injectSimulationForCurrentLocation 已删除——_startTrack 首点改走
+///  _dispatchBSSIDForSeq（计划权威语义）+ _injectGpsForCurrentLocation 两步，GPS/wifi 各自单一入口）
 
 /// 下发软路由：HTTP POST /cgi-bin/wifi-switch {current_ssid, current_bssid, target:{ssid,bssid}} → {ok}
 /// （Superwrt uhttpd CGI：SSID+MAC 双定位 wireless 段（防同名歧义）→ uci 改 ssid+macaddr → wifi reload）
@@ -577,14 +579,21 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
 - (void)_checkWifiTileChangedAndReinject {
     CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
     if (coord.latitude == 0 && coord.longitude == 0) return; // 无当前位置
+    // F6 恢复首拍抑制：_lastWifiTileKey=0（daemon 重启归零）时只建基线不下发——
+    // 上一个 BSSID 会话本就生效中，恢复即 reload = 设备断网风暴（真机日志实锤）
+    if (_lastWifiTileKey == 0) {
+        _lastWifiTileKey = [TRWpsTile tileKeyForCoordinate:coord];
+        TVLog(@"[locsim] tile baseline seeded (tile %llu), no dispatch", (unsigned long long)_lastWifiTileKey);
+        return;
+    }
     uint64_t newKey = 0;
     if (![TRWpsTile tileChangedForCoordinate:coord previous:_lastWifiTileKey newKey:&newKey]) return; // 同瓦片：不重反查（LRU 已覆盖）
     _lastWifiTileKey = newKey;
-    [self _handleAPSwitchForCurrentLocation];
+    [self _handleAPSwitchForCurrentLocationForced:NO];
 }
 
 /// 轨迹点 → 更新当前位置状态（仅更新内存，不注入——注入由调用方决定路径：
-/// 首点/锚点平移走 _injectSimulationForCurrentLocation（两路合一），轨迹 tick 走 GPS 每点 + wifi 瓦片变化触发，2026-08-30）
+/// 首点走 _dispatchBSSIDForSeq（计划）+ _injectGpsForCurrentLocation，轨迹 tick 走 GPS 每点 + wifi 计划段下发，2026-09-06 修订）
 - (void)_updateCurrentFromPoint:(NSDictionary *)p {
     double lat = [p[@"lat"] doubleValue];
     double lon = [p[@"lon"] doubleValue];

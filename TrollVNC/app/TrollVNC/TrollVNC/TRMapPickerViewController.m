@@ -2316,30 +2316,37 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     //    单瓦片查询（LRU/inflight 复用）→ 回调内判失败 → 接螺旋邻近 → 螺旋最终回调 signal。
     //    一条因果链一次请求，不赌 TRWpsTile 内部回调顺序（C14：事实-通道-消费三元声明）
     NSMutableArray *segPlan = [NSMutableArray array]; // [{fromSeq,toSeq,bssid}]
-    __block NSString *bssidLocal = nil; // 回调写回的反查结果
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
     for (NSUInteger ri = 0; ri < repIdx.count; ri++) {
         NSUInteger idx = [repIdx[ri] unsignedIntegerValue];
         NSDictionary *pt = points[idx];
         CLLocationCoordinate2D cc = CLLocationCoordinate2DMake([pt[@"lat"] doubleValue], [pt[@"lon"] doubleValue]);
-        __block BOOL settled = NO; // 最终回调只 signal 一次（防单查/螺旋竞争窗口的重复 signal）
+        // ② 串行两级反查（2026-09-06 崩溃根因修复）：每轮独立的"结果盒 + 信号量"——
+        //    禁止跨轮共享 __block 变量（bssidLocal/settled/sem 曾为循环外共享，completion 块被
+        //    TRWpsTile 持有/拷贝时 __block 存储的 ARC copy/dispose 在"写队列读+主队列写"间
+        //    过度释放 → 僵尸对象 → _CF_forwarding SIGABRT，真机两次同栈实拍）。
+        //    现约定：completion 只写自己的盒、只 signal 自己的信号量；信号量 happens-before
+        //    保证 wait 返回后盒内结果可见（无共享可变状态，无块拷贝竞态）。
+        NSMutableArray *box = [NSMutableArray array];        // 本轮结果盒：0 或 1 个 bssid 字符串
+        __block BOOL settled = NO;                           // 仅主队列触碰（回调串行），防重复 signal
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0); // 本轮独立信号量
         [[TRWpsTile sharedClient] queryBssidsForCoordinate:cc force:NO completion:^(NSArray<TRWpsTileAP *> *aps, NSError *error) {
             if (aps.count > 0) {
                 // 单查成功：取最近 AP，本轮完成（C6 成功路径零额外开销）
-                if (!settled) { settled = YES; bssidLocal = [self _nearestBSSIDFromAPs:aps near:cc]; dispatch_semaphore_signal(sem); }
+                if (!settled) { settled = YES; [box addObject:[self _nearestBSSIDFromAPs:aps near:cc] ?: @""]; dispatch_semaphore_signal(sem); }
                 return;
             }
             // 单查失败（error/空）→ 螺旋邻近回退（C6 无失败分支，与 daemon _handleAPSwitchForCurrentLocation 同构）：
-            // 螺旋从邻近瓦片找最近有效瓦片，全空则回调空数组 → bssid=nil → 空段（纵深防御）
+            // 螺旋从邻近瓦片找最近有效瓦片，全空则回调空数组 → 盒空 → 空段（纵深防御）
             [TRWpsTile queryNearestBssidsForCoordinate:cc maxAttempts:24 completion:^(NSArray<TRWpsTileAP *> *nearAps, NSError *nearErr) {
                 if (!settled) {
                     settled = YES;
-                    bssidLocal = [self _nearestBSSIDFromAPs:nearAps near:cc];
+                    [box addObject:[self _nearestBSSIDFromAPs:nearAps near:cc] ?: @""];
                     dispatch_semaphore_signal(sem); // 每轮恰好一次（单查失败 → 螺旋最终回调）
                 }
             }];
         }];
         dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER); // 等本代表点最终回调完成
+        NSString *bssidLocal = box.firstObject; // 信号量 happens-before 保证可见
         // 段合并（写队列线程内执行，线程安全）：相邻同 BSSID 延续，变化则开新段
         NSString *lastB = segPlan.count ? ((NSDictionary *)segPlan[segPlan.count - 1])[@"bssid"] : nil;
         if (segPlan.count == 0 || !lastB || ![bssidLocal isEqualToString:lastB]) {
