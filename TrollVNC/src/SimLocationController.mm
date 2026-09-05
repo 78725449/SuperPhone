@@ -356,7 +356,9 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     }];
 }
 
-/// AP 列表处理：按距离取最近 AP → 下发软路由切换（已知网络条目修改在回调后）
+/// AP 列表处理：按距离取最近 AP → 下发软路由（2026-09-05 语义重定义：设备无感漫游）——
+/// SSID 保持设备当前连接的不变（同 SSID 换 BSSID = iOS 原生漫游，不断网/不动密码/不动已知网络），
+/// 只把匹配段的 macaddr 改为目标 BSSID；known-networks/名称库 SSID/evt=ap 均退役
 - (void)_handleAPList:(NSArray<TRWpsTileAP *> *)aps atCoord:(CLLocationCoordinate2D)coord {
     TRWpsTileAP *nearest = aps[0];
     double best = DBL_MAX;
@@ -364,44 +366,18 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         double d = [SimRouteCalculator haversineMeters:coord to:ap.coord];
         if (d < best) { best = d; nearest = ap; }
     }
-    NSString *targetSSID = [self _generateCitySSIDForBSSID:nearest.bssid];
-    // 写入 SimAP 信息（App wifi 状态栏消费：当前模拟 AP 的 SSID/BSSID/坐标/距离）
-    {
-        [self writeMobilePrefsUsingBlock:^(NSMutableDictionary *mp) {
-            mp[@"SimAPSSID"] = targetSSID;
-            mp[@"SimAPBSSID"] = nearest.bssid;
-            mp[@"SimAPLat"] = @(nearest.coord.latitude);
-            mp[@"SimAPLon"] = @(nearest.coord.longitude);
-            mp[@"SimAPDistance"] = @(best);
-        }];
-        // AP 事件走 UDS 推送（2026-09-05）：plist 写对 App 的 cfprefsd 缓存不可见（wifi 水滴
-        // 从未出现的根因），UDS 必达直接驱动 App 更新 wifi 状态栏+水滴标注
-        [SimLocationController _simUDSSendLine:[NSString stringWithFormat:
-            @"{\"evt\":\"ap\",\"ssid\":\"%@\",\"bssid\":\"%@\",\"lat\":%.6f,\"lon\":%.6f,\"dist\":%.0f}",
-            targetSSID, nearest.bssid, nearest.coord.latitude, nearest.coord.longitude, best]];
-    }
     static NSString *sLastAPBSSID = nil;
     if (sLastAPBSSID && [sLastAPBSSID isEqualToString:nearest.bssid]) return; // 同 AP 不重复下发
     sLastAPBSSID = nearest.bssid;
-    TVLog(@"[locsim] wifi-switch -> {ssid:%@ bssid:%@} d=%.0fm", targetSSID, nearest.bssid, best);
-    // 下发前先取当前连接 SSID（软路由按它定位要改的 wireless 段；known-networks 也改它）
+    // 下发前取当前连接 SSID/BSSID（软路由精准匹配 wireless 段用）
     NSString *curSSID = [TRWifiKnownNetworks currentSSID];
     NSString *curBSSID = [TRWifiKnownNetworks currentBSSID];
     if (!curSSID.length) { TVLog(@"[locsim] no current ssid (not associated?), skip switch"); return; }
-    __weak __typeof__(self) weakSelf = self;
-    [self _requestRouterSwitchSSID:targetSSID bssid:nearest.bssid currentSSID:curSSID currentBSSID:curBSSID completion:^(BOOL ok) {
-        __strong __typeof__(self) sSelf = weakSelf;
-        if (!sSelf) return;
-        if (!ok) { TVLog(@"[locsim] router switch failed, skip known-networks"); return; }
-        // AP 已改成功（回调）→ 改设备已知网络条目 SSID（用户定案时序：AP 先行，设备随后）
-        if (![curSSID isEqualToString:targetSSID]) {
-            NSError *err = nil;
-            BOOL rn = [TRWifiKnownNetworks renameKnownNetworkSSID:curSSID to:targetSSID error:&err];
-            TVLog(@"[locsim] known-networks rename %@->%@ : %@ %@",
-                  curSSID, targetSSID, rn ? @"OK" : @"FAIL", err.localizedDescription ?: @"");
-        }
-        // 启动 SCDynamicStore 监听 WiFi 重连（收到 notify 后 App 更新水滴）
-        [sSelf _startWifiReconnectMonitorWithTargetBSSID:nearest.bssid];
+    TVLog(@"[locsim] wifi-switch -> target bssid %@ (d=%.0fm, ssid unchanged: %@)", nearest.bssid, best, curSSID);
+    // 下发（fire-and-forget）：软路由精准匹配段后只改 macaddr——SSID 不变 = 设备无感漫游
+    // 结果验证走常驻 BSSID 订阅 → UDS evt=bssid → App 反查（前端只验证结果）
+    [self _requestRouterSwitchSSID:curSSID bssid:nearest.bssid currentSSID:curSSID currentBSSID:curBSSID completion:^(BOOL ok) {
+        TVLog(@"[locsim] router switch %@", ok ? @"sent OK" : @"FAILED");
     }];
 }
 
@@ -418,12 +394,6 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     // 任意 BSSID 变化都推，App 侧与 lastWifiBSSID 比对去重，零开销）
     [SimLocationController _simUDSSendLine:[NSString stringWithFormat:
         @"{\"evt\":\"bssid\",\"bssid\":\"%@\"}", curBSSID]];
-    if (_wifiTargetBSSID && [curBSSID caseInsensitiveCompare:_wifiTargetBSSID] == NSOrderedSame) {
-        notify_post("com.82flex.trollvnc.wifi-switched");
-        TVLog(@"[locsim] wifi reconnect: %@ matches target, notified App", curBSSID);
-        _wifiTargetBSSID = nil;
-        [self _teardownWifiStore];
-    }
 }
 
 /// 释放 SCDynamicStore 监听（SetDispatchQueue(NULL) 停止投递 + CFRelease）
@@ -463,35 +433,6 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
     [ctrl _handleWifiStoreChanged];
 }
 
-- (void)_startWifiReconnectMonitorWithTargetBSSID:(NSString *)bssid {
-    _wifiTargetBSSID = bssid;
-    // 清理旧监听（复用/重复下发时）
-    [self _teardownWifiStore];
-    TVFn_SCDynamicStoreCreate createFn = NULL;
-    TVFn_SCDynamicStoreSetNotificationKeys setKeysFn = NULL;
-    TVFn_SCDynamicStoreSetDispatchQueue setQueueFn = NULL;
-    if (!TVLoadSCDynamicStore(&createFn, NULL, &setKeysFn, &setQueueFn)) {
-        TVLog(@"[locsim] SCDynamicStore symbols unavailable, skip wifi monitor");
-        _wifiTargetBSSID = nil; // 无兜底：失败即清理目标，防残留（2026-08-30）
-        return;
-    }
-    TVSCDynamicStoreContext ctx = {0, (__bridge void *)self, NULL, NULL, NULL};
-    _wifiStore = createFn(NULL, CFSTR("com.82flex.trollvnc.wifi-monitor"), _wifiAirPortStoreCallback, &ctx);
-    if (!_wifiStore) { TVLog(@"[locsim] SCDynamicStoreCreate failed"); _wifiTargetBSSID = nil; return; }
-    if (!setKeysFn || !setQueueFn) {
-        TVLog(@"[locsim] SCDynamicStore setKeys/setQueue symbols unavailable, teardown");
-        [self _teardownWifiStore];
-        _wifiTargetBSSID = nil;
-        return;
-    }
-    // 监听 AirPort 状态键（重连/断连时 configd 更新该键 → 回调）
-    CFStringRef keys[] = { CFSTR("State:/Network/Interface/en0/AirPort") };
-    CFArrayRef keyArr = CFArrayCreate(NULL, (const void **)keys, 1, &kCFTypeArrayCallBacks);
-    if (setKeysFn) setKeysFn(_wifiStore, keyArr, NULL);
-    CFRelease(keyArr);
-    if (setQueueFn) setQueueFn(_wifiStore, dispatch_get_main_queue());
-    // 监听生命周期：匹配成功即清理（_handleWifiStoreChanged），无轮询无超时兜底（2026-08-30 用户定案）
-}
 
 
 /// 统一注入动作（2026-08-29 改造）：GPS 直写为主；wifi 处理器改为"软路由联动下发"——
@@ -499,24 +440,8 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
 /// ② GPS 处理器（直写坐标：完整重启广播当前坐标）
 /// GPS 链路全程不受影响（anchor/itinerary 坐标注入独立保留）；wifi 注入扫描结果链路已移除
 - (void)_injectSimulationForCurrentLocation {
-    [self _handleAPSwitchForCurrentLocation];  // ① wifi 处理器：轨迹沿 AP 排列切换软路由
+    [self _handleAPSwitchForCurrentLocation];  // ① wifi 处理器：轨迹沿 AP 排列切换软路由（只改目标 BSSID，SSID 不变=无感漫游）
     [self _injectGpsForCurrentLocation];            // ② GPS 处理器：当前坐标直写完整重启（收尾）
-}
-
-
-/// SSID 生成：WPS 反查只有 BSSID 无 SSID——用"城市常见 SSID 风格池"按 BSSID 哈希取稳定名
-- (NSString *)_generateCitySSIDForBSSID:(NSString *)bssid {
-    static NSArray *kCitySSIDPool = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        kCitySSIDPool = @[@"CMCC-", @"ChinaNet-", @"ChinaUnicom-", @"Tenda_", @"TP-LINK_", @"HUAWEI-"];
-    });
-    // BSSID 后 3 段做哈希 → 稳定取池 + 随机后缀
-    NSUInteger h = 0;
-    for (NSUInteger i = 0; i < bssid.length; i++) h = h * 31 + [bssid characterAtIndex:i];
-    NSString *prefix = kCitySSIDPool[h % kCitySSIDPool.count];
-    NSString *suffix = [NSString stringWithFormat:@"%02X%02X", (unsigned)(h >> 16 & 0xFF), (unsigned)(h & 0xFF)];
-    return [prefix stringByAppendingString:suffix];
 }
 
 /// 下发软路由：HTTP POST /cgi-bin/wifi-switch {current_ssid, current_bssid, target:{ssid,bssid}} → {ok}
