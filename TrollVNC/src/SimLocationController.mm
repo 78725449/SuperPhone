@@ -125,7 +125,10 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         _persistedTrackVersion = [cp[@"trackVersion"] unsignedIntegerValue];
         _currentSeq = _persistedSeq;
         [self _injectGpsForCurrentLocation];
-        TVLog(@"[locsim] startup: injected persisted position (%.5f, %.5f) seq=%lu ver=%lu",
+        // 启动契约完整化（2026-09-05 用户定义）：有轨迹+当前位置 → 注入后开定位，恢复位置立即可见广播
+        // （无位置场景不开定位——直到首锚点/搜索/播放等显式位置命令出现）
+        [SimLocationManager setSystemLocationServices:YES];
+        TVLog(@"[locsim] startup: injected persisted position (%.5f, %.5f) seq=%lu ver=%lu, location ON",
               statePos.latitude, statePos.longitude, (unsigned long)_persistedSeq, (unsigned long)_persistedTrackVersion);
     } else {
         TVLog(@"[locsim] startup: no persisted position, no injection (first launch / no record)");
