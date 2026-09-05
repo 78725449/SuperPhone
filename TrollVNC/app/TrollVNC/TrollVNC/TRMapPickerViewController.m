@@ -2276,12 +2276,18 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     dispatch_once(&once, ^{
         sTrackWriteQueue = dispatch_queue_create("com.82flex.trollvnc.trackwrite", DISPATCH_QUEUE_SERIAL);
     });
+    __weak typeof(self) weakSelf = self;
     dispatch_async(sTrackWriteQueue, ^{
+        // 生命周期防护（2026-09-05 崩溃修复）：plan 生成含数十次串行网络反查（秒级阻塞），
+        // 期间 VC 可能已释放——旧写法 block 直接持 self，执行到一半 self 已 dealloc →
+        // ___forwarding___ SIGABRT。改 weak + 入口 strong 判空：VC 消失即放弃本次写入。
+        __strong typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
         // BSSID 计划生成（2026-09-05 用户定案：创建轨迹时其所有瓦片及所含 AP 全部生成——
         // 播放中零反查，daemon 只按计划逐段下发）。瓦片螺旋反查无失败分支（空洞自动邻近回退），
         // 同瓦片 LRU 缓存复用 → 代表点反查请求数 = 跨瓦片数。
         // 在写队列内串行执行：与轨迹写入同序，编辑变更自动同步（增删/重排锚点 → 新 points → 新 plan）
-        NSArray *bssidPlan = [self _generateBSSIDPlanForPoints:snapshot];
+        NSArray *bssidPlan = [strongSelf _generateBSSIDPlanForPoints:snapshot];
         NSDictionary *payload = @{ @"version": @3, @"trackVersion": @(trackVersion), @"segments": segSnapshot, @"points": snapshot,
                                    @"bssidPlan": bssidPlan };
         NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
