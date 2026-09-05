@@ -103,9 +103,13 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
 @property (nonatomic, copy) NSString *currentLegMode;       // 当前位置水滴的出行方式（当前段目标锚点的，walk/drive）
 @property (nonatomic, assign) double currentLegSpeed;              // 当前所在路线（出发锚点段）的生成速度——从段缓存 segmentPoints 取（含 ±10% 抖动；random 段反映实际随机模式）
 @property (nonatomic, assign) BOOL startupLockedToAnchor;          // 开启瞬间到注入落地前：锁定锚点显示（忽略旧 fix，防开启横跳）
-@property (nonatomic, assign) NSInteger reconcileMismatchCount;    // 行为对账：fix.speed 特征与 locating 期望的连续不符计数（确认闭环）
-@property (nonatomic, assign) NSInteger reconcileRetryCount;       // 行为对账：命令重发次数（上限 2，防风暴）
-@property (nonatomic, assign) double lastCommandAt;                // 最近一次播放/停止命令时刻——对账宽限期起点（daemon 注入会话重启 1-2s + interval 1s，过渡窗口内不对账防误判）
+@property (nonatomic, assign) NSInteger reconcileMismatchCount;    // （退役中）行为对账计数——UDS 回执闭环上线后由回执派生 UI
+@property (nonatomic, assign) NSInteger reconcileRetryCount;       // （退役中）命令重发计数
+@property (nonatomic, assign) double lastCommandAt;                // 最近一次播放/停止命令时刻
+@property (nonatomic, assign) NSInteger simUDSFD;                  // UDS client fd（-1=未连接；命令/回执内核必达通道）
+@property (nonatomic, strong) dispatch_source_t simUDSReadSource;  // UDS 回执读 source
+@property (nonatomic, strong) dispatch_source_t simUDSRetrySource; // UDS 断线重连 timer
+@property (nonatomic, copy) NSString *simUDSRxBuffer;              // UDS 接收缓冲（按 \n 拆回执行）
 @property (nonatomic, strong) NSMutableArray *fabCoinLabels;              // 定位 FAB 铜钱四字（招财进宝，上/右/下/左顺时针）
 @property (nonatomic, strong) CAGradientLayer *fabGoldGradient;           // 定位 FAB 铜钱渐变金底（定位中显示）
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
@@ -150,6 +154,7 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
     self.searchCompleter.delegate = self;
     [self readCurrentStatus]; // 调用者追踪：启动强制 off（宁停不漏契约）——若日志出现本行即 App 被杀重启
     TVLog(@"[locsim] *** readCurrentStatus from viewDidLoad (App launch/reload → force off) ***");
+    [self startSimUDSClient]; // UDS 双向通道（命令必达 + 回执驱动 UI，2026-09-05）
     [self restoreSession]; // 2026-08-30 持久化 v2：恢复编排会话（读契约文件重建锚点链/路线）
     // 真实定位授权：requestWhenInUse 需 Info.plist usage description。
     // 授权成功后 locationManagerDidChangeAuthorization 建立 App 自己的活跃位置请求（startUpdatingLocation）——
@@ -1036,11 +1041,11 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 开启时刻：只认晚于此的 fix（过滤开启前的旧 fix）
     self.lastCommandAt = [[NSDate date] timeIntervalSince1970]; // 对账宽限期起点（命令后 5s 内不对账，防启动过渡误判）
         self.startupLockedToAnchor = YES; // 开启瞬间到注入落地前：锁定锚点位置显示，忽略旧 fix（防"旧→锚点"横跳）
-        // 原子写入：只写模式（2026-09-05 权威语义对齐：前端不传递位置——当前位置是 daemon 唯一真相，
-        // 接力棒是 daemon 内部 _currentLat，前端写坐标=用滞后 fix 污染接力基线）
+        // 权威语义（2026-09-05）：UDS 命令必达（内核保证）+ plist 兜底过渡；前端不传递位置
+        BOOL hasRouteCmd = [[NSFileManager defaultManager] fileExistsAtPath:kTRSimTrackFilePath];
+        [self sendSimCommand:@{@"cmd": hasRouteCmd ? @"play" : @"anchor"}];
         [self commitSimPrefs:^(NSUserDefaults *d) {
-            BOOL hasRoute = [[NSFileManager defaultManager] fileExistsAtPath:kTRSimTrackFilePath];
-            [d setObject:hasRoute ? @"itinerary" : @"anchor" forKey:@"SimLocationMode"];
+            [d setObject:hasRouteCmd ? @"itinerary" : @"anchor" forKey:@"SimLocationMode"];
         }];
         [self refreshUserLocationView];       // 当前位置水滴恢复出行图标
         // 停止后再开启：之前模拟位置（cur）距当前实际位置（lastFix=真实或残留）>500m → 瞬间跳回停止前位置（复用首锚点视野行为）；
@@ -1159,6 +1164,105 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     // 状态条短暂显示提示（UIButton 用 setTitle 渲染，titleLabel.text 直接赋值无效）
     [self.statusBtn setTitle:hint forState:UIControlStateNormal];
     [self.statusBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+}
+
+#pragma mark - UDS 双向通道 client（2026-09-05 权威架构：命令必达 + 回执驱动 UI）
+
+/// 连接 daemon 的 sim.uds（Unix Domain Socket，内核保证送达）+ 读 dispatch + 断线重连
+- (void)startSimUDSClient {
+    if (self.simUDSFD >= 0) return;
+    NSString *path = @"/var/mobile/Library/Caches/com.82flex.trollvnc/sim.uds";
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        [self scheduleSimUDSRetry]; // daemon 未起（socket 文件未建），重试
+        return;
+    }
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { [self scheduleSimUDSRetry]; return; }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, path.fileSystemRepresentation, sizeof(addr.sun_path) - 1);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        [self scheduleSimUDSRetry];
+        return;
+    }
+    self.simUDSFD = fd;
+    self.simUDSRxBuffer = @"";
+    dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, fd, 0, dispatch_get_main_queue());
+    dispatch_source_set_event_handler(src, ^{
+        uint8_t chunk[1024];
+        ssize_t n = read(fd, chunk, sizeof(chunk));
+        if (n <= 0) { // daemon 侧断开（重启/替换客户端）
+            [self simUDSDisconnected];
+            return;
+        }
+        self.simUDSRxBuffer = [self.simUDSRxBuffer stringByAppendingString:[[NSString alloc] initWithBytes:chunk length:(NSUInteger)n encoding:NSUTF8StringEncoding]];
+        // 按行拆回执
+        NSRange r;
+        while ((r = [self.simUDSRxBuffer rangeOfString:@"\n"]).location != NSNotFound) {
+            NSString *line = [self.simUDSRxBuffer substringToIndex:r.location];
+            self.simUDSRxBuffer = [self.simUDSRxBuffer substringFromIndex:r.location + 1];
+            if (line.length) [self handleSimStateLine:line];
+        }
+    });
+    dispatch_source_set_cancel_handler(src, ^{ close(fd); });
+    dispatch_resume(src);
+    self.simUDSReadSource = src;
+    TVLog(@"[locsim] UDS client connected (fd=%d)", fd);
+}
+
+- (void)scheduleSimUDSRetry {
+    if (self.simUDSRetrySource) return;
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), DISPATCH_TIME_FOREVER, 0);
+    dispatch_source_set_event_handler(t, ^{
+        dispatch_source_cancel(t);
+        weakSelf.simUDSRetrySource = nil;
+        [weakSelf startSimUDSClient];
+    });
+    dispatch_resume(t);
+    self.simUDSRetrySource = t;
+}
+
+- (void)simUDSDisconnected {
+    if (self.simUDSReadSource) { dispatch_source_cancel(self.simUDSReadSource); self.simUDSReadSource = nil; }
+    self.simUDSFD = -1;
+    TVLog(@"[locsim] UDS disconnected, retry in 5s");
+    [self scheduleSimUDSRetry];
+}
+
+/// 回执处理：daemon 执行态 → UI 对齐（locating/按钮/状态栏 = daemon 真相，2026-09-05 权威语义）
+- (void)handleSimStateLine:(NSString *)line {
+    id json = [NSJSONSerialization JSONObjectWithData:[line dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    if (![json isKindOfClass:[NSDictionary class]]) return;
+    NSString *mode = json[@"mode"];
+    if (!mode.length) return;
+    BOOL daemonPlaying = [mode isEqualToString:@"itinerary"];
+    // 同步位置回显（daemon 是唯一位置真相，simstate 序列化于此）
+    double lat = [json[@"lat"] doubleValue], lon = [json[@"lon"] doubleValue];
+    if (lat != 0 || lon != 0) self.cur = CLLocationCoordinate2DMake(lat, lon);
+    if (daemonPlaying != self.locating) {
+        self.locating = daemonPlaying;
+        self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 状态切换时刻（过滤旧 fix）
+        [self refreshUserLocationView];
+        [self resetFocusBaseline];
+        [self refreshWifiAnnotation];
+        TVLog(@"[locsim] UDS state aligned: daemon=%@ -> locating=%d", mode, self.locating);
+    }
+    [self updateStatus];
+}
+
+/// 命令发送（UDS 优先必达；plist+notify 并存兜底过渡）
+- (void)sendSimCommand:(NSDictionary *)cmd {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:cmd options:0 error:NULL];
+    if (self.simUDSFD >= 0 && data) {
+        NSMutableData *payload = [data mutableCopy];
+        [payload appendBytes:"\n" length:1];
+        write(self.simUDSFD, payload.bytes, payload.length); // 内核保证送达
+    }
+    // 兜底过渡：plist+notify 同步写（daemon applyFromPrefs 与 UDS 命令语义等价，重复执行幂等）
 }
 
 /// 行为对账——确认闭环（2026-09-04 定案，App 订阅 locationd 的行为实证对账）：
@@ -1893,9 +1997,8 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 }
 
 - (void)commitStop {
-    // 权威语义对齐（2026-09-05）：只写 mode——前端不传递位置，daemon 的 _currentLat（注入即写）永远
-    // 比 App 的滞后 fix 新鲜，停止接力由 daemon 自己的位置完成（配合 daemon off 分支 50m 阈值，
-    // plist 陈旧坐标不再能污染运行时位置）
+    // 权威语义对齐（2026-09-05）：UDS 命令必达 + plist 兜底过渡；前端不传递位置
+    [self sendSimCommand:@{@"cmd": @"stop"}];
     [self commitSimPrefs:^(NSUserDefaults *d) {
         [d setObject:@"off" forKey:@"SimLocationMode"];
     }];
