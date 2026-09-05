@@ -21,6 +21,9 @@
 #import <CoreLocation/CoreLocation.h> // 真实定位（未模拟定位时显示系统蓝点并聚焦）
 #import <SystemConfiguration/CaptiveNetwork.h> // 当前连接 WiFi SSID/BSSID（WiFi 水滴数据源，2026-08-29）
 #import <notify.h>
+#import <sys/socket.h> // UDS client（sim.uds 命令/回执通道，2026-09-05；bootstrap SDK 需显式导入——MKGeometry 同类教训）
+#import <sys/un.h>     // sockaddr_un
+#import <unistd.h>     // read/write/close
 // CoordTransform 曾于 2026-08-30 误删（当时误断言"MKMapView 层全程 WGS-84"）；2026-09-04 治理恢复为编排瓦片系/注入 WGS 的边界转换器
 // TRWpsTile import 已移除（2026-09-04 死代码清理：App 标注走 TRWpsClient 当前连接反查，不经 TRWpsTile 原语）
 // TRWifiScanContract import 已移除（2026-09-04：TRWifiActiveScanner 死链删除，App 不消费 wifiscan.json/updated）
