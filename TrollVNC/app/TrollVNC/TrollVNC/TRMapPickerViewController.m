@@ -114,6 +114,10 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
 @property (nonatomic, strong) dispatch_source_t simUDSRetrySource; // UDS 断线重连 timer
 @property (nonatomic, copy) NSString *simUDSRxBuffer;              // UDS 接收缓冲（按 \n 拆回执行）
 @property (nonatomic, copy) NSDictionary *pendingSimCommand;       // 写失败缓存的命令（重连成功后重发一次）
+@property (nonatomic, copy) NSString *simAPSSID;                   // 模拟 AP（UDS evt=ap 推送，替代 plist 读——cfprefsd 缓存不可见）
+@property (nonatomic, copy) NSString *simAPBSSID;                  // 模拟 AP BSSID
+@property (nonatomic, assign) double simAPDistance;                // 模拟 AP 距离（m）
+@property (nonatomic, assign) CLLocationCoordinate2D simAPCoord;   // 模拟 AP 坐标（瓦片系）
 @property (nonatomic, strong) NSMutableArray *fabCoinLabels;              // 定位 FAB 铜钱四字（招财进宝，上/右/下/左顺时针）
 @property (nonatomic, strong) CAGradientLayer *fabGoldGradient;           // 定位 FAB 铜钱渐变金底（定位中显示）
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
@@ -488,10 +492,11 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
     NSString *posStr = [NSString stringWithFormat:@"%.5f,%.5f", pos.latitude, pos.longitude];
     NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
     if (self.locating) {
-        // 模拟态：显示模拟 AP 信息（daemon _handleAPList 写入）
-        NSString *apSSID = [d stringForKey:@"SimAPSSID"];
-        NSString *apBSSID = [d stringForKey:@"SimAPBSSID"];
-        double apDist = [d doubleForKey:@"SimAPDistance"];
+        // 模拟态：显示模拟 AP 信息（2026-09-05 改 UDS evt=ap 内存值——plist 读经 cfprefsd 缓存
+        // 不可见，"反查中"永不消失的根因）
+        NSString *apSSID = self.simAPSSID;
+        NSString *apBSSID = self.simAPBSSID;
+        double apDist = self.simAPDistance;
         if (apSSID.length && apBSSID.length) {
             self.wifiDiagLabel.text = [NSString stringWithFormat:@"模拟位置：%@   模拟AP：%@，%@，距离：%.0fm",
                 posStr, apSSID, apBSSID, apDist];
@@ -1246,6 +1251,21 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 - (void)handleSimStateLine:(NSString *)line {
     id json = [NSJSONSerialization JSONObjectWithData:[line dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
     if (![json isKindOfClass:[NSDictionary class]]) return;
+    // AP 事件（2026-09-05）：daemon 反查+软路由下发成功 → 模拟 AP 信息推送（替代 plist SimAP*
+    // 传递——cfprefsd 缓存不可见致"反查中"永不消失）。直接更新状态栏，绕过 plist。
+    if ([json[@"evt"] isEqualToString:@"ap"]) {
+        NSString *ssid = json[@"ssid"], *bssid = json[@"bssid"];
+        double apLat = [json[@"lat"] doubleValue], apLon = [json[@"lon"] doubleValue];
+        double dist = [json[@"dist"] doubleValue];
+        if (ssid.length && bssid.length) {
+            self.simAPSSID = ssid;
+            self.simAPBSSID = bssid;
+            self.simAPDistance = dist;
+            self.simAPCoord = CLLocationCoordinate2DMake(apLat, apLon);
+            [self _updateWifiStatusBar]; // 状态栏直接显示模拟 AP（播放态分支消费内存值）
+        }
+        return;
+    }
     NSString *mode = json[@"mode"];
     if (!mode.length) return;
     BOOL daemonPlaying = [mode isEqualToString:@"itinerary"];
