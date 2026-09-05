@@ -1823,6 +1823,11 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 - (void)commitStop {
     [self commitSimPrefs:^(NSUserDefaults *d) {
         [d setObject:@"off" forKey:@"SimLocationMode"];
+        // 停止接力纪律（2026-09-04 实测根因修复）：同步当前位置（self.cur=最后收到 fix≈轨迹中途）进 plist——
+        // 否则 plist 里残留播放起点坐标，daemon off 分支 coordChanged 会注入它 → 位置跳回出发点锚点。
+        // 配合 daemon off 分支的 50m 阈值（命令坐标与运行时位置微差不注入），plist 坐标保鲜只为下次点播放的续播基线
+        [d setDouble:self.cur.latitude forKey:@"SimLocationLat"];
+        [d setDouble:self.cur.longitude forKey:@"SimLocationLon"];
     }];
 }
 

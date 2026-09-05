@@ -192,6 +192,15 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         if (acc < 3.0) acc = 3.0;
         if (acc > 15.0) acc = 15.0;
         BOOL coordChanged = (fabs(_currentLat - lat) > 0.000001 || fabs(_currentLon - lon) > 0.000001);
+        // 停止接力纪律（2026-09-04 实测根因修复）：播放推进后 plist 里的 Lat/Lon 是播放起点（App 点播放时写的、
+        // 无人更新），停止时若注入它 = 位置跳回出发点锚点。命令坐标与本 daemon 位置差异在 kArrivalThresholdM 内
+        // = 只是投递延迟的微差 → 以 daemon 内存位置（更新鲜）为准不注入；差异大才是 App 显式位置命令（设锚点）→ 注入
+        double cmdDist = [SimRouteCalculator haversineMeters:CLLocationCoordinate2DMake(_currentLat, _currentLon)
+                                    to:CLLocationCoordinate2DMake(lat, lon)];
+        if (coordChanged && cmdDist < 50.0) {
+            TVLog(@"[locsim] off mode: plist coord within %.0fm of runtime position — keep runtime (stale-playback-start guard)", cmdDist);
+            coordChanged = NO;
+        }
         if (coordChanged && (lat != 0 || lon != 0)) {
             _currentLat = lat;
             _currentLon = lon;
@@ -586,10 +595,20 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
     NSUInteger startIdx = 0;
     if (_currentLat != 0 || _currentLon != 0) {
         BOOL seqValid = NO;
-        // ① seq 精确续播（2026-08-30 数据源排序）：轨迹版本一致 + 记录的 seq 在范围内 → 直接定位（O(1) 无几何歧义）
+        // ① seq 精确续播（2026-08-30 数据源排序）：轨迹版本一致 + 记录的 seq 在范围内 + 位置一致性校验 → 直接定位
+        //    位置一致性（2026-09-04 接力纪律）：seq 指向的点必须与当前位置吻合（<50m）才可信——
+        //    daemon 重启等场景 simstate 的 seq 可能与实际注入位置脱节（如 plist 命令坐标已把位置移到别处），
+        //    此时盲信 seq = 跳到 seq 点（回起点/已消费坐标）；接力棒是当前位置，seq 只是加速索引
         if (_currentTrackVersion == _persistedTrackVersion && _currentSeq < points.count) {
-            startIdx = _currentSeq;
-            seqValid = YES;
+            NSDictionary *seqPt = points[_currentSeq];
+            double seqDist = [SimRouteCalculator haversineMeters:CLLocationCoordinate2DMake(_currentLat, _currentLon)
+                                       to:CLLocationCoordinate2DMake([seqPt[@"lat"] doubleValue], [seqPt[@"lon"] doubleValue])];
+            if (seqDist < 50.0) {
+                startIdx = _currentSeq;
+                seqValid = YES;
+            } else {
+                TVLog(@"[locsim] seq %lu stale (point %.0fm from current pos) -> geometric fallback", (unsigned long)_currentSeq, seqDist);
+            }
         }
         if (!seqValid) {
             // ② 几何兜底（版本不一致=编辑过新轨迹，或 seq 越界）：顺序感知找最近点——
