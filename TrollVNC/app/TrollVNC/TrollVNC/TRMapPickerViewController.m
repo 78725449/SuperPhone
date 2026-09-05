@@ -1223,7 +1223,13 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
             self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 状态切换时刻（过滤旧 fix）
             // startTimestamp 同步（F4）：对齐进入播放态时也刷新开启时刻——防"stopTimestamp 旧于
             // 本刻的残留真实 fix"穿过过滤器（App 重启对齐瞬间的 <1s 真实位置窗口）
-            if (daemonPlaying) self.startTimestamp = self.stopTimestamp;
+            if (daemonPlaying) {
+                self.startTimestamp = self.stopTimestamp;
+                // W1（2026-09-05 组件审查）：对齐进播放态补原生跟随——daemon 崩溃恢复播放/编辑重发
+                // 播放等"非用户点击"路径此前不设 Follow，蓝点走出视野只剩 500m 自动聚焦兜底
+                self.mapView.userTrackingMode = MKUserTrackingModeFollow;
+                self.lastAutoFocusWGS = self.cur; // 聚焦基线=模拟位置（瓦片系）
+            }
             [self refreshUserLocationView];
             [self resetFocusBaseline];
             [self refreshWifiAnnotation];
@@ -1425,7 +1431,8 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         [self.segmentPoints removeObjectAtIndex:idx];
     }
     if (!self.segments.count) {
-        // 全部锚点删除 → 停止定位并同步停止 daemon（写 mode=off，设备恢复真实定位），避免 App 停止但设备仍被模拟
+        // 全部锚点删除 → 停止定位并同步停止 daemon（设备恢复真实定位），避免 App 停止但设备仍被模拟
+        BOOL wasPlaying = self.locating; // F3 修正：先捕获播放态（下方 locating=NO 会吞掉判断）
         self.hasStart = NO;
         self.locating = NO;
         self.pendingEditAction = nil;    // 清挂起编辑（空链无需再生成）
@@ -1442,9 +1449,9 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         [self updateStatus];
         [self syncSegmentsUI];
     [self writeTrackFile:@[]]; // 删光同步清编排契约文件——否则重开 App restoreSession 恢复出幽灵锚点（2026-09-04 实测修复）
-        // F3（2026-09-05）：播放中删光必须同步发 stop——否则 daemon 内存 _trackPoints 把旧轨迹
+        // F3：播放中删光必须同步发 stop——否则 daemon 内存 _trackPoints 把旧轨迹
         // 播完（幽灵播放）；stop 的微动中心 = daemon 当前位置（种子点语义不变）
-        if (self.locating) { [self stopPlayback]; }
+        if (wasPlaying) { [self stopPlayback]; }
         return;
     }
     // 跨过被删锚点的合并段标记待生成；删链尾则无（轨迹截断到上一锚点）
