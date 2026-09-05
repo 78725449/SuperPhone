@@ -887,7 +887,7 @@ static NSString *const kSimUDSPath = @"/var/mobile/Library/Caches/com.82flex.tro
     // 初始 BSSID 推送（2026-09-05 断裂点 A2）：anchor/play 会开定位——App 在"先关再开"抖动窗口里
     // 的 CNCopy 必空（获取中挂死），state 回执不触发 wifi 链（locating 可能不变）。
     // 命令完成后立即推当前 BSSID：App 收到即刷新状态栏+发起反查，无变化也完成对齐。
-    [self _handleWifiStoreChanged];
+    [[self sharedController] _handleWifiStoreChanged]; // 实例方法（经 sharedController 强类型访问）
 }
 
 + (void)startSimUDSServer {
