@@ -105,6 +105,7 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
 @property (nonatomic, assign) BOOL startupLockedToAnchor;          // 开启瞬间到注入落地前：锁定锚点显示（忽略旧 fix，防开启横跳）
 @property (nonatomic, assign) NSInteger reconcileMismatchCount;    // 行为对账：fix.speed 特征与 locating 期望的连续不符计数（确认闭环）
 @property (nonatomic, assign) NSInteger reconcileRetryCount;       // 行为对账：命令重发次数（上限 2，防风暴）
+@property (nonatomic, assign) double lastCommandAt;                // 最近一次播放/停止命令时刻——对账宽限期起点（daemon 注入会话重启 1-2s + interval 1s，过渡窗口内不对账防误判）
 @property (nonatomic, strong) NSMutableArray *fabCoinLabels;              // 定位 FAB 铜钱四字（招财进宝，上/右/下/左顺时针）
 @property (nonatomic, strong) CAGradientLayer *fabGoldGradient;           // 定位 FAB 铜钱渐变金底（定位中显示）
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
@@ -993,6 +994,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     self.locating = NO;
     self.pendingEditAction = nil;    // 放弃生成中挂起的编辑（停止后不再生长/复活设备）
     self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 停止时刻：只认晚于此的 fix（过滤停止前的旧 fix）
+    self.lastCommandAt = [[NSDate date] timeIntervalSince1970]; // 对账宽限期起点（命令后 5s 内不对账，防启动过渡误判）
     self.startupLockedToAnchor = NO; // 停止即解锁（2026-09-04 治理：锁生命周期限定播放会话内，防跨状态残留）
     [self commitStop];
     self.mapView.userTrackingMode = MKUserTrackingModeNone; // 退出原生跟随（水滴随 locationd 当前位置）
@@ -1030,6 +1032,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         }
         self.locating = YES;
         self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 开启时刻：只认晚于此的 fix（过滤开启前的旧 fix）
+    self.lastCommandAt = [[NSDate date] timeIntervalSince1970]; // 对账宽限期起点（命令后 5s 内不对账，防启动过渡误判）
         self.startupLockedToAnchor = YES; // 开启瞬间到注入落地前：锁定锚点位置显示，忽略旧 fix（防"旧→锚点"横跳）
         // 原子写入：坐标 + 模式，一次 notify（daemon 模式切换已跳过 500ms 合并，立即执行）
         {
@@ -1166,6 +1169,10 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 /// 重试耗尽仍不符 → 以行为为现实校准 UI（行为即真相，优于任何自报状态）。
 - (void)reconcilePlaybackState {
     if (!self.lastFix) return; // 无 fix 无法判定（定位关/未授权），不臆断
+    // 命令宽限期（2026-09-04 实测误判修复）：点播放后 daemon 要重启注入会话（stop→clear→append→start 1-2s）
+    // + locationInterval 1s 节奏，首个轨迹 fix 约 2-3s 后才广播——宽限期内 fix 仍是微动旧值（speed=0），
+    // 对账会把正常启动误判为"命令未生效"→ 误重发 → 打断刚建立的轨迹。宽限 5s 后才开始对账
+    if ([[NSDate date] timeIntervalSince1970] - self.lastCommandAt < 5.0) return;
     // 特征匹配：locating=YES 期望轨迹推进（speed>0.1）；locating=NO 期望微动驻留（speed≤0.1）
     BOOL behaviorMoving = self.lastFix.speed > 0.1;
     BOOL matches = self.locating ? behaviorMoving : !behaviorMoving;
@@ -1391,6 +1398,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         self.locating = NO;
         self.pendingEditAction = nil;    // 清挂起编辑（空链无需再生成）
         self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 记停止时刻（同 toggleLocate）
+    self.lastCommandAt = [[NSDate date] timeIntervalSince1970]; // 对账宽限期起点（命令后 5s 内不对账，防启动过渡误判）
         [self commitStop];
         [self.segmentPoints removeAllObjects];
         for (id o in self.mapView.overlays) {
@@ -1901,6 +1909,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     self.locating = NO;
     self.pendingEditAction = nil;
     self.stopTimestamp = [[NSDate date] timeIntervalSince1970];
+    self.lastCommandAt = [[NSDate date] timeIntervalSince1970]; // 对账宽限期起点（命令后 5s 内不对账，防启动过渡误判）
     self.startupLockedToAnchor = NO; // 解锁（防御性重置）
     self.mapView.userTrackingMode = MKUserTrackingModeNone;
     [self refreshUserLocationView];
