@@ -491,6 +491,42 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
     [self _renderWifiStatusBar];
 }
 
+/// 用给定 BSSID 集合反查并更新 wifi 标注（evt=bssid 唯一驱动的查询端；seq 竞态防护，丢弃过期回调）。
+/// 结果只写渲染缓存（Q6：渲染与查询分离），由回调内直接渲染状态栏
+- (void)_queryWifiAnnoWithBssids:(NSArray<NSString *> *)bssids seq:(NSUInteger)seq {
+    if (bssids.count == 0) {
+        [self removeWifiAnnotationIfExists]; // 无 BSSID 清除残留（同现有空列表分支语义）
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    [[TRWpsClient sharedClient] queryCoordinatesForBssids:bssids completion:^(NSDictionary<NSString *,CLLocation *> *result,
+        CLLocationCoordinate2D centroid, BOOL hasValid, NSError *error) {
+        __strong typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (seq != strongSelf.wifiQuerySeq) return; // 过期回调丢弃（查询入口已收敛为 evt+query，主队列保序）
+        if (error || !hasValid) {
+            // 稳态文案（2026-09-05 Q7）：不再"反查中/失败"振荡——空洞区诚实显示无数据
+            strongSelf.lastWifiQueryFailed = YES;
+            strongSelf.lastWifiAnnoCoord = CLLocationCoordinate2DMake(0, 0);
+            [strongSelf _renderWifiStatusBar];
+            return;
+        }
+        strongSelf.lastWifiQueryFailed = NO;
+        strongSelf.lastWifiAnnoCoord = centroid;
+        [strongSelf _renderWifiStatusBar];
+        // 更新/创建 wifi 标注（先移除旧的再添加新的，避免重复标注累积）
+        [strongSelf removeWifiAnnotationIfExists];
+// centroid 为 wloc 反查质心（坐标系悬案：gs-loc-cn 中国节点返回 GCJ/WGS 待真机裁决，2026-09-04）——现状直画
+        TRWifiAnnotation *ann = [[TRWifiAnnotation alloc] init];
+        ann.coordinate = centroid;
+        ann.title = strongSelf.locating ? @"WiFi 定位（模拟位置）" : @"WiFi 定位（wloc 反查）";
+        ann.info = [NSString stringWithFormat:@"%.4f, %.4f（%lu 个 AP）",
+                    centroid.latitude, centroid.longitude, (unsigned long)result.count];
+        ann.subtitle = ann.info;
+        [strongSelf.mapView addAnnotation:ann];
+    }];
+}
+
 /// 移除地图上已有的 WiFi 定位标注（按类型匹配，防重复标注累积）
 - (void)removeWifiAnnotationIfExists {
     NSMutableArray *toRemove = [NSMutableArray array];
@@ -1177,12 +1213,24 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     // 纯缓存渲染（C15），反查由 evt=bssid 驱动。不放在 locating 判断内：anchor→anchor 也需渲染。
     [self _renderWifiStatusBar];
     if (daemonPlaying != self.locating) {
-        self.locating = daemonPlaying;
-        self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 状态切换时刻（过滤旧 fix）
-        [self refreshUserLocationView];
-        [self resetFocusBaseline];
-        [self refreshWifiAnnotation];
-        TVLog(@"[locsim] UDS state aligned: daemon=%@ -> locating=%d", mode, self.locating);
+        // 编辑驻留对齐守卫（2026-09-05 F2 修复）：编辑链中 daemon 收到 UDS anchor（hold 机械驻留）
+        // 回执 mode=anchor——这是"播放中的机械过程"，不是用户停止。若不守卫，locating 被打回 NO →
+        // writeTrackFile 的 play 重发永不触发（isGenerating 时捕获 locating=NO）→ 编辑后播放静默死亡。
+        // 守卫 = 生成中收到 anchor 且本会话曾播放 → 保持 locating，等 play 重发回到 itinerary。
+        BOOL mechanicalHold = (self.isGenerating && [mode isEqualToString:@"anchor"] && self.stopTimestamp > 0);
+        if (!mechanicalHold) {
+            self.locating = daemonPlaying;
+            self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 状态切换时刻（过滤旧 fix）
+            // startTimestamp 同步（F4）：对齐进入播放态时也刷新开启时刻——防"stopTimestamp 旧于
+            // 本刻的残留真实 fix"穿过过滤器（App 重启对齐瞬间的 <1s 真实位置窗口）
+            if (daemonPlaying) self.startTimestamp = self.stopTimestamp;
+            [self refreshUserLocationView];
+            [self resetFocusBaseline];
+            [self refreshWifiAnnotation];
+            TVLog(@"[locsim] UDS state aligned: daemon=%@ -> locating=%d", mode, self.locating);
+        } else {
+            TVLog(@"[locsim] UDS state: anchor during edit (mechanical hold) — keep locating=%d", self.locating);
+        }
     }
     [self updateStatus];
 }
@@ -1394,6 +1442,9 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         [self updateStatus];
         [self syncSegmentsUI];
     [self writeTrackFile:@[]]; // 删光同步清编排契约文件——否则重开 App restoreSession 恢复出幽灵锚点（2026-09-04 实测修复）
+        // F3（2026-09-05）：播放中删光必须同步发 stop——否则 daemon 内存 _trackPoints 把旧轨迹
+        // 播完（幽灵播放）；stop 的微动中心 = daemon 当前位置（种子点语义不变）
+        if (self.locating) { [self stopPlayback]; }
         return;
     }
     // 跨过被删锚点的合并段标记待生成；删链尾则无（轨迹截断到上一锚点）

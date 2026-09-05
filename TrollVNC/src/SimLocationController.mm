@@ -327,15 +327,8 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         curBSSID ?: @"", curSSID ?: @""]];
 }
 
-/// 释放 SCDynamicStore 监听（SetDispatchQueue(NULL) 停止投递 + CFRelease）
-- (void)_teardownWifiStore {
-    if (!_wifiStore) return;
-    TVFn_SCDynamicStoreSetDispatchQueue setQueueFn = NULL;
-    TVLoadSCDynamicStore(NULL, NULL, NULL, &setQueueFn);
-    if (setQueueFn) setQueueFn(_wifiStore, NULL);
-    CFRelease(_wifiStore);
-    _wifiStore = NULL;
-}
+/// （2026-09-05 F5：_teardownWifiStore 已删除——BSSID 订阅常驻化后零调用者，
+///  store 生命周期 = daemon 生命周期，随进程消亡由内核回收）
 
 /// BSSID 变化常驻订阅（2026-09-05 双订阅对称架构）：daemon 启动即建立，不随下发/匹配拆装——
 /// 任意 BSSID 变化经 _handleWifiStoreChanged → UDS 推 App（App 比对去重后反查更新水滴）
@@ -838,6 +831,8 @@ static NSString *const kSimUDSPath = @"/var/mobile/Library/Caches/com.82flex.tro
         });
         dispatch_resume(g_simUDSReadSource);
         [self pushSimStateToApp]; // 连接建立即推当前状态（App 启动对齐）
+        [[self sharedController] _handleWifiStoreChanged]; // 连接建立即推当前连接（F1：A1 逻辑延伸到连接时点——
+        // App 重启后 wifi 缓存不能等"下一次 BSSID 变化"，accept 即对齐）
     });
     dispatch_source_set_cancel_handler(g_simUDSAcceptSource, ^{
         if (g_simUDSClientFD >= 0) close(g_simUDSClientFD);
