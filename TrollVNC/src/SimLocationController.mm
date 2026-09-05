@@ -596,11 +596,38 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
         return;
     }
     [self _updateCurrentFromPoint:_trackPoints[_trackIndex++]];
-    // GPS 注入：每 tick 必需（locationd 广播新坐标，App 当前位置跟随）
-    // wifi 反查：仅瓦片变化才触发，不每 tick 下发（2026-08-30 用户定案）
     [self _injectGpsForCurrentLocation];
-    // 网络变化监控：瓦片变化才重新反查换池（同瓦片 LRU 命中零成本；反查池成功后同 tick 注入）
-    [self _checkWifiTileChangedAndReinject];   // 2026-08-30 用户定案：wifi 反查只发生在启动/回调/网络变化
+    // BSSID 下发（2026-09-05 权威语义：bssidPlan 计划驱动）——轨迹文件自包含计划（创建时固化），
+    // tick 只做"当前 seq 所在覆盖段 → 段 bssid 与上次下发不同 → 下发一次"（段内零下发，
+    // 符合基站覆盖物理）。播放中零反查网络请求。
+    [self _dispatchBSSIDForSeq:_currentSeq];
+}
+
+/// BSSID 计划段查询+下发（2026-09-05 权威语义）：当前 seq 落在 bssidPlan 哪个覆盖段 →
+/// 段 bssid 与上次下发不同才下发（段内零下发，符合基站覆盖物理）。无 plan（旧轨迹）→ 退化瓦片反查路径。
+- (void)_dispatchBSSIDForSeq:(NSUInteger)seq {
+    NSArray *plan = [self _loadBSSIDPlan];
+    if (plan.count == 0) {
+        [self _checkWifiTileChangedAndReinject]; // 兼容：旧轨迹无 plan → 瓦片变化临时反查（现状路径）
+        return;
+    }
+    NSString *targetBSSID = nil;
+    for (NSDictionary *seg in plan) {
+        NSUInteger from = [seg[@"fromSeq"] unsignedIntegerValue];
+        NSUInteger to = [seg[@"toSeq"] unsignedIntegerValue];
+        if (seq >= from && seq <= to) { targetBSSID = seg[@"bssid"]; break; }
+    }
+    if (!targetBSSID.length) return;
+    static NSString *sLastSentBSSID = nil;
+    if ([targetBSSID isEqualToString:sLastSentBSSID]) return; // 段内：零下发
+    sLastSentBSSID = targetBSSID;
+    NSString *curSSID = [TRWifiKnownNetworks currentSSID];
+    NSString *curBSSID = [TRWifiKnownNetworks currentBSSID];
+    if (!curSSID.length) { TVLog(@"[locsim] bssid dispatch skipped (no current ssid)"); return; }
+    TVLog(@"[locsim] plan dispatch -> bssid %@ (seq=%lu)", targetBSSID, (unsigned long)seq);
+    [self _requestRouterSwitchSSID:curSSID bssid:targetBSSID currentSSID:curSSID currentBSSID:curBSSID completion:^(BOOL ok) {
+        TVLog(@"[locsim] router switch %@", ok ? @"sent OK" : @"FAILED");
+    }];
 }
 
 /// 检测当前坐标瓦片是否变化，跨瓦片则重新反查并下发软路由 AP 切换（轨迹跟随，2026-08-29）
@@ -649,6 +676,17 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
         return json[@"points"];
     }
     if ([json isKindOfClass:[NSArray class]]) return json;
+    return @[];
+}
+
+/// 读轨迹文件的 BSSID 计划（2026-09-05 权威语义：创建轨迹时固化的覆盖段数组）
+- (NSArray *)_loadBSSIDPlan {
+    NSData *data = [NSData dataWithContentsOfFile:kTRSimTrackFilePath];
+    if (!data.length) return @[];
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    if ([json isKindOfClass:[NSDictionary class]] && [json[@"bssidPlan"] isKindOfClass:[NSArray class]]) {
+        return json[@"bssidPlan"];
+    }
     return @[];
 }
 

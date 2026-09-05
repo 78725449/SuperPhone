@@ -2276,7 +2276,13 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         sTrackWriteQueue = dispatch_queue_create("com.82flex.trollvnc.trackwrite", DISPATCH_QUEUE_SERIAL);
     });
     dispatch_async(sTrackWriteQueue, ^{
-        NSDictionary *payload = @{ @"version": @3, @"trackVersion": @(trackVersion), @"segments": segSnapshot, @"points": snapshot };
+        // BSSID 计划生成（2026-09-05 用户定案：创建轨迹时其所有瓦片及所含 AP 全部生成——
+        // 播放中零反查，daemon 只按计划逐段下发）。瓦片螺旋反查无失败分支（空洞自动邻近回退），
+        // 同瓦片 LRU 缓存复用 → 代表点反查请求数 = 跨瓦片数。
+        // 在写队列内串行执行：与轨迹写入同序，编辑变更自动同步（增删/重排锚点 → 新 points → 新 plan）
+        NSArray *bssidPlan = [self _generateBSSIDPlanForPoints:snapshot];
+        NSDictionary *payload = @{ @"version": @3, @"trackVersion": @(trackVersion), @"segments": segSnapshot, @"points": snapshot,
+                                   @"bssidPlan": bssidPlan };
         NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
         if (!json) return;
         NSString *tmp = [kTRSimTrackFilePath stringByAppendingString:@".tmp"];
@@ -2291,6 +2297,59 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
             notify_post(TVNC_NOTIFY_PREFS_CHANGED);
         }
     });
+}
+
+/// BSSID 计划生成（2026-09-05 权威语义：覆盖段模型）——
+/// 代表点采样（每几百米）→ 逐点反查所在瓦片 AP（同瓦片 LRU 复用，螺旋保证无失败）→
+/// 最近 AP BSSID → 相邻同 BSSID 代表点合并为覆盖段 {fromSeq,toSeq,bssid}。
+/// 段内零下发（AP 覆盖半径内连续点共享 BSSID——基站覆盖物理模型）；段边界才是下发点。
+/// 拟真细节由段边界自然承载：长驻留+瞬时切换+原路回程重复+空洞段邻近回退。
+/// 此方法在串行写队列内同步执行（反查回调串行拼接，完成后返回）。
+- (NSArray *)_generateBSSIDPlanForPoints:(NSArray *)points {
+    if (points.count == 0) return @[];
+    // ① 代表点采样：每 k 点取一个（k 使代表数 ≈ 点数/64，上限防爆炸；短轨迹全取）
+    NSUInteger step = MAX(1, points.count / 64);
+    NSMutableArray *repIdx = [NSMutableArray array]; // 代表点的数组索引
+    for (NSUInteger i = 0; i < points.count; i += step) [repIdx addObject:@(i)];
+    if ([repIdx lastObject] != @(points.count - 1)) [repIdx addObject:@(points.count - 1)]; // 补尾点
+    // ② 串行反查（写队列上下文，信号量等回调——轨迹生成非热路径，阻塞可接受；
+    //    每轮恰好 1 signal + 1 wait，无计数漂移；拼段在写队列线程，线程安全）
+    NSMutableArray *segPlan = [NSMutableArray array]; // [{fromSeq,toSeq,bssid}]
+    __block NSString *bssidLocal = nil; // 回调写回的反查结果
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    for (NSUInteger ri = 0; ri < repIdx.count; ri++) {
+        NSUInteger idx = [repIdx[ri] unsignedIntegerValue];
+        NSDictionary *pt = points[idx];
+        CLLocationCoordinate2D cc = CLLocationCoordinate2DMake([pt[@"lat"] doubleValue], [pt[@"lon"] doubleValue]);
+        [[TRWpsTile sharedClient] queryBssidsForCoordinate:cc force:NO completion:^(NSArray<TRWpsTileAP *> *aps, NSError *error) {
+            // 最近 AP：aps[0]（反查按距离排序）；兜底遍历
+            NSString *bssid = (aps.count > 0) ? aps[0].bssid : nil;
+            if (!bssid) {
+                double bd = DBL_MAX;
+                for (TRWpsTileAP *ap in aps) {
+                    double d = [SimRouteCalculator haversineMeters:cc to:ap.coord];
+                    if (d < bd) { bd = d; bssid = ap.bssid; }
+                }
+            }
+            bssidLocal = bssid;
+            dispatch_semaphore_signal(sem); // 唯一 signal：每轮恰好一次
+        }];
+        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER); // 等本代表点反查完成
+        // 段合并（写队列线程内执行，线程安全）：相邻同 BSSID 延续，变化则开新段
+        NSString *lastB = segPlan.count ? ((NSDictionary *)segPlan[segPlan.count - 1])[@"bssid"] : nil;
+        if (segPlan.count == 0 || !lastB || ![bssidLocal isEqualToString:lastB]) {
+            [segPlan addObject:@{@"fromSeq": @(idx), @"toSeq": @(idx), @"bssid": bssidLocal ?: @""}];
+        } else {
+            NSMutableDictionary *last = segPlan[segPlan.count - 1];
+            last[@"toSeq"] = @(idx);
+        }
+    }
+    // 尾段 toSeq 对齐最后点
+    if (segPlan.count) {
+        NSMutableDictionary *last = segPlan[segPlan.count - 1];
+        last[@"toSeq"] = @(points.count - 1);
+    }
+    return segPlan;
 }
 
 #pragma mark - MKMapViewDelegate
