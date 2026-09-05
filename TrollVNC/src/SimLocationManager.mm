@@ -81,12 +81,14 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
                                                            course:course
                                                             speed:speed
                                                         timestamp:[NSDate date]];
-    // 持续注入模型 v3——池管理适配（2026-09-05 定案）：clear→append→flush，不 stop/start。
-    // 会话持续激活（投递循环不重置），池里永远只有一个最新点：
-    // - 不 clear（v27）：池积压 → locationd 异常投递（假速度 10.0 + 冻结，真机实拍）——每秒 append
-    //   生产与 interval 消费时钟漂移必致积压，clear 是必要的池管理
-    // - 不 start（v2 教训）：flush 后不激活投递循环 → 广播停止（lastFix 冻结实拍）
-    // - 不 stop：会话重建的空窗远大于 clear→append 两连调（微秒级）
+    // 持续注入模型 v4（2026-09-06 根因修复，真机干净基线实拍裁决）：clear→append→flush→**start**。
+    // start 必须每次调用——它是投递循环的激活步骤（v2 已实证：删它=广播停止/或全新 locationd 上从未
+    // 激活=广播真实位置，"南京锚点跳驻马店"根因），且对已激活会话幂等无害（v2 时代真机每秒 start
+    // 广播正常）。v3 把 start 误随 stop 一起删（"不 start"的注释论证混淆了 stopLocationSimulation 与
+    // startLocationSimulation 的职责）——干净基线/设备重启后全新 locationd 进程上会话从未激活，
+    // 广播恒为真实位置；旧会话残留场景（升级部署）掩盖了此 bug。
+    // - clear 必要：池管理（每秒 append 生产与 interval 消费时钟漂移必致积压 → 假速度 10.0/冻结）
+    // - stop 禁止：会话重建空窗远大于 clear→append 两连调
     _sim.locationDeliveryBehavior = 1; // 持续投递
     _sim.locationDistance = 0;         // 无距离过滤：每次注入都投递
     _sim.locationInterval = 1.0;       // 投递间隔 1s（对齐 daemon 每秒注入节奏）
@@ -95,6 +97,7 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     [_sim clearSimulatedLocations];    // 池管理：清掉已消费/积压旧点（真空窗口=clear→append 两连调，微秒级）
     [_sim appendSimulatedLocation:location];
     [_sim flush];
+    [_sim startLocationSimulation];    // 投递循环激活（幂等；干净 locationd 首次注入时必需——v3 缺它=永不广播模拟值）
     [SimLocationManager postTimezoneUpdate];
 }
 
