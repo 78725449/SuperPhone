@@ -1036,15 +1036,12 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 开启时刻：只认晚于此的 fix（过滤开启前的旧 fix）
     self.lastCommandAt = [[NSDate date] timeIntervalSince1970]; // 对账宽限期起点（命令后 5s 内不对账，防启动过渡误判）
         self.startupLockedToAnchor = YES; // 开启瞬间到注入落地前：锁定锚点位置显示，忽略旧 fix（防"旧→锚点"横跳）
-        // 原子写入：坐标 + 模式，一次 notify（daemon 模式切换已跳过 500ms 合并，立即执行）
-        {
-    [self commitSimPrefs:^(NSUserDefaults *d) {
-        BOOL hasRoute = [[NSFileManager defaultManager] fileExistsAtPath:kTRSimTrackFilePath];
-        [d setDouble:self.cur.latitude forKey:@"SimLocationLat"];
-        [d setDouble:self.cur.longitude forKey:@"SimLocationLon"];
-        [d setObject:hasRoute ? @"itinerary" : @"anchor" forKey:@"SimLocationMode"];
-    }];
-        }
+        // 原子写入：只写模式（2026-09-05 权威语义对齐：前端不传递位置——当前位置是 daemon 唯一真相，
+        // 接力棒是 daemon 内部 _currentLat，前端写坐标=用滞后 fix 污染接力基线）
+        [self commitSimPrefs:^(NSUserDefaults *d) {
+            BOOL hasRoute = [[NSFileManager defaultManager] fileExistsAtPath:kTRSimTrackFilePath];
+            [d setObject:hasRoute ? @"itinerary" : @"anchor" forKey:@"SimLocationMode"];
+        }];
         [self refreshUserLocationView];       // 当前位置水滴恢复出行图标
         // 停止后再开启：之前模拟位置（cur）距当前实际位置（lastFix=真实或残留）>500m → 瞬间跳回停止前位置（复用首锚点视野行为）；
         // 距离近（位置本就在附近/残留）不跳——维持"开启不主动聚焦"的常规语义
@@ -1893,13 +1890,11 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 }
 
 - (void)commitStop {
+    // 权威语义对齐（2026-09-05）：只写 mode——前端不传递位置，daemon 的 _currentLat（注入即写）永远
+    // 比 App 的滞后 fix 新鲜，停止接力由 daemon 自己的位置完成（配合 daemon off 分支 50m 阈值，
+    // plist 陈旧坐标不再能污染运行时位置）
     [self commitSimPrefs:^(NSUserDefaults *d) {
         [d setObject:@"off" forKey:@"SimLocationMode"];
-        // 停止接力纪律（2026-09-04 实测根因修复）：同步当前位置（self.cur=最后收到 fix≈轨迹中途）进 plist——
-        // 否则 plist 里残留播放起点坐标，daemon off 分支 coordChanged 会注入它 → 位置跳回出发点锚点。
-        // 配合 daemon off 分支的 50m 阈值（命令坐标与运行时位置微差不注入），plist 坐标保鲜只为下次点播放的续播基线
-        [d setDouble:self.cur.latitude forKey:@"SimLocationLat"];
-        [d setDouble:self.cur.longitude forKey:@"SimLocationLon"];
     }];
 }
 
