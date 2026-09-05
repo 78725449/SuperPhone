@@ -174,8 +174,10 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
 
 /// anchor 执行核心（2026-09-05 Q2 参数化）：坐标/精度由调用方显式传入，唯一调用链 =
 /// UDS anchor 命令（JSON 坐标直达，C2）。旧 `_startAnchor` plist 读壳已删除——
-/// plist SimLocationLat/Lon 是陈旧污染源（读它=UDS 命令坐标被覆写/跳回旧锚点/0,0 裸开定位，
-/// "反复暴露真实位置"第一根因）。语义不变：注入新坐标 + 反查 AP + 确保定位开启 + 微动游走
+/// plist SimLocationLat/Lon 是陈旧污染源（读它=UDS 命令坐标被覆写/跳回旧锚点/0,0 裸开定位）。
+/// 完整动作序列（2026-09-06 X1 定稿，用户确认：位置在哪 AP 跟到哪，驻留态同样下发）：
+/// ① 设模式/坐标 → ② **先注入再开定位**（压窄 locationd 广播真实值的窗口）→
+/// ③ AP 反查+下发（驻留态 AP 跟随模拟位置，否则 wifi 层拆穿 GPS 层）→ ④ 微动游走
 - (void)_startAnchorAtLat:(double)lat lon:(double)lon acc:(double)acc {
     if (acc < 3.0) acc = 3.0;
     if (acc > 15.0) acc = 15.0;
@@ -191,14 +193,15 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     _currentMode = @"anchor";
     _currentAcc = acc;
     _currentAlt = 45.0;
-    // 注入新坐标（变更持久注入的内容）
+    // ① 注入新坐标（变更持久注入的内容）
     [self _injectGpsForCurrentLocation];
-    [self _handleAPSwitchForCurrentLocation]; // 反查 AP（播放未开始，不触发下发）
-    // 检查并开启系统定位（先注入后开，确保第一秒即模拟值）
+    // ② 检查并开启系统定位（先注入后开，确保第一秒即模拟值——开定位时 locationd 冷启动即有注入会话在）
     if (![CLLocationManager locationServicesEnabled]) {
         [SimLocationManager setSystemLocationServices:YES];
     }
-    // 启动 anchor 微动游走（拟人化：真人不会一动不动，2026-08-30 修复：此前 timer 从未创建，_anchorTick 死代码）
+    // ③ AP 跟随（驻留态同样下发：最近 AP → 无感漫游；X1 最初版"anchor 不下发"定性错误已撤销）
+    [self _handleAPSwitchForCurrentLocation];
+    // ④ 启动 anchor 微动游走（拟人化：真人不会一动不动）
     [self _startMicroWanderWithCenter:CLLocationCoordinate2DMake(lat, lon) acc:acc];
     TVLog(@"[locsim] anchor set (%.5f, %.5f) acc=%.1f (idle micro-wander)", lat, lon, acc);
 }
@@ -271,7 +274,10 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
 /// 坐标 → TRWpsTile 瓦片动态反查 BSSID → 最近 AP → 下发软路由改 SSID/BSSID → known-networks 改名 →
 /// SCDynamicStore 监听重连。调用时机：启动/锚点/轨迹 tick 仅瓦片变化才触发（不每 tick 下发，2026-08-30 用户定案）
 - (void)_handleAPSwitchForCurrentLocation {
-    // 2026-08-29 软路由联动：反查 AP 列表（空洞螺旋保留）→ 最近 AP → 下发软路由切换
+    // 2026-09-06 X1 定稿（用户裁决）：anchor 驻留态**同样下发**——位置在哪 AP 跟到哪（四层自洽：
+    // 驻留时不跟随 = wifi 层守在家庭 AP = wloc 拆穿 GPS 层）。本方法与 _startAnchorAtLat 的
+    // 时序契约：**注入→开定位之后**才调用（AP 反查/下发不打断 GPS 广播，且首次下发前位置已是模拟值）。
+    // （X1 最初版"anchor 不下发"是误读注释的错判，已撤销——错误注释"不触发下发"同步删除）
     CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(_currentLat, _currentLon);
     if (coord.latitude == 0 && coord.longitude == 0) return;
     [[TRWpsTile sharedClient] queryBssidsForCoordinate:coord force:NO completion:^(NSArray<TRWpsTileAP *> *aps, NSError *error) {
@@ -488,10 +494,14 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
             }
         }
     }
-    // 首点：更新当前位置 + 统一注入（wifi 反查 + GPS 收尾同 tick，2026-08-28 定案"同一坐标两路输出，动作合一"）
+    // 首点：更新当前位置 + 统一注入（2026-09-06 W-B 修订：AP 下发统一走计划段——首点 seq 已由
+    // _updateCurrentFromPoint 设置，_dispatchBSSIDForSeq 与 tick 同一语义"段 BSSID 与上次不同才下发"，
+    // 消灭旧瓦片路径+计划路径的双下发（两次路由 reload、两 BSSID 不同=设备来回漫游）；
+    // 无计划（旧轨迹）时 _dispatchBSSIDForSeq 内部自动退化瓦片反查路径）
     [self _updateCurrentFromPoint:points[startIdx]];
-    [self _injectSimulationForCurrentLocation]; // 首点无条件 wifi 反查 + GPS 注入（正确：建立 AP 池）
-    _lastWifiTileKey = [TRWpsTile tileKeyForCoordinate:CLLocationCoordinate2DMake(_currentLat, _currentLon)]; // 记录首点瓦片 key（首点已反查，同瓦片不重复触发）
+    [self _dispatchBSSIDForSeq:_currentSeq]; // ① wifi 处理器：计划段下发（首点 seq，与 tick 同构）
+    [self _injectGpsForCurrentLocation];      // ② GPS 处理器收尾
+    _lastWifiTileKey = [TRWpsTile tileKeyForCoordinate:CLLocationCoordinate2DMake(_currentLat, _currentLon)]; // 记录首点瓦片 key（退化路径防重复触发）
     _trackIndex = startIdx + 1;
     if (_trackSource) {
         dispatch_source_cancel(_trackSource);
