@@ -81,22 +81,20 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
                                                            course:course
                                                             speed:speed
                                                         timestamp:[NSDate date]];
-    // 完整重启模型（2026-09-05 定案回归，8-24 原样+两处实测修正）：stop→clear→append→flush→start。
-    // 实验史：v1 append-only（删 stop/clear/start）→ flush 后不广播（start 是投递循环开关）；
-    //         v2 保留 start 不 clear → 生产/消费时钟漂移致队列积压 → locationd 假速度（10m/s）+ 投递
-    //         卡死冻结（真机实拍）——clear 是必要的队列管理，其毫秒级窗口是可接受代价（真机长期无实害）。
-    // 保留的两处实测修正：locationSpeed=speed（=0 时广播 speed 为 0，2026-09-04）；
-    //                     注入出口 GCJ→WGS（见上，2026-09-04 坐标治理）
-    [_sim stopLocationSimulation];
-    [_sim clearSimulatedLocations];
+    // 持续注入模型 v2（2026-09-05 修正）：不 stop/clear——位置池永不空（clear 窗口 = locationd 回退
+    // 真实位置的真空，暴露真实位置）；保留 start = 投递循环开关（v1 实验删除它导致 flush 后队列积压
+    // 不广播：App lastFix 冻结在某个轨迹 fix（速度 10.0 在跳、坐标不动的矛盾实拍）——start 是投递
+    // 循环的激活步骤，clear 才是真空元凶，两者职责不同不可同删
     _sim.locationDeliveryBehavior = 1; // 持续投递
     _sim.locationDistance = 0;         // 无距离过滤：每次注入都投递
     _sim.locationInterval = 1.0;       // 投递间隔 1s（对齐 daemon 每秒注入节奏）
-    _sim.locationSpeed = speed;        // 与注入 CLLocation 的 speed 一致
+    _sim.locationSpeed = speed;        // 与注入 CLLocation 的 speed 一致（2026-09-04 实测修正：=0 时 locationd
+                                       // 广播的 fix.speed 亦为 0，App 状态栏"驻留中"误判——8-24"速度由
+                                       // CLLocation 自带"的假设未经实测，locationd 广播 speed 取自本参数）
     _sim.locationRepeatBehavior = 1;   // 重复投递
     [_sim appendSimulatedLocation:location];
     [_sim flush];
-    [_sim startLocationSimulation];
+    [_sim startLocationSimulation];    // 投递循环激活（幂等语义待真机确认：重复 start 对已激活会话无害）
     [SimLocationManager postTimezoneUpdate];
 }
 
