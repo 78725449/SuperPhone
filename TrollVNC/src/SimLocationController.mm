@@ -799,6 +799,9 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
     NSMutableDictionary *mp = [NSMutableDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath] ?: [NSMutableDictionary dictionary];
     if (mutate) mutate(mp);
     [mp writeToFile:kSimMobilePrefsPath atomically:YES];
+    // 调用者追踪（2026-09-05 诊断：14:04:30/14:04:51 两次 off 均无 App 侧 *** 追踪行——排查 daemon 写入路径）：
+    // mutate 后的 mode 值直接可见，谁把 mode 写成 off 一目了然
+    TVLog(@"[locsim] *** writeMobilePrefs done, mode after write = %@ ***", mp[@"SimLocationMode"] ?: @"(unset)");
 }
 
 #pragma mark - 参数读取（mobile 域 plist 优先 → root suite 仅兜底）

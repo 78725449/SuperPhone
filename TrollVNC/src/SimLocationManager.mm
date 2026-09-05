@@ -81,12 +81,10 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
                                                            course:course
                                                             speed:speed
                                                         timestamp:[NSDate date]];
-    // 持续注入模型（2026-09-05 实验定案，替代 8-24"完整重启"定案）：不 stop/clear/start——注入会话是
-    // 常驻管道，模式切换只是换下一个注入点，位置池永不空（clear 窗口 = locationd 回退真实位置的真空，
-    // 会暴露真实位置 + 播放启动延迟 2-3s）。投递参数齐全（locationRepeatBehavior=1 池空重复投递最后位
-    // 置 = "注入持续跑"的机制），生产速率=locationInterval=消费速率 → 池不积累。
-    // 8-24"append-only 不广播"实测与投递参数设置同批叠加，归因可能错误（当时无投递参数必然不投递）；
-    // 失败回滚：恢复 stop/clear/start 三行即可
+    // 持续注入模型 v2（2026-09-05 修正）：不 stop/clear——位置池永不空（clear 窗口 = locationd 回退
+    // 真实位置的真空，暴露真实位置）；保留 start = 投递循环开关（v1 实验删除它导致 flush 后队列积压
+    // 不广播：App lastFix 冻结在某个轨迹 fix（速度 10.0 在跳、坐标不动的矛盾实拍）——start 是投递
+    // 循环的激活步骤，clear 才是真空元凶，两者职责不同不可同删
     _sim.locationDeliveryBehavior = 1; // 持续投递
     _sim.locationDistance = 0;         // 无距离过滤：每次注入都投递
     _sim.locationInterval = 1.0;       // 投递间隔 1s（对齐 daemon 每秒注入节奏）
@@ -96,6 +94,7 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     _sim.locationRepeatBehavior = 1;   // 重复投递
     [_sim appendSimulatedLocation:location];
     [_sim flush];
+    [_sim startLocationSimulation];    // 投递循环激活（幂等语义待真机确认：重复 start 对已激活会话无害）
     [SimLocationManager postTimezoneUpdate];
 }
 
