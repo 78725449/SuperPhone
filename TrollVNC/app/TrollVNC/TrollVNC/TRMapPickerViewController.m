@@ -148,7 +148,8 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
     // 从未 alloc/init 也未设 delegate → 对 nil 发消息静默 no-op，点搜索无反应；iOS 15+ 均需此行）
     self.searchCompleter = [[MKLocalSearchCompleter alloc] init];
     self.searchCompleter.delegate = self;
-    [self readCurrentStatus];
+    [self readCurrentStatus]; // 调用者追踪：启动强制 off（宁停不漏契约）——若日志出现本行即 App 被杀重启
+    TVLog(@"[locsim] *** readCurrentStatus from viewDidLoad (App launch/reload → force off) ***");
     [self restoreSession]; // 2026-08-30 持久化 v2：恢复编排会话（读契约文件重建锚点链/路线）
     // 真实定位授权：requestWhenInUse 需 Info.plist usage description。
     // 授权成功后 locationManagerDidChangeAuthorization 建立 App 自己的活跃位置请求（startUpdatingLocation）——
@@ -991,6 +992,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 /// 用户定案"播完=复位=与手动停止一致"）：复位播放态 UI + commitStop 写 off 通知 daemon，
 /// App/daemon/plist 三方一致归停止态；位置订阅 locationd 不变（off 分支终点微动继续，注入始终运行）
 - (void)stopPlayback {
+    TVLog(@"[locsim] *** stopPlayback (user stop) — locating was %d ***", self.locating); // 调用者追踪
     self.locating = NO;
     self.pendingEditAction = nil;    // 放弃生成中挂起的编辑（停止后不再生长/复活设备）
     self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 停止时刻：只认晚于此的 fix（过滤停止前的旧 fix）
@@ -1198,6 +1200,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     if (!self.locating) {
         // 期望停止但行为在移动 → 重发停止
         TVLog(@"[locsim-grow] reconcile: stop not effective, resend off");
+        TVLog(@"[locsim] *** commitStop from reconcilePlaybackState (resend) ***"); // 调用者追踪
         [self commitStop];
     } else {
         // 期望播放但行为静止 → 先过可播放性判定：位置在轨迹尽头=已播完，不重发，直接校准停止
@@ -1399,6 +1402,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         self.pendingEditAction = nil;    // 清挂起编辑（空链无需再生成）
         self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 记停止时刻（同 toggleLocate）
     self.lastCommandAt = [[NSDate date] timeIntervalSince1970]; // 对账宽限期起点（命令后 5s 内不对账，防启动过渡误判）
+        TVLog(@"[locsim] *** commitStop from deleteSegmentAt (all-cleared) ***"); // 调用者追踪
         [self commitStop];
         [self.segmentPoints removeAllObjects];
         for (id o in self.mapView.overlays) {
@@ -1904,6 +1908,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 /// 不再 commitStop（避免与 daemon 单方复位的反向竞速；Darwin 通知丢失也无害，plist 已 off）。
 /// 幂等守卫：未开启时忽略。
 - (void)playbackDidFinish {
+    TVLog(@"[locsim] *** playbackDidFinish notified (locating=%d) — daemon finish event ***", self.locating); // 调用者追踪：延迟到达的旧播完通知会误杀新播放（2026-09-04 诊断）
     if (!self.locating) return;
     TVLog(@"[locsim] playback finished (daemon notified) -> reset to stopped");
     self.locating = NO;
