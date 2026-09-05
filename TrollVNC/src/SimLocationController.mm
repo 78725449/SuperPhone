@@ -134,21 +134,8 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         TVLog(@"[locsim] startup: no persisted position, no injection (first launch / no record)");
     }
 
-    // ④ 残留模式处理：itinerary = 崩溃前播放中 → 放行（后续 start 的 reloadFromPrefs 恢复续播）；
-    NSString *mode = [self _readPref:@"SimLocationMode"];
-    if ([mode isEqualToString:@"itinerary"]) {
-        TVLog(@"[locsim] startup: itinerary mode, allowing reload to restore playback");
-        return;   // 定位已关；reload 恢复播放
-    }
-    // ⑤ anchor（无播放进度可恢复）→ 强制 off 归停止态（防双域不一致残留）。
-    // 注：itinerary 分支已在上方 return，此条件实际仅 anchor 可达（|| itinerary 为不可达残留，保留不动）
-    if ([mode isEqualToString:@"anchor"] || [mode isEqualToString:@"itinerary"]) {
-        // 预置 off 写回（防 _readPref 双域不一致）
-    [self writeMobilePrefsUsingBlock:^(NSMutableDictionary *mp) {
-        mp[@"SimLocationMode"] = @"off";
-    }];
-    }
-    // 定位已在②关掉，无需额外动作
+    // ④ 残留模式处理已退役（2026-09-05）：plist SimLocation* 命令退役，启动一律归停止态
+    // （微动接管当前位置）；播放恢复 = App 重连 UDS 后按需发 play 命令（App 重启本强制 off，契约一致）
 }
 
 - (void)reloadFromPrefs {
@@ -386,6 +373,11 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
             mp[@"SimAPLon"] = @(nearest.coord.longitude);
             mp[@"SimAPDistance"] = @(best);
         }];
+        // AP 事件走 UDS 推送（2026-09-05）：plist 写对 App 的 cfprefsd 缓存不可见（wifi 水滴
+        // 从未出现的根因），UDS 必达直接驱动 App 更新 wifi 状态栏+水滴标注
+        [SimLocationController _simUDSSendLine:[NSString stringWithFormat:
+            @"{\"evt\":\"ap\",\"ssid\":\"%@\",\"bssid\":\"%@\",\"lat\":%.6f,\"lon\":%.6f,\"dist\":%.0f}",
+            targetSSID, nearest.bssid, nearest.coord.latitude, nearest.coord.longitude, best]];
     }
     static NSString *sLastAPBSSID = nil;
     if (sLastAPBSSID && [sLastAPBSSID isEqualToString:nearest.bssid]) return; // 同 AP 不重复下发

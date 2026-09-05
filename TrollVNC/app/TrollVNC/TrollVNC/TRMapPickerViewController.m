@@ -113,6 +113,7 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
 @property (nonatomic, strong) dispatch_source_t simUDSReadSource;  // UDS 回执读 source
 @property (nonatomic, strong) dispatch_source_t simUDSRetrySource; // UDS 断线重连 timer
 @property (nonatomic, copy) NSString *simUDSRxBuffer;              // UDS 接收缓冲（按 \n 拆回执行）
+@property (nonatomic, copy) NSDictionary *pendingSimCommand;       // 写失败缓存的命令（重连成功后重发一次）
 @property (nonatomic, strong) NSMutableArray *fabCoinLabels;              // 定位 FAB 铜钱四字（招财进宝，上/右/下/左顺时针）
 @property (nonatomic, strong) CAGradientLayer *fabGoldGradient;           // 定位 FAB 铜钱渐变金底（定位中显示）
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
@@ -608,9 +609,9 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
 /// 残留的 anchor/itinerary 模式强制写 off（App 启动态=停止=执行契约，daemon 强制对齐停止、locationd 保持当前位置），
 /// 避免"启动即自动开启模拟 / 真实位置被当模拟位置 / 恢复态 Follow 干扰搜索聚焦"
 - (void)readCurrentStatus {
-    [self commitSimPrefs:^(NSUserDefaults *d) {
-        [d setObject:@"off" forKey:@"SimLocationMode"];
-    }];
+    // 启动态=停止（2026-08-24 契约）：不再写 plist off（SimLocation* 命令已退役）——
+    // App 重启的对齐 = UDS 连接建立时 daemon 推送执行态回执（handleSimStateLine 校准 locating）；
+    // daemon 侧残留播放由用户显式停止（UDS stop）或播完复位终止
     // 2026-08-30 定案：不再从 SimCurrentLat/Lon 恢复 self.cur——该值可能残留旧坐标系（GCJ-02）
     // 致绿点偏移（实测 SimLocationLat 与 SimCurrentLat 差 538m 东南 = GCJ 偏移特征）。
     // 当前位置唯一真相 = locationd 广播 fix（handleLocationUpdate → self.cur = loc.coordinate，瓦片系）；
@@ -1044,12 +1045,10 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         self.startTimestamp = [[NSDate date] timeIntervalSince1970]; // 开启时刻：只认晚于此的 fix（过滤开启前的旧 fix）
     self.lastCommandAt = [[NSDate date] timeIntervalSince1970]; // 对账宽限期起点（命令后 5s 内不对账，防启动过渡误判）
         self.startupLockedToAnchor = YES; // 开启瞬间到注入落地前：锁定锚点位置显示，忽略旧 fix（防"旧→锚点"横跳）
-        // 权威语义（2026-09-05）：UDS 命令必达（内核保证）+ plist 兜底过渡；前端不传递位置
+        // 权威语义（2026-09-05）：UDS 命令必达唯一通道（plist SimLocation* 命令已退役——
+        // 16:42 实证：双写路径的 cfprefsd 缓存不可见会造成 daemon 读到陈旧命令）
         BOOL hasRouteCmd = [[NSFileManager defaultManager] fileExistsAtPath:kTRSimTrackFilePath];
         [self sendSimCommand:@{@"cmd": hasRouteCmd ? @"play" : @"anchor"}];
-        [self commitSimPrefs:^(NSUserDefaults *d) {
-            [d setObject:hasRouteCmd ? @"itinerary" : @"anchor" forKey:@"SimLocationMode"];
-        }];
         [self refreshUserLocationView];       // 当前位置水滴恢复出行图标
         // 停止后再开启：之前模拟位置（cur）距当前实际位置（lastFix=真实或残留）>500m → 瞬间跳回停止前位置（复用首锚点视野行为）；
         // 距离近（位置本就在附近/残留）不跳——维持"开启不主动聚焦"的常规语义
@@ -1213,6 +1212,13 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     dispatch_resume(src);
     self.simUDSReadSource = src;
     TVLog(@"[locsim] UDS client connected (fd=%d)", fd);
+    // 重连成功：重发写失败时缓存的命令（回调式送达保证，2026-09-05）
+    if (self.pendingSimCommand) {
+        NSDictionary *pending = self.pendingSimCommand;
+        self.pendingSimCommand = nil;
+        TVLog(@"[locsim] UDS resending pending command: %@", pending[@"cmd"]);
+        [self sendSimCommand:pending];
+    }
 }
 
 - (void)scheduleSimUDSRetry {
@@ -1257,15 +1263,22 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     [self updateStatus];
 }
 
-/// 命令发送（UDS 优先必达；plist+notify 并存兜底过渡）
+/// 命令发送（UDS 必达唯一通道，2026-09-05：plist SimLocation* 命令已退役）
+/// 写失败回调式处理：close → 触发重连 → 连接建立后重发一次（pendingCmd）
 - (void)sendSimCommand:(NSDictionary *)cmd {
     NSData *data = [NSJSONSerialization dataWithJSONObject:cmd options:0 error:NULL];
     if (self.simUDSFD >= 0 && data) {
         NSMutableData *payload = [data mutableCopy];
         [payload appendBytes:"\n" length:1];
-        write(self.simUDSFD, payload.bytes, payload.length); // 内核保证送达
+        ssize_t n = write(self.simUDSFD, payload.bytes, payload.length);
+        if (n >= 0 && (NSUInteger)n == payload.length) {
+            self.pendingSimCommand = nil; // 送达，清缓存
+            return;
+        }
+        TVLog(@"[locsim] UDS write failed (n=%zd), reconnecting", n);
     }
-    // 兜底过渡：plist+notify 同步写（daemon applyFromPrefs 与 UDS 命令语义等价，重复执行幂等）
+    self.pendingSimCommand = cmd; // 缓存命令：重连成功后自动重发
+    [self simUDSDisconnected];    // 写失败视为断开 → close + 5s 重连
 }
 
 
@@ -1931,20 +1944,17 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     // 读坐标注入+开定位+微动驻留该锚点（"设锚点后位置=锚点"的既定行为不变，走 anchor 分支的
     // 坐标读入路径）；off 分支的坐标读入随此改动删除（off 态 plist 坐标失去污染路径）
     // self.cur 统一瓦片系（2026-09-04 治理），daemon injectPoint 出口统一 GCJ→WGS
-    [self commitSimPrefs:^(NSUserDefaults *d) {
-        CLLocationCoordinate2D wgs = self.cur;
-        [d setDouble:wgs.latitude forKey:@"SimLocationLat"];
-        [d setDouble:wgs.longitude forKey:@"SimLocationLon"];
-        [d setObject:@"anchor" forKey:@"SimLocationMode"];
-    }];
+    // 2026-09-05 权威语义：设锚点 = 显式位置命令走 UDS（anchor+坐标）——daemon 注入+开定位+微动驻留
+    // self.cur 统一瓦片系（2026-09-04 治理），daemon injectPoint 出口统一 GCJ→WGS
+    [self sendSimCommand:@{@"cmd": @"anchor",
+                           @"lat": @(self.cur.latitude),
+                           @"lon": @(self.cur.longitude),
+                           @"acc": @(5.0)}];
 }
 
 - (void)commitStop {
-    // 权威语义对齐（2026-09-05）：UDS 命令必达 + plist 兜底过渡；前端不传递位置
+    // 权威语义（2026-09-05）：UDS 命令必达唯一通道（plist SimLocation* 命令已退役）
     [self sendSimCommand:@{@"cmd": @"stop"}];
-    [self commitSimPrefs:^(NSUserDefaults *d) {
-        [d setObject:@"off" forKey:@"SimLocationMode"];
-    }];
 }
 
 /// 轨迹播完复位（daemon kTRSimPlaybackFinishedNotification 通知，2026-09-04 治理）：
@@ -1973,11 +1983,11 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 /// "只要不是停止定位，编辑时底层保持当前位置不乱跳"（仅定位中生效；停止态编辑不动 daemon）
 - (void)holdAtCurrentPosition:(CLLocationCoordinate2D)curW {
     if (!self.locating) return;
-    // 2026-08-29 定案：只写坐标，不写模式——编辑时保持当前模式不变
-    [self commitSimPrefs:^(NSUserDefaults *d) {
-        [d setDouble:curW.latitude forKey:@"SimLocationLat"];
-        [d setDouble:curW.longitude forKey:@"SimLocationLon"];
-    }];
+    // 编辑驻留 = 显式位置命令走 UDS（2026-09-05：daemon anchor 注入当前位置+微动，轨迹源停）
+    [self sendSimCommand:@{@"cmd": @"anchor",
+                           @"lat": @(curW.latitude),
+                           @"lon": @(curW.longitude),
+                           @"acc": @(5.0)}];
 }
 
 /// 编辑动作统一入口（联动性：编辑不丢）——生成中挂起（最后一次生效），否则立即执行
