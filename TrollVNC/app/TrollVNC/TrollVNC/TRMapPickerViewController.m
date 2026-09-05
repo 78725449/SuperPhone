@@ -1266,6 +1266,17 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         }
         return;
     }
+    // BSSID 变化事件（2026-09-05 双订阅对称架构：daemon SCDynamicStore 常驻监听 → UDS 推送；
+    // 与 lastWifiBSSID 比对零开销，变化才 wloc 反查更新水滴——回归"变化才查"约定）
+    if ([json[@"evt"] isEqualToString:@"bssid"]) {
+        NSString *bssid = json[@"bssid"];
+        if (bssid.length && !(self.lastWifiBSSID && [bssid caseInsensitiveCompare:self.lastWifiBSSID] == NSOrderedSame)) {
+            self.lastWifiBSSID = bssid;
+            NSUInteger seq = ++self.wifiQuerySeq;
+            [self _queryWifiAnnoWithBssids:@[bssid] seq:seq];
+        }
+        return;
+    }
     NSString *mode = json[@"mode"];
     if (!mode.length) return;
     BOOL daemonPlaying = [mode isEqualToString:@"itinerary"];
@@ -1675,7 +1686,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         self.lastFix = loc; // 记录回调 fix（原始 WGS 对象；坐标/速度真相源，不读属性缓存）
         self.cur = mapCoord; // self.cur 统一存瓦片系（与锚点/路线/算路同系，2026-09-04 治理）
         [self _updateWifiStatusBar]; // wifi 状态栏刷新（模拟位置/模拟AP）
-        [self _refreshWifiAnnoFromCurrentConnection]; // wifi 水滴标注更新
+        // wifi 水滴轮询已退役（2026-09-05 双订阅对称：BSSID 变化由 daemon SCDynamicStore 经 UDS 推送驱动）
         [self updateAnchorPassStateWithLiveWGS:mapCoord]; // 先更新段速度/经过态，状态栏立即反映
         [self updateStatus];
         // 自动聚焦：Follow 原生已跟随无需重复；用户拖动退出 Follow 后模拟位置距上次聚焦点超阈值则拉回
@@ -1698,7 +1709,6 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     // 更新当前位置（首锚点注入落地后，self.cur 跟随 locationd 注入位置；瓦片系统一存储）
     self.cur = mapCoord;
     [self updateAnchorPassStateWithLiveWGS:mapCoord]; // 停止态也更新三态（passed 单调：红锚点保持红，仅反映位置新经过）
-[self _refreshWifiAnnoFromCurrentConnection]; // wifi 标注 fix 驱动刷新（BSSID 增量比对）
     [self updateStatus];
     // 自动聚焦（距离阈值）：fix 距停止瞬间基线超阈值才聚焦——
     // 旧 fix（≈基线）不触发、新 fix（画布外）必触发；GPS 收敛渐进超阈值再拉回

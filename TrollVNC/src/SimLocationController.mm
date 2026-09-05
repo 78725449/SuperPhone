@@ -99,6 +99,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     [self _forceStopOnStartup];
     [self reloadFromPrefs];
     [SimLocationController startSimUDSServer]; // UDS 双向通道（命令/回执内核必达，2026-09-05）
+    [self _startBSSIDChangeMonitor]; // WiFi 侧系统订阅常驻（BSSID 变化 → UDS 推 App 反查，双订阅对称）
 }
 
 /// 启动定位处理（2026-08-29 定案）：先关定位（安全基底）→ 注入上次位置 → 根据残留模式决定是否恢复播放
@@ -411,9 +412,13 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
 
 /// AirPort 状态键变化回调：重连完成时 configd 更新该键，读当前 BSSID 比对目标
 - (void)_handleWifiStoreChanged {
-    if (!_wifiTargetBSSID) return;
     NSString *curBSSID = [TRWifiKnownNetworks currentBSSID];
-    if (curBSSID.length && [curBSSID caseInsensitiveCompare:_wifiTargetBSSID] == NSOrderedSame) {
+    if (!curBSSID.length) return;
+    // BSSID 变化必推 UDS（2026-09-05 双订阅对称架构：WiFi 侧网络流 → App 反查更新水滴；
+    // 任意 BSSID 变化都推，App 侧与 lastWifiBSSID 比对去重，零开销）
+    [SimLocationController _simUDSSendLine:[NSString stringWithFormat:
+        @"{\"evt\":\"bssid\",\"bssid\":\"%@\"}", curBSSID]];
+    if (_wifiTargetBSSID && [curBSSID caseInsensitiveCompare:_wifiTargetBSSID] == NSOrderedSame) {
         notify_post("com.82flex.trollvnc.wifi-switched");
         TVLog(@"[locsim] wifi reconnect: %@ matches target, notified App", curBSSID);
         _wifiTargetBSSID = nil;
@@ -429,6 +434,28 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     if (setQueueFn) setQueueFn(_wifiStore, NULL);
     CFRelease(_wifiStore);
     _wifiStore = NULL;
+}
+
+/// BSSID 变化常驻订阅（2026-09-05 双订阅对称架构）：daemon 启动即建立，不随下发/匹配拆装——
+/// 任意 BSSID 变化经 _handleWifiStoreChanged → UDS 推 App（App 比对去重后反查更新水滴）
+- (void)_startBSSIDChangeMonitor {
+    if (_wifiStore) return; // 常驻：已建立则不重建
+    TVFn_SCDynamicStoreCreate createFn = NULL;
+    TVFn_SCDynamicStoreSetNotificationKeys setKeysFn = NULL;
+    TVFn_SCDynamicStoreSetDispatchQueue setQueueFn = NULL;
+    if (!TVLoadSCDynamicStore(&createFn, NULL, &setKeysFn, &setQueueFn)) {
+        TVLog(@"[locsim] SCDynamicStore symbols unavailable, BSSID monitor skip");
+        return;
+    }
+    TVSCDynamicStoreContext ctx = {0, (__bridge void *)self, NULL, NULL, NULL};
+    _wifiStore = createFn(NULL, CFSTR("com.82flex.trollvnc.bssid-monitor"), _wifiAirPortStoreCallback, &ctx);
+    if (!_wifiStore) { TVLog(@"[locsim] BSSID monitor create failed"); return; }
+    CFStringRef keys[] = { CFSTR("State:/Network/Interface/en0/AirPort") };
+    CFArrayRef keyArr = CFArrayCreate(NULL, (const void **)keys, 1, &kCFTypeArrayCallBacks);
+    setKeysFn(_wifiStore, keyArr, NULL);
+    CFRelease(keyArr);
+    setQueueFn(_wifiStore, dispatch_get_main_queue());
+    TVLog(@"[locsim] BSSID change monitor started (persistent)");
 }
 
 static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef changedKeys, void *info) {
