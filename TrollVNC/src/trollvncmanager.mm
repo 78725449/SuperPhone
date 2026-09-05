@@ -647,9 +647,9 @@ int main(int argc, const char *argv[]) {
                 }
                 // 网关地址/令牌/设备名变更 → 标记重发 register（host 变更由 worker 断开重连）
                 [[TRGatewayClient sharedClient] noteExternalPrefsChanged];
-                // 定位参数变更（App 写 mobile 域后通知）→ 控制器合并窗口重读生效
-                //（一次编辑链连发多次通知合并为一次重载，防热重载风暴；无巡检——notify 驱动全覆盖）
-                [[SimLocationController sharedController] scheduleReloadFromPrefs];
+                // 定位参数变更桥已删除（2026-09-05 Q1）：UDS 是唯一命令通道（C1），
+                // plist reload 状态机（scheduleReloadFromPrefs/applyFromPrefs）整套退役——
+                // plist Sim* 键零读零写，SimLocationController 不再消费 prefs-changed
                 // watchdog 节流/退出超时：TRWatchDog 属性可热调，即时生效
                 //（2026-08-20 前为 manager 重启级；双域读取保证 mobile 域设置页写入可见）
                 NSUserDefaults *wd = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];

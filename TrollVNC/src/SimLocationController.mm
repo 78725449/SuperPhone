@@ -30,9 +30,9 @@ static NSString *const kSimMobilePrefsPath = @"/var/mobile/Library/Preferences/c
 // daemon 状态文件（daemon 独写，崩溃恢复注入位置+播放进度用，2026-08-30）：{currentPosition:{lat,lon,acc,seq,trackVersion}}
 // 编排真相在 kTRSimTrackFilePath（App 独写 segments/points）；本文件只存注入进度，单一写入者无并发
 static NSString *const kSimStateFilePath = @"/var/mobile/Library/Preferences/com.82flex.trollvnc.simstate.json";
-// prefs-changed 重载合并窗口：App 一次编辑链（holdAtCurrentPosition → 重算 → writeTrackFile）
-// 连发多次通知，窗口内合并为一次重载（防热重载风暴，2026-08-27）
-static const NSTimeInterval kSimReloadMergeInterval = 0.5;
+// simstate 持久化（daemon 独写，崩溃恢复注入位置+播放进度+执行模式用）：
+// {currentPosition:{lat,lon,acc,seq,trackVersion}, mode:"off|anchor|itinerary"}（2026-09-05 Q1：mode 入 simstate）
+// 编排真相在 kTRSimTrackFilePath（App 独写 segments/points/bssidPlan）；本文件只存执行态，单一写入者无并发
 // track 逐点注入间隔（itinerary：1s/点）
 static const NSTimeInterval kSimTrackTickInterval = 1.0;
 // anchor 节拍间隔（1s/拍）
@@ -54,14 +54,14 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     // dispatch_source_t _patrolSource; 已移除（2026-08-29 配置驱动覆盖）
     dispatch_source_t _trackSource;    // itinerary 逐点注入
     dispatch_source_t _anchorSource;   // anchor 微动游走
-    dispatch_source_t _reloadDebounce; // prefs-changed 重载合并（500ms 窗口）
+    // （2026-09-05 Q1：_reloadDebounce 已随 plist reload 状态机整套退役——UDS 是唯一命令通道）
     NSArray<NSDictionary *> *_trackPoints; // 轨迹点序列（内存缓存）
     NSUInteger _trackIndex;
     NSUInteger _currentSeq;          // 当前注入点的 seq（数据源排序，2026-08-30：恢复 O(1) 定位续播，独立维护非 _trackIndex）
     NSUInteger _currentTrackVersion; // 当前播放轨迹的版本号（trackVersion，区分新旧轨迹）
     NSUInteger _persistedSeq;        // 上次持久化的 seq（恢复时校验用）
     NSUInteger _persistedTrackVersion; // 上次持久化的轨迹版本（恢复时校验用）
-    NSString *_lastParamsSig;          // 参数指纹（变更检测）
+    // （2026-09-05 Q1：_lastParamsSig/_paramsSignature 已随 reload 指纹机制退役）
     // anchor 基底
     double _anchorLat, _anchorLon, _anchorAcc;
     // 当前位置（每次注入后更新；供 status / 编排初始起点 / 失效恢复）
@@ -91,19 +91,19 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
 #pragma mark - 公共入口
 
 - (void)start {
-    // 启动契约（2026-08-28 起；daemon 由 launchd/watchdog 拉起 = 崩溃/设备重启恢复场景）：
+    // 启动契约（2026-08-28 起；2026-09-05 Q1 修订；daemon 由 launchd/watchdog 拉起 = 崩溃/设备重启恢复场景）：
     // _forceStopOnStartup 先关系统定位（安全基底）→ 注入上次位置（simstate.json，位置连续）→
-    // 残留 itinerary（崩溃前播放中）放行恢复播放；anchor/off 归停止态。
-    // 与 App 侧契约不对称：App 重启 = readCurrentStatus 强制 off（宁停不漏，模拟由用户显式开启）；
+    // 按 simstate mode 恢复：itinerary 放行恢复播放（C10）；anchor/off 归停止态微动。
+    // 与 App 侧契约不对称：App 重启 = 不写任何状态、UDS 对齐（宁停不漏，模拟由用户显式开启）；
     // daemon 重启 = 恢复（App 可能仍在前台播放，崩溃恢复语义）。
     [self _forceStopOnStartup];
-    [self reloadFromPrefs];
     [SimLocationController startSimUDSServer]; // UDS 双向通道（命令/回执内核必达，2026-09-05）
     [self _startBSSIDChangeMonitor]; // WiFi 侧系统订阅常驻（BSSID 变化 → UDS 推 App 反查，双订阅对称）
 }
 
-/// 启动定位处理（2026-08-29 定案）：先关定位（安全基底）→ 注入上次位置 → 根据残留模式决定是否恢复播放
-/// 宁停不漏的落点 = App 启动强制 off；daemon 启动对 itinerary 放行（崩溃恢复），anchor 无进度可恢复 → off
+/// 启动定位处理（2026-08-29 定案；2026-09-05 Q1 对齐启动契约 C10）：
+/// 先关定位（安全基底）→ 注入上次位置 → 按持久化 mode 恢复（itinerary 放行续播，anchor/off 微动）。
+/// 状态源 = simstate.json（C11 持久化驱动：位置+seq+trackVersion+mode 四合一，daemon 独写）
 - (void)_forceStopOnStartup {
     // ① 读系统定位当前状态（诊断）
     BOOL sysLocON = [CLLocationManager locationServicesEnabled];
@@ -111,8 +111,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     // ② 先关定位（确定安全状态；setSystemLocationServices: 内部幂等：已关则跳过）
     [SimLocationManager setSystemLocationServices:NO];
 
-    // ③ 读 daemon 状态文件，注入上次注入位置（有则注入，确保注入始终跑——即使不恢复播放；
-    // 位置连续：崩溃后注入上次位置而非 0,0/真实位置；位置真相=daemon 写回的注入进度）
+    // ③ 读 daemon 状态文件，注入上次注入位置（有则注入，确保注入始终跑——即使不恢复播放）
     NSDictionary *state = [SimLocationController loadPersistedPosition];
     CLLocationCoordinate2D statePos = [SimLocationController readPositionFromState:state];
     if (CLLocationCoordinate2DIsValid(statePos)) {
@@ -135,115 +134,45 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
         TVLog(@"[locsim] startup: no persisted position, no injection (first launch / no record)");
     }
 
-    // ④ 残留模式处理已退役（2026-09-05）：plist SimLocation* 命令退役，启动一律归停止态
-    // （微动接管当前位置）；播放恢复 = App 重连 UDS 后按需发 play 命令（App 重启本强制 off，契约一致）
-}
-
-- (void)reloadFromPrefs {
-    NSString *sig = [self _paramsSignature];
-    if (_lastParamsSig && [sig isEqualToString:_lastParamsSig]) {
-        return;   // 参数未变：跳过（旧巡检已移除，配置驱动 notify 覆盖）
-    }
-    _lastParamsSig = sig;
-    [self applyFromPrefs];
-}
-
-/// prefs-changed 通知入口：模式切换（off ↔ itinerary ↔ anchor）立即执行，不经过 500ms 合并；
-/// 模式不变（编辑锚点坐标变化）则 500ms 合并窗口防热重载风暴（hold → 重算 → writeTrack 连发多次通知）
-- (void)scheduleReloadFromPrefs {
-    // 模式切换：立即执行，零延迟响应播放/停止
-    NSString *newMode = [self _readPref:@"SimLocationMode"];
-    if (![newMode isKindOfClass:[NSString class]] || newMode.length == 0) newMode = @"off";
-    if (![newMode isEqualToString:_currentMode]) {
-        [self reloadFromPrefs];
-        return;
-    }
-    // 模式不变（编辑坐标变化）：500ms 合并窗口防风暴
-    if (_reloadDebounce) {
-        dispatch_source_cancel(_reloadDebounce);
-    }
-    _reloadDebounce = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-    dispatch_source_set_timer(_reloadDebounce,
-                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSimReloadMergeInterval * NSEC_PER_SEC)),
-                              DISPATCH_TIME_FOREVER, 0);
-    __weak __typeof__(self) weakSelf = self;
-    dispatch_source_set_event_handler(_reloadDebounce, ^{
-        [weakSelf reloadFromPrefs];
-    });
-    dispatch_resume(_reloadDebounce);
-}
-
-#pragma mark - 状态机
-
-- (void)applyFromPrefs {
-    NSString *mode = [self _readPref:@"SimLocationMode"];
+    // ④ 按持久化 mode 恢复（2026-09-05 Q1，C10 放行恢复）：simstate mode 是唯一执行态真相——
+    // itinerary → _startTrack 续播（接力机器现成：版本一致 seq 精确/不一致几何兜底，C7）；
+    // anchor/off → 停止态微动（中心=恢复的当前位置）。无位置且 mode=itinerary 时不恢复（无可续播位置）
+    NSString *mode = [state isKindOfClass:[NSDictionary class]] ? state[@"mode"] : nil;
     if (![mode isKindOfClass:[NSString class]] || mode.length == 0) mode = @"off";
-    TVLog(@"[locsim] apply mode=%@", mode);
-    if ([mode isEqualToString:@"off"]) {
-        // off = 纯停止（2026-09-05 权威语义对齐）：不推进轨迹、不关系统定位、不清注入（注入始终运行）。
-        // 坐标读入已删除——plist 的 Lat/Lon 在 off 态是陈旧污染源（播放起点/上次设锚点残留），
-        // 注入它会跳回出发点锚点（历次"回出发点"实拍根因）。当前位置唯一真相 = _currentLat
-        // （持续注入下每秒更新+注入即写 simstate），off 时直接以它为中心微动，位置零跳变。
-        // 设锚点的显式位置命令走 mode=anchor（commitAnchor 已改写），由 anchor 分支的坐标读入承接。
-        [self _stopTrack];  // 停轨迹推进（位置保持；拟人微动由下方 off 分支统一启动）
-        [[SimLocationManager sharedManager] stopPlaybackOnly]; // 停 wifi 扫描，不清 GPS 会话
-        [self _teardownWifiStore];           // 停止播放即停止 wifi 重连监听（无兜底，2026-08-30）
-        _wifiTargetBSSID = nil;
-        _currentMode = @"off";
-        _lastWifiTileKey = 0;
-        // 未播放时保持拟人微动（2026-08-30 用户定案：真人不会一动不动）——
-        // 中心 = 当前位置，只随机偏移不推进轨迹；模式保持 off（微动不改模式）；无有效位置则不启动
+    if ([mode isEqualToString:@"itinerary"] && (_currentLat != 0 || _currentLon != 0)) {
+        _currentMode = @"itinerary"; // _startTrack 会重设；先置防恢复窗口内 push 谎报
+        [self _startTrack];
+        TVLog(@"[locsim] startup: persisted itinerary -> resume playback (crash recovery)");
+    } else {
         if (_currentLat != 0 || _currentLon != 0) {
             [self _startMicroWanderWithCenter:CLLocationCoordinate2DMake(_currentLat, _currentLon) acc:_currentAcc];
         }
-    } else if ([mode isEqualToString:@"anchor"]) {
-        double lat = [self _readDouble:@"SimLocationLat" def:0.0];
-        double lon = [self _readDouble:@"SimLocationLon" def:0.0];
-        double acc = [self _readDouble:@"SimLocationAccuracy" def:5.0];
-        if (acc < 3.0) acc = 3.0;
-        if (acc > 15.0) acc = 15.0;
-        if ([_currentMode isEqualToString:@"anchor"] && _anchorSource) {
-            // anchor→anchor 坐标更新（编辑 hold 微差/挪锚点）：平移游走中心，不重启——
-            // 全量重启会重置游走状态回中闪跳 + wifi 完整重注，是编辑热重载风暴主因（2026-08-27）
-            if (lat != _anchorLat || lon != _anchorLon || acc != _anchorAcc) {
-                _anchorLat = lat;
-                _anchorLon = lon;
-                _anchorAcc = acc;
-                _currentAcc = acc;
-                // 平移后当前位置立即跟随（下一 tick 前注入一次，防空窗）
-                _currentLat = _anchorLat + _currentMy / 111320.0;
-                _currentLon = _anchorLon + _currentMx / (111320.0 * cos(_anchorLat * M_PI / 180.0));
-                [self _injectSimulationForCurrentLocation]; // 统一注入：wifi 窗口 + GPS 收尾（同一坐标两路）
-                TVLog(@"[locsim] anchor shift (%.5f, %.5f)", lat, lon);
-            }
-        } else {
-            // 位置基底：中心点 + 微动游走（拟人必需，完全静止坐标像假 GPS）
-            [self _stopTrack];
-            [self _startAnchor];
-        }
-    } else if ([mode isEqualToString:@"itinerary"]) {
-        // 动作序列：轨迹文件逐秒推进（续播见 _startTrack：版本一致 seq 精确定位 / 不一致几何兜底，不从头重放）
-        // 权威语义对齐（2026-09-05）：不读 plist 坐标——前端不传递位置，_currentLat（注入即写 simstate，
-        // 持续注入下永不丢失）是唯一接力棒；App 的滞后 fix 无权覆盖它。daemon 重启场景由启动契约的
-        // simstate 恢复补位（_currentLat 恢复自 simstate 而非 plist）
-        [self _stopAnchor];
-        [self _startTrack];
-    } else {
-        TVLog(@"[locsim] unknown mode=%@ -> off", mode);
-        [self _stopAnchor];
-        [self _stopTrack];
-        [[SimLocationManager sharedManager] stopPlaybackOnly];
         _currentMode = @"off";
-        _lastWifiTileKey = 0; // 防残留：off 后重启时首点必重新触发反查
+        TVLog(@"[locsim] startup: mode=%@ -> stopped state (micro-wander)", mode);
     }
-    [SimLocationController pushSimStateToApp]; // 回执推送：执行态变更必达（App UI 对齐真相，2026-09-05）
 }
 
-- (void)_startAnchor {
-    // 2026-08-29 定案：首锚点只注入坐标 + 确保定位开启，不启动播放（等待路线生成后 _startTrack 接管）
-    double lat = [self _readDouble:@"SimLocationLat" def:0.0];
-    double lon = [self _readDouble:@"SimLocationLon" def:0.0];
-    double acc = [self _readDouble:@"SimLocationAccuracy" def:5.0];
+/// 停止态执行核心（2026-09-05 Q1 抽取）：原 applyFromPrefs off 分支语义——停轨迹推进、
+/// 停 wifi 扫描（不动常驻 BSSID 订阅！store 生命周期 = daemon 生命周期）、以当前位置为中心微动。
+/// 调用方：UDS stop 命令 / 启动恢复非 itinerary 分支 / forceOffAndReload / _startTrack 空轨迹分支
+- (void)_applyStopNow {
+    [self _stopTrack];  // 停轨迹推进（位置保持；拟人微动由下方统一启动）
+    [[SimLocationManager sharedManager] stopPlaybackOnly]; // 停 wifi 扫描，不清 GPS 会话
+    _wifiTargetBSSID = nil;
+    _currentMode = @"off";
+    _lastWifiTileKey = 0;
+    // 未播放时保持拟人微动（2026-08-30 用户定案：真人不会一动不动）——
+    // 中心 = 当前位置，只随机偏移不推进轨迹；无有效位置则不启动
+    if (_currentLat != 0 || _currentLon != 0) {
+        [self _startMicroWanderWithCenter:CLLocationCoordinate2DMake(_currentLat, _currentLon) acc:_currentAcc];
+    }
+}
+
+/// anchor 执行核心（2026-09-05 Q2 参数化）：坐标/精度由调用方显式传入，唯一调用链 =
+/// UDS anchor 命令（JSON 坐标直达，C2）。旧 `_startAnchor` plist 读壳已删除——
+/// plist SimLocationLat/Lon 是陈旧污染源（读它=UDS 命令坐标被覆写/跳回旧锚点/0,0 裸开定位，
+/// "反复暴露真实位置"第一根因）。语义不变：注入新坐标 + 反查 AP + 确保定位开启 + 微动游走
+- (void)_startAnchorAtLat:(double)lat lon:(double)lon acc:(double)acc {
     if (acc < 3.0) acc = 3.0;
     if (acc > 15.0) acc = 15.0;
     _anchorLat = lat;
@@ -322,7 +251,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
 }
 
 /// anchor 当前点提交：按当前游走偏移计算坐标并注入（GPS 单路；wifi 由调用方按需触发）
-/// 不改 _currentMode——微动只是移动位置，模式（off/anchor/itinerary）由状态机 applyFromPrefs 决定（2026-08-30）
+/// 不改 _currentMode——微动只是移动位置，模式（off/anchor/itinerary）由 UDS 命令状态机决定（2026-09-05 Q1 修订）
 - (void)_commitAnchorPoint {
     double lat = _anchorLat + _currentMy / 111320.0;
     double lon = _anchorLon + _currentMx / (111320.0 * cos(_anchorLat * M_PI / 180.0));
@@ -386,14 +315,16 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
 /// dlsym 动态解析后监听 State:/Network/Interface/en0/AirPort 键变化（重连时 configd 更新该键），
 /// 匹配目标 BSSID 后 notify App 更新水滴；监听生命周期 = 下发成功后 → 匹配成功（无轮询、无超时兜底，2026-08-30 用户定案）
 
-/// AirPort 状态键变化回调：重连完成时 configd 更新该键，读当前 BSSID 比对目标
+/// AirPort 状态键变化回调：重连完成时 configd 更新该键（2026-09-05 Q6 修订：空 BSSID 也推——
+/// 断连是真实物理事件，App 需要它撤水滴/显示未连接；载荷带 ssid 同源白送，App 渲染零二次查询）
 - (void)_handleWifiStoreChanged {
     NSString *curBSSID = [TRWifiKnownNetworks currentBSSID];
-    if (!curBSSID.length) return;
-    // BSSID 变化必推 UDS（2026-09-05 双订阅对称架构：WiFi 侧网络流 → App 反查更新水滴；
-    // 任意 BSSID 变化都推，App 侧与 lastWifiBSSID 比对去重，零开销）
+    NSString *curSSID = [TRWifiKnownNetworks currentSSID];
+    // BSSID 变化必推 UDS（双订阅对称架构：WiFi 侧网络流 → App 渲染+变化才反查；
+    // 任意变化都推，App 侧与 lastWifiBSSID 比对去重，零开销）
     [SimLocationController _simUDSSendLine:[NSString stringWithFormat:
-        @"{\"evt\":\"bssid\",\"bssid\":\"%@\"}", curBSSID]];
+        @"{\"evt\":\"bssid\",\"bssid\":\"%@\",\"ssid\":\"%@\"}",
+        curBSSID ?: @"", curSSID ?: @""]];
 }
 
 /// 释放 SCDynamicStore 监听（SetDispatchQueue(NULL) 停止投递 + CFRelease）
@@ -513,6 +444,9 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
         TVLog(@"[locsim] track file empty/missing: %@", kTRSimTrackFilePath);
         [self _stopTrack];
         [[SimLocationManager sharedManager] stopPlaybackOnly]; // 空轨迹：停播放，不清注入
+        // 空轨迹归停止态（2026-09-05 Q4：状态不自谎）——mode/落盘/回执与 stop 命令同语义
+        [self _applyStopNow];
+        [self _persistState];
         return;
     }
     _trackPoints = points;
@@ -586,14 +520,10 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
         // 播完回到拟人微动（真人不会一动不动，2026-08-30）：中心=终点坐标，继续小幅随机偏移
         [self _startMicroWanderWithCenter:CLLocationCoordinate2DMake(_currentLat, _currentLon) acc:_currentAcc];
         // 播完单方复位（2026-09-04 治理，替代"通知 App 由 App commitStop"的竞速设计）：
-        // daemon 单点保证三方一致——_currentMode 归 off + plist 写 off/终点坐标（位置连续，
-        // 未来 reload 不跳回起点）；Darwin 通知可能丢失，故不依赖 App 回写
+        // daemon 单点保证三方一致——_currentMode 归 off + _persistState 落盘（simstate mode=off，
+        // 2026-09-05 Q1：plist 写块删除，simstate 是唯一持久化状态源）——位置连续，未来恢复不跳回起点
         _currentMode = @"off";
-        [self writeMobilePrefsUsingBlock:^(NSMutableDictionary *mp) {
-            mp[@"SimLocationMode"] = @"off";
-            mp[@"SimLocationLat"] = @(_currentLat);
-            mp[@"SimLocationLon"] = @(_currentLon);
-        }];
+        [self _persistState];
         TVLog(@"[locsim] itinerary finished, keep final point + idle micro-wander (mode reset to off)");
         notify_post(kTRSimPlaybackFinishedNotification.UTF8String); // App 仅做 UI 复位（丢失无害，plist 已 off）
         [SimLocationController pushSimStateToApp]; // UDS 回执推送：播完复位必达（通知丢失的兜底，2026-09-05）
@@ -735,9 +665,12 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
     // 记录持久化的 seq/trackVersion（恢复续播校验：_startTrack 读 _persistedTrackVersion 比对当前轨迹版本）
     _persistedSeq = _currentSeq;
     _persistedTrackVersion = _currentTrackVersion;
+    // mode 入 simstate（2026-09-05 Q1，C11 持久化驱动状态源）：执行态与位置同文件同生命周期，
+    // 注入频率 = 落盘频率 → mode 恒新鲜；恢复链 = simstate 四合一恢复（位置+seq+版本+模式）
     NSDictionary *payload = @{
         @"currentPosition": @{ @"lat": @(_currentLat), @"lon": @(_currentLon), @"acc": @(_currentAcc),
                                @"seq": @(_currentSeq), @"trackVersion": @(_currentTrackVersion) },
+        @"mode": _currentMode ?: @"off",
     };
     NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:NULL];
     if (!json) return;
@@ -749,34 +682,25 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
     [[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kSimStateFilePath error:NULL];
 }
 
-/// 强制写 off 并重载（daemon.restart 升级通道用，2026-08-28）：升级退出前写 off，防新 manager
-/// 启动契约读到残留 itinerary 而恢复播放；系统定位关闭由重启后 _forceStopOnStartup ② 兜底（本方法不直接关定位）
+/// 强制写 off 并重载（daemon.restart 升级通道用，2026-08-28）：升级退出前归 off，防新 manager
+/// 启动契约恢复播放；系统定位关闭由重启后 _forceStopOnStartup ② 兜底（本方法不直接关定位）
 + (void)forceOffAndReload {
-    // 写 off 到 mobile 域 plist（配置源）→ reloadFromPrefs 走 off 分支（停轨迹，保留注入会话）；
-    // 系统定位关闭由重启后 _forceStopOnStartup ② 完成（宁无位置不漏真实）
-    [[SimLocationController sharedController] writeMobilePrefsUsingBlock:^(NSMutableDictionary *mp) {
-        mp[@"SimLocationMode"] = @"off";
-    }];
-    [[SimLocationController sharedController] reloadFromPrefs];
+    // 2026-09-05 Q1：写 simstate mode=off（唯一持久化状态源）→ _applyStopNow（停轨迹+微动）；
+    // 不再写 plist（Sim* 命令键零写）
+    SimLocationController *sc = [SimLocationController sharedController];
+    [sc _applyStopNow];
+    [sc _persistState]; // 显式落盘（停微动路径注入间隔最长 45s，升级窗口内需立即持久化 mode=off）
     TVLog(@"[locsim] forceOffAndReload done (daemon restarting)");
 }
 
-/// mobile 域 plist 原子写（唯一写入出口，2026-09-04 治理）：读现有键 → mutate → 原子落盘
-/// 所有 SimLocation*/SimAP* 写入必须走此 helper（启动契约/_handleAPList/播完复位/forceOffAndReload 收口）
-- (void)writeMobilePrefsUsingBlock:(void (^)(NSMutableDictionary *mp))mutate {
-    NSMutableDictionary *mp = [NSMutableDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath] ?: [NSMutableDictionary dictionary];
-    if (mutate) mutate(mp);
-    [mp writeToFile:kSimMobilePrefsPath atomically:YES];
-    // 调用者追踪（2026-09-05 诊断：14:04:30/14:04:51 两次 off 均无 App 侧 *** 追踪行——排查 daemon 写入路径）：
-    // mutate 后的 mode 值直接可见，谁把 mode 写成 off 一目了然
-    TVLog(@"[locsim] *** writeMobilePrefs done, mode after write = %@ ***", mp[@"SimLocationMode"] ?: @"(unset)");
-}
+/// （2026-09-05 Q1：writeMobilePrefsUsingBlock 已删除——Sim* 命令键零写，写块调用点全部退役；
+///  播完复位/forceOffAndReload 均改 _persistState 落盘 simstate）
 
-#pragma mark - 参数读取（mobile 域 plist 优先 → root suite 仅兜底）
+#pragma mark - 配置读取（mobile 域 plist 优先 → root suite 仅兜底；仅非命令配置，2026-09-05 Q1 收敛）
 
 - (id)_readPref:(NSString *)key {
-    // 配置源=mobile 域（App 写入，同域无覆盖问题）；
-    // root 域仅兜底——旧实现 root 域优先，daemon 曾写 root 残留 SimLocationMode 会永久覆盖 App 的 mobile 写入
+    // 仅存非命令配置（现唯一消费：SimRouterHTTP 软路由地址）；Sim* 命令键零读取
+    // 配置源=mobile 域；root 域仅兜底（历史：root 残留曾覆盖 App 的 mobile 写入）
     NSDictionary *mobilePrefs = [NSDictionary dictionaryWithContentsOfFile:kSimMobilePrefsPath];
     id v = mobilePrefs[key];
     if (v) return v;
@@ -790,30 +714,12 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
     return def;
 }
 
-- (NSString *)_paramsSignature {
-    // 轨迹 mtime 仅 itinerary 纳入指纹（它才消费轨迹文件）——anchor/off 态下轨迹重写
-    // （编辑重算期间）不触发 anchor 无谓重启（热重载风暴成因之一，2026-08-27）
-    NSString *mode = [self _readPref:@"SimLocationMode"] ?: @"off";
-    long long trackStamp = 0;
-    if ([mode isEqualToString:@"itinerary"]) {
-        NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:kTRSimTrackFilePath error:NULL];
-        NSDate *mtime = attrs[NSFileModificationDate];
-        trackStamp = (long long)(mtime.timeIntervalSince1970 * 1000);
-    }
-    return [NSString stringWithFormat:@"%@|%.6f|%.6f|%.2f|%@|%lld",
-            mode,
-            [self _readDouble:@"SimLocationLat" def:0.0],
-            [self _readDouble:@"SimLocationLon" def:0.0],
-            [self _readDouble:@"SimLocationAccuracy" def:5.0],
-            [self _readPref:@"SimLocationSpeed"] ?: @"",
-            trackStamp];
-}
-
 #pragma mark - UDS 双向通道（2026-09-05 权威架构：命令/回执内核必达通道）
 
 // Unix Domain Socket：App(mobile) ↔ daemon(root) 直连。协议 = 每行一个 JSON（\n 分隔）：
-//   App→daemon：{"cmd":"play"|"stop"|"anchor","lat":..,"lon":..,"acc":..}
+//   App→daemon：{"cmd":"play"|"stop"|"anchor"(lat,lon,acc)|"query"}
 //   daemon→App：{"evt":"state","mode":"off|anchor|itinerary","seq":N,"lat":..,"lon":..,"acc":..}
+//               {"evt":"bssid","bssid":"..","ssid":".."}（变化推/断连推空/连接与命令后必推）
 // notify 即发即弃（历次脱节根因），UDS 由内核保证送达；执行态任何变更主动推送回执，
 // App UI 由此对齐 daemon 真相（locating 派生自回执，不再自持）。
 static int g_simUDSListenFD = -1;
@@ -853,40 +759,35 @@ static NSString *const kSimUDSPath = @"/var/mobile/Library/Caches/com.82flex.tro
     NSString *cmd = json[@"cmd"];
     SimLocationController *selfer = self.sharedController;
     TVLog(@"[locsim] UDS command: %@", cmd);
+    // 命令三步模式（2026-09-05 Q1）：① 直调执行分支（真机验证过的机器）② _persistState（mode 入 simstate，
+    // 恢复链唯一状态源）③ push state+bssid 回执（App UI 对齐真相）
     if ([cmd isEqualToString:@"play"]) {
         // 等价 itinerary 分支（权威语义：接力棒 = _currentLat，不读 plist 坐标）
         [selfer _stopAnchor];
         [selfer _startTrack];
+        [selfer _persistState];
     } else if ([cmd isEqualToString:@"stop"]) {
-        // 等价 off 分支（位置以 _currentLat 为准，微动接管）
-        [selfer _stopTrack];
-        [[SimLocationManager sharedManager] stopPlaybackOnly];
-        [selfer _teardownWifiStore];
-        selfer->_wifiTargetBSSID = nil;
-        selfer->_currentMode = @"off";
-        selfer->_lastWifiTileKey = 0;
-        if (selfer->_currentLat != 0 || selfer->_currentLon != 0) {
-            [selfer _startMicroWanderWithCenter:CLLocationCoordinate2DMake(selfer->_currentLat, selfer->_currentLon) acc:selfer->_currentAcc];
-        }
+        // 停止核心（位置以 _currentLat 为准，微动接管；不拆常驻 BSSID 订阅——store 生命周期 = daemon 生命周期）
+        [selfer _applyStopNow];
+        [selfer _persistState];
     } else if ([cmd isEqualToString:@"anchor"]) {
-        // 显式位置命令（设锚点/hold）：读命令内坐标 → 注入+开定位+微动驻留
+        // 显式位置命令（设锚点/hold）：读命令内坐标 → Q2 参数化直达（不读 plist！）→ 注入+开定位+微动驻留
         double lat = [json[@"lat"] doubleValue];
         double lon = [json[@"lon"] doubleValue];
         double acc = [json[@"acc"] doubleValue];
-        if (acc < 3.0) acc = 3.0;
-        if (acc > 15.0) acc = 15.0;
         if (lat != 0 || lon != 0) {
-            selfer->_currentLat = lat;
-            selfer->_currentLon = lon;
-            selfer->_currentAcc = acc;
             [selfer _stopTrack];
-            [selfer _startAnchor];
+            [selfer _startAnchorAtLat:lat lon:lon acc:acc];
+            [selfer _persistState];
         }
+    } else if ([cmd isEqualToString:@"query"]) {
+        // WiFi 对账命令（2026-09-05 Q6）：App 点诊断条 → daemon 同步读当前连接（configd 直读，
+        // 无定位依赖）→ 下方统一 evt 回推权威值 → App 缓存被修正（校验走权威通道，App 零自读）
+        TVLog(@"[locsim] UDS query -> push current bssid/ssid");
     }
     [self pushSimStateToApp]; // 回执：执行态必达（App UI 对齐真相）
-    // 初始 BSSID 推送（2026-09-05 断裂点 A2）：anchor/play 会开定位——App 在"先关再开"抖动窗口里
-    // 的 CNCopy 必空（获取中挂死），state 回执不触发 wifi 链（locating 可能不变）。
-    // 命令完成后立即推当前 BSSID：App 收到即刷新状态栏+发起反查，无变化也完成对齐。
+    // 当前连接推送（断裂点 A2 + Q6）：anchor/play 会开定位——App 在"先关再开"抖动窗口里的
+    // CNCopy 必空（Q6 后 App 已无 CNCopy，此推送是 evt 链的对齐源）；query 命令也经此回推权威值。
     [[self sharedController] _handleWifiStoreChanged]; // 实例方法（经 sharedController 强类型访问）
 }
 

@@ -19,7 +19,6 @@
 #import <MapKit/MapKit.h>
 #import <MapKit/MKGeometry.h> // NSValue valueWithMKCoordinate/MKCoordinateValue（bootstrap SDK 需显式导入）
 #import <CoreLocation/CoreLocation.h> // 真实定位（未模拟定位时显示系统蓝点并聚焦）
-#import <SystemConfiguration/CaptiveNetwork.h> // 当前连接 WiFi SSID/BSSID（WiFi 水滴数据源，2026-08-29）
 #import <notify.h>
 #import <sys/socket.h> // UDS client（sim.uds 命令/回执通道，2026-09-05；bootstrap SDK 需显式导入——MKGeometry 同类教训）
 #import <sys/un.h>     // sockaddr_un
@@ -34,8 +33,8 @@
 #import "../../../src/CoordTransform.h" // GCJ-02 ↔ WGS-84（fix 入口/注入出口边界转换，2026-09-04 治理）
 #import "TRWpsClient.h"
 #import "../../../src/TRWpsTile.h" // BSSID 计划生成（2026-09-05：writeTrackFile 内联坐标→AP 反查，App target 已编译 TRWpsTile.mm）
-#import "TVNCUtil.h" // TVNC_NOTIFY_PREFS_CHANGED（prefs-changed 通知名宏，2026-08-28 收敛）
 #import "../../../src/Logging.h" // TVLog 宏（restoreSession 恢复日志用；符号定义在 TRAppLogging.m，2026-08-31 起 App 引用共享模块日志）
+// TVNCUtil.h import 已删（2026-09-05 Q1：TVNC_NOTIFY_PREFS_CHANGED 唯一用途 notify_post 已退役——UDS 唯一命令通道）
 
 /// 轨迹文件路径 → kTRSimTrackFilePath（TRSimContract.h 跨端单一真相源，2026-08-28）
 // prefs suite 名 → kTRAppPrefsSuiteName（TRAppDomain.h 跨端单一真相源，2026-08-28）
@@ -91,7 +90,10 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
 @property (nonatomic, strong) UIView *statusDot;                     // 状态圆点（定位中绿/停止灰）
 @property (nonatomic, strong) UILabel *wifiDiagLabel;                // WiFi 链路诊断标签（注册/回调/列表/BSSID/反查 5 环）
 @property (nonatomic, assign) NSUInteger wifiQuerySeq;  // wifi 反查请求序号（丢弃过期回调，防模拟/真实切换竞态）
-@property (nonatomic, copy) NSString *lastWifiBSSID;  // 上次反查的当前连接 BSSID（fix 驱动增量：BSSID 未变不重复反查，2026-09-04 触发模型治理）
+@property (nonatomic, copy) NSString *lastWifiBSSID;  // 上次 evt=bssid 推送的当前连接 BSSID（渲染缓存+增量比对，evt 唯一驱动）
+@property (nonatomic, copy) NSString *lastWifiSSID;   // 上次 evt=bssid 推送的 SSID（渲染缓存，Q6）
+@property (nonatomic, assign) BOOL lastWifiQueryFailed; // 最近一次 wloc 反查失败（稳态文案"本区域无数据"，Q7）
+@property (nonatomic, assign) CLLocationCoordinate2D lastWifiAnnoCoord; // 最近反查质心（渲染缓存，Q6 渲染/查询分离）
 // wifiLastTileKey/wifiTileAps 已删除（2026-09-04 死代码清理：窗口质心标注废弃，标注走当前连接反查）
 // wifiCurWGS 已删除（2026-09-05 断裂点 B：wifi 反查质心≠当前位置，聚焦兜底污染视野——空洞区 5km 外邻近 AP 抢占聚焦）
 @property (nonatomic, strong) UITableView *stepTable;        // 步骤列表（状态条展开；删除 + 拖拽排序）
@@ -454,116 +456,39 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
     ]];
 }
 
-/// 点击 WiFi 诊断标签：手动刷新当前状态
+/// 点击 WiFi 诊断标签：手动对账（2026-09-05 Q6）：发 UDS query 命令 → daemon 同步读当前连接
+/// （configd 直读，无定位依赖）→ evt{bssid,ssid} 回推权威值 → App 缓存被修正后渲染。
+/// App 不自读系统（CNCopy 已整体删除）——校验走权威通道，App 零系统读取。
 - (void)wifiDiagTapped:(UITapGestureRecognizer *)g {
-    [self _updateWifiStatusBar]; // 立即刷新当前状态
+    [self sendSimCommand:@{@"cmd": @"query"}]; // UDS 断线时此命令进入缓存重发链（送达保证）
 }
 
-/// 当前连接 WiFi 信息（CNCopyCurrentNetworkInfo 封装，2026-09-04 治理：2 处调用收口）。
-/// 注意：需系统定位服务开启才返回数据——定位关时返回 nil（wifi 标注触发模型依赖 fix 驱动，
-/// 定位关时 fix 不到达自然不触发，与本 helper 的 nil 返回语义一致）
-- (NSDictionary *)currentNetworkInfo {
-    NSArray *ifs = (__bridge_transfer NSArray *)CNCopySupportedInterfaces();
-    for (id ifname in ifs) {
-        NSDictionary *info = (__bridge_transfer NSDictionary *)CNCopyCurrentNetworkInfo((__bridge CFStringRef)ifname);
-        if (info) return info;
-    }
-    return nil;
-}
-
-/// wifi 状态栏更新（2026-08-30）：统一管理 wifiDiagLabel 显示，取代旧多处分散更新
-/// 模拟中 → 读 daemon 写入的 SimAP 数据（SSID/BSSID/坐标/距离）+ 当前位置
-/// 非模拟 → 读 CNCopy 当前连接 SSID/BSSID + wloc 反查坐标
-- (void)_updateWifiStatusBar {
-    // 统一「当前AP」显示（2026-09-05 用户定案）：播放态/停止态的 AP 是同一个——设备实际连接的 AP
-    // （模拟链的作用 = 让"实际连接的 AP"变成模拟位置对应的 AP：反查→下发→重连）。当前定位状态栏
-    // 已显示位置，此处只补 AP 信息；反查结果驱动地图 wifi 水滴（删旧建新）
-    NSDictionary *info = [self currentNetworkInfo];
-    NSString *bssid = info[(__bridge NSString *)kCNNetworkInfoKeyBSSID];
-    NSString *ssid = info[(__bridge NSString *)kCNNetworkInfoKeySSID];
-    if (bssid.length && ssid.length) {
-        self.wifiDiagLabel.text = [NSString stringWithFormat:@"当前AP：%@，%@，位置：反查中…", ssid, bssid];
-        NSUInteger seq = ++self.wifiQuerySeq;
-        [self _queryWifiAnnoWithBssids:@[bssid] seq:seq]; // wloc 反查 → 回调更新水滴+状态栏位置
-    } else {
-        self.wifiDiagLabel.text = @"WiFi: 当前连接获取中…";
-    }
-}
-
-/// WiFi 水滴（2026-08-29 职责重定义，用户定案）：只读「当前连接 WiFi」的 SSID/BSSID →
-/// 用 BSSID 做 wloc 反查（复用 _queryWifiAnnoWithBssids）→ 标注真实 AP 的位置。
-/// 不跟随模拟坐标——它是软路由切换效果的可视化验证（真实 BSSID 被定位到哪 = 切换是否生效），
-/// 与 GPS 轨迹/模拟位置完全解耦。旧「瓦片检测 + 缓存池质心跟随」逻辑已删。
-/// 数据源 = CNCopyCurrentNetworkInfo（App 有定位授权可用；daemon 才需要 ipconfig 通道）。
-/// wifi 标注触发模型（2026-09-04 治理，与订阅定位同构）：didUpdateLocations 为唯一时钟——
-/// 每次 fix 到达时读当前连接 BSSID，与缓存比对：变化/首次 → wloc 反查更新标注；未变 → 跳过（零开销）。
-/// 定位关时 fix 不到达 → 不触发（CNCopyCurrentNetworkInfo 需系统定位开启才返回数据——
-/// 停止态"获取中"死路的根治：daemon off 注入/播放会开定位，fix 到达即自动恢复反查链）
-/// 覆盖触发项：启动恢复（首个 fix）/ 软路由下发断网重连（BSSID 变化）/ 网络切换（同上）
-- (void)_refreshWifiAnnoFromCurrentConnection {
-    NSDictionary *info = [self currentNetworkInfo];
-    NSString *bssid = info[(__bridge NSString *)kCNNetworkInfoKeyBSSID];
+/// wifi 状态栏渲染器（2026-09-05 Q6 重建）：**纯渲染**——只从内存缓存读值画文本，
+/// 不调任何系统 API、不发起反查（渲染与查询分离，C15）。缓存由 evt=bssid UDS 推送唯一驱动
+/// （双订阅对称 C3：WiFi 链触发与显示均不依赖定位授权——"获取中"卡死的架构性铲除）。
+/// 数据三态：有 BSSID → 当前AP：SSID，BSSID + 位置（反查结果/反查中/本区域无数据）；
+/// bssid 为空 → 未连接 WiFi（断连是真实物理事件，evt 推空触发）
+- (void)_renderWifiStatusBar {
+    NSString *bssid = self.lastWifiBSSID;
     if (!bssid.length) {
-        [self removeWifiAnnotationIfExists];
-        self.lastWifiBSSID = nil;
+        self.wifiDiagLabel.text = @"WiFi: 未连接";
         return;
     }
-    // fix 驱动增量：BSSID 未变化 → 跳过（同 AP 反查结果稳定，无重复网络请求）
-    if ([bssid isEqualToString:self.lastWifiBSSID]) return;
-    self.lastWifiBSSID = bssid;
-    NSUInteger seq = ++self.wifiQuerySeq;
-    [self _queryWifiAnnoWithBssids:@[bssid] seq:seq];
-}
-
-/// 用给定 BSSID 集合反查并更新 wifi 标注（动态反查与真实扫描共用；seq 竞态防护，丢弃过期回调）
-- (void)_queryWifiAnnoWithBssids:(NSArray<NSString *> *)bssids seq:(NSUInteger)seq {
-    if (bssids.count == 0) {
-        [self removeWifiAnnotationIfExists]; // 无 BSSID 清除残留（同现有空列表分支语义）
-        return;
+    NSString *ssid = self.lastWifiSSID ?: @"?";
+    if (self.lastWifiQueryFailed) {
+        self.wifiDiagLabel.text = [NSString stringWithFormat:@"当前AP：%@，%@ · 位置反查失败（本区域无数据）", ssid, bssid];
+    } else if (self.lastWifiAnnoCoord.latitude != 0 || self.lastWifiAnnoCoord.longitude != 0) {
+        self.wifiDiagLabel.text = [NSString stringWithFormat:@"当前AP：%@，%@，位置：%.4f, %.4f", ssid, bssid,
+            self.lastWifiAnnoCoord.latitude, self.lastWifiAnnoCoord.longitude];
+    } else {
+        self.wifiDiagLabel.text = [NSString stringWithFormat:@"当前AP：%@，%@，位置：反查中…", ssid, bssid];
     }
-    __weak typeof(self) weakSelf = self;
-    [[TRWpsClient sharedClient] queryCoordinatesForBssids:bssids completion:^(NSDictionary<NSString *,CLLocation *> *result,
-        CLLocationCoordinate2D centroid, BOOL hasValid, NSError *error) {
-        __strong typeof(self) strongSelf = weakSelf;
-        if (!strongSelf) return;
-        if (seq != strongSelf.wifiQuerySeq) return; // 过期回调丢弃（模拟/真实切换竞态防护）
-        if (error || !hasValid) {
-            strongSelf.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: 反查失败 %@",
-                error.localizedDescription ?: @"无有效坐标"];
-            return;
-        }
-        strongSelf.wifiDiagLabel.text = [NSString stringWithFormat:@"WiFi: 反查OK 定位(%.4f,%.4f)←%lu AP%@",
-            centroid.latitude, centroid.longitude, (unsigned long)result.count,
-            strongSelf.locating ? @"（模拟位置）" : @"（真实扫描）"];
-        // wifiCurWGS 聚焦兜底已删除（2026-09-05 断裂点 B）：此 centroid 是"当前连接 AP 的
-        // 物理位置"——空洞区螺旋回退时是 5km 外的邻近 AP，用它聚焦 = 地图视野被抢到 AP 位置
-        // （"当前位置被抢走"的根因）。当前位置聚焦只由 locationd/UDS 链负责，wifi 数据只画水滴。
-        // 更新/创建 wifi 标注（先移除旧的再添加新的，避免重复）
-        [strongSelf removeWifiAnnotationIfExists];
-// centroid 为 wloc 反查质心（坐标系悬案：gs-loc-cn 中国节点返回 GCJ/WGS 待真机裁决，2026-09-04）——现状直画
-        TRWifiAnnotation *ann = [[TRWifiAnnotation alloc] init];
-        ann.coordinate = centroid;
-        ann.title = strongSelf.locating ? @"WiFi 定位（模拟位置）" : @"WiFi 定位（wloc 反查）";
-        ann.info = [NSString stringWithFormat:@"%.4f, %.4f（%lu 个 AP）",
-                    centroid.latitude, centroid.longitude, (unsigned long)result.count];
-        ann.subtitle = ann.info;
-        [strongSelf.mapView addAnnotation:ann];
-        // 更新状态栏的 AP 位置（wloc 反查成功）
-        [strongSelf _updateWifiStatusBar];
-    }];
 }
 
-/// 模拟开关切换后立即刷新 wifi 标注（用当前语义：模拟中→模拟位置，停止→真实位置）
+/// 模拟开关切换后立即渲染 wifi 状态栏（2026-09-05 Q6 修订）：播放/停止切换时网络连接并没有变，
+/// 只需重渲染（标题随 locating 的语义后缀变化），**不需要重查询**——查询只由 BSSID 变化事件驱动（C4）
 - (void)refreshWifiAnnotation {
-    if (!self.locating) {
-        // 停止态：读当前连接 WiFi 反查标注（回到真实位置，2026-08-30 替代旧主动扫描）
-        [self _updateWifiStatusBar]; // 状态栏刷新
-        [self _refreshWifiAnnoFromCurrentConnection]; // 水滴标注更新
-        return;
-    }
-    // 模拟态：当前连接 BSSID 反查（不跟随模拟坐标）
-    [self _updateWifiStatusBar]; // 状态栏刷新
-    [self _refreshWifiAnnoFromCurrentConnection]; // 水滴标注更新
+    [self _renderWifiStatusBar];
 }
 
 /// 移除地图上已有的 WiFi 定位标注（按类型匹配，防重复标注累积）
@@ -587,7 +512,7 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
     // 当前位置唯一真相 = locationd 广播 fix（handleLocationUpdate → self.cur = loc.coordinate，瓦片系）；
     // 启动后首个 fix 到达即建立 self.cur/绿点，无需历史恢复。
     self.locating = NO;   // 不恢复定位中；初始视野/聚焦以 locationd（真实）为准
-    [self _updateWifiStatusBar]; // wifi 状态栏：启动时显示当前连接 AP
+    [self _renderWifiStatusBar]; // wifi 状态栏：启动时显示当前连接 AP
     [self updateStatus];
 }
 
@@ -981,7 +906,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     [self refreshUserLocationView];                          // 当前位置水滴去图标（未定位=纯绿点）
     [self resetFocusBaseline];                              // 重置自动聚焦基线（下一个 fix 触发聚焦）
     [self refreshWifiAnnotation];                            // 停止：立即更新 wifi 标注（不等下次系统扫描回调）
-    [self _updateWifiStatusBar]; // wifi 状态栏刷新（切换模拟/真实 AP 显示）
+    [self _renderWifiStatusBar]; // wifi 状态栏刷新（切换模拟/真实 AP 显示）
     [self updateStatus];
 }
 
@@ -1030,7 +955,7 @@ if ((curW.latitude != 0 || curW.longitude != 0)
 self.lastAutoFocusWGS = self.cur; // 自动聚焦基线=模拟位置（瓦片系，拖动退出 Follow 后模拟位置超阈值才拉回）
         self.mapView.userTrackingMode = MKUserTrackingModeFollow; // 原生跟随：MapKit 内部位置源持续订阅 locationd → 水滴跟随模拟位置（单一数据源）
         [self refreshWifiAnnotation];                            // 开启：立即切到模拟位置 wifi 标注（不等下次系统扫描回调）
-        [self _updateWifiStatusBar]; // wifi 状态栏刷新（切换模拟/真实 AP 显示）
+        [self _renderWifiStatusBar]; // wifi 状态栏刷新（切换模拟/真实 AP 显示）
         [self updateStatus];
     }
     // 停止分支的刷新由 stopPlayback 统一执行（2026-09-04 抽取：手动停止与播完复位共用）
@@ -1213,12 +1138,30 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 - (void)handleSimStateLine:(NSString *)line {
     id json = [NSJSONSerialization JSONObjectWithData:[line dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
     if (![json isKindOfClass:[NSDictionary class]]) return;
-    // BSSID 变化事件（2026-09-05 双订阅对称架构：daemon SCDynamicStore 常驻监听 → UDS 推送；
-    // 与 lastWifiBSSID 比对零开销，变化才 wloc 反查更新水滴——回归"变化才查"约定）
+    // 当前连接事件（2026-09-05 Q6 重建：evt=bssid 是 WiFi 显示链唯一驱动——双订阅对称 C3，
+    // 触发与显示均不依赖定位授权）。空 bssid = 断连（真实物理事件）→ 撤水滴 + "未连接"；
+    // 变化才 wloc 反查（比对零开销，C4）；渲染与查询分离（C15）
     if ([json[@"evt"] isEqualToString:@"bssid"]) {
         NSString *bssid = json[@"bssid"];
-        if (bssid.length && !(self.lastWifiBSSID && [bssid caseInsensitiveCompare:self.lastWifiBSSID] == NSOrderedSame)) {
-            self.lastWifiBSSID = bssid;
+        NSString *ssid = json[@"ssid"];
+        if (!bssid.length) {
+            // 断连：撤水滴 + 重置渲染缓存（诚实显示未连接）
+            self.lastWifiBSSID = nil;
+            self.lastWifiSSID = nil;
+            self.lastWifiQueryFailed = NO;
+            self.lastWifiAnnoCoord = CLLocationCoordinate2DMake(0, 0);
+            [self removeWifiAnnotationIfExists];
+            [self _renderWifiStatusBar];
+            return;
+        }
+        BOOL changed = !(self.lastWifiBSSID && [bssid caseInsensitiveCompare:self.lastWifiBSSID] == NSOrderedSame);
+        self.lastWifiBSSID = bssid;
+        if (ssid.length) self.lastWifiSSID = ssid;
+        [self _renderWifiStatusBar]; // BSSID/SSID 缓存已更新，立即渲染（纯缓存渲染）
+        if (changed) {
+            // BSSID 变化 → 反查新 AP 物理位置 → 水滴删旧建新（切换效果的可视化验证）
+            self.lastWifiQueryFailed = NO;
+            self.lastWifiAnnoCoord = CLLocationCoordinate2DMake(0, 0);
             NSUInteger seq = ++self.wifiQuerySeq;
             [self _queryWifiAnnoWithBssids:@[bssid] seq:seq];
         }
@@ -1230,10 +1173,9 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     // 同步位置回显（daemon 是唯一位置真相，simstate 序列化于此）
     double lat = [json[@"lat"] doubleValue], lon = [json[@"lon"] doubleValue];
     if (lat != 0 || lon != 0) self.cur = CLLocationCoordinate2DMake(lat, lon);
-    // wifi 状态栏刷新（2026-09-05 断裂点 A3）：state 回执到达 = daemon 侧刚完成注入/开定位，
-    // App 的 CNCopy 此时可能刚从"定位关抖动窗口"恢复——立即刷新状态栏（无网络开销，反查由
-    // daemon evt=bssid 驱动）。不放在 locating 判断内：locating 不变的 anchor→anchor 也需刷新。
-    [self _updateWifiStatusBar];
+    // wifi 状态栏渲染（2026-09-05 Q6）：state 回执 = 执行态刚变更（开定位/注入完成）——
+    // 纯缓存渲染（C15），反查由 evt=bssid 驱动。不放在 locating 判断内：anchor→anchor 也需渲染。
+    [self _renderWifiStatusBar];
     if (daemonPlaying != self.locating) {
         self.locating = daemonPlaying;
         self.stopTimestamp = [[NSDate date] timeIntervalSince1970]; // 状态切换时刻（过滤旧 fix）
@@ -1632,7 +1574,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         self.startupLockedToAnchor = NO;
         self.lastFix = loc; // 记录回调 fix（原始 WGS 对象；坐标/速度真相源，不读属性缓存）
         self.cur = mapCoord; // self.cur 统一存瓦片系（与锚点/路线/算路同系，2026-09-04 治理）
-        [self _updateWifiStatusBar]; // wifi 状态栏刷新（模拟位置/模拟AP）
+        [self _renderWifiStatusBar]; // wifi 状态栏刷新（模拟位置/模拟AP）
         // wifi 水滴轮询已退役（2026-09-05 双订阅对称：BSSID 变化由 daemon SCDynamicStore 经 UDS 推送驱动）
         [self updateAnchorPassStateWithLiveWGS:mapCoord]; // 先更新段速度/经过态，状态栏立即反映
         [self updateStatus];
@@ -1906,15 +1848,8 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 
 #pragma mark - 落盘自治（App=配置源，manager=注入执行器）
 
-/// mobile 域命令提交（唯一出口，2026-09-04 治理）：写键 → synchronize（防 cfprefsd 懒落盘竞态，
-/// 2026-08-27 教训）→ notify_post。所有 SimLocation*/SimAP* 写入必须走此 helper
-/// （readCurrentStatus/toggleLocate/commitAnchor/commitStop/holdAtCurrentPosition 收口）
-- (void)commitSimPrefs:(void (^)(NSUserDefaults *d))mutate {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
-    if (mutate) mutate(d);
-    [d synchronize];
-    notify_post(TVNC_NOTIFY_PREFS_CHANGED);
-}
+/// mobile 域命令提交已退役（2026-09-05 Q1：commitSimPrefs 零调用者删除——UDS 是唯一命令通道，
+/// plist Sim* 键零读零写；本注释保留至下一轮清理，防误回潮）
 
 - (void)commitAnchor {
     // 2026-09-05 权威语义对齐：设锚点 = 显式位置命令（mode=anchor + 坐标）——daemon anchor 分支
@@ -1949,7 +1884,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     self.mapView.userTrackingMode = MKUserTrackingModeNone;
     [self resetFocusBaseline];
     [self refreshWifiAnnotation];
-    [self _updateWifiStatusBar];
+    [self _renderWifiStatusBar];
     [self updateStatus];
 }
 
@@ -2276,8 +2211,8 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         __strong typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
         // BSSID 计划生成（2026-09-05 用户定案：创建轨迹时其所有瓦片及所含 AP 全部生成——
-        // 播放中零反查，daemon 只按计划逐段下发）。瓦片螺旋反查无失败分支（空洞自动邻近回退），
-        // 同瓦片 LRU 缓存复用 → 代表点反查请求数 = 跨瓦片数。
+        // 播放中零反查，daemon 只按计划逐段下发）。两级反查无失败分支（单查→螺旋邻近回退，C6，
+        // 与 daemon 反查同构），同瓦片 LRU 缓存复用 → 代表点网络请求数 = 跨瓦片数。
         // 在写队列内串行执行：与轨迹写入同序，编辑变更自动同步（增删/重排锚点 → 新 points → 新 plan）
         NSArray *bssidPlan = [strongSelf _generateBSSIDPlanForPoints:snapshot];
         NSDictionary *payload = @{ @"version": @3, @"trackVersion": @(trackVersion), @"segments": segSnapshot, @"points": snapshot,
@@ -2292,18 +2227,26 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         if (![[NSFileManager defaultManager] moveItemAtPath:tmp toPath:kTRSimTrackFilePath error:nil]) return;
         // 2026-08-29 定案：轨迹写入后不自动切换模式——播放开关由用户控制
         if (locating) {
-            // 仅通知 daemon 轨迹文件已更新（不改变模式，可用于读取路线点）
-            notify_post(TVNC_NOTIFY_PREFS_CHANGED);
+            // 编辑重算续播闭环（2026-09-05 Q3，主队列命令发送）：播放中编辑 → hold 驻留 → 写盘完成
+            // → UDS play 重发 → daemon _startTrack 读新轨迹（版本不一致）→ 几何兜底从当前位置接力续播
+            // （C7）。旧 notify_post(prefs-changed) 已删（reload 状态机退役，UDS 是唯一通道 C1）。
+            // UDS 断线时命令自动进 pendingSimCommand，重连后重发（送达保证复用）
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [strongSelf sendSimCommand:@{@"cmd": @"play"}];
+            });
         }
     });
 }
 
 /// BSSID 计划生成（2026-09-05 权威语义：覆盖段模型）——
-/// 代表点采样（每几百米）→ 逐点反查所在瓦片 AP（同瓦片 LRU 复用，螺旋保证无失败）→
-/// 最近 AP BSSID → 相邻同 BSSID 代表点合并为覆盖段 {fromSeq,toSeq,bssid}。
+/// 代表点采样（每几百米）→ 逐点两级反查（单瓦片查询 [LRU 复用] → 失败即螺旋邻近回退，C6 无失败分支，
+/// 与 daemon _handleAPSwitchForCurrentLocation 同构）→ haversine 真实最近 AP →
+/// 相邻同 BSSID 代表点合并为覆盖段 {fromSeq,toSeq,bssid}。
 /// 段内零下发（AP 覆盖半径内连续点共享 BSSID——基站覆盖物理模型）；段边界才是下发点。
-/// 拟真细节由段边界自然承载：长驻留+瞬时切换+原路回程重复+空洞段邻近回退。
+/// 拟真细节由段边界自然承载：长驻留+瞬时切换+原路回程重复。极端数据沙漠（螺旋 24 瓦片全空）
+/// 才产出空 bssid 段——daemon _dispatchBSSIDForSeq 对空 bssid 跳过（纵深防御，不赌它被触发）。
 /// 此方法在串行写队列内同步执行（反查回调串行拼接，完成后返回）。
+/// 有界性由机制保证（无超时赌注）：单请求 15s 必回调 + 代表点 ≤65 + 跨瓦片 LRU 消解网络请求数。
 - (NSArray *)_generateBSSIDPlanForPoints:(NSArray *)points {
     if (points.count == 0) return @[];
     // ① 代表点采样：每 k 点取一个（k 使代表数 ≈ 点数/64，上限防爆炸；短轨迹全取）
@@ -2311,8 +2254,9 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     NSMutableArray *repIdx = [NSMutableArray array]; // 代表点的数组索引
     for (NSUInteger i = 0; i < points.count; i += step) [repIdx addObject:@(i)];
     if ([repIdx lastObject] != @(points.count - 1)) [repIdx addObject:@(points.count - 1)]; // 补尾点
-    // ② 串行反查（写队列上下文，信号量等回调——轨迹生成非热路径，阻塞可接受；
-    //    每轮恰好 1 signal + 1 wait，无计数漂移；拼段在写队列线程，线程安全）
+    // ② 串行两级反查（写队列上下文，信号量等最终回调——每轮恰好 1 signal + 1 wait，无计数漂移）：
+    //    单瓦片查询（LRU/inflight 复用）→ 回调内判失败 → 接螺旋邻近 → 螺旋最终回调 signal。
+    //    一条因果链一次请求，不赌 TRWpsTile 内部回调顺序（C14：事实-通道-消费三元声明）
     NSMutableArray *segPlan = [NSMutableArray array]; // [{fromSeq,toSeq,bssid}]
     __block NSString *bssidLocal = nil; // 回调写回的反查结果
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
@@ -2320,20 +2264,24 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         NSUInteger idx = [repIdx[ri] unsignedIntegerValue];
         NSDictionary *pt = points[idx];
         CLLocationCoordinate2D cc = CLLocationCoordinate2DMake([pt[@"lat"] doubleValue], [pt[@"lon"] doubleValue]);
+        __block BOOL settled = NO; // 最终回调只 signal 一次（防单查/螺旋竞争窗口的重复 signal）
         [[TRWpsTile sharedClient] queryBssidsForCoordinate:cc force:NO completion:^(NSArray<TRWpsTileAP *> *aps, NSError *error) {
-            // 最近 AP：aps[0]（反查按距离排序）；兜底遍历
-            NSString *bssid = (aps.count > 0) ? aps[0].bssid : nil;
-            if (!bssid) {
-                double bd = DBL_MAX;
-                for (TRWpsTileAP *ap in aps) {
-                    double d = [SimRouteCalculator haversineMeters:cc to:ap.coord];
-                    if (d < bd) { bd = d; bssid = ap.bssid; }
-                }
+            if (aps.count > 0) {
+                // 单查成功：取最近 AP，本轮完成（C6 成功路径零额外开销）
+                if (!settled) { settled = YES; bssidLocal = [self _nearestBSSIDFromAPs:aps near:cc]; dispatch_semaphore_signal(sem); }
+                return;
             }
-            bssidLocal = bssid;
-            dispatch_semaphore_signal(sem); // 唯一 signal：每轮恰好一次
+            // 单查失败（error/空）→ 螺旋邻近回退（C6 无失败分支，与 daemon _handleAPSwitchForCurrentLocation 同构）：
+            // 螺旋从邻近瓦片找最近有效瓦片，全空则回调空数组 → bssid=nil → 空段（纵深防御）
+            [TRWpsTile queryNearestBssidsForCoordinate:cc maxAttempts:24 completion:^(NSArray<TRWpsTileAP *> *nearAps, NSError *nearErr) {
+                if (!settled) {
+                    settled = YES;
+                    bssidLocal = [self _nearestBSSIDFromAPs:nearAps near:cc];
+                    dispatch_semaphore_signal(sem); // 每轮恰好一次（单查失败 → 螺旋最终回调）
+                }
+            }];
         }];
-        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER); // 等本代表点反查完成
+        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER); // 等本代表点最终回调完成
         // 段合并（写队列线程内执行，线程安全）：相邻同 BSSID 延续，变化则开新段
         NSString *lastB = segPlan.count ? ((NSDictionary *)segPlan[segPlan.count - 1])[@"bssid"] : nil;
         if (segPlan.count == 0 || !lastB || ![bssidLocal isEqualToString:lastB]) {
@@ -2348,7 +2296,23 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         NSMutableDictionary *last = segPlan[segPlan.count - 1];
         last[@"toSeq"] = @(points.count - 1);
     }
+    NSUInteger gapSegs = 0;
+    for (NSDictionary *seg in segPlan) { if (![seg[@"bssid"] length]) gapSegs++; }
+    TVLog(@"[locsim-grow] bssidPlan: %lu segs (%lu gap), %lu reps", (unsigned long)segPlan.count, (unsigned long)gapSegs, (unsigned long)repIdx.count);
     return segPlan;
+}
+
+/// AP 列表 → haversine 最近 BSSID（2026-09-05 Q5：aps[0] 假设排序无证据——TRWpsTile 返回
+/// 从未排序，daemon 同场景都是遍历取最近；本 helper 是唯一取法，计划与 daemon 行为同构）
+- (NSString *)_nearestBSSIDFromAPs:(NSArray<TRWpsTileAP *> *)aps near:(CLLocationCoordinate2D)cc {
+    if (aps.count == 0) return nil;
+    TRWpsTileAP *best = nil;
+    double bd = DBL_MAX;
+    for (TRWpsTileAP *ap in aps) {
+        double d = [SimRouteCalculator haversineMeters:cc to:ap.coord];
+        if (d < bd) { bd = d; best = ap; }
+    }
+    return best.bssid;
 }
 
 #pragma mark - MKMapViewDelegate
