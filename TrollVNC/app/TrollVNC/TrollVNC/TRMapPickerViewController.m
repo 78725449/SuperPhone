@@ -33,6 +33,7 @@
 #import "SimRouteCalculator.h"
 #import "../../../src/CoordTransform.h" // GCJ-02 ↔ WGS-84（fix 入口/注入出口边界转换，2026-09-04 治理）
 #import "TRWpsClient.h"
+#import "../../../src/TRWpsTile.h" // BSSID 计划生成（2026-09-05：writeTrackFile 内联坐标→AP 反查，App target 已编译 TRWpsTile.mm）
 #import "TVNCUtil.h" // TVNC_NOTIFY_PREFS_CHANGED（prefs-changed 通知名宏，2026-08-28 收敛）
 #import "../../../src/Logging.h" // TVLog 宏（restoreSession 恢复日志用；符号定义在 TRAppLogging.m，2026-08-31 起 App 引用共享模块日志）
 
