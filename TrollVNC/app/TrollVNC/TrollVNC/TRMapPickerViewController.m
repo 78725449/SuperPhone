@@ -1164,14 +1164,11 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         ? @"   --"
         : [NSString stringWithFormat:@"   %.5f, %.5f", showWgs.latitude, showWgs.longitude];
     NSString *speedTxt = @"0.0 m/s";
-    // 2026-08-30：注入始终跑，无"停止"——移动中=路线播放，模拟中=静止注入
-    // 状态文案订阅真实移动（2026-09-04 治理）：lastFix.speed 为 locationd 广播的实际速度
-    // （daemon 注入轨迹点自带 speed 字段）——速度 >0.1 = 移动中；播放但速度≈0 = 驻留微动
-    BOOL isMoving = self.lastFix && self.lastFix.speed > 0.1;
-    NSString *modeTxt = self.locating ? (isMoving ? @"移动中" : @"驻留中") : @"模拟中";
+    // 状态文案语义（2026-09-04 用户定义）：播放开=「模拟中」（正在模拟播放轨迹）；
+    // 播放关=「驻留中」（原地微动驻留，注入持续）。速度数字为订阅数据（lastFix.speed 实际值）
+    NSString *modeTxt = self.locating ? @"模拟中" : @"驻留中";
     if (self.locating) {
         // 速度 = lastFix.speed（locationd 广播的实际速度，daemon 注入轨迹点自带 speed 字段）
-        // （currentLegSpeed 为段配置速度，仅用于锚点图标，不作为实际移动速度显示）
         speedTxt = [NSString stringWithFormat:@"%.1f m/s", self.lastFix ? self.lastFix.speed : self.currentLegSpeed];
     }
     // 富文本：模式加粗 + 速度等宽灰 + 坐标等宽灰（对齐原型 stat .m/.spd/.c）
