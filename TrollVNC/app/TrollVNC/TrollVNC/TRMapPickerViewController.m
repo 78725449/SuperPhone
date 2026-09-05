@@ -103,6 +103,8 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
 @property (nonatomic, copy) NSString *currentLegMode;       // 当前位置水滴的出行方式（当前段目标锚点的，walk/drive）
 @property (nonatomic, assign) double currentLegSpeed;              // 当前所在路线（出发锚点段）的生成速度——从段缓存 segmentPoints 取（含 ±10% 抖动；random 段反映实际随机模式）
 @property (nonatomic, assign) BOOL startupLockedToAnchor;          // 开启瞬间到注入落地前：锁定锚点显示（忽略旧 fix，防开启横跳）
+@property (nonatomic, assign) NSInteger reconcileMismatchCount;    // 行为对账：fix.speed 特征与 locating 期望的连续不符计数（确认闭环）
+@property (nonatomic, assign) NSInteger reconcileRetryCount;       // 行为对账：命令重发次数（上限 2，防风暴）
 @property (nonatomic, strong) NSMutableArray *fabCoinLabels;              // 定位 FAB 铜钱四字（招财进宝，上/右/下/左顺时针）
 @property (nonatomic, strong) CAGradientLayer *fabGoldGradient;           // 定位 FAB 铜钱渐变金底（定位中显示）
 @property (nonatomic, assign) BOOL expanded;                // 步骤列表展开态
@@ -1157,6 +1159,62 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     [self.statusBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
 }
 
+/// 行为对账——确认闭环（2026-09-04 定案，App 订阅 locationd 的行为实证对账）：
+/// 期望状态（self.locating）vs 实际行为（fix.speed 特征：轨迹推进≈1.4m/s、微动=0），
+/// 连续 3 个 fix 不符 = 命令未生效（notify 丢失/竞速/编辑链干扰统一捕获）→ 重发命令（≤2 次）。
+/// 重发前先过可播放性判定：位置在轨迹尽头（播完复位场景）→ 不重发播放，直接校准为停止态。
+/// 重试耗尽仍不符 → 以行为为现实校准 UI（行为即真相，优于任何自报状态）。
+- (void)reconcilePlaybackState {
+    if (!self.lastFix) return; // 无 fix 无法判定（定位关/未授权），不臆断
+    // 特征匹配：locating=YES 期望轨迹推进（speed>0.1）；locating=NO 期望微动驻留（speed≤0.1）
+    BOOL behaviorMoving = self.lastFix.speed > 0.1;
+    BOOL matches = self.locating ? behaviorMoving : !behaviorMoving;
+    if (matches) {
+        self.reconcileMismatchCount = 0;
+        self.reconcileRetryCount = 0;
+        return;
+    }
+    self.reconcileMismatchCount++;
+    if (self.reconcileMismatchCount < 3) return; // 过渡容忍：切换瞬间 lastFix 还是旧值（3 个 fix≈3s）
+    self.reconcileMismatchCount = 0;
+    if (self.reconcileRetryCount >= 2) {
+        // 重试耗尽：行为即现实——校准 UI（播完复位/停止残留等场景最终对齐）
+        self.locating = behaviorMoving;
+        self.startTimestamp = [[NSDate date] timeIntervalSince1970];
+        [self setHint:behaviorMoving ? @"播放控制已按实际行为校准（播放中）" : @"播放控制已按实际行为校准（驻留中）"];
+        [self refreshUserLocationView];
+        [self updateStatus];
+        return;
+    }
+    // 重发命令
+    self.reconcileRetryCount++;
+    if (!self.locating) {
+        // 期望停止但行为在移动 → 重发停止
+        TVLog(@"[locsim-grow] reconcile: stop not effective, resend off");
+        [self commitStop];
+    } else {
+        // 期望播放但行为静止 → 先过可播放性判定：位置在轨迹尽头=已播完，不重发，直接校准停止
+        if (self.anchors.count >= 2) {
+            TRAnchorAnnotation *endAnno = self.anchors.lastObject;
+            double dEnd = [SimRouteCalculator haversineMeters:self.cur to:endAnno.coordinate];
+            if (dEnd <= kPassedThresholdM) {
+                self.locating = NO;
+                [self setHint:@"轨迹已播完，播放状态已复位"];
+                [self refreshUserLocationView];
+                [self updateStatus];
+                return;
+            }
+        }
+        TVLog(@"[locsim-grow] reconcile: play not effective, resend itinerary");
+        [self commitSimPrefs:^(NSUserDefaults *d) {
+            BOOL hasRoute = [[NSFileManager defaultManager] fileExistsAtPath:kTRSimTrackFilePath];
+            [d setDouble:self.cur.latitude forKey:@"SimLocationLat"];
+            [d setDouble:self.cur.longitude forKey:@"SimLocationLon"];
+            [d setObject:hasRoute ? @"itinerary" : @"anchor" forKey:@"SimLocationMode"];
+        }];
+    }
+}
+
 - (void)updateStatus {
     // 坐标：强制绑定当前位置（locationd 单一真相，2026-08-24 定）——模拟中=注入位置 / 停止=真实位置，无"保留最后模拟坐标"回退
     CLLocationCoordinate2D showWgs = [self currentSimPosition];
@@ -1533,6 +1591,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         [self updateStatus];
         // 自动聚焦：Follow 原生已跟随无需重复；用户拖动退出 Follow 后模拟位置距上次聚焦点超阈值则拉回
         if (self.mapView.userTrackingMode != MKUserTrackingModeFollow) [self maybeAutoFocus:mapCoord];
+        [self reconcilePlaybackState]; // 行为对账：fix 特征 vs 期望状态（确认闭环）
         return;
     }
     // 停止态：只认晚于停止时刻的 fix——过滤停止前的旧 fix
@@ -1555,6 +1614,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     // 自动聚焦（距离阈值）：fix 距停止瞬间基线超阈值才聚焦——
     // 旧 fix（≈基线）不触发、新 fix（画布外）必触发；GPS 收敛渐进超阈值再拉回
     [self maybeAutoFocus:mapCoord];
+    [self reconcilePlaybackState]; // 行为对账：fix 特征 vs 期望状态（确认闭环）
 }
 
 /// App 自己的活跃订阅回调（locationd 广播）：唯一驱动
