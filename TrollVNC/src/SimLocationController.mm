@@ -184,33 +184,11 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     if (![mode isKindOfClass:[NSString class]] || mode.length == 0) mode = @"off";
     TVLog(@"[locsim] apply mode=%@", mode);
     if ([mode isEqualToString:@"off"]) {
-        // 2026-08-29 定案：off = 停止播放（不推进轨迹），不关系统定位、不清注入（注入始终运行）
-        // 但若坐标有变化（App 创建锚点/更新位置），则注入新坐标+开定位
-        double lat = [self _readDouble:@"SimLocationLat" def:0.0];
-        double lon = [self _readDouble:@"SimLocationLon" def:0.0];
-        double acc = [self _readDouble:@"SimLocationAccuracy" def:5.0];
-        if (acc < 3.0) acc = 3.0;
-        if (acc > 15.0) acc = 15.0;
-        BOOL coordChanged = (fabs(_currentLat - lat) > 0.000001 || fabs(_currentLon - lon) > 0.000001);
-        // 停止接力纪律（2026-09-04 实测根因修复）：播放推进后 plist 里的 Lat/Lon 是播放起点（App 点播放时写的、
-        // 无人更新），停止时若注入它 = 位置跳回出发点锚点。命令坐标与本 daemon 位置差异在 kArrivalThresholdM 内
-        // = 只是投递延迟的微差 → 以 daemon 内存位置（更新鲜）为准不注入；差异大才是 App 显式位置命令（设锚点）→ 注入
-        double cmdDist = [SimRouteCalculator haversineMeters:CLLocationCoordinate2DMake(_currentLat, _currentLon)
-                                    to:CLLocationCoordinate2DMake(lat, lon)];
-        if (coordChanged && cmdDist < 50.0) {
-            TVLog(@"[locsim] off mode: plist coord within %.0fm of runtime position — keep runtime (stale-playback-start guard)", cmdDist);
-            coordChanged = NO;
-        }
-        if (coordChanged && (lat != 0 || lon != 0)) {
-            _currentLat = lat;
-            _currentLon = lon;
-            _currentAcc = acc;
-            [self _injectGpsForCurrentLocation];
-            if (![CLLocationManager locationServicesEnabled]) {
-                [SimLocationManager setSystemLocationServices:YES];
-            }
-            TVLog(@"[locsim] off mode: injected position (%.5f, %.5f) acc=%.1f", lat, lon, acc);
-        }
+        // off = 纯停止（2026-09-05 权威语义对齐）：不推进轨迹、不关系统定位、不清注入（注入始终运行）。
+        // 坐标读入已删除——plist 的 Lat/Lon 在 off 态是陈旧污染源（播放起点/上次设锚点残留），
+        // 注入它会跳回出发点锚点（历次"回出发点"实拍根因）。当前位置唯一真相 = _currentLat
+        // （持续注入下每秒更新+注入即写 simstate），off 时直接以它为中心微动，位置零跳变。
+        // 设锚点的显式位置命令走 mode=anchor（commitAnchor 已改写），由 anchor 分支的坐标读入承接。
         [self _stopTrack];  // 停轨迹推进（位置保持；拟人微动由下方 off 分支统一启动）
         [[SimLocationManager sharedManager] stopPlaybackOnly]; // 停 wifi 扫描，不清 GPS 会话
         [self _teardownWifiStore];           // 停止播放即停止 wifi 重连监听（无兜底，2026-08-30）

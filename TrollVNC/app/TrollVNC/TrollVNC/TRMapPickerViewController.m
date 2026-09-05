@@ -1880,12 +1880,15 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 }
 
 - (void)commitAnchor {
-    // 2026-08-29 定案：只写坐标，不写模式——daemon off 分支检测坐标变化后注入+开定位，保持模式为 off
-// self.cur 统一瓦片系（2026-09-04 治理），直接写 plist——daemon injectPoint 出口统一 GCJ→WGS
+    // 2026-09-05 权威语义对齐：设锚点 = 显式位置命令（mode=anchor + 坐标）——daemon anchor 分支
+    // 读坐标注入+开定位+微动驻留该锚点（"设锚点后位置=锚点"的既定行为不变，走 anchor 分支的
+    // 坐标读入路径）；off 分支的坐标读入随此改动删除（off 态 plist 坐标失去污染路径）
+    // self.cur 统一瓦片系（2026-09-04 治理），daemon injectPoint 出口统一 GCJ→WGS
     [self commitSimPrefs:^(NSUserDefaults *d) {
         CLLocationCoordinate2D wgs = self.cur;
         [d setDouble:wgs.latitude forKey:@"SimLocationLat"];
         [d setDouble:wgs.longitude forKey:@"SimLocationLon"];
+        [d setObject:@"anchor" forKey:@"SimLocationMode"];
     }];
 }
 
