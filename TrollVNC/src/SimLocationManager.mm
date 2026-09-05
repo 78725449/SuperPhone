@@ -81,20 +81,20 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
                                                            course:course
                                                             speed:speed
                                                         timestamp:[NSDate date]];
-    // 持续注入模型 v2（2026-09-05 修正）：不 stop/clear——位置池永不空（clear 窗口 = locationd 回退
-    // 真实位置的真空，暴露真实位置）；保留 start = 投递循环开关（v1 实验删除它导致 flush 后队列积压
-    // 不广播：App lastFix 冻结在某个轨迹 fix（速度 10.0 在跳、坐标不动的矛盾实拍）——start 是投递
-    // 循环的激活步骤，clear 才是真空元凶，两者职责不同不可同删
+    // 持续注入模型 v3——池管理适配（2026-09-05 定案）：clear→append→flush，不 stop/start。
+    // 会话持续激活（投递循环不重置），池里永远只有一个最新点：
+    // - 不 clear（v27）：池积压 → locationd 异常投递（假速度 10.0 + 冻结，真机实拍）——每秒 append
+    //   生产与 interval 消费时钟漂移必致积压，clear 是必要的池管理
+    // - 不 start（v2 教训）：flush 后不激活投递循环 → 广播停止（lastFix 冻结实拍）
+    // - 不 stop：会话重建的空窗远大于 clear→append 两连调（微秒级）
     _sim.locationDeliveryBehavior = 1; // 持续投递
     _sim.locationDistance = 0;         // 无距离过滤：每次注入都投递
     _sim.locationInterval = 1.0;       // 投递间隔 1s（对齐 daemon 每秒注入节奏）
-    _sim.locationSpeed = speed;        // 与注入 CLLocation 的 speed 一致（2026-09-04 实测修正：=0 时 locationd
-                                       // 广播的 fix.speed 亦为 0，App 状态栏"驻留中"误判——8-24"速度由
-                                       // CLLocation 自带"的假设未经实测，locationd 广播 speed 取自本参数）
-    _sim.locationRepeatBehavior = 1;   // 重复投递
+    _sim.locationSpeed = speed;        // 与注入 CLLocation 的 speed 一致（=0 时广播 speed 为 0，2026-09-04 实测）
+    _sim.locationRepeatBehavior = 1;   // 重复投递（两次注入间重复投最后点 = 驻留保鲜）
+    [_sim clearSimulatedLocations];    // 池管理：清掉已消费/积压旧点（真空窗口=clear→append 两连调，微秒级）
     [_sim appendSimulatedLocation:location];
     [_sim flush];
-    [_sim startLocationSimulation];    // 投递循环激活（幂等语义待真机确认：重复 start 对已激活会话无害）
     [SimLocationManager postTimezoneUpdate];
 }
 
