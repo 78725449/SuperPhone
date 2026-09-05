@@ -90,7 +90,9 @@ static const NSString *kLocSimTimezoneNotification = @"AutomaticTimeZoneUpdateNe
     _sim.locationDeliveryBehavior = 1; // 持续投递
     _sim.locationDistance = 0;         // 无距离过滤：每次注入都投递
     _sim.locationInterval = 1.0;       // 投递间隔 1s（对齐 daemon 每秒注入节奏）
-    _sim.locationSpeed = 0;            // 速度由注入 CLLocation 自带（不插值）
+    _sim.locationSpeed = speed;        // 与注入 CLLocation 的 speed 一致（2026-09-04 实测修正：=0 时 locationd
+                                       // 广播的 fix.speed 亦为 0，App 状态栏"驻留中"误判——8-24"速度由
+                                       // CLLocation 自带"的假设未经实测，locationd 广播 speed 取自本参数）
     _sim.locationRepeatBehavior = 1;   // 重复投递
     [_sim appendSimulatedLocation:location];
     [_sim flush];
