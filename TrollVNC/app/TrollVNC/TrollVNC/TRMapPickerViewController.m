@@ -2349,9 +2349,15 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER); // 等本代表点最终回调完成
         NSString *bssidLocal = box.firstObject; // 信号量 happens-before 保证可见
         // 段合并（写队列线程内执行，线程安全）：相邻同 BSSID 延续，变化则开新段
+        // ⚠️ 2026-09-06 崩溃真根因（trollvnc-crash.log 铁证）：NSDictionaryI setObject:forKeyedSubscript:
+        //    unrecognized selector —— 段字典用字面量 @{} 创建 = **不可变**，合并分支 last[@"toSeq"]=...
+        //    对不可变字典下标写 = NSInvalidArgumentException（030de8a 同栈崩溃的真正根因，
+        //    当时误诊为生命周期；52 轮改 __block 共享未触雷区）。修复 = 段字典用 mutable 创建。
         NSString *lastB = segPlan.count ? ((NSDictionary *)segPlan[segPlan.count - 1])[@"bssid"] : nil;
         if (segPlan.count == 0 || !lastB || ![bssidLocal isEqualToString:lastB]) {
-            [segPlan addObject:@{@"fromSeq": @(idx), @"toSeq": @(idx), @"bssid": bssidLocal ?: @""}];
+            [segPlan addObject:[NSMutableDictionary dictionaryWithDictionary:@{
+                @"fromSeq": @(idx), @"toSeq": @(idx), @"bssid": bssidLocal ?: @""
+            }]];
         } else {
             NSMutableDictionary *last = segPlan[segPlan.count - 1];
             last[@"toSeq"] = @(idx);
