@@ -1206,9 +1206,10 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     NSString *mode = json[@"mode"];
     if (!mode.length) return;
     BOOL daemonPlaying = [mode isEqualToString:@"itinerary"];
-    // 同步位置回显（daemon 是唯一位置真相，simstate 序列化于此）
-    double lat = [json[@"lat"] doubleValue], lon = [json[@"lon"] doubleValue];
-    if (lat != 0 || lon != 0) self.cur = CLLocationCoordinate2DMake(lat, lon);
+    // （2026-09-06：回执不再写 self.cur——删除第二通道。既有契约"self.cur 永远来自
+    // CLLocationManager 回调"恢复完全体：位置回显唯一来源 = locationd fix 流；
+    // 回执只驱动 locating 对齐 + UI 渲染。v4 注入修复后两通道值恒同源，此行冗余且
+    // 断线重连窗口与 fix 流交替覆写（C14 单一通道违规实锤，用户裁决删除）
     // wifi 状态栏渲染（2026-09-05 Q6）：state 回执 = 执行态刚变更（开定位/注入完成）——
     // 纯缓存渲染（C15），反查由 evt=bssid 驱动。不放在 locating 判断内：anchor→anchor 也需渲染。
     [self _renderWifiStatusBar];
