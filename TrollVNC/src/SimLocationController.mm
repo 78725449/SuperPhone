@@ -78,6 +78,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     CFAbsoluteTime _anchorLastRefreshAt;
     CFAbsoluteTime _anchorLastMoveAt;
     uint64_t _lastWifiTileKey;   // 上次 wifi 反查的瓦片 key（跨瓦片才重反查，轨迹跟随）
+    NSString *_lastPushedWifiBSSID; // 上次经 UDS 推送给 App 的 BSSID（订阅活性自愈比对基线，2026-09-06 F7）
     NSString *_wifiTargetBSSID;   // WiFi 重连监听目标 BSSID（SCDynamicStore 键变化比对，匹配即清理，2026-08-30 去兜底）
     TVSCDynamicStoreRef _wifiStore; // WiFi 重连监听 store（SCDynamicStore 键变化回调，2026-08-30 替代 1s 轮询）
     // （2026-09-04 死代码清理：_wifiTileAps/_lastWifiWindowBssids 已删除——窗口注入随软路由联动模型废弃，两 ivar 零读写）
@@ -235,6 +236,7 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
     //  ② 偶发小迁移（3~8min 一次概率）：5~20m 内新点（房间间走动/起身），迁移后静止
     // 彻底去除"每秒连续微动爬行"（旧实现每秒动 0.1~0.5m = 不自然的永动漂移）
     _anchorTickCount++;
+    [self _wifiSubscribeHeartbeatTick]; // 订阅活性心跳（15s 间隔内嵌，F7：SDS 静默失效自愈）
     BOOL shouldMove = (_anchorLastMoveAt == 0)
         ? (arc4random_uniform(1000) < 50)   // 首个迁移点稍快出现（启动后 1~2min）
         : (arc4random_uniform(10000) < (uint32_t)(kSimAnchorMoveProbPerTick * 10000));
@@ -335,14 +337,42 @@ static const double kSimAnchorMoveProbPerTick = 0.002;           // 每次拍迁
 
 /// AirPort 状态键变化回调：重连完成时 configd 更新该键（2026-09-05 Q6 修订：空 BSSID 也推——
 /// 断连是真实物理事件，App 需要它撤水滴/显示未连接；载荷带 ssid 同源白送，App 渲染零二次查询）
+/// 2026-09-06 订阅活性自愈：_lastPushedWifiBSSID 缓存上次推送值——空→有值跃迁必推（漫游重连完成），
+/// SDS 静默失效由心跳兜底（见 _wifiSubscribeHeartbeat）
 - (void)_handleWifiStoreChanged {
     NSString *curBSSID = [TRWifiKnownNetworks currentBSSID];
     NSString *curSSID = [TRWifiKnownNetworks currentSSID];
-    // BSSID 变化必推 UDS（双订阅对称架构：WiFi 侧网络流 → App 渲染+变化才反查；
-    // 任意变化都推，App 侧与 lastWifiBSSID 比对去重，零开销）
+    // 空值跃迁必推（F7）：上次推的是空（漫游断连窗口），本次读到值（重连完成）——这是
+    // 重要状态跃迁；SDS 键从无到有理论上会回调，但软路由 reload 风暴中订阅可能静默失效，
+    // 此处显式比对兜底（纯内存比较零开销，C4）
+    BOOL lastWasEmpty = (_lastPushedWifiBSSID.length == 0);
+    BOOL nowHasValue = (curBSSID.length > 0);
+    _lastPushedWifiBSSID = curBSSID ?: @"";
     [SimLocationController _simUDSSendLine:[NSString stringWithFormat:
         @"{\"evt\":\"bssid\",\"bssid\":\"%@\",\"ssid\":\"%@\"}",
         curBSSID ?: @"", curSSID ?: @""]];
+    if (lastWasEmpty && nowHasValue) {
+        TVLog(@"[locsim] wifi reconnect detected (bssid %@ -> push)", curBSSID);
+    }
+}
+
+/// 订阅活性心跳（2026-09-06 F7）：每 15s 直读一次当前连接并与上次推送值比对——
+/// 只做内存比较（零网络、零 wloc），SDS 回调仍是主驱动；心跳只兜"SDS 订阅在软路由
+/// reload 风暴中静默失效"的底（真机实锤：漫游重连完成后 App 永挂"未连接"）。
+/// 调用点 = _anchorTick（1s 节拍内嵌，非独立 timer）
+- (void)_wifiSubscribeHeartbeatTick {
+    static NSTimeInterval sLastBeat = 0;
+    NSTimeInterval now = CFAbsoluteTimeGetCurrent();
+    if (now - sLastBeat < 15.0) return;
+    sLastBeat = now;
+    NSString *curBSSID = [TRWifiKnownNetworks currentBSSID];
+    NSString *curSSID = [TRWifiKnownNetworks currentSSID];
+    BOOL changed = !(curBSSID && _lastPushedWifiBSSID && [curBSSID caseInsensitiveCompare:_lastPushedWifiBSSID] == NSOrderedSame)
+        || (curBSSID.length == 0 && _lastPushedWifiBSSID.length > 0)
+        || (curBSSID.length > 0 && _lastPushedWifiBSSID.length == 0);
+    if (!changed) return; // 与上次推送一致：订阅活着，零动作
+    TVLog(@"[locsim] wifi heartbeat: pushed=%@ now=%@ -> repush (subscription revive)", _lastPushedWifiBSSID, curBSSID);
+    [self _handleWifiStoreChanged]; // 统一推送路径（含跃迁判定）
 }
 
 /// （2026-09-05 F5：_teardownWifiStore 已删除——BSSID 订阅常驻化后零调用者，
@@ -541,6 +571,7 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
     }
     [self _updateCurrentFromPoint:_trackPoints[_trackIndex++]];
     [self _injectGpsForCurrentLocation];
+    [self _wifiSubscribeHeartbeatTick]; // 订阅活性心跳（F7：播放态同样覆盖）
     // BSSID 下发（2026-09-05 权威语义：bssidPlan 计划驱动）——轨迹文件自包含计划（创建时固化），
     // tick 只做"当前 seq 所在覆盖段 → 段 bssid 与上次下发不同 → 下发一次"（段内零下发，
     // 符合基站覆盖物理）。播放中零反查网络请求。
