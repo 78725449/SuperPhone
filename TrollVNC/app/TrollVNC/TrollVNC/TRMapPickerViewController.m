@@ -1150,6 +1150,9 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     dispatch_resume(src);
     self.simUDSReadSource = src;
     TVLog(@"[locsim] UDS client connected (fd=%d)", fd);
+    // 订阅模型：连接建立即主动取当前状态（与 CLLocationManager startUpdatingLocation 同构——
+    // GPS 会话启动时，wifi 订阅随附启动，取一次当前 BSSID 然后变化靠推送）
+    [self sendSimCommand:@{@"cmd": @"query"}];
     // 重连成功：重发写失败时缓存的命令（回调式送达保证，2026-09-05）
     if (self.pendingSimCommand) {
         NSDictionary *pending = self.pendingSimCommand;
