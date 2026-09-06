@@ -482,6 +482,7 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
         // 空轨迹归停止态（2026-09-05 Q4：状态不自谎）——mode/落盘/回执与 stop 命令同语义
         [self _applyStopNow];
         [self _persistState];
+        [SimLocationController pushFullStateSync]; // 全状态同步推送（state+bssid，补先前漏推——2026-09-06 订阅模型对齐）
         return;
     }
     _trackPoints = points;
@@ -566,7 +567,7 @@ static void _wifiAirPortStoreCallback(TVSCDynamicStoreRef store, CFArrayRef chan
         [self _persistState];
         TVLog(@"[locsim] itinerary finished, keep final point + idle micro-wander (mode reset to off)");
         notify_post(kTRSimPlaybackFinishedNotification.UTF8String); // App 仅做 UI 复位（丢失无害，plist 已 off）
-        [SimLocationController pushSimStateToApp]; // UDS 回执推送：播完复位必达（通知丢失的兜底，2026-09-05）
+        [SimLocationController pushFullStateSync]; // 全状态同步推送（state+bssid，补先前漏推的 bssid，2026-09-06 订阅模型对齐）
         return;
     }
     [self _updateCurrentFromPoint:_trackPoints[_trackIndex++]];
@@ -800,6 +801,16 @@ static NSString *const kSimUDSPath = @"/var/mobile/Library/Caches/com.82flex.tro
         sc->_currentAcc]];
 }
 
+/// 全状态同步推送（2026-09-06 架构收敛，订阅模型对齐）：执行态回执 + 当前连接状态同时推送。
+/// 推 state：mode/seq/position（App 对齐 locating 与 UI）
+/// 推 evt=bssid：当前 SSID/BSSID（App 渲染状态栏与水判，空值也推——UDS 断线时 App 三态诚实显示）
+/// 所有恢复点（UDS accept/命令处理尾/播完复位/空轨迹）统一走此入口。
+/// 注入始终运行模式下，执行态与 wifi 连接是同级常驻数据，本方法保证两者同步。
++ (void)pushFullStateSync {
+    [self pushSimStateToApp];
+    [[self sharedController] _handleWifiStoreChanged];
+}
+
 + (void)_simUDSHandleCommand:(NSData *)data {
     NSString *line = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     if (!line.length) return;
@@ -834,10 +845,9 @@ static NSString *const kSimUDSPath = @"/var/mobile/Library/Caches/com.82flex.tro
         // 无定位依赖）→ 下方统一 evt 回推权威值 → App 缓存被修正（校验走权威通道，App 零自读）
         TVLog(@"[locsim] UDS query -> push current bssid/ssid");
     }
-    [self pushSimStateToApp]; // 回执：执行态必达（App UI 对齐真相）
+    [SimLocationController pushFullStateSync]; // 全状态同步推送（state+bssid，2026-09-06 订阅模型对齐）
     // 当前连接推送（断裂点 A2 + Q6）：anchor/play 会开定位——App 在"先关再开"抖动窗口里的
     // CNCopy 必空（Q6 后 App 已无 CNCopy，此推送是 evt 链的对齐源）；query 命令也经此回推权威值。
-    [[self sharedController] _handleWifiStoreChanged]; // 实例方法（经 sharedController 强类型访问）
 }
 
 + (void)startSimUDSServer {
@@ -886,8 +896,7 @@ static NSString *const kSimUDSPath = @"/var/mobile/Library/Caches/com.82flex.tro
             if (g_simUDSClientFD == cfd) g_simUDSClientFD = -1;
         });
         dispatch_resume(g_simUDSReadSource);
-        [self pushSimStateToApp]; // 连接建立即推当前状态（App 启动对齐）
-        [[self sharedController] _handleWifiStoreChanged]; // 连接建立即推当前连接（F1：A1 逻辑延伸到连接时点——
+        [SimLocationController pushFullStateSync]; // 连接建立即推全状态（state+bssid，2026-09-06 订阅模型对齐）
         // App 重启后 wifi 缓存不能等"下一次 BSSID 变化"，accept 即对齐）
     });
     dispatch_source_set_cancel_handler(g_simUDSAcceptSource, ^{

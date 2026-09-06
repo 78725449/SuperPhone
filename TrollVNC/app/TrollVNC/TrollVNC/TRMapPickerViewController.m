@@ -466,12 +466,22 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
 /// wifi 状态栏渲染器（2026-09-05 Q6 重建）：**纯渲染**——只从内存缓存读值画文本，
 /// 不调任何系统 API、不发起反查（渲染与查询分离，C15）。缓存由 evt=bssid UDS 推送唯一驱动
 /// （双订阅对称 C3：WiFi 链触发与显示均不依赖定位授权——"获取中"卡死的架构性铲除）。
-/// 数据三态：有 BSSID → 当前AP：SSID，BSSID + 位置（反查结果/反查中/本区域无数据）；
-/// bssid 为空 → 未连接 WiFi（断连是真实物理事件，evt 推空触发）
+/// 订阅模型四态（2026-09-06 架构对齐）：与 GPS 定位同级——变化才推，不变稳定。
+/// ① UDS 断线 → "未连接"（诚实降级，同"定位服务不可用"）
+/// ② 已连等待首个 evt → "同步中…"（同"等待首个 fix"）
+/// ③ 有 BSSID → 当前AP：SSID，BSSID + 位置（反查结果/反查中/本区域无数据）
+/// ④ 空 bssid 已收到（断连事件）→ "未连接"（物理断连，诚实显示）
 - (void)_renderWifiStatusBar {
     NSString *bssid = self.lastWifiBSSID;
+    if (!bssid) {
+        // bssid = nil 表示从未收到过 evt，区分 UDS 断线与等待中
+        self.wifiDiagLabel.text = (self.simUDSFD < 0)
+            ? @"WiFi: 未连接"
+            : @"WiFi: 同步中…";
+        return;
+    }
     if (!bssid.length) {
-        self.wifiDiagLabel.text = @"WiFi: 未连接";
+        self.wifiDiagLabel.text = @"WiFi: 未连接"; // 收到 evt 明确报告空 BSSID（断连事件）
         return;
     }
     NSString *ssid = self.lastWifiSSID ?: @"?";
@@ -1176,13 +1186,15 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     if (![json isKindOfClass:[NSDictionary class]]) return;
     // 当前连接事件（2026-09-05 Q6 重建：evt=bssid 是 WiFi 显示链唯一驱动——双订阅对称 C3，
     // 触发与显示均不依赖定位授权）。空 bssid = 断连（真实物理事件）→ 撤水滴 + "未连接"；
-    // 变化才 wloc 反查（比对零开销，C4）；渲染与查询分离（C15）
+    // 变化才 wloc 反查（比对零开销，C4）；渲染与查询分离（C15）。
+    // 2026-09-06 订阅模型对齐：evt 到达即更新缓存，render 四态区分（UDS 断线/同步中/未连接/当前AP）
     if ([json[@"evt"] isEqualToString:@"bssid"]) {
         NSString *bssid = json[@"bssid"];
         NSString *ssid = json[@"ssid"];
+        // 收到 evt 即标记"已收到首次推送"（与 render 的 nil 区分——nil=从未收到，@""=收到空值）
         if (!bssid.length) {
-            // 断连：撤水滴 + 重置渲染缓存（诚实显示未连接）
-            self.lastWifiBSSID = nil;
+            // 断开连接：设为 @""（非 nil）让 render 显示"未连接"而非"同步中"
+            self.lastWifiBSSID = @"";
             self.lastWifiSSID = nil;
             self.lastWifiQueryFailed = NO;
             self.lastWifiAnnoCoord = CLLocationCoordinate2DMake(0, 0);
