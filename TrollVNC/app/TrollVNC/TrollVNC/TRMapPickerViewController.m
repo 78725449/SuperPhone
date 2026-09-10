@@ -476,7 +476,7 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
     NSString *bssid = self.lastWifiBSSID;
     if (!bssid) {
         // bssid = nil 表示从未收到过 evt，区分 UDS 断线与等待中
-        self.wifiDiagLabel.text = (self.simUDSFD < 0)
+        self.wifiDiagLabel.text = (self.simUDSFD < 1)
             ? @"WiFi: 未连接"
             : @"WiFi: 同步中…";
         return;
@@ -1112,7 +1112,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 
 /// 连接 daemon 的 sim.uds（Unix Domain Socket，内核保证送达）+ 读 dispatch + 断线重连
 - (void)startSimUDSClient {
-    if (self.simUDSFD >= 0) return;
+    if (self.simUDSFD > 0) return; // fd=0=未初始化（NSInteger 默认值），socket() 只返回正 fd 或 -1——`>= 0` 曾致启动永不连接（2026-09-11 真机日志铁证）
     NSString *path = @"/var/mobile/Library/Caches/com.82flex.trollvnc/sim.uds";
     TVAppLog(@"startSimUDSClient: fileExists=%d", [[NSFileManager defaultManager] fileExistsAtPath:path] ? 1 : 0);
     if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
@@ -1155,16 +1155,18 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     dispatch_resume(src);
     self.simUDSReadSource = src;
     TVLog(@"[locsim] UDS client connected (fd=%d)", fd);
-    // 订阅模型：连接建立即主动取当前状态（与 CLLocationManager startUpdatingLocation 同构——
-    // GPS 会话启动时，wifi 订阅随附启动，取一次当前 BSSID 然后变化靠推送）
-    [self sendSimCommand:@{@"cmd": @"query"}];
-    // 重连成功：重发写失败时缓存的命令（回调式送达保证，2026-09-05）
+    // ⚠️ 顺序关键（2026-09-11 真机日志铁证）：pending 重发必须在 query **之前**——
+    // sendSimCommand 写成功会清 pendingSimCommand，query 若在前会把断线期间缓存的
+    // anchor/play 命令误判"已达"清掉（daemon 只收到 query 永远收不到 anchor 的真凶）
     if (self.pendingSimCommand) {
         NSDictionary *pending = self.pendingSimCommand;
         self.pendingSimCommand = nil;
         TVLog(@"[locsim] UDS resending pending command: %@", pending[@"cmd"]);
         [self sendSimCommand:pending];
     }
+    // 订阅模型：连接建立即主动取当前状态（与 CLLocationManager startUpdatingLocation 同构——
+    // GPS 会话启动时，wifi 订阅随附启动，取一次当前 BSSID 然后变化靠推送）
+    [self sendSimCommand:@{@"cmd": @"query"}];
 }
 
 - (void)scheduleSimUDSRetry {
@@ -1268,7 +1270,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 - (void)sendSimCommand:(NSDictionary *)cmd {
     NSData *data = [NSJSONSerialization dataWithJSONObject:cmd options:0 error:NULL];
     TVAppLog(@"sendSimCommand: cmd=%@ simUDSFD=%ld dataLen=%lu", cmd[@"cmd"], (long)self.simUDSFD, (unsigned long)data.length);
-    if (self.simUDSFD >= 0 && data) {
+    if (self.simUDSFD > 0 && data) {
         NSMutableData *payload = [data mutableCopy];
         [payload appendBytes:"\n" length:1];
         ssize_t n = write(self.simUDSFD, payload.bytes, payload.length);
