@@ -34,6 +34,7 @@
 #import "TRWpsClient.h"
 #import "../../../src/TRWpsTile.h" // BSSID 计划生成（2026-09-05：writeTrackFile 内联坐标→AP 反查，App target 已编译 TRWpsTile.mm）
 #import "../../../src/Logging.h" // TVLog 宏（restoreSession 恢复日志用；符号定义在 TRAppLogging.m，2026-08-31 起 App 引用共享模块日志）
+void TVAppLog(NSString *fmt, ...); // App 侧时序观测日志声明（TRAppLogging.m 实现，2026-09-11 真机治理期）
 // TVNCUtil.h import 已删（2026-09-05 Q1：TVNC_NOTIFY_PREFS_CHANGED 唯一用途 notify_post 已退役——UDS 唯一命令通道）
 
 /// 轨迹文件路径 → kTRSimTrackFilePath（TRSimContract.h 跨端单一真相源，2026-08-28）
@@ -1068,6 +1069,7 @@ self.lastAutoFocusWGS = self.cur; // 自动聚焦基线=模拟位置（瓦片系
         // 第一个锚点：判断是否有当前位置（持久化/注入的）
         CLLocationCoordinate2D curPos = [self currentSimPosition];
         BOOL hasCurPos = (curPos.latitude != 0 || curPos.longitude != 0);
+        TVAppLog(@"applySearchResult first-anchor: segCnt=1 hasCurPos=%d curPos=(%.5f,%.5f) lastFix=%p", hasCurPos, curPos.latitude, curPos.longitude, self.lastFix);
         if (hasCurPos) {
             // 有当前位置：基于当前位置创建锚点（起点，消费），搜索位置作为终点 → 生成路线
             // curPos 为 WGS-84（currentSimPosition 契约）
@@ -1112,21 +1114,24 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 - (void)startSimUDSClient {
     if (self.simUDSFD >= 0) return;
     NSString *path = @"/var/mobile/Library/Caches/com.82flex.trollvnc/sim.uds";
+    TVAppLog(@"startSimUDSClient: fileExists=%d", [[NSFileManager defaultManager] fileExistsAtPath:path] ? 1 : 0);
     if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
         [self scheduleSimUDSRetry]; // daemon 未起（socket 文件未建），重试
         return;
     }
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) { [self scheduleSimUDSRetry]; return; }
+    if (fd < 0) { TVAppLog(@"startSimUDSClient: socket() failed errno=%d", errno); [self scheduleSimUDSRetry]; return; }
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, path.fileSystemRepresentation, sizeof(addr.sun_path) - 1);
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        TVAppLog(@"startSimUDSClient: connect() failed errno=%d", errno);
         close(fd);
         [self scheduleSimUDSRetry];
         return;
     }
+    TVAppLog(@"startSimUDSClient: connected fd=%d", fd);
     self.simUDSFD = fd;
     self.simUDSRxBuffer = @"";
     dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, fd, 0, dispatch_get_main_queue());
@@ -1185,6 +1190,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 
 /// 回执处理：daemon 执行态 → UI 对齐（locating/按钮/状态栏 = daemon 真相，2026-09-05 权威语义）
 - (void)handleSimStateLine:(NSString *)line {
+    TVAppLog(@"handleSimStateLine: %@", line);
     id json = [NSJSONSerialization JSONObjectWithData:[line dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
     if (![json isKindOfClass:[NSDictionary class]]) return;
     // 当前连接事件（2026-09-05 Q6 重建：evt=bssid 是 WiFi 显示链唯一驱动——双订阅对称 C3，
@@ -1261,6 +1267,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 /// 写失败回调式处理：close → 触发重连 → 连接建立后重发一次（pendingCmd）
 - (void)sendSimCommand:(NSDictionary *)cmd {
     NSData *data = [NSJSONSerialization dataWithJSONObject:cmd options:0 error:NULL];
+    TVAppLog(@"sendSimCommand: cmd=%@ simUDSFD=%ld dataLen=%lu", cmd[@"cmd"], (long)self.simUDSFD, (unsigned long)data.length);
     if (self.simUDSFD >= 0 && data) {
         NSMutableData *payload = [data mutableCopy];
         [payload appendBytes:"\n" length:1];
@@ -1542,6 +1549,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 /// 播放/停止同一来源（注入位置），无 fix 时回退 self.cur（统一瓦片系，2026-09-04 治理）
 - (CLLocationCoordinate2D)currentSimPosition {
     // lastFix 为 WGS fix（locationd 语义）→ 转瓦片系与 segments 同系；self.cur 已是瓦片系
+    TVAppLog(@"currentSimPosition: lastFix=%@ cur=(%.5f,%.5f)", self.lastFix ? [NSString stringWithFormat:@"%.5f,%.5f", self.lastFix.coordinate.latitude, self.lastFix.coordinate.longitude] : @"nil", self.cur.latitude, self.cur.longitude);
     if (self.lastFix) return [CoordTransform wgs84ToGcj02:self.lastFix.coordinate];
     return self.cur;
 }
@@ -1635,6 +1643,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 /// 每个 fix 自带出生时间（CLLocation.timestamp，系统盖章），只认晚于对应切换时刻的 fix——旧货当没看见
 - (void)handleLocationUpdate:(CLLocation *)loc {
     if (!loc) return;
+    TVAppLog(@"handleLocationUpdate: locating=%d loc=(%.5f,%.5f) ts=%@", self.locating ? 1 : 0, loc.coordinate.latitude, loc.coordinate.longitude, loc.timestamp);
     // 坐标系边界转换（2026-09-04 治理）：locationd 广播 = WGS-84 语义（注入出口已转 WGS/真实 GPS 亦 WGS），
     // 编排世界（锚点/路线/25m 锁基线/self.cur）= 地图瓦片系——入口统一 WGS→GCJ，函数内全部用 mapCoord
     // （与锚点/锁/经过判定/聚焦同系；水滴 MKUserLocation 由 MapKit 自动偏移，不走此路径）
@@ -1927,6 +1936,7 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 
 - (void)commitAnchor {
     // 2026-09-05 权威语义对齐：设锚点 = 显式位置命令（mode=anchor + 坐标）——daemon anchor 分支
+    TVAppLog(@"commitAnchor: simUDSFD=%ld", (long)self.simUDSFD);
     // 读坐标注入+开定位+微动驻留该锚点（"设锚点后位置=锚点"的既定行为不变，走 anchor 分支的
     // 坐标读入路径）；off 分支的坐标读入随此改动删除（off 态 plist 坐标失去污染路径）
     // self.cur 统一瓦片系（2026-09-04 治理），daemon injectPoint 出口统一 GCJ→WGS
