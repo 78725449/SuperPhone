@@ -129,7 +129,7 @@ static const int kHashBits = 64;                      // 哈希位数
                               format:(OSType)format {
     if (!data || width == 0 || height == 0) return 0;
     __block uint64_t hash = 0;
-    vImage_Buffer src;
+    __block vImage_Buffer src; // __block：block 内取址需非 const（捕获的普通局部变量在 block 内是 const）
     src.data = (void *)data;
     src.width = (vImagePixelCount)width;
     src.height = (vImagePixelCount)height;
@@ -205,7 +205,7 @@ static const int kHashBits = 64;                      // 哈希位数
             TVLog(@"[TRScreenHasher] 不支持的像素格式 0x%08X，仅支持 ARGB/BGRA", (unsigned)srcFormat);
             return 0;
         }
-        vImage_Error scaleErr = vImageScale_ARGB8888(&srcBuffer, &_argbBuffer, NULL, kvImageNoFlags);
+        vImage_Error scaleErr = vImageScale_ARGB8888(srcBuffer, &_argbBuffer, NULL, kvImageNoFlags);
         if (scaleErr != kvImageNoError) {
             TVLog(@"[TRScreenHasher] vImageScale 失败（err=%zd）", scaleErr);
             return 0;
