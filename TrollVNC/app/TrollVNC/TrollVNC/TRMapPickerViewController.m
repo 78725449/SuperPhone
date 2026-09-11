@@ -34,7 +34,6 @@
 #import "TRWpsClient.h"
 #import "../../../src/TRWpsTile.h" // BSSID 计划生成（2026-09-05：writeTrackFile 内联坐标→AP 反查，App target 已编译 TRWpsTile.mm）
 #import "../../../src/Logging.h" // TVLog 宏（restoreSession 恢复日志用；符号定义在 TRAppLogging.m，2026-08-31 起 App 引用共享模块日志）
-void TVAppLog(NSString *fmt, ...); // App 侧时序观测日志声明（TRAppLogging.m 实现，2026-09-11 真机治理期）
 // TVNCUtil.h import 已删（2026-09-05 Q1：TVNC_NOTIFY_PREFS_CHANGED 唯一用途 notify_post 已退役——UDS 唯一命令通道）
 
 /// 轨迹文件路径 → kTRSimTrackFilePath（TRSimContract.h 跨端单一真相源，2026-08-28）
@@ -111,6 +110,7 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
 @property (nonatomic, assign) double currentLegSpeed;              // 当前所在路线（出发锚点段）的生成速度——从段缓存 segmentPoints 取（含 ±10% 抖动；random 段反映实际随机模式）
 @property (nonatomic, assign) BOOL startupLockedToAnchor;          // 开启瞬间到注入落地前：锁定锚点显示（忽略旧 fix，防开启横跳）
 @property (nonatomic, assign) NSInteger simUDSFD;                  // UDS client fd（-1=未连接；命令/回执内核必达通道）
+@property (nonatomic, assign) BOOL hasSimulatedSession;                  // 有模拟会话（state 回执 mode≠off 时 YES，2026-09-11 逻辑层治理 B——首锚点判据）
 @property (nonatomic, strong) dispatch_source_t simUDSReadSource;  // UDS 回执读 source
 @property (nonatomic, strong) dispatch_source_t simUDSRetrySource; // UDS 断线重连 timer
 @property (nonatomic, copy) NSString *simUDSRxBuffer;              // UDS 接收缓冲（按 \n 拆回执行）
@@ -607,11 +607,11 @@ static const double kPassedThresholdM = 25.0; // 到达/落地判定阈值：距
     NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
     [self.segments addObject:@{@"type": @"anchor", @"lat": @(wgs.latitude), @"lon": @(wgs.longitude), @"mode": mode}];
     if (self.segments.count == 1) {
-        // 第一个锚点：判断是否有当前位置（持久化/注入的）
-        CLLocationCoordinate2D curPos = [self currentSimPosition]; // lastFix 优先（daemon 注入的当前位置）
-        BOOL hasCurPos = (curPos.latitude != 0 || curPos.longitude != 0);
+        // 第一个锚点：判断是否有模拟会话（daemon mode≠off，2026-09-11 逻辑层治理 B）
+        BOOL hasCurPos = self.hasSimulatedSession;
         if (hasCurPos) {
-            // 有当前位置（持久化恢复）：基于当前位置创建锚点（起点，消费），点击位置作为终点 → 生成路线
+            // 有模拟会话（持久化恢复）：基于当前位置创建锚点（起点，消费），点击位置作为终点 → 生成路线
+            CLLocationCoordinate2D curPos = [self currentSimPosition]; // lastFix 优先（daemon 注入的当前位置）
             // 当前位置锚点插到点击位置前面（segments[0]=起点，segments[1]=终点）
 // curPos 为瓦片系（currentSimPosition 已转），segments 统一存瓦片系（2026-09-04 治理）
             [self.segments insertObject:@{@"type": @"anchor", @"lat": @(curPos.latitude), @"lon": @(curPos.longitude), @"mode": mode}
@@ -1066,12 +1066,12 @@ self.lastAutoFocusWGS = self.cur; // 自动聚焦基线=模拟位置（瓦片系
     NSString *mode = (self.modeSeg.selectedSegmentIndex == 1) ? @"drive" : @"walk";
     [self.segments addObject:@{@"type": @"anchor", @"lat": @(wgs.latitude), @"lon": @(wgs.longitude), @"mode": mode}];
     if (self.segments.count == 1) {
-        // 第一个锚点：判断是否有当前位置（持久化/注入的）
-        CLLocationCoordinate2D curPos = [self currentSimPosition];
-        BOOL hasCurPos = (curPos.latitude != 0 || curPos.longitude != 0);
-        TVAppLog(@"applySearchResult first-anchor: segCnt=1 hasCurPos=%d curPos=(%.5f,%.5f) lastFix=%p", hasCurPos, curPos.latitude, curPos.longitude, self.lastFix);
+        // 第一个锚点：判断是否有模拟会话（daemon mode≠off，2026-09-11 逻辑层治理 B：
+        // 取代 lastFix 判据——lastFix 在无注入时=真实 GPS，曾误判"有位置"走路线生长 → 永不注入）
+        BOOL hasCurPos = self.hasSimulatedSession;
         if (hasCurPos) {
-            // 有当前位置：基于当前位置创建锚点（起点，消费），搜索位置作为终点 → 生成路线
+            // 有模拟会话：基于当前位置创建锚点（起点，消费），搜索位置作为终点 → 生成路线
+            CLLocationCoordinate2D curPos = [self currentSimPosition];
             // curPos 为 WGS-84（currentSimPosition 契约）
             [self.segments insertObject:@{@"type": @"anchor", @"lat": @(curPos.latitude), @"lon": @(curPos.longitude), @"mode": mode}
                                 atIndex:0];
@@ -1114,24 +1114,21 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 - (void)startSimUDSClient {
     if (self.simUDSFD > 0) return; // fd=0=未初始化（NSInteger 默认值），socket() 只返回正 fd 或 -1——`>= 0` 曾致启动永不连接（2026-09-11 真机日志铁证）
     NSString *path = @"/var/mobile/Library/Caches/com.82flex.trollvnc/sim.uds";
-    TVAppLog(@"startSimUDSClient: fileExists=%d", [[NSFileManager defaultManager] fileExistsAtPath:path] ? 1 : 0);
     if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
         [self scheduleSimUDSRetry]; // daemon 未起（socket 文件未建），重试
         return;
     }
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) { TVAppLog(@"startSimUDSClient: socket() failed errno=%d", errno); [self scheduleSimUDSRetry]; return; }
+    if (fd < 0) { [self scheduleSimUDSRetry]; return; }
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, path.fileSystemRepresentation, sizeof(addr.sun_path) - 1);
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        TVAppLog(@"startSimUDSClient: connect() failed errno=%d", errno);
         close(fd);
         [self scheduleSimUDSRetry];
         return;
     }
-    TVAppLog(@"startSimUDSClient: connected fd=%d", fd);
     self.simUDSFD = fd;
     self.simUDSRxBuffer = @"";
     dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, fd, 0, dispatch_get_main_queue());
@@ -1164,9 +1161,10 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
         TVLog(@"[locsim] UDS resending pending command: %@", pending[@"cmd"]);
         [self sendSimCommand:pending];
     }
-    // 订阅模型：连接建立即主动取当前状态（与 CLLocationManager startUpdatingLocation 同构——
-    // GPS 会话启动时，wifi 订阅随附启动，取一次当前 BSSID 然后变化靠推送）
-    [self sendSimCommand:@{@"cmd": @"query"}];
+    // （2026-09-11 逻辑层治理：query-on-connect 已撤回——58 轮观测日志证明 accept 推送的
+    // state+bssid 完整到达，连接同步只信 accept 推送（唯一路径）；query 保留用户手动
+    // 点诊断条的对账用途，不再连接时自动发出——曾因 sendSimCommand 写成功清 pending 的
+    // 语义把断线缓存的 anchor 误清，顺序修复只是止血，撤回才是逻辑层根治）
 }
 
 - (void)scheduleSimUDSRetry {
@@ -1192,7 +1190,6 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 
 /// 回执处理：daemon 执行态 → UI 对齐（locating/按钮/状态栏 = daemon 真相，2026-09-05 权威语义）
 - (void)handleSimStateLine:(NSString *)line {
-    TVAppLog(@"handleSimStateLine: %@", line);
     id json = [NSJSONSerialization JSONObjectWithData:[line dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
     if (![json isKindOfClass:[NSDictionary class]]) return;
     // 当前连接事件（2026-09-05 Q6 重建：evt=bssid 是 WiFi 显示链唯一驱动——双订阅对称 C3，
@@ -1229,6 +1226,11 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
     NSString *mode = json[@"mode"];
     if (!mode.length) return;
     BOOL daemonPlaying = [mode isEqualToString:@"itinerary"];
+    // hasSimulatedSession（2026-09-11 逻辑层治理 B）：由 state 回执 mode 驱动——
+    // daemon 处于模拟态（anchor/itinerary）= 有模拟会话；off = 无注入会话（位置只是历史/残留）。
+    // 取代旧判据 lastFix 非空（locationd fix 在注入前=真实 GPS，曾致首锚点误走"路线生长"分支
+    // 永不注入——缺陷 B 实证：58 轮日志 hasCurPos=0 路径正确，但 lastFix 有值时路径错）。
+    self.hasSimulatedSession = ![mode isEqualToString:@"off"];
     // （2026-09-06：回执不再写 self.cur——删除第二通道。既有契约"self.cur 永远来自
     // CLLocationManager 回调"恢复完全体：位置回显唯一来源 = locationd fix 流；
     // 回执只驱动 locating 对齐 + UI 渲染。v4 注入修复后两通道值恒同源，此行冗余且
@@ -1269,7 +1271,6 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 /// 写失败回调式处理：close → 触发重连 → 连接建立后重发一次（pendingCmd）
 - (void)sendSimCommand:(NSDictionary *)cmd {
     NSData *data = [NSJSONSerialization dataWithJSONObject:cmd options:0 error:NULL];
-    TVAppLog(@"sendSimCommand: cmd=%@ simUDSFD=%ld dataLen=%lu", cmd[@"cmd"], (long)self.simUDSFD, (unsigned long)data.length);
     if (self.simUDSFD > 0 && data) {
         NSMutableData *payload = [data mutableCopy];
         [payload appendBytes:"\n" length:1];
@@ -1551,7 +1552,6 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 /// 播放/停止同一来源（注入位置），无 fix 时回退 self.cur（统一瓦片系，2026-09-04 治理）
 - (CLLocationCoordinate2D)currentSimPosition {
     // lastFix 为 WGS fix（locationd 语义）→ 转瓦片系与 segments 同系；self.cur 已是瓦片系
-    TVAppLog(@"currentSimPosition: lastFix=%@ cur=(%.5f,%.5f)", self.lastFix ? [NSString stringWithFormat:@"%.5f,%.5f", self.lastFix.coordinate.latitude, self.lastFix.coordinate.longitude] : @"nil", self.cur.latitude, self.cur.longitude);
     if (self.lastFix) return [CoordTransform wgs84ToGcj02:self.lastFix.coordinate];
     return self.cur;
 }
@@ -1645,7 +1645,6 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 /// 每个 fix 自带出生时间（CLLocation.timestamp，系统盖章），只认晚于对应切换时刻的 fix——旧货当没看见
 - (void)handleLocationUpdate:(CLLocation *)loc {
     if (!loc) return;
-    TVAppLog(@"handleLocationUpdate: locating=%d loc=(%.5f,%.5f) ts=%@", self.locating ? 1 : 0, loc.coordinate.latitude, loc.coordinate.longitude, loc.timestamp);
     // 坐标系边界转换（2026-09-04 治理）：locationd 广播 = WGS-84 语义（注入出口已转 WGS/真实 GPS 亦 WGS），
     // 编排世界（锚点/路线/25m 锁基线/self.cur）= 地图瓦片系——入口统一 WGS→GCJ，函数内全部用 mapCoord
     // （与锚点/锁/经过判定/聚焦同系；水滴 MKUserLocation 由 MapKit 自动偏移，不走此路径）
@@ -1938,7 +1937,6 @@ self.lastAutoFocusWGS = wgs; // 自动聚焦基线（瓦片系，2026-09-04 治�
 
 - (void)commitAnchor {
     // 2026-09-05 权威语义对齐：设锚点 = 显式位置命令（mode=anchor + 坐标）——daemon anchor 分支
-    TVAppLog(@"commitAnchor: simUDSFD=%ld", (long)self.simUDSFD);
     // 读坐标注入+开定位+微动驻留该锚点（"设锚点后位置=锚点"的既定行为不变，走 anchor 分支的
     // 坐标读入路径）；off 分支的坐标读入随此改动删除（off 态 plist 坐标失去污染路径）
     // self.cur 统一瓦片系（2026-09-04 治理），daemon injectPoint 出口统一 GCJ→WGS
