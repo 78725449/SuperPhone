@@ -153,6 +153,10 @@ static const NSInteger kScreenChangeThreshold = 2;           // 画面变化判�
 // 快照档位规格（board 档：看板/卡片墙消费，固定 320px 宽等比；不设 AI 档——AI 拉图走既有 screenshot 能力）
 static const int kSnapBoardWidth = 320;                      // board 档输出宽度像素
 static const int kSnapBoardQuality = 60;                     // board 档 JPEG 质量（1-100）
+
+// 采集门控前向声明（定义见「采集启动」区；CaptureFps 热重载（~L3420）先于定义调用，ObjC++ 需先声明）
+static void tvRefreshCapturePolicy(void);
+
 static BOOL gAsyncSwapEnabled = NO;         // Enable non-blocking swap (may cause tearing)
 
 // Wheel scroll coalescing state (async, non-blocking)
