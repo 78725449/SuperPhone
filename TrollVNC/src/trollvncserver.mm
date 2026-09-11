@@ -52,6 +52,7 @@
 #import <CoreLocation/CoreLocation.h>
 #import <string>
 #import <sys/socket.h>
+#import <sys/select.h>
 #import <sys/sysctl.h>
 #import <spawn.h>
 // theos SDK 无 Security/SecTask.h（同 SecStaticCode 教训），自声明所需符号；extern "C" 防 C++ mangled
@@ -60,6 +61,21 @@ typedef struct __SecTask *SecTaskRef;
 extern SecTaskRef SecTaskCreateFromSelf(CFAllocatorRef allocator);
 extern CFTypeRef SecTaskCopyValueForEntitlement(SecTaskRef task, CFStringRef entitlement, CFErrorRef *error);
 }
+// turbojpeg（libturbojpeg.a 已链接；include 目录无 turbojpeg.h，源码级自声明，同 SecTask 先例；TJPF_RGB 等常量 1.x/2.x 均稳定）
+extern "C" {
+typedef void *tjhandle;
+extern tjhandle tjInitCompress(void);
+extern int tjCompress2(tjhandle handle, const unsigned char *srcBuf, int width, int pitch, int height, int pixelFormat,
+                       unsigned char **jpegBuf, unsigned long *jpegSize, int jpegSubsamp, int jpegQual, int flags);
+extern void tjFree(unsigned char *buffer);
+extern int tjDestroy(tjhandle handle);
+}
+#ifndef TJPF_RGB
+#define TJPF_RGB 0
+#endif
+#ifndef TJSAMP_444
+#define TJSAMP_444 0
+#endif
 #import <sys/wait.h>
 #import <unistd.h>
 #import <vector>
@@ -123,6 +139,20 @@ static int gMaxInflightUpdates = 2;         // Max concurrent client encodes; dr
 static int gTileSize = 32;                  // Tile size for dirty detection (pixels)
 static int gFullscreenThresholdPercent = 50; // If changed tiles exceed this %, update full screen（2026-08-20 默认对齐 balanced 预设）
 static int gMaxRectsLimit = 512;            // Max rects before falling back to bbox/fullscreen（2026-08-20 默认对齐 balanced 预设）
+
+// ===== 画面事件（快照/变化等待事件源，2026-09-15 快照服务重构）=====
+// 采集管线每帧对 back buffer 算 pHash，与基线比汉明距离；超过阈值即视为一次「画面变化」：
+// gChangeSeq 递增、gLastChangeTime 刷新。screen.wait 挂起至 gChangeSeq 越过 since，
+// screen.waitStable 挂起至「距上次变化已满 minStableMs」。全局共享：5802 等待线程读、采集线程写。
+static uint64_t gChangeSeq = 0;                              // 画面变化序号（全局递增，仅变化时 +1）
+static uint64_t gLastScreenHash = 0;                         // 上次产生的画面 pHash 基线
+static CFAbsoluteTime gLastChangeTime = 0;                   // 上次画面变化时刻（0=从未变化，不参与稳定判定）
+static int gWaitCount = 0;                                   // 挂起中的 screen.wait/waitStable 请求数（采集门控消费者）
+static pthread_mutex_t gScreenEventMutex = PTHREAD_MUTEX_INITIALIZER; // gChangeSeq/gWaitCount 等短临界区锁
+static const NSInteger kScreenChangeThreshold = 2;           // 画面变化判定阈值（pHash 汉明距离；0-64）
+// 快照档位规格（board 档：看板/卡片墙消费，固定 320px 宽等比；不设 AI 档——AI 拉图走既有 screenshot 能力）
+static const int kSnapBoardWidth = 320;                      // board 档输出宽度像素
+static const int kSnapBoardQuality = 60;                     // board 档 JPEG 质量（1-100）
 static BOOL gAsyncSwapEnabled = NO;         // Enable non-blocking swap (may cause tearing)
 
 // Wheel scroll coalescing state (async, non-blocking)
@@ -2091,6 +2121,30 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     const size_t width = (size_t)CVPixelBufferGetWidth(pb);
     const size_t height = (size_t)CVPixelBufferGetHeight(pb);
 
+    // ===== 画面变化事件（快照服务事件源，2026-09-15）=====
+    // 每帧对采集帧算 pHash 与基线比汉明距离；超阈 → gChangeSeq++/gLastChangeTime 刷新。
+    // 采集线程（CADisplayLink 回调）写；screen.wait/waitStable 等待线程读（gScreenEventMutex 短临界）。
+    // 0.3ms/帧开销可忽略；首帧仅建基线不产生事件（避免首个 wait 被启动瞬间误唤醒）。
+    {
+        uint64_t h = [[TRScreenHasher sharedHasher] computeHashFromRawBuffer:base
+                                                                       width:width
+                                                                      height:height
+                                                                    rowBytes:srcBPR
+                                                                      format:'ARGB'];
+        if (h != 0) {
+            pthread_mutex_lock(&gScreenEventMutex);
+            if (gLastScreenHash == 0) {
+                gLastScreenHash = h;
+            } else if ([[TRScreenHasher sharedHasher] hammingDistanceBetweenHash:gLastScreenHash andHash:h] >
+                       kScreenChangeThreshold) {
+                gLastScreenHash = h;
+                gChangeSeq++;
+                gLastChangeTime = CFAbsoluteTimeGetCurrent();
+            }
+            pthread_mutex_unlock(&gScreenEventMutex);
+        }
+    }
+
     // Determine rotation and resize framebuffer if orientation implies new dimensions.
     int rotQ = (gOrientationSyncEnabled ? gRotationQuad.load(std::memory_order_relaxed) : 0) & 3;
 
@@ -3416,10 +3470,8 @@ static void tvApplyPrefsChanged(void) {
             double v = capFpsN2.doubleValue;
             if (v < 1) v = 1; if (v > 30) v = 30;
             gCaptureLowFps = v;
-            // 无客户端（低频模式）时立即应用新帧率
-            if (gClientCount == 0 && gIsCaptureStarted) {
-                [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps max:gCaptureLowFps];
-            }
+            // 2026-09-15 门控统一：新档位经 tvRefreshCapturePolicy 重算生效（仅 wait 消费时按新低档运转）
+            tvRefreshCapturePolicy();
         }
         TVLog(@"-daemon: prefs-changed -> hot reload applied");
     }
@@ -3436,45 +3488,72 @@ static void tvInstallPrefsChangedListener(void) {
     TVLog(@"-daemon: prefs-changed listener installed");
 }
 
-/** 2026-08-22 最小验证：采集惰性启动（隧道握手成功后 notify 触发）。
- *  替代「服务启动即常驻采集」——验证 SIGILL 是否因启动太早/无客户端触发。 */
-static void tvStartCaptureIfNeeded(void) {
-    if (gIsCaptureStarted || !gFrameHandler) return;
-    gIsCaptureStarted = YES;
-    [[ScreenCapturer sharedCapturer]
-        setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps max:gCaptureLowFps];
-    [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:gFrameHandler];
-    TVLog(@"Screen capture started (lazy, tunnel-connected, low-fps %.0f).", gCaptureLowFps);
+/** 采集门控（2026-09-15 快照服务重构）：按消费者集合动态启停/调档。
+ *  消费者 = RFB 客户端（gClientCount）+ 快照挂起（gWaitCount）。
+ *  - 无消费者 → 完全停止采集（S1 空闲零采集零开销）；
+ *  - 仅 wait 挂起 → CaptureFps 低档（变化感知保底，够 pHash 判定）；
+ *  - 有 RFB → FrameRateSpec 推流档。
+ *  ScreenCapturer 生命周期 API 要求主线程，统一调度执行（可从任意线程调用）。
+ *  取代旧「隧道连接即启动/常驻 10fps/notify 升降频」模型。 */
+static void tvRefreshCapturePolicy(void) {
+    if (!gFrameHandler) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BOOL rfbActive = (gClientCount > 0);
+        BOOL waiterActive = (gWaitCount > 0);
+
+        if (!rfbActive && !waiterActive) {
+            if (gIsCaptureStarted) {
+                gIsCaptureStarted = NO;
+                [[ScreenCapturer sharedCapturer] endCapture];
+                TVLog(@"capture policy -> stopped (no consumers)");
+            }
+            return;
+        }
+
+        if (!gIsCaptureStarted) {
+            gIsCaptureStarted = YES;
+            if (rfbActive) {
+                [[ScreenCapturer sharedCapturer]
+                    setPreferredFrameRateWithMin:gFpsMin preferred:gFpsPref max:gFpsMax];
+            } else {
+                [[ScreenCapturer sharedCapturer]
+                    setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps max:gCaptureLowFps];
+            }
+            [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:gFrameHandler];
+            TVLog(@"capture policy -> started (%@)", rfbActive ? @"rfb(FrameRateSpec)" : @"wait(CaptureFps)");
+            return;
+        }
+
+        // 已采集：按消费者集合切换档位
+        if (rfbActive) {
+            [[ScreenCapturer sharedCapturer]
+                setPreferredFrameRateWithMin:gFpsMin preferred:gFpsPref max:gFpsMax];
+        } else {
+            [[ScreenCapturer sharedCapturer]
+                setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps max:gCaptureLowFps];
+        }
+        TVLog(@"capture policy -> %@", rfbActive ? @"active(FrameRateSpec)" : @"wait(CaptureFps)");
+    });
 }
 
-/** 监听 manager（TRTunnelClient）隧道握手成功通知，触发采集惰性启动 */
+/** 监听 manager（TRTunnelClient）隧道握手成功通知：触发门控重算（隧道连接本身不再是消费者） */
 static void tvInstallTunnelConnectedListener(void) {
     static int token = 0;
     notify_register_dispatch("com.82flex.trollvnc.tunnel-connected", &token,
                              dispatch_get_main_queue(), ^(int t) {
         (void)t;
-        tvStartCaptureIfNeeded();
+        tvRefreshCapturePolicy();
     });
     TVLog(@"-daemon: tunnel-connected listener installed");
 }
 
-/** 采集帧率档位（缩略图态 CaptureFps / 屏幕流态 FrameRateSpec）——由 TRTunnelClient 经 notify 驱动 */
-static void tvApplyCaptureFramerate(BOOL active) {
-    if (!gIsCaptureStarted || !gFrameHandler) return;
-    if (active) {
-        [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gFpsMin preferred:gFpsPref max:gFpsMax];
-    } else {
-        [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps max:gCaptureLowFps];
-    }
-    TVLog(@"capture framerate -> %@", active ? @"active(FrameRateSpec)" : @"idle(CaptureFps)");
-}
-
+/** 采集帧率档位通知（TRTunnelClient 经 notify 驱动：会话开/关）——归一为门控重算 */
 static void tvInstallCaptureFramerateListeners(void) {
     static int idleTok = 0, activeTok = 0;
     notify_register_dispatch("com.82flex.trollvnc.capture-idle", &idleTok,
-        dispatch_get_main_queue(), ^(int t) { (void)t; tvApplyCaptureFramerate(NO); });
+        dispatch_get_main_queue(), ^(int t) { (void)t; tvRefreshCapturePolicy(); });
     notify_register_dispatch("com.82flex.trollvnc.capture-active", &activeTok,
-        dispatch_get_main_queue(), ^(int t) { (void)t; tvApplyCaptureFramerate(YES); });
+        dispatch_get_main_queue(), ^(int t) { (void)t; tvRefreshCapturePolicy(); });
     TVLog(@"-daemon: capture-framerate listeners installed");
 }
 
@@ -3801,13 +3880,9 @@ static NSDictionary *tvExtHandleCapHello(rfbClientPtr cl, NSDictionary *params) 
         // 2026-08-21 修复：此前仅减计数不停采集——mgmt 探测连接把 gClientCount 瞬时抬到 1 又降回 0，
         // 采集（CADisplayLink）在 0 客户端下持续空转渲染（空耗 + 高频踩渲染路径，崩溃循环帮凶）；
         // KeepAlive/AutoAssist 同理被探测连接误开。
-        // 2026-08-21 架构升级：采集已常驻（服务启动即启动），不再 stopCapture，只降回低频。
+        // 2026-09-15 门控统一：计数变化后由 tvRefreshCapturePolicy 决定停采/降档。
+        tvRefreshCapturePolicy();
         if (gClientCount == 0) {
-            if (gIsCaptureStarted) {
-                [[ScreenCapturer sharedCapturer]
-                    setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps max:gCaptureLowFps];
-                TVLog(@"Management exemption emptied clients; capture idled at %.0f fps.", gCaptureLowFps);
-            }
             [[STHIDEventGenerator sharedGenerator] setKeepAliveInterval:0];
 #if !TARGET_OS_SIMULATOR
             if (gRestoreAssist) {
@@ -4676,6 +4751,177 @@ static void tvHttpApiWriteResponse(int fd, SSL *ssl, NSDictionary *resp) {
     (void)tvTlsWrite(fd, ssl, out.bytes, out.length);
 }
 
+#pragma mark - 快照服务（screen.snapshot / screen.wait / screen.waitStable，2026-09-15）
+
+/**
+ * board 档快照编码：按需取当前帧 → vImage 等比降采样至 kSnapBoardWidth → ARGB 转 RGB 紧凑
+ * → turbojpeg 压缩（TJPF_RGB/TJSAMP_444）。不依赖采集管线（采集停止时同样可用）。
+ * 参数：outW/outH - 输出编码尺寸（可 NULL）
+ * 返回值：JPEG NSData；失败返回 nil
+ */
+static NSData *tvSnapEncodeBoardJPEG(int *outW, int *outH) {
+    CVPixelBufferRef pb = [[ScreenCapturer sharedCapturer] captureSingleFrameBuffer];
+    if (!pb) return nil;
+    NSData *jpeg = nil;
+    CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+    uint8_t *base = (uint8_t *)CVPixelBufferGetBaseAddress(pb);
+    size_t sw = CVPixelBufferGetWidth(pb), sh = CVPixelBufferGetHeight(pb);
+    size_t sbr = CVPixelBufferGetBytesPerRow(pb);
+    if (base && sw > 0 && sh > 0) {
+        int dw = kSnapBoardWidth;
+        int dh = MAX(1, (int)round((double)sh * dw / (double)sw));
+        const size_t argbRow = (size_t)dw * 4;
+        uint8_t *scaled = (uint8_t *)malloc((size_t)dw * (size_t)dh * 4);
+        if (scaled) {
+            vImage_Buffer srcV;
+            srcV.data = base; srcV.height = (vImagePixelCount)sh;
+            srcV.width = (vImagePixelCount)sw; srcV.rowBytes = sbr;
+            vImage_Buffer dstV;
+            dstV.data = scaled; dstV.height = (vImagePixelCount)dh;
+            dstV.width = (vImagePixelCount)dw; dstV.rowBytes = argbRow;
+            if (vImageScale_ARGB8888(&srcV, &dstV, NULL, kvImageHighQualityResampling) == kvImageNoError) {
+                // ARGB（内存序 A,R,G,B；IOSurface 'ARGB'）→ RGB888 紧凑（turbojpeg TJPF_RGB）
+                const size_t rgbRow = (size_t)dw * 3;
+                uint8_t *rgb = (uint8_t *)malloc((size_t)dw * (size_t)dh * 3);
+                if (rgb) {
+                    for (int y = 0; y < dh; y++) {
+                        const uint8_t *sp = scaled + (size_t)y * argbRow;
+                        uint8_t *dp = rgb + (size_t)y * rgbRow;
+                        for (int x = 0; x < dw; x++, sp += 4, dp += 3) {
+                            dp[0] = sp[1]; dp[1] = sp[2]; dp[2] = sp[3];
+                        }
+                    }
+                    tjhandle tj = tjInitCompress();
+                    if (tj) {
+                        unsigned char *jbuf = NULL;
+                        unsigned long jsz = 0;
+                        if (tjCompress2(tj, rgb, dw, (int)rgbRow, dh, TJPF_RGB, &jbuf, &jsz,
+                                       TJSAMP_444, kSnapBoardQuality, 0) == 0 && jbuf && jsz > 0) {
+                            jpeg = [NSData dataWithBytes:jbuf length:jsz];
+                        }
+                        if (jbuf) tjFree(jbuf);
+                        tjDestroy(tj);
+                    }
+                    free(rgb);
+                    if (jpeg) {
+                        if (outW) *outW = dw;
+                        if (outH) *outH = dh;
+                    }
+                }
+            }
+            free(scaled);
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+    CVPixelBufferRelease(pb);
+    return jpeg;
+}
+
+/**
+ * screen.wait / screen.waitStable 挂起等待（协议层零超时；客户端断开连接即取消清理）。
+ * 功能：挂起期间计入 gWaitCount（采集门控消费者）保证低档采集运转以感知变化；
+ *      select 100ms 周期检查连接 EOF——连接断开（AI 放弃等待/超时 abort）即刻清理返回。
+ * 参数：fd         - 客户端 socket（EOF 检测）
+ *      since      - screen.wait：等到 gChangeSeq > since
+ *      waitStable - YES=screen.waitStable：等到「距上次变化已满 minStableMs」且基线已建立
+ *      minStableMs - 稳定窗口毫秒（waitStable 用）
+ * 返回值：YES 条件满足应按 {seq} 应答；NO 连接已断开，静默清理
+ */
+static BOOL tvWaitForScreenEvent(int fd, uint64_t since, BOOL waitStable, double minStableMs) {
+    pthread_mutex_lock(&gScreenEventMutex);
+    gWaitCount++;
+    pthread_mutex_unlock(&gScreenEventMutex);
+    tvRefreshCapturePolicy();
+    BOOL disconnected = NO;
+    for (;;) {
+        BOOL met = NO;
+        pthread_mutex_lock(&gScreenEventMutex);
+        if (waitStable) {
+            if (gLastChangeTime > 0 && (CFAbsoluteTimeGetCurrent() - gLastChangeTime) >= minStableMs) met = YES;
+        } else {
+            if (gChangeSeq > since) met = YES;
+        }
+        pthread_mutex_unlock(&gScreenEventMutex);
+        if (met) break;
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(fd, &rfds);
+        struct timeval sv;
+        sv.tv_sec = 0;
+        sv.tv_usec = 100 * 1000; // 100ms 粒度：变化→唤醒延迟 <200ms（达标）
+        int s = select(fd + 1, &rfds, NULL, NULL, &sv);
+        if (s > 0 && FD_ISSET(fd, &rfds)) {
+            char b;
+            if (read(fd, &b, 1) <= 0) { disconnected = YES; break; } // EOF/错误 = 客户端放弃等待
+        }
+    }
+    pthread_mutex_lock(&gScreenEventMutex);
+    gWaitCount--;
+    pthread_mutex_unlock(&gScreenEventMutex);
+    tvRefreshCapturePolicy();
+    return !disconnected;
+}
+
+/**
+ * 5802 快照服务三原语入口（POST JSON op 分发；TV 需要 fd/ssl 做挂起 EOF 检测，
+ * 故不经 tvHttpApiDispatch——后者签名无连接上下文）。
+ * 返回时由调用方统一释放 ssl/close fd。
+ */
+static void tvHttpApiHandleScreenOp(int fd, SSL *ssl, NSDictionary *req) {
+    NSString *op = req[@"op"];
+    NSDictionary *params = req[@"params"] ?: @{};
+
+    if ([op isEqualToString:@"screen.snapshot"]) {
+        int w = 0, h = 0;
+        NSData *jpeg = tvSnapEncodeBoardJPEG(&w, &h);
+        if (!jpeg) {
+            tvHttpApiWriteResponse(fd, ssl, tvExtErr(@"取帧/编码失败"));
+            return;
+        }
+        uint64_t seq = 0;
+        pthread_mutex_lock(&gScreenEventMutex);
+        seq = gChangeSeq;
+        pthread_mutex_unlock(&gScreenEventMutex);
+        tvHttpApiWriteResponse(fd, ssl, tvExtOk(@{
+            @"seq": @(seq),
+            @"w": @(w),
+            @"h": @(h),
+            @"jpeg": [jpeg base64EncodedStringWithOptions:0],
+            @"ts": @((long long)(CFAbsoluteTimeGetCurrent() * 1000.0)),
+        }));
+        return;
+    }
+
+    if ([op isEqualToString:@"screen.wait"] || [op isEqualToString:@"screen.waitStable"]) {
+        BOOL stable = [op isEqualToString:@"screen.waitStable"];
+        uint64_t since = 0;
+        double minStableMs = 500;
+        if (stable) {
+            NSNumber *mn = params[@"minStableMs"];
+            if ([mn isKindOfClass:[NSNumber class]]) minStableMs = mn.doubleValue;
+            if (minStableMs <= 0) minStableMs = 500;
+        } else {
+            NSNumber *sn = params[@"since"];
+            if (![sn isKindOfClass:[NSNumber class]]) {
+                tvHttpApiWriteResponse(fd, ssl, tvExtErr(@"screen.wait 缺少参数 since"));
+                return;
+            }
+            since = sn.unsignedLongLongValue;
+        }
+        if (tvWaitForScreenEvent(fd, since, stable, minStableMs)) {
+            uint64_t seq = 0;
+            pthread_mutex_lock(&gScreenEventMutex);
+            seq = gChangeSeq;
+            pthread_mutex_unlock(&gScreenEventMutex);
+            tvHttpApiWriteResponse(fd, ssl, tvExtOk(@{@"seq": @(seq)}));
+        }
+        // 连接断开：不写响应，静默清理
+        return;
+    }
+
+    tvHttpApiWriteResponse(fd, ssl, tvExtErr([NSString stringWithFormat:@"未知操作: %@", op ?: @""]));
+}
+
 static void tvHttpApiHandleClient(int fd) {
     // 2026-08-19：peek 分流——TLS(0x16) → https；否则明文（兼容未配证书的老页面）
     SSL *ssl = NULL;
@@ -4710,6 +4956,17 @@ static void tvHttpApiHandleClient(int fd) {
             if (body) {
                 NSDictionary *req = [NSJSONSerialization JSONObjectWithData:body options:0 error:nil];
                 if ([req isKindOfClass:[NSDictionary class]]) {
+                    // 快照服务三原语（需 fd/ssl 上下文做挂起 EOF 检测，单独分发）
+                    NSString *oop = req[@"op"];
+                    if ([oop isKindOfClass:[NSString class]] &&
+                        ([oop isEqualToString:@"screen.snapshot"] ||
+                         [oop isEqualToString:@"screen.wait"] ||
+                         [oop isEqualToString:@"screen.waitStable"])) {
+                        tvHttpApiHandleScreenOp(fd, ssl, req);
+                        if (ssl) SSL_free(ssl);
+                        close(fd);
+                        return;
+                    }
                     NSDictionary *resp = tvHttpApiDispatch(req);
                     tvHttpApiWriteResponse(fd, ssl, resp);
                     if (ssl) SSL_free(ssl);
@@ -5637,11 +5894,8 @@ static void clientGoneHook(rfbClientPtr cl) {
     // 防止 0 客户端下 CADisplayLink 高频空转渲染（采集已常驻，只降频不停采）。
     if (wasMgmt) {
         if (gClientCount == 0) {
-            if (gIsCaptureStarted) {
-                [[ScreenCapturer sharedCapturer]
-                    setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps max:gCaptureLowFps];
-                TVLog(@"Management client gone with no clients; capture idled at %.0f fps.", gCaptureLowFps);
-            }
+            // 2026-09-15 门控统一：mgmt 客户端消失重算采集策略（无消费者则完全停止）
+            tvRefreshCapturePolicy();
             [[STHIDEventGenerator sharedGenerator] setKeepAliveInterval:0];
         }
         TVLog(@"Management client gone");
@@ -5676,12 +5930,8 @@ static void clientGoneHook(rfbClientPtr cl) {
         notify_post("com.82flex.trollvnc.control-idle");
     }
 
-    // 采集已常驻：客户端归零时只降回低频，不停采（2026-08-21 架构升级）
-    if (gIsCaptureStarted && gClientCount == 0) {
-        [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gCaptureLowFps preferred:gCaptureLowFps
-                                                                      max:gCaptureLowFps];
-        TVLog(@"No clients remaining; capture idled at %.0f fps.", gCaptureLowFps);
-    }
+    // 采集门控统一：客户端归零时由 tvRefreshCapturePolicy 处理（无 wait 挂起则完全停止）
+    tvRefreshCapturePolicy();
 
 #if !TARGET_OS_SIMULATOR
     // AutoAssist: disable AssistiveTouch if we enabled it and no clients remain
@@ -5737,6 +5987,9 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
 
     gClientCount++;
     TVLog(@"Client connected, active clients=%d", gClientCount);
+
+    // 2026-09-15 门控统一：首个客户端连接即启动/升频采集（原「idle 降频后再升频」逻辑归入口控）
+    tvRefreshCapturePolicy();
 
     // Add to global client states
     NSString *clientId = tvGenerateClientId8(cl->sock);
@@ -6610,9 +6863,8 @@ int main(int argc, const char *argv[]) {
         initializeTilingOrReset();
         initializeAndRunRfbServer();
 
-        // 2026-08-22 最小验证：采集改为惰性启动——服务启动不再采集，改由「隧道握手成功」跨进程通知触发
-        //（tunnel-connected 通知 → tvStartCaptureIfNeeded），验证 SIGILL 是否因启动太早/无客户端触发。
-        // gFrameHandler 已在 prepareScreenCapturer 就绪；此处仅安装监听，采集在隧道握手成功后启动。
+        // 2026-09-15 采集门控：服务启动零采集；消费者（RFB 客户端 / screen.wait 挂起）出现时
+        // 按需启动，全部消失即完全停止（tvRefreshCapturePolicy 统一判定，gFrameHandler 已就绪）。
         tvInstallTunnelConnectedListener();
         tvInstallCaptureFramerateListeners();
         tvInstallTunnelKickRemoteListener(); // 2026-08-23 方向2互斥：隧道控制会话建立踢 5801

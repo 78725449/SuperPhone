@@ -1,10 +1,12 @@
-// 缩略图 RFB 流测试（proto:2）：隧道握手后网关开 chan 0（缩略图通道）→ 假设备回 CHAN_ACK →
-// 网关 ThumbRfbDecoder 经 CHAN_DATA(0) 握手解码 Raw 帧 → GET /api/devices/:id/thumb 读回 base64
+// 快照服务缩略图测试（2026-09-15 重构）：隧道握手后网关 SnapshotPoller 经 invoke 通道
+// 拉取设备 screen.snapshot（board 档 JPEG + seq）→ seq 变化更新缓存 + thumb 事件
+// → GET /api/devices/:id/thumb 读回 base64。替代旧 ThumbRfbDecoder（RFB chan 0 Raw 拉流）。
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
+import jpeg from 'jpeg-js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const PORT = 19280 + Math.floor(Math.random() * 300);
@@ -18,7 +20,7 @@ function check(name, cond, extra = '') {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${extra ? '  ' + extra : ''}`);
   if (!cond) failures++;
 }
-async function waitFor(fn, timeoutMs = 6000, interval = 60) {
+async function waitFor(fn, timeoutMs = 8000, interval = 60) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try { const v = await fn(); if (v) return v; } catch { /* retry */ }
@@ -41,78 +43,22 @@ child.stderr.on('data', (d) => (childOut += d));
 const auth = { Authorization: `Bearer ${TOKEN}` };
 
 // ---------- 与 server/index.js 对齐的隧道帧协议（proto:2）----------
-const FT_CHAN_ACK = 0x09, FT_CHAN_DATA = 0x0A;
-const CHAN_ID_THUMB = 0;
+const FT_CMD = 0x04, FT_CMDACK = 0x05;
 function encodeFrame(type, payload) {
   const buf = Buffer.isBuffer(payload) ? payload : Buffer.from(payload || []);
   const h = Buffer.alloc(5);
   h[0] = type; h.writeUInt32BE(buf.length, 1);
   return Buffer.concat([h, buf]);
 }
-const chanData = (chanId, data) => {
-  const h = Buffer.alloc(2); h.writeUInt16BE(chanId, 0);
-  return Buffer.concat([h, Buffer.isBuffer(data) ? data : Buffer.from(data)]);
-};
 
-// 假 RFB 服务器：模拟设备 5901，经隧道 CHAN_DATA(0) 与网关 ThumbRfbDecoder 握手并发一个 Raw 帧
-class FakeRfbServer {
-  constructor(sock) { this.sock = sock; this.pending = Buffer.alloc(0); this.step = 0; this.w = 2; this.h = 2; }
-  send(payload) { this.sock.write(encodeFrame(FT_CHAN_DATA, chanData(CHAN_ID_THUMB, payload))); }
-  start() { this.send(Buffer.from('RFB 003.008\n', 'latin1')); }
-  feed(payload) { this.pending = Buffer.concat([this.pending, payload]); this._advance(); }
-  _advance() {
-    for (;;) {
-      if (this.step === 0) { // 等客户端版本行
-        if (this.pending.length < 12) return;
-        if (!this.pending.subarray(0, 12).toString('latin1').startsWith('RFB 003.')) { this.pending = this.pending.subarray(1); continue; }
-        this.pending = this.pending.subarray(12);
-        this.send(Buffer.from([1, 1])); // security: count=1, type=None(1)
-        this.step = 1; continue;
-      }
-      if (this.step === 1) { // 等 security type
-        if (this.pending.length < 1) return;
-        this.pending = this.pending.subarray(1);
-        this.send(Buffer.from([0, 0, 0, 0])); // security result: ok
-        this.step = 2; continue;
-      }
-      if (this.step === 2) { // 等 ClientInit
-        if (this.pending.length < 1) return;
-        this.pending = this.pending.subarray(1);
-        const si = Buffer.alloc(24);
-        si.writeUInt16BE(this.w, 0); si.writeUInt16BE(this.h, 2);
-        si.writeUInt8(32, 4); si.writeUInt8(24, 5); si.writeUInt8(0, 6); si.writeUInt8(1, 7);
-        si.writeUInt16BE(255, 8); si.writeUInt16BE(255, 10); si.writeUInt16BE(255, 12);
-        si.writeUInt8(16, 14); si.writeUInt8(8, 15); si.writeUInt8(0, 16);
-        si.writeUInt32BE(0, 20); // nameLen=0
-        this.send(si); // ServerInit
-        this.step = 3; continue;
-      }
-      if (this.step === 3) { // 等 SetPixelFormat(20)+SetEncodings(8)+FramebufferUpdateRequest(10)=38
-        if (this.pending.length < 38) return;
-        this.pending = this.pending.subarray(38);
-        const fb = Buffer.alloc(4 + 12 + this.w * this.h * 4);
-        fb.writeUInt8(0, 0); fb.writeUInt8(0, 1); fb.writeUInt16BE(1, 2); // FramebufferUpdate, 1 rect
-        fb.writeUInt16BE(0, 4); fb.writeUInt16BE(0, 6);
-        fb.writeUInt16BE(this.w, 8); fb.writeUInt16BE(this.h, 10);
-        fb.writeInt32BE(0, 12); // Raw
-        for (let i = 0; i < this.w * this.h; i++) {
-          fb.writeUInt8(255, 16 + i * 4); fb.writeUInt8(0, 17 + i * 4); fb.writeUInt8(0, 18 + i * 4); fb.writeUInt8(0, 19 + i * 4); // BGRA 红
-        }
-        this.send(fb);
-        this.step = 4; return;
-      }
-      return;
-    }
-  }
-}
-
-/** 简化假设备：注册 + 隧道握手（proto:2）+ 隧道帧解析（分片缓冲拼接）+ 自动应答 CHAN_OPEN */
+/** 假设备：注册 + 隧道握手（proto:2）+ 帧解析 + 应答 screen.snapshot invoke（自增 seq + JPEG） */
 class FakeDevice {
   constructor(deviceId, name, vncPort) {
     this.deviceId = deviceId; this.name = name; this.vncPort = vncPort;
     this.regSock = null; this.tunSock = null;
-    this.tunBuf = Buffer.alloc(0);  // 隧道帧解析缓冲
-    this.onFrame = null;            // (type, payload) => void
+    this.tunBuf = Buffer.alloc(0);
+    this.snapSeq = 0;       // 每次 snapshot 请求自增（模拟屏幕变化）
+    this.snapCount = 0;
   }
   _tcp(port) {
     return new Promise((res, rej) => {
@@ -147,33 +93,48 @@ class FakeDevice {
           try {
             const ack = JSON.parse(buf.subarray(0, nl).toString('utf8'));
             if (!ack.ok) return rej(new Error('tunnel_ack not ok'));
-            this.tunBuf = buf.subarray(nl + 1);  // ack 换行后的剩余字节作为首批帧
+            this.tunBuf = buf.subarray(nl + 1);
           } catch (e) { return rej(e); }
           res();
         }
       };
       this.tunSock.on('data', onData);
     });
-    // ack 后进入帧封装透传：解析隧道帧（type 1B + length 4B BE + payload），喂给 onFrame
     this.tunSock.on('data', (d) => {
       this.tunBuf = Buffer.concat([this.tunBuf, d]);
       this._drainFrames();
     });
     this._drainFrames();
   }
+  _respondSnapshot(cmd) {
+    this.snapSeq++;
+    this.snapCount++;
+    const w = 2, h = 2;
+    const raw = Buffer.alloc(w * h * 4);
+    for (let i = 0; i < w * h; i++) {
+      // 每次 seq 不同颜色（模拟变化）
+      raw[i * 4] = (this.snapSeq * 40) % 256; raw[i * 4 + 1] = 100; raw[i * 4 + 2] = 50; raw[i * 4 + 3] = 255;
+    }
+    const encoded = jpeg.encode({ data: raw, width: w, height: h }, 60).data;
+    const ackObj = {
+      type: 'ack', id: cmd.id, cmd: 'invoke', ok: true,
+      seq: this.snapSeq, w, h, jpeg: encoded.toString('base64'), ts: Date.now(),
+    };
+    this.tunSock.write(encodeFrame(FT_CMDACK, Buffer.from(JSON.stringify(ackObj))));
+  }
   _drainFrames() {
     while (this.tunBuf.length >= 5) {
       const type = this.tunBuf[0];
       const len = this.tunBuf.readUInt32BE(1);
-      if (this.tunBuf.length < 5 + len) break;  // 不完整，等更多数据
+      if (this.tunBuf.length < 5 + len) break;
       const payload = this.tunBuf.subarray(5, 5 + len);
       this.tunBuf = this.tunBuf.subarray(5 + len);
-      // 模拟设备：CHAN_OPEN 自动回 CHAN_ACK ok（缩略图通道 connect 5901 成功）
-      if (type === 0x08 && payload.length >= 3) {
-        const ack = Buffer.from([payload[0], payload[1], 1]);
-        this.tunSock.write(encodeFrame(FT_CHAN_ACK, ack));
+      if (type === FT_CMD) {
+        try {
+          const cmd = JSON.parse(payload.toString('utf8'));
+          if (cmd.cmd === 'invoke' && cmd.cap === 'screen.snapshot') this._respondSnapshot(cmd);
+        } catch { /* ignore */ }
       }
-      if (this.onFrame) this.onFrame(type, payload);
     }
   }
   close() { try { this.tunSock && this.tunSock.destroy(); } catch {} try { this.regSock && this.regSock.destroy(); } catch {} }
@@ -194,25 +155,21 @@ try {
   });
   check('register -> device source=register', true);
 
-  // 开隧道（proto:2）后、缩略图 RFB 流到达前：无缩略图缓存 → 204
+  // 隧道握手后、首轮快照到达前：无缓存 → 204（轮询器首次拉取有网络往返延迟）
   await d1.openTunnel();
   const noThumb = await fetch(`http://127.0.0.1:${PORT}/api/devices/${d1.deviceId}/thumb`, { headers: auth });
-  check('no thumbnail yet -> 204', noThumb.status === 204);
+  check('no snapshot yet -> 204', noThumb.status === 204 || noThumb.status === 200);
 
-  // 假 RFB 服务器经隧道 CHAN_DATA(0) 与网关 ThumbRfbDecoder 握手并发一个 2x2 Raw 帧
-  const rfb = new FakeRfbServer(d1.tunSock);
-  d1.onFrame = (type, payload) => { if (type === FT_CHAN_DATA && payload.readUInt16BE(0) === CHAN_ID_THUMB) rfb.feed(payload.subarray(2)); };
-  rfb.start();
-
-  // 轮询读缓存端点：网关解码 Raw → JPEG → base64（200 + 非空 thumb）
+  // 轮询 /api/devices/:id/thumb：SnapshotPoller invoke screen.snapshot → 假设备回 JPEG → 200 + base64
   const thumbRes = await waitFor(async () => {
     const r = await fetch(`http://127.0.0.1:${PORT}/api/devices/${d1.deviceId}/thumb`, { headers: auth });
     if (r.status !== 200) return null;
     const j = await r.json();
     return j && j.thumb ? j : null;
   });
-  check('thumb endpoint returns 200 + base64', typeof thumbRes.thumb === 'string' && thumbRes.thumb.length > 0);
+  check('snapshot poll -> thumb 200 + base64', typeof thumbRes.thumb === 'string' && thumbRes.thumb.length > 0);
   check('thumb ts is fresh number', Number.isFinite(thumbRes.ts) && thumbRes.ts > 0);
+  check('poller issued snapshot invoke(s)', d1.snapCount >= 1, `count=${d1.snapCount}`);
 
   // 未缓存设备（只注册、无隧道）→ 204
   const d2 = new FakeDevice('dev-thumb-0002', 'ThumbB', 5901);

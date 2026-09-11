@@ -996,6 +996,26 @@ static NSDictionary *TRSearchGatewaySync(void) {
             NSString *hex = resp[@"hash"];
             return @{@"ok":@YES, @"hash":hex};
         }];
+
+    // screen.snapshot（2026-09-15 快照服务）：board 档 JPEG 快照（320px，含全局变化 seq）。
+    // 真身在 trollvncserver 5802（TRCapabilityRegistry 所在 manager 进程经 HTTP 回环执行）。
+    // 瞬时语义（取帧+编码 <50ms），可同步调用；挂起原语 screen.wait/waitStable 不注册——
+    // 平台方（网关 invoke）已按 screen.* 前缀异步分流（TRGatewayClient），避免阻塞隧道主循环。
+    // 消费方：看板轮询器（网关）/ AI 拉图后 seq 去重 / cap.list 能力发现。
+    [self _registerControl:@"screen.snapshot" title:@"屏幕快照" icon:@"📸" route:TRCapRouteLocalCmd
+        params:@[@{@"name":@"quality",@"type":@"number",@"required":@NO}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            NSDictionary *resp = [[TRGatewayClient sharedClient] _loopbackScreenInvoke:nil op:@"screen.snapshot" params:p];
+            if (!resp) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:@"快照服务不可用（回环失败）"}];
+                return nil;
+            }
+            if (![resp[@"ok"] boolValue]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"screen.snapshot 失败"}];
+                return nil;
+            }
+            return resp;
+        }];
 }
 
 /**

@@ -117,6 +117,30 @@ static const int kHashBits = 64;                      // 哈希位数
 }
 
 /**
+ * 对【已存在的原始像素缓冲区】直接计算 pHash（零额外渲染，采集管线复用）。
+ * 功能：handleFramebuffer 内 tight back buffer 免取帧参与全局变化判定（seq 事件源）。
+ * 参数：见头文件声明
+ * 返回值：uint64_t — 64bit pHash；参数非法返回 0
+ */
+- (uint64_t)computeHashFromRawBuffer:(const void *)data
+                               width:(size_t)width
+                              height:(size_t)height
+                            rowBytes:(size_t)rowBytes
+                              format:(OSType)format {
+    if (!data || width == 0 || height == 0) return 0;
+    __block uint64_t hash = 0;
+    vImage_Buffer src;
+    src.data = (void *)data;
+    src.width = (vImagePixelCount)width;
+    src.height = (vImagePixelCount)height;
+    src.rowBytes = rowBytes;
+    dispatch_sync(_queue, ^{
+        hash = [self _computeHashFromVImageBuffer:&src format:format];
+    });
+    return hash;
+}
+
+/**
  * pHash 计算内部实现（无锁，需在 _queue 内调用）。
  * 功能：执行 5 步管线，返回 64bit 哈希。
  * 参数：无
@@ -142,7 +166,6 @@ static const int kHashBits = 64;                      // 哈希位数
 // 供采集回调（handleFramebuffer）复用采集帧，避免 captureSingleFrameBuffer 在 CADisplayLink
 // 回调内二次 CARenderServerRenderDisplay 导致 SIGILL 崩溃循环（server 首帧后即退出）。
 - (uint64_t)_computeHashFromLockedPixelBuffer:(CVPixelBufferRef)pixelBuffer {
-    uint64_t hash = 0;
     void *baseAddr = CVPixelBufferGetBaseAddress(pixelBuffer);
     size_t srcWidth = CVPixelBufferGetWidth(pixelBuffer);
     size_t srcHeight = CVPixelBufferGetHeight(pixelBuffer);
@@ -160,6 +183,19 @@ static const int kHashBits = 64;                      // 哈希位数
         srcBuffer.width = srcWidth;
         srcBuffer.height = srcHeight;
         srcBuffer.rowBytes = srcRowBytes;
+
+        return [self _computeHashFromVImageBuffer:&srcBuffer format:srcFormat];
+}
+
+/**
+ * pHash 核心：从任意 ARGB/BGRA vImage 源缓冲区计算（_queue 内调用，无锁）。
+ * 功能：vImage 桥接版 —— CVPixelBuffer 与 raw buffer（采集 back buffer）共用同一计算体。
+ * 参数：srcBuffer - 源 vImage 视图（ARGB/BGRA，4B/px）
+ *      srcFormat - 'ARGB'(0x42475241) / 'BGRA'(0x41524742)
+ * 返回值：uint64_t — 64bit pHash；源非法/失败返回 0
+ */
+- (uint64_t)_computeHashFromVImageBuffer:(vImage_Buffer *)srcBuffer format:(OSType)srcFormat {
+    uint64_t hash = 0;
 
         // ===== 步骤 02：缩放 32×32（vImageScale_ARGB8888）=====
         // vImageScale_ARGB8888 对 ARGB/BGRA 均适用（每通道独立插值，不关心通道顺序），

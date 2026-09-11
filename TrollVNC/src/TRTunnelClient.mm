@@ -678,6 +678,9 @@ static void TRTunnelLog(const char *fmt, ...) {
                              @"id": cmd[@"id"] ?: [NSNull null],
                              @"ok": @NO,
                              @"error": @"no command handler" };
+                } else if ([ack[@"pendingAsync"] boolValue]) {
+                    // 2026-09-15：长挂起原语（screen.wait 等）异步接管，稍后经 sendCmdAckForId:ack: 回写
+                    break;
                 }
                 NSData *ackJson = [NSJSONSerialization dataWithJSONObject:ack options:0 error:NULL];
                 if (ackJson) {
@@ -757,6 +760,17 @@ static void TRTunnelLog(const char *fmt, ...) {
     BOOL ok = [self _writeFrameLocked:fd type:type data:data length:len];
     pthread_mutex_unlock(&_writeMutex);
     return ok;
+}
+
+/** 异步回写 CMDACK（快照服务长挂起原语用；写锁保证与隧道主循环并发安全） */
+- (BOOL)sendCmdAckForId:(id)cid ack:(NSDictionary *)ack {
+    if (!_started || _tunnelFd < 0) return NO;
+    NSMutableDictionary *out = [ack mutableCopy] ?: [NSMutableDictionary dictionary];
+    out[@"type"] = @"ack";
+    out[@"id"] = cid ?: [NSNull null];
+    NSData *json = [NSJSONSerialization dataWithJSONObject:out options:0 error:NULL];
+    if (!json) return NO;
+    return [self _writeFrame:_tunnelFd type:kFrameTypeCmdAck data:json.bytes length:json.length];
 }
 
 - (BOOL)_writeFrameLocked:(int)fd type:(uint8_t)type data:(const void *)data length:(size_t)len {

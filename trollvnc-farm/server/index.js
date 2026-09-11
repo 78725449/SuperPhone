@@ -11,156 +11,49 @@ import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import Bonjour from 'bonjour-service';
-import jpeg from 'jpeg-js';
 
-// 缩略图 RFB 客户端：解码设备 5901 的 Raw 编码 framebuffer，产出 JPEG。
-// 只声明 Raw 编码（SetEncodings 仅 Raw=0），避免 Tight/ZRLE 复杂解码。
-class ThumbRfbDecoder {
-  constructor() {
-    this.w = 0; this.h = 0;
-    this.fb = null;            // RGBA Buffer（ServerInit 后分配）
-    this.state = 'version';    // version -> security -> secresult -> init -> update
-    this.pending = Buffer.alloc(0);
-    this.jpeg = null;          // 最新 JPEG Buffer
-    this.maxPending = 1024 * 1024;  // 握手阶段 pending 上限；init 后按全屏帧调整
-    this.lastNotifyTs = 0;          // onJpeg 节流时间戳
-    this.paused = false;            // 会话期间暂停：不发增量请求（拉模型下设备即不推帧）
-    this.onSend = null;        // (Buffer) => void，上行握手字节回调
-    this.onJpeg = null;        // jpeg 更新回调
-  }
-  pause() { this.paused = true; }
-  resume() {
-    if (!this.paused) return;
+// 快照轮询器（2026-09-15 替代 ThumbRfbDecoder）：经 invoke 通道低频拉取设备 screen.snapshot
+// （board 档 JPEG + 全局变化 seq），seq 变化 → 更新缓存 + 广播 thumb 事件（前端事件驱动零改动）。
+// 会话（session 通道）激活期间暂停轮询（省设备端按需渲染与隧道流量）；设备固件不支持
+// screen.snapshot（旧版本）时连续失败退避降级（30s 重试窗口），不刷屏不崩。
+class SnapshotPoller {
+  constructor(deviceId) {
+    this.deviceId = deviceId;
+    this.seq = -1;            // 上次缓存帧的全局变化 seq（-1=未拉取）
+    this.jpeg = null;         // 最新 board 档 JPEG base64
     this.paused = false;
-    if (this.fb && this.w > 0) this._requestUpdate(true); // 补发增量请求即恢复推送
+    this.running = false;
+    this.failStreak = 0;
+    this.intervalMs = 2000;   // 正常轮询间隔
   }
-  feed(data) {
-    if (this.state === 'dead') { this.pending = Buffer.alloc(0); return; }
-    this.pending = Buffer.concat([this.pending, data]);
-    if (this.pending.length > this.maxPending) { this.pending = Buffer.alloc(0); this.state = 'dead'; return; }
-    let again = true;
-    while (again) again = this._step();
-  }
-  _step() {
-    switch (this.state) {
-      case 'version': {
-        const n = this.pending.indexOf(0x0a);
-        if (n < 0) {
-          // 未到换行：若首字节不是 'R'(0x52)，是旧会话污染数据，清空重等
-          if (this.pending.length > 0 && this.pending[0] !== 0x52) this.pending = Buffer.alloc(0);
-          return false;
-        }
-        const ver = this.pending.subarray(0, n + 1).toString('latin1');
-        this.pending = this.pending.subarray(n + 1);
-        if (!ver.startsWith('RFB ')) return true; // 丢弃非版本行，继续等
-        this._send(Buffer.from('RFB 003.008\n', 'latin1'));
-        this.state = 'security';
-        return true;
-      }
-      case 'security': {
-        if (this.pending.length < 1) return false;
-        const n = this.pending[0];
-        if (this.pending.length < 1 + n) return false;
-        const types = this.pending.subarray(1, 1 + n);
-        this.pending = this.pending.subarray(1 + n);
-        if (types.includes(1)) { this._send(Buffer.from([1])); this.state = 'secresult'; }
-        else { this.state = 'dead'; }
-        return true;
-      }
-      case 'secresult': {
-        if (this.pending.length < 4) return false;
-        this.pending = this.pending.subarray(4);
-        this._send(Buffer.from([1])); // ClientInit: shared-flag=1
-        this.state = 'init';
-        return true;
-      }
-      case 'init': {
-        // ServerInit: width(2) height(2) pixfmt(16) nameLen(4) name(nameLen)
-        if (this.pending.length < 24) return false;
-        this.w = this.pending.readUInt16BE(0);
-        this.h = this.pending.readUInt16BE(2);
-        const nameLen = this.pending.readUInt32BE(20);
-        if (this.pending.length < 24 + nameLen) return false;
-        this.pending = this.pending.subarray(24 + nameLen);
-        this.fb = Buffer.alloc(this.w * this.h * 4);
-        this.maxPending = this.w * this.h * 4 + 1024 * 1024; // 一帧全屏 Raw + 余量
-        // SetPixelFormat: type(0) + padding(3) + pixelFormat(16) = 20 字节；声明 BGRA（与设备端 serverFormat 一致）
-        const pixfmt = Buffer.alloc(16);
-        pixfmt.writeUInt8(32, 0);   // bits-per-pixel
-        pixfmt.writeUInt8(24, 1);   // depth
-        pixfmt.writeUInt8(0, 2);    // big-endian-flag
-        pixfmt.writeUInt8(1, 3);    // true-color-flag
-        pixfmt.writeUInt16BE(255, 4);  // red-max
-        pixfmt.writeUInt16BE(255, 6);  // green-max
-        pixfmt.writeUInt16BE(255, 8);  // blue-max
-        pixfmt.writeUInt8(16, 10);  // red-shift = 16（BGRA）
-        pixfmt.writeUInt8(8, 11);   // green-shift = 8
-        pixfmt.writeUInt8(0, 12);   // blue-shift = 0
-        this._send(Buffer.concat([Buffer.from([0, 0, 0, 0]), pixfmt]));
-        // SetEncodings: type(2) + padding(1) + count(2) + encoding(4) = 8 字节，仅声明 Raw(0)
-        this._send(Buffer.from([2, 0, 0, 1, 0, 0, 0, 0]));
-        this.state = 'update';
-        this._requestUpdate(true);
-        return true;
-      }
-      case 'update': {
-        // 多客户端并存（proto:2）后设备剪贴板变化会向所有客户端广播 ServerCutText
-        // （type 3，[type:1][pad:3][len:4][text]）——解码器只关心 FramebufferUpdate，
-        // 遇到即整条跳过（否则会被当 rect 头解析导致错乱死亡）
-        if (this.pending.length >= 1 && this.pending[0] === 3) {
-          if (this.pending.length < 8) return false;
-          const cutLen = this.pending.readUInt32BE(4);
-          if (this.pending.length < 8 + cutLen) return false;
-          this.pending = this.pending.subarray(8 + cutLen);
-          return true;
-        }
-        if (this.pending.length < 4) return false;
-        const numRects = this.pending.readUInt16BE(2);
-        let off = 4;
-        for (let i = 0; i < numRects; i++) {
-          if (this.pending.length < off + 12) return false;
-          const x = this.pending.readUInt16BE(off);
-          const y = this.pending.readUInt16BE(off + 2);
-          const rw = this.pending.readUInt16BE(off + 4);
-          const rh = this.pending.readUInt16BE(off + 6);
-          const enc = this.pending.readInt32BE(off + 8);
-          off += 12;
-          if (enc !== 0) { this.state = 'dead'; return false; } // 仅 Raw
-          const rowBytes = rw * 4;
-          if (this.pending.length < off + rowBytes * rh) return false;
-          const px = this.pending.subarray(off, off + rowBytes * rh);
-          off += rowBytes * rh;
-          for (let r = 0; r < rh; r++) {
-            const src = px.subarray(r * rowBytes, (r + 1) * rowBytes);
-            const dstOff = ((y + r) * this.w + x) * 4;
-            for (let c = 0; c < rw; c++) {
-              this.fb[dstOff + c * 4] = src[c * 4 + 2];       // R
-              this.fb[dstOff + c * 4 + 1] = src[c * 4 + 1];   // G
-              this.fb[dstOff + c * 4 + 2] = src[c * 4];       // B
-              this.fb[dstOff + c * 4 + 3] = 255;              // A
-            }
+  start() { this.paused = false; this._loop(); }
+  pause() { this.paused = true; }
+  resume() { if (this.paused) { this.paused = false; this._loop(); } }
+  stop() { this.paused = true; this.running = false; }
+  async _loop() {
+    if (this.running || this.paused) return;
+    this.running = true;
+    try {
+      while (!this.paused) {
+        const ack = await sendDeviceCmd(this.deviceId, { cmd: 'invoke', cap: 'screen.snapshot', params: {} }, 15000);
+        if (ack && ack.ok !== false && typeof ack.seq === 'number' && typeof ack.jpeg === 'string') {
+          this.failStreak = 0;
+          if (this.seq !== ack.seq) {
+            this.seq = ack.seq;
+            this.jpeg = ack.jpeg;
+            notifyDevicesChanged('thumb', this.deviceId);
           }
+        } else {
+          // 旧固件/能力缺失/设备忙：连续失败退避降级，避免 2s 空旋刷屏
+          this.failStreak++;
         }
-        this.pending = this.pending.subarray(off);
-        if (this.fb && this.w > 0 && this.h > 0) {
-          try { this.jpeg = jpeg.encode({ data: this.fb, width: this.w, height: this.h }, 70).data; } catch { /* ignore */ }
-          const now = Date.now();
-          if (this.onJpeg && now - this.lastNotifyTs >= 500) { this.lastNotifyTs = now; this.onJpeg(); }
-        }
-        this._requestUpdate(true); // 增量请求：静止不触发 update
-        return true;
+        if (this.paused) break;
+        const backoff = this.failStreak >= 3 ? 30000 : this.intervalMs;
+        await new Promise((r) => setTimeout(r, backoff));
       }
-      default: return false;
+    } catch { /* 隧道中断等：静默，下次 resume/start 恢复 */ } finally {
+      this.running = false;
     }
-  }
-  _send(b) { if (this.onSend) this.onSend(Buffer.isBuffer(b) ? b : Buffer.from(b)); }
-  _requestUpdate(incremental) {
-    if (this.paused) return; // 会话期间暂停：不发请求（连接保留，恢复时补发）
-    const m = Buffer.alloc(10);
-    m.writeUInt8(3, 0); m.writeUInt8(incremental ? 1 : 0, 1);
-    m.writeUInt16BE(0, 2); m.writeUInt16BE(0, 4);
-    m.writeUInt16BE(this.w, 6); m.writeUInt16BE(this.h, 8);
-    this._send(m);
   }
 }
 
@@ -387,7 +280,7 @@ const sessionsByDevice = new Map();   // deviceId -> Set<ws>
 const sessionGroup = new Map();       // ws -> { group, deviceId }???????????
 const sessionBroadcaster = new Map(); // ws -> true
 const registeredDevices = new Map(); // deviceId -> { sock, lastHeartbeat }
-// Phase 7：设备隧道连接（deviceId -> { sock, channels, controller, thumbRfb }），
+// Phase 7：设备隧道连接（deviceId -> { sock, channels, controller, thumbPoller }），
 // proto:2 通道复用：单隧道多路 5901 连接（chan 0 缩略图 + 会话通道），跨网络 RFB 透传 + 命令复用
 const tunnels = new Map();
 // 隧道帧协议常量（type:1B + length:4B BE + payload）
@@ -479,7 +372,17 @@ function sendDeviceCmd(deviceId, cmdObj, timeoutMs = 5000) {
       sent = sendToDevice(deviceId, payload);
     }
     if (!sent) { resolve(null); return; }
-    const timer = setTimeout(() => { pendingCmds.delete(cid); resolve(null); }, timeoutMs);
+    // 2026-09-15 快照服务：挂起原语（screen.wait/waitStable）被网关侧放弃（AI 超时/请求断开）时
+    // 向设备发 cancel（原 cid 经 cancelId 传达），设备端 shutdown 挂起 fd 立即退出——
+    // 防「AI 放弃等待而屏幕永不变」的设备端永久挂起泄漏
+    const timer = setTimeout(() => {
+      pendingCmds.delete(cid);
+      resolve(null);
+      if (cmdObj.cmd === 'invoke' && typeof cmdObj.cap === 'string' &&
+          (cmdObj.cap === 'screen.wait' || cmdObj.cap === 'screen.waitStable')) {
+        try { sendDeviceCmd(deviceId, { cmd: 'cancel', cancelId: cid }, 3000); } catch { /* ignore */ }
+      }
+    }, timeoutMs);
     pendingCmds.set(cid, { resolve, timer, cmd: cmdObj.cmd, deviceId });
   });
 }
@@ -503,14 +406,12 @@ function broadcastInput(fromWs, groupName, data) {
 }
 
 // ---------- WebSocket <-> VNC 桥接 ----------
-// proto:2 会话通道辅助：缩略图在会话期间暂停请求（RFB 拉模型——不发
-// FramebufferUpdateRequest 设备即不推帧，连接/握手状态完整保留，零流量），
-// 会话通道全断后补发一个增量请求即恢复推送（无重连、无竞态）
+// 快照轮询在会话期间暂停（省设备端按需渲染与隧道流量），会话通道全断后恢复轮询
 function pauseThumb(tun) {
-  if (tun.thumbRfb && !tun.thumbRfb.paused) tun.thumbRfb.pause();
+  if (tun.thumbPoller && !tun.thumbPoller.paused) tun.thumbPoller.pause();
 }
 function resumeThumb(tun) {
-  if (tun.thumbRfb && tun.thumbRfb.paused) tun.thumbRfb.resume();
+  if (tun.thumbPoller && tun.thumbPoller.paused) tun.thumbPoller.resume();
 }
 function hasSessionChannels(tun) {
   for (const ch of tun.channels.values()) if (ch.kind === CHAN_KIND_SESSION) return true;
@@ -529,16 +430,7 @@ function releaseChPendingUp(tun, ch) {
   }
   ch.pendingUp = Buffer.alloc(0);
 }
-// 缩略图通道重开（chan 0 EOF / ACK 失败后的 2s 退避重试；已就绪则跳过）
-function scheduleThumbOpen(tun) {
-  if (tun.thumbRetryTimer) return;
-  tun.thumbRetryTimer = setTimeout(() => {
-    tun.thumbRetryTimer = null;
-    if (tun.sock && !tun.sock.destroyed && tun.sock.writable && !tun.thumbRfb) {
-      writeTunnelFrame(tun.sock, FT_CHAN_OPEN, chanPayload(CHAN_ID_THUMB, CHAN_KIND_THUMB));
-    }
-  }, 2000);
-}
+// 会话通道重开辅助（原缩略图通道 chan 0 已退役——2026-09-15 快照服务替代，见 SnapshotPoller）
 function handleVncSocket(ws, req, deviceId, grp, isBroadcast, isCtrl) {
   const dev = findDevice(deviceId);
   if (!dev) {
@@ -877,11 +769,11 @@ async function handleApi(req, res, url) {
       const dev = findDevice(id);
       if (!dev) { sendJson(res, 404, { error: 'device not found' }); return true; }
       if (req.method === 'GET' && sub === 'thumb') {
-        // 缩略图缓存读取：缩略图 RFB 解码器产出的 JPEG（base64）；无缓存返回 204
+        // 快照缓存读取（2026-09-15：SnapshotPoller 拉取的 board 档 JPEG base64；无缓存返回 204）
         const trec = tunnels.get(id);
-        const jpeg = trec && trec.thumbRfb && trec.thumbRfb.jpeg;
-        if (!jpeg) { res.writeHead(204); res.end(); return true; }
-        sendJson(res, 200, { thumb: jpeg.toString('base64'), ts: Date.now() });
+        const thumb = trec && trec.thumbPoller && trec.thumbPoller.jpeg;
+        if (!thumb) { res.writeHead(204); res.end(); return true; }
+        sendJson(res, 200, { thumb, ts: Date.now() });
         return true;
       }
       // 2026-08-23：相册导入（照片/视频）——前端经网关中转 → 设备 5802 album.import（PHPhotoLibrary）
@@ -1011,7 +903,10 @@ async function handleApi(req, res, url) {
         const body = await readBody(req).catch(() => ({}));
         const cap = String(body.cap || '');
         if (!cap) { sendJson(res, 400, { error: 'cap required' }); return true; }
-        const timeoutMs = Math.min(Math.max(Number(body.timeout) || 5000, 500), 15000);
+        // 2026-09-15 快照服务：screen.wait/waitStable 为协议零超时长挂起原语（AI 等变化/等稳定，
+        // 可挂起至分钟级），超时上限放宽至 120s；其余能力维持 15s 上限
+        const maxTimeout = cap === 'screen.wait' || cap === 'screen.waitStable' ? 120000 : 15000;
+        const timeoutMs = Math.min(Math.max(Number(body.timeout) || 5000, 500), maxTimeout);
         const ack = await sendDeviceCmd(id, { cmd: 'invoke', cap, params: body.params || {} }, timeoutMs);
         if (!ack) { sendJson(res, 504, { error: 'ack timeout', cap }); return true; }
         sendJson(res, 200, { ok: ack.ok !== false, cap, deviceId: dev.id, ack });
@@ -1635,20 +1530,17 @@ const tunnelServer = net.createServer((sock) => {
    */
   const handleFrame = (type, payload) => {
     if (type === FT_CHAN_DATA) {
-      // 通道 RFB 数据（设备→网关）：按 chanId 分发——0 喂缩略图解码器，其余发对应会话 WS
+      // 通道 RFB 数据（设备→网关）：按 chanId 发对应会话 WS（chan 0 缩略图 RFB 流已退役，
+      // 剩余无分发目标则忽略——2026-09-15 快照服务替代）
       if (payload.length < 2) return;
       const rec = tunnels.get(deviceId);
       if (!rec) return;
       const chanId = payload.readUInt16BE(0);
       const data = payload.subarray(2);
-      if (chanId === CHAN_ID_THUMB) {
-        if (rec.thumbRfb) rec.thumbRfb.feed(data);
-      } else {
-        const ch = rec.channels.get(chanId);
-        if (ch && ch.ws && ch.ws.readyState === ch.ws.OPEN) {
-          ch.rx += data.length;
-          try { ch.ws.send(data); } catch { /* ignore */ }
-        }
+      const ch = rec.channels.get(chanId);
+      if (ch && ch.ws && ch.ws.readyState === ch.ws.OPEN) {
+        ch.rx += data.length;
+        try { ch.ws.send(data); } catch { /* ignore */ }
       }
     } else if (type === FT_CHAN_ACK) {
       // 通道建立确认（设备→网关）：[chanId:2BE][ok:1B]
@@ -1658,21 +1550,6 @@ const tunnelServer = net.createServer((sock) => {
       if (!rec) return;
       const chanId = payload.readUInt16BE(0);
       const ok = payload[2];
-      if (chanId === CHAN_ID_THUMB) {
-        // 缩略图通道就绪：创建解码器（onSend 输出封装为 chan 0 下行；设备端对通道
-        // 首包 12B "RFB 003." 重复版本有对称过滤）
-        if (ok) {
-          rec.thumbRfb = new ThumbRfbDecoder();
-          rec.thumbRfb.onSend = (bytes) => { try { writeTunnelFrame(sock, FT_CHAN_DATA, chanDataPayload(CHAN_ID_THUMB, bytes)); } catch { /* noop */ } };
-          rec.thumbRfb.onJpeg = () => { notifyDevicesChanged('thumb', deviceId); };
-          // 若已有会话（如 5901 重启后重开 chan 0），保持暂停语义
-          if (hasSessionChannels(rec)) rec.thumbRfb.pause();
-        } else {
-          console.log(`[tunnel] thumb chan ack failed (${deviceId}), retry in 2s`);
-          scheduleThumbOpen(rec);
-        }
-        return;
-      }
       const ch = rec.channels.get(chanId);
       if (!ch || ch.ready) return;
       if (ch.timer) { clearTimeout(ch.timer); ch.timer = null; }
@@ -1693,21 +1570,14 @@ const tunnelServer = net.createServer((sock) => {
       const rec = tunnels.get(deviceId);
       if (!rec) return;
       const chanId = payload.readUInt16BE(0);
-      if (chanId === CHAN_ID_THUMB) {
-        // 缩略图通道断开：丢弃解码器，退避重试 CHAN_OPEN（设备 5901 恢复后自愈）
-        console.log(`[tunnel] thumb chan closed (${deviceId}), retry in 2s`);
-        rec.thumbRfb = null;
-        scheduleThumbOpen(rec);
-      } else {
-        const ch = rec.channels.get(chanId);
-        if (!ch) return; // 会话已自行关闭（幂等）
-        rec.channels.delete(chanId);
-        if (ch.timer) { clearTimeout(ch.timer); ch.timer = null; }
-        // reason=3：5801 直连接管（设备端主动让位）→ 4001「已被其它端接管」；否则 5901 EOF → 4006
-        const reason = payload.length >= 3 ? payload[2] : 0;
-        try { ch.ws.close(reason === 3 ? 4001 : 4006, reason === 3 ? 'taken over by direct client' : 'device rfb eof'); } catch { /* noop */ }
-        if (!hasSessionChannels(rec)) resumeThumb(rec);
-      }
+      const ch = rec.channels.get(chanId);
+      if (!ch) return; // 会话已自行关闭（幂等）
+      rec.channels.delete(chanId);
+      if (ch.timer) { clearTimeout(ch.timer); ch.timer = null; }
+      // reason=3：5801 直连接管（设备端主动让位）→ 4001「已被其它端接管」；否则 5901 EOF → 4006
+      const reason = payload.length >= 3 ? payload[2] : 0;
+      try { ch.ws.close(reason === 3 ? 4001 : 4006, reason === 3 ? 'taken over by direct client' : 'device rfb eof'); } catch { /* noop */ }
+      if (!hasSessionChannels(rec)) resumeThumb(rec);
     } else if (type === FT_CMDACK) {
       // cmd ack: match pending cmds
       let ack;
@@ -1798,10 +1668,9 @@ const tunnelServer = net.createServer((sock) => {
       tunnels.set(deviceId, {
         sock,
         channels: new Map(),   // chanId -> { id, kind, ws, ready, pendingUp, timer }
-        nextChan: 1,           // 会话通道号分配器（0 固定缩略图）
+        nextChan: 1,           // 会话通道号分配器（chan 0 缩略图 RFB 流已退役，2026-09-15）
         controller: null,
-        thumbRfb: null,        // 缩略图解码器（chan 0 ACK 成功后创建）
-        thumbRetryTimer: null, // chan 0 EOF/失败重试定时器
+        thumbPoller: null,     // 快照轮询器（隧道就绪即启动：invoke screen.snapshot 拉 board 档 JPEG）
         controlled: false,
         controlledSource: null,
       });
@@ -1811,9 +1680,11 @@ const tunnelServer = net.createServer((sock) => {
       dev.lastSeen = Date.now();
       saveDb();
       console.log(`[tunnel] established for device ${deviceId} (${dev.name}) proto=${TUNNEL_PROTO}`);
-      // 隧道就绪即开缩略图通道（chan 0）：设备端 connect 5901 + 主动写版本后回 ACK，
-      // ACK 后网关创建 ThumbRfbDecoder 开始缩略图拉流
-      writeTunnelFrame(sock, FT_CHAN_OPEN, chanPayload(CHAN_ID_THUMB, CHAN_KIND_THUMB));
+      // 2026-09-15：缩略图改走快照服务——隧道就绪即启动 SnapshotPoller（invoke 通道，
+      // 不占用 5901 RFB 客户端；会话激活时自动暂停）
+      const poller = new SnapshotPoller(deviceId);
+      tunnels.get(deviceId).thumbPoller = poller;
+      poller.start();
       // buf 中剩余字节作为首批帧数据
       if (buf.length > 0) {
         feedFrame(buf);
@@ -1826,7 +1697,7 @@ const tunnelServer = net.createServer((sock) => {
         if (rec && rec.sock === sock) {
           tunnels.delete(deviceId);
           // 关闭关联的 WS 会话与通道状态，避免挂起（客户端可重连）
-          if (rec.thumbRetryTimer) { clearTimeout(rec.thumbRetryTimer); rec.thumbRetryTimer = null; }
+          if (rec.thumbPoller) { rec.thumbPoller.stop(); rec.thumbPoller = null; }
           for (const ch of rec.channels.values()) {
             if (ch.timer) { clearTimeout(ch.timer); ch.timer = null; }
             try { ch.ws.close(4002, 'tunnel closed'); } catch { /* noop */ }

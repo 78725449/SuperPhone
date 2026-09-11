@@ -64,6 +64,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     NSTimeInterval _retryDelay;
     NSString *_deviceId;
     NSString *_deviceName;
+    NSMutableDictionary *_loopbackFds; // 快照服务挂起回环登记表：cid(str) -> @(fd)（cancel 用，2026-09-15）
 }
 
 - (NSString *)_gatewayHost;
@@ -521,6 +522,84 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
  * @param msg 原始命令字典（{type:"cmd", cmd, id, ...}）
  * @return ack 字典（{type:"ack", cmd, id, ok, ...}）；非 cmd 类型返回 nil
  */
+/**
+ * HTTP 回环调用本机 trollvncserver 的 5802 快照服务（screen.snapshot / screen.wait / screen.waitStable）。
+ * 功能：快照真身在画面进程（server）；manager 经 127.0.0.1 回环执行，隧道/网关侧只透传。
+ *      挂起式原语（wait/waitStable）会阻塞至条件满足或连接断开——必须在独立线程调用；
+ *      网关超时放弃（pendingCmds 超时 → cmd:'cancel'）时经 cancelLoopbackForId: shutdown 该 fd 取消。
+ * 参数：cid    - 隧道命令 id（登记进取消表，可 nil）
+ *      op     - 原语名（screen.snapshot / screen.wait / screen.waitStable）
+ *      params - 参数字典（透传）
+ * 返回值：响应 JSON 字典（含 ok 字段）；通信失败/被取消返回 nil
+ */
+- (NSDictionary *)_loopbackScreenInvoke:(id)cid op:(NSString *)op params:(NSDictionary *)params {
+    NSDictionary *req = @{@"op": op, @"params": params ?: @{}};
+    NSData *body = [NSJSONSerialization dataWithJSONObject:req options:0 error:NULL];
+    if (!body) return nil;
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return nil;
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(5802); // trollvncserver 管理 API 端口（固定）
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(fd);
+        return nil;
+    }
+    if (cid) {
+        @synchronized(self) {
+            if (!_loopbackFds) _loopbackFds = [NSMutableDictionary dictionary];
+            _loopbackFds[[cid description]] = @(fd);
+        }
+    }
+
+    NSMutableString *head = [NSMutableString stringWithString:
+        @"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"];
+    [head appendFormat:@"Content-Length: %lu\r\nConnection: close\r\n\r\n", (unsigned long)body.length];
+    NSMutableData *out = [NSMutableData dataWithData:[head dataUsingEncoding:NSUTF8StringEncoding]];
+    [out appendData:body];
+    if (write(fd, out.bytes, out.length) < 0) {
+        if (cid) { @synchronized(self) { [_loopbackFds removeObjectForKey:[cid description]]; } }
+        close(fd);
+        return nil;
+    }
+
+    // 读取全部响应至 EOF（server 固定 Connection: close；挂起期间阻塞由 server 侧控制）
+    NSMutableData *resp = [NSMutableData data];
+    char buf[8192];
+    for (;;) {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n <= 0) break;
+        [resp appendBytes:buf length:(NSUInteger)n];
+        if (resp.length > 16 * 1024 * 1024) break; // 防御：超出上限（不应发生）
+    }
+    if (cid) { @synchronized(self) { [_loopbackFds removeObjectForKey:[cid description]]; } }
+    close(fd);
+
+    NSRange sep = [resp rangeOfData:[NSData dataWithBytes:"\r\n\r\n" length:4] options:0
+                              range:NSMakeRange(0, resp.length)];
+    if (sep.location == NSNotFound || resp.length < sep.location + 4) return nil;
+    NSData *jsonData = [resp subdataWithRange:NSMakeRange(sep.location + 4, resp.length - sep.location - 4)];
+    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:NULL];
+    return [json isKindOfClass:[NSDictionary class]] ? json : nil;
+}
+
+/** 取消挂起的快照回环（网关超时放弃后经 cmd:'cancel' 到达）：shutdown 挂起 fd → read 返回 0 → 挂起线程退出 */
+- (void)cancelLoopbackForId:(id)cid {
+    if (!cid) return;
+    NSNumber *fdN = nil;
+    @synchronized(self) {
+        fdN = _loopbackFds[[cid description]];
+        if (fdN) [_loopbackFds removeObjectForKey:[cid description]];
+    }
+    if (fdN) {
+        int fd = fdN.intValue;
+        shutdown(fd, SHUT_RDWR); // 唤醒阻塞 read；后续 close 由持有线程执行
+    }
+}
+
 - (NSDictionary *)_buildAckForCommand:(NSDictionary *)msg {
     NSString *type = [msg[@"type"] description];
     if (![type isEqualToString:@"cmd"]) return nil;
@@ -528,6 +607,12 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     NSString *cid = msg[@"id"] ? [msg[@"id"] description] : @"";
 
     if ([cmd isEqualToString:@"ping"]) {
+        return @{ @"type": @"ack", @"cmd": cmd, @"id": cid, @"ok": @YES };
+    }
+    else if ([cmd isEqualToString:@"cancel"]) {
+        // 2026-09-15 快照服务：网关放弃挂起原语（AI 超时/断开）后的取消通知——shutdown 对应回环 fd
+        NSString *cancelId = msg[@"cancelId"] ? [msg[@"cancelId"] description] : @"";
+        if (cancelId.length) [self cancelLoopbackForId:cancelId];
         return @{ @"type": @"ack", @"cmd": cmd, @"id": cid, @"ok": @YES };
     }
     else if ([cmd isEqualToString:@"query"]) {
@@ -552,6 +637,21 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
         NSString *capId = msg[@"cap"] ? [msg[@"cap"] description] : @"";
         NSDictionary *params = msg[@"params"];
         if (![params isKindOfClass:[NSDictionary class]]) params = @{};
+        // ===== 快照服务（2026-09-15）：screen.* 真身在 trollvncserver 5802，经 HTTP 回环执行 =====
+        // wait/waitStable 为协议零超时的长挂起；snapshot 含取帧+编码——统一在线程池异步执行，
+        // 完成后经 TRTunnelClient sendCmdAckForId: 回写（pendingAsync 语义，不阻塞隧道主循环）。
+        if ([capId hasPrefix:@"screen."]) {
+            id cidRaw = msg[@"id"];
+            __weak typeof(self) weakSelf = self;
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                if (!strongSelf) return;
+                NSDictionary *result = [strongSelf _loopbackScreenInvoke:cidRaw op:capId params:params];
+                if (!result) result = @{@"ok": @NO, @"error": @"loopback failed"};
+                [[TRTunnelClient sharedClient] sendCmdAckForId:cidRaw ack:result];
+            });
+            return @{@"pendingAsync": @YES};
+        }
         NSError *err = nil;
         NSDictionary *result = [[TRCapabilityRegistry sharedRegistry] invoke:capId params:params error:&err];
         if (result) {

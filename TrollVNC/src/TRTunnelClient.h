@@ -34,9 +34,20 @@
  * 命令处理器（隧道 CMD 帧到达时调用，返回 ack 字典）
  * 由 TRGatewayClient 注入，复用现有命令处理逻辑（query/set/invoke/restart/ping）。
  * @param cmd 网关通过隧道下发的命令字典（{type:"cmd", cmd, id, ...}）
- * @return ack 字典（{type:"ack", cmd, id, ok, ...}），将通过 CMDACK 帧回传网关
+ * @return ack 字典（{type:"ack", cmd, id, ok, ...}），将通过 CMDACK 帧回传网关；
+ *         返回 @{@"pendingAsync": @YES} 表示已异步接管，稍后必须经 sendCmdAckForId:ack: 回写
  */
 @property (nonatomic, copy, nullable) NSDictionary *(^commandHandler)(NSDictionary *cmd);
+
+/**
+ * 异步回写 CMDACK（配合 commandHandler 的 pendingAsync 语义，2026-09-15 快照服务）：
+ * 长挂起原语（screen.wait / screen.waitStable）由独立线程经 HTTP 回环等待，完成后回写。
+ * 线程安全（内部 _writeFrame 自带写锁）；隧道已断开时静默失败。
+ * @param cid 原命令 id（NSString 或 NSNumber，原样回传网关）
+ * @param ack 应答字典（自动补 type/id 字段）
+ * @return YES 写入成功；NO 隧道不可用
+ */
+- (BOOL)sendCmdAckForId:(nullable id)cid ack:(NSDictionary *)ack;
 
 /**
  * 请求断开所有隧道会话通道（5801 直连接管时调用，2026-08-23）：

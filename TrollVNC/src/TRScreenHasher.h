@@ -62,6 +62,23 @@ static const NSInteger TRScreenWaitStableDefaultThreshold = 3;
  */
 - (NSString *)computeHashHexForCurrentFrame;
 
+/**
+ * 对【已存在的原始像素缓冲区】直接计算 pHash（零额外渲染）。
+ * 功能：采集管线（handleFramebuffer）内的 tight 帧/back buffer 免取帧直接参与变化判定；
+ *      屏流档 60fps 下每帧 0.3ms，作为 seq 变化事件源的开销可忽略。
+ * 参数：data    - ARGB/BGRA 内存序像素（4B/px，紧凑或带 stride 均可）
+ *      width   - 像素宽
+ *      height  - 像素高
+ *      rowBytes - 每行字节数（stride）
+ *      format  - 像素格式 'ARGB'(0x42475241) / 'BGRA'(0x41524742)
+ * 返回值：uint64_t — 64bit pHash；参数非法返回 0
+ */
+- (uint64_t)computeHashFromRawBuffer:(const void *)data
+                               width:(size_t)width
+                              height:(size_t)height
+                            rowBytes:(size_t)rowBytes
+                              format:(OSType)format;
+
 #pragma mark - 汉明距离与差异检测
 
 /**
