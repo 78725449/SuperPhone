@@ -4856,7 +4856,9 @@ static BOOL tvWaitForScreenEvent(int fd, uint64_t since, BOOL waitStable, double
         BOOL met = NO;
         pthread_mutex_lock(&gScreenEventMutex);
         if (waitStable) {
-            if (gLastChangeTime > 0 && (CFAbsoluteTimeGetCurrent() - gLastChangeTime) >= minStableMs) met = YES;
+            // minStableMs 是毫秒；CFAbsoluteTimeGetCurrent 差值单位是秒——必须换算，
+            // 否则 400ms 会被当成 400s（真机表现为 waitStable 永远等不到，客户端 deadline 超时）
+            if (gLastChangeTime > 0 && (CFAbsoluteTimeGetCurrent() - gLastChangeTime) >= (minStableMs / 1000.0)) met = YES;
         } else {
             if (gChangeSeq > since) met = YES;
         }
