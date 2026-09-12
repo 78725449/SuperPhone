@@ -2138,7 +2138,10 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
         if (h != 0) {
             pthread_mutex_lock(&gScreenEventMutex);
             if (gLastScreenHash == 0) {
+                // 首帧仅建基线不产生事件；同时记「已知状态时刻」——否则自启动以来无变化时
+                // gLastChangeTime 恒 0，screen.waitStable 的「距上次变化 ≥ minStableMs」永不成立（永久挂起）
                 gLastScreenHash = h;
+                gLastChangeTime = CFAbsoluteTimeGetCurrent();
             } else if ([[TRScreenHasher sharedHasher] hammingDistanceBetweenHash:gLastScreenHash andHash:h] >
                        kScreenChangeThreshold) {
                 gLastScreenHash = h;
@@ -4832,6 +4835,18 @@ static NSData *tvSnapEncodeBoardJPEG(int *outW, int *outH) {
  * 返回值：YES 条件满足应按 {seq} 应答；NO 连接已断开，静默清理
  */
 static BOOL tvWaitForScreenEvent(int fd, uint64_t since, BOOL waitStable, double minStableMs) {
+    // 2026-09-15 基线新鲜度：空闲态（无 RFB 客户端）采集未运行 → 若直接挂起，门控启动采集后的
+    // 首帧会被当基线，从而吞掉「等待前已发生的变化」（AI 注入→等变化会等不到）。此处先同步取
+    // 当前帧建立基线（与 snapshot 同源，~20ms），再靠 gWaitCount 触发的采集持续感知后续变化。
+    if (!gIsCaptureStarted) {
+        uint64_t h0 = [[TRScreenHasher sharedHasher] computeHashForCurrentFrame];
+        if (h0 != 0) {
+            pthread_mutex_lock(&gScreenEventMutex);
+            gLastScreenHash = h0;
+            gLastChangeTime = CFAbsoluteTimeGetCurrent();
+            pthread_mutex_unlock(&gScreenEventMutex);
+        }
+    }
     pthread_mutex_lock(&gScreenEventMutex);
     gWaitCount++;
     pthread_mutex_unlock(&gScreenEventMutex);
