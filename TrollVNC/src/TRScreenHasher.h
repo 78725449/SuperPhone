@@ -70,7 +70,10 @@ static const NSInteger TRScreenWaitStableDefaultThreshold = 3;
  *      width   - 像素宽
  *      height  - 像素高
  *      rowBytes - 每行字节数（stride）
- *      format  - 像素格式 'ARGB'(0x42475241) / 'BGRA'(0x41524742)
+ *      format  - 像素格式：`'BGRA'`(0x42475241，内存序 B,G,R,A) / `'ARGB'`(0x41524742，内存序 A,R,G,B)
+ *                ⚠️ ScreenCapturer 的 IOSurface 字符码虽写作 'ARGB'，实际内存序为 B,G,R,A
+ *                （little-endian），故采集帧应传 'BGRA'——传错只会交换灰度权重，不影响变化判定自洽性
+ *                （2026-09-13 真机颜色 bug 即由此类比误推导致，JPEG 编码侧已按格式判定修正）
  * 返回值：uint64_t — 64bit pHash；参数非法返回 0
  */
 - (uint64_t)computeHashFromRawBuffer:(const void *)data

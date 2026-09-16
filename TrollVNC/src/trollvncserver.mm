@@ -2130,11 +2130,13 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     // 采集线程（CADisplayLink 回调）写；screen.wait/waitStable 等待线程读（gScreenEventMutex 短临界）。
     // 0.3ms/帧开销可忽略；首帧仅建基线不产生事件（避免首个 wait 被启动瞬间误唤醒）。
     {
+        // 采集帧通道顺序 = BGRA 内存序（IOSurface 'ARGB' 字符码在 little-endian 下的实际布局，
+        // 2026-09-13 真机实证：按 ARGB 解释会把 alpha 当蓝）——灰度权重需按事实传递
         uint64_t h = [[TRScreenHasher sharedHasher] computeHashFromRawBuffer:base
                                                                        width:width
                                                                       height:height
                                                                     rowBytes:srcBPR
-                                                                      format:'ARGB'];
+                                                                      format:'BGRA'];
         if (h != 0) {
             pthread_mutex_lock(&gScreenEventMutex);
             if (gLastScreenHash == 0) {
@@ -4761,8 +4763,10 @@ static void tvHttpApiWriteResponse(int fd, SSL *ssl, NSDictionary *resp) {
 #pragma mark - 快照服务（screen.snapshot / screen.wait / screen.waitStable，2026-09-15）
 
 /**
- * board 档快照编码：按需取当前帧 → vImage 等比降采样至 kSnapBoardWidth → ARGB 转 RGB 紧凑
+ * board 档快照编码：按需取当前帧 → vImage 等比降采样至 kSnapBoardWidth → 像素转 RGB888 紧凑
  * → turbojpeg 压缩（TJPF_RGB/TJSAMP_444）。不依赖采集管线（采集停止时同样可用）。
+ * ⚠️ 通道顺序：ScreenCapturer 的 IOSurface 字符码 'ARGB'(0x42475241) 在 little-endian 下内存序为
+ * **B,G,R,A**——必须按 BGRA 取样，否则 alpha 会被当蓝、红绿互换（2026-09-13 真机反差色 bug）。
  * 参数：outW/outH - 输出编码尺寸（可 NULL）
  * 返回值：JPEG NSData；失败返回 nil
  */
@@ -4774,6 +4778,12 @@ static NSData *tvSnapEncodeBoardJPEG(int *outW, int *outH) {
     uint8_t *base = (uint8_t *)CVPixelBufferGetBaseAddress(pb);
     size_t sw = CVPixelBufferGetWidth(pb), sh = CVPixelBufferGetHeight(pb);
     size_t sbr = CVPixelBufferGetBytesPerRow(pb);
+    // 通道顺序判定（2026-09-13 真机实证）：ScreenCapturer 的 IOSurface 字符码为 'ARGB'(0x42475241)，
+    // 但 iOS little-endian 下其内存序为 B,G,R,A；按 ARGB 取样会把 alpha 当蓝且红绿互换（反差色症状）。
+    // 与 TRScreenHasher 同源：0x42475241 视为 'BGRA' 内存序（其余按 A,R,G,B）。
+    OSType pixFmt = CVPixelBufferGetPixelFormatType(pb);
+    const BOOL isBGRA = (pixFmt == 0x42475241 /* 'BGRA' 内存序 B,G,R,A */);
+    (void)pixFmt;
     if (base && sw > 0 && sh > 0) {
         int dw = kSnapBoardWidth;
         int dh = MAX(1, (int)round((double)sh * dw / (double)sw));
@@ -4795,7 +4805,16 @@ static NSData *tvSnapEncodeBoardJPEG(int *outW, int *outH) {
                         const uint8_t *sp = scaled + (size_t)y * argbRow;
                         uint8_t *dp = rgb + (size_t)y * rgbRow;
                         for (int x = 0; x < dw; x++, sp += 4, dp += 3) {
-                            dp[0] = sp[1]; dp[1] = sp[2]; dp[2] = sp[3];
+                            // 通道顺序按【运行时像素格式】判定（2026-09-13 真机实证）：
+                            // ScreenCapturer 的 IOSurface 是 'ARGB'(0x42475241) 字符码，但 iOS
+                            // little-endian 下其内存序为 B,G,R,A —— 按 ARGB 取样会把 alpha 当蓝、
+                            // 且红绿互换（真机症状：缩略图反差色、B 通道恒 ~255）。
+                            // 与 TRScreenHasher 的 isBGRA 判定同源：0x42475241 = 'BGRA' 内存序。
+                            if (isBGRA) {
+                                dp[0] = sp[2]; dp[1] = sp[1]; dp[2] = sp[0]; // B,G,R,A → R,G,B
+                            } else {
+                                dp[0] = sp[1]; dp[1] = sp[2]; dp[2] = sp[3]; // A,R,G,B → R,G,B
+                            }
                         }
                     }
                     tjhandle tj = tjInitCompress();

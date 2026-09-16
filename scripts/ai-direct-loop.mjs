@@ -47,6 +47,7 @@ function rpc(op, params = {}, timeoutMs = 30000) {
 /** 挂起等变化：协议零超时；应用层 deadline 用 AbortController 断开连接取消（设备端自动清理） */
 function waitChange(since, deadlineMs = 30000) {
   return new Promise((resolve, reject) => {
+    let deadlineHit = false;
     const body = JSON.stringify({ op: 'screen.wait', params: { since } });
     const req = http.request(`${BASE}/`, {
       method: 'POST',
@@ -59,17 +60,23 @@ function waitChange(since, deadlineMs = 30000) {
         catch (e) { reject(new Error(`wait 响应解析失败: ${e.message}`)); }
       });
     });
-    req.on('error', reject);
+    req.on('error', (e) => {
+      // 应用层 deadline 到点 abort → 连接断开（设备端挂起随之清理）。这是「无变化」的正常结论，
+      // 不是异常：以 {ok:false} 返回供编排决策（demo 可继续下一轮/判定注入无效）
+      if (deadlineHit) resolve({ ok: false, error: `等待变化超时(${deadlineMs}ms)：注入可能未生效或屏幕无变化` });
+      else reject(e);
+    });
     req.write(body);
     req.end();
     // 应用层 deadline：到点 abort → 连接断开 → 设备端挂起自动清理（无协议层超时）
-    const timer = setTimeout(() => req.destroy(new Error(`wait 无变化超时(${deadlineMs}ms)——注入可能未生效`)), deadlineMs);
+    const timer = setTimeout(() => { deadlineHit = true; req.destroy(); }, deadlineMs);
     req.on('close', () => clearTimeout(timer));
   });
 }
 
 function waitStable(minStableMs = 500, deadlineMs = 30000) {
   return new Promise((resolve, reject) => {
+    let deadlineHit = false;
     const body = JSON.stringify({ op: 'screen.waitStable', params: { minStableMs } });
     const req = http.request(`${BASE}/`, {
       method: 'POST',
@@ -82,10 +89,13 @@ function waitStable(minStableMs = 500, deadlineMs = 30000) {
         catch (e) { reject(new Error(`waitStable 响应解析失败: ${e.message}`)); }
       });
     });
-    req.on('error', reject);
+    req.on('error', (e) => {
+      if (deadlineHit) resolve({ ok: false, error: `等待稳定超时(${deadlineMs}ms)：画面持续变化` });
+      else reject(e);
+    });
     req.write(body);
     req.end();
-    const timer = setTimeout(() => req.destroy(new Error(`waitStable 超时(${deadlineMs}ms)`)), deadlineMs);
+    const timer = setTimeout(() => { deadlineHit = true; req.destroy(); }, deadlineMs);
     req.on('close', () => clearTimeout(timer));
   });
 }
@@ -116,7 +126,7 @@ async function demo(find) {
       console.log(`[demo] step${step}: 未找到目标 → 结束（${ocr.error || 'found=false'}）`);
       return;
     }
-    const line = ocr.lines && ocr.lines[0];
+    const line = ocr.matches && ocr.matches[0]; // vision.find_text 返回 matches[]（{text,x,y,w,h,cx,cy,confidence}）
     if (!line) { console.log(`[demo] step${step}: 无命中行`); return; }
     console.log(`[demo] step${step}: 命中 "${line.text}" @ (${line.cx}, ${line.cy})`);
     const tap = await timed(`step${step} tap`, () => rpc('touch.tap', { x: line.cx, y: line.cy }));
