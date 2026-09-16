@@ -1,0 +1,7 @@
+# 依赖与构建产物：node_modules 是本地 junction（esbuild/tsdown/@deepseek-ai），
+# lib/ 由 npm run build 生成（DSH 直接读取 lib/，但它是产物、不入库）。
+node_modules/
+lib/
+
+# 本地备份与临时数据（data/backups 等）
+data/

@@ -1,0 +1,4 @@
+# dsh-superphone bundle patch
+- insert:
+    - id: dsh-superphone
+      name: '@zseven-w/dsh-superphone'

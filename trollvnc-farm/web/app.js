@@ -7,10 +7,20 @@ import { attachFarmGesture, attachRightHome, resolveGesture } from './gesture.js
 
 const $ = (id) => document.getElementById(id);
 const isMobile = () => window.matchMedia('(max-width: 900px)').matches;
+// 保持系统鼠标（2026-09-17）：嵌入窄容器（如 DSH 侧边栏面板的 iframe）时，宽度命中移动端
+// 断点会让网关按触屏端处理——既不显示自绘圆点（触屏端无光标是刻意设计），又把系统光标 clear
+// 成 none，于是"鼠标移入画面毫无反应"。带 ?syscursor=1 时**只做一件事**：让 noVNC 的光标子系统
+// 在本会话内完全不动 cursor（既不隐藏系统光标、也不启用 PC 自绘覆盖层）→ 窄容器里保持系统默认
+// 箭头。**不新增任何光标实现**，也**不触碰触屏端"无光标"的原设计**（不带此参数行为与之前一致）。
+const keepSystemCursor = () => new URLSearchParams(location.search).get('syscursor') === '1';
 
 // ---------- token ----------
 const url = new URL(location.href);
 let TOKEN = url.searchParams.get('token') || localStorage.getItem('farm_token') || '';
+// 单卡模式（2026-09-17）：?only=<deviceId> 时卡片墙只渲染该设备的一张卡片并填满容器，
+// 供 DSH 侧边栏插件面板等窄容器嵌入（选择器在外层切换设备，卡片行为仍是网关自己的那一套：
+// 缩略图事件驱动获取、⋯ 菜单、悬停「点击进入控制」、点击进聚焦）。**缺省时行为完全不变**。
+const ONLY = url.searchParams.get('only') || '';
 function setToken(t) {
   TOKEN = t || '';
   if (TOKEN) localStorage.setItem('farm_token', TOKEN);
@@ -161,8 +171,11 @@ async function refreshDevices() {
   const remote = SELF_ID ? (data.devices || []).filter((d) => String(d.id) !== SELF_ID) : (data.devices || []);
   // 注入虚拟预览设备（MOCK_COUNT=0：预览关闭；置 >0 可查看卡片墙布局）
   devices = remote.concat(MOCK_DEVICES);
+  // 单卡模式：只渲染指定设备（数据源 devices 保持全量——计数、聚焦校验、其它按 id 查设备的
+  // 逻辑都不受影响；wallInstances 因此只含可见设备，所有遍历它的路径天然安全）
+  const visibleDevices = ONLY ? devices.filter((d) => d.id === ONLY) : devices;
   const onlineCount = devices.filter((d) => d.online === true).length;
-  $('empty').classList.toggle('hidden', devices.length > 0);
+  $('empty').classList.toggle('hidden', visibleDevices.length > 0);
   $('meta').textContent = `共 ${devices.length} 台 · ${onlineCount} 在线 · ${devices.length - onlineCount} 离线`;
 
   // 聚焦中的设备掉线 -> 退出聚焦，回到墙（离线可见）
@@ -188,8 +201,14 @@ async function refreshDevices() {
     }
   }
   updateBatchBar();
-  // 渲染全部设备（在线=实时画面；离线=置灰占位+上次在线）
-  for (const d of devices) {
+  // 渲染全部设备（在线=实时画面；离线=置灰占位+上次在线）；单卡模式只渲染唯一可见设备
+  // 单卡模式同时隐藏控制台 chrome（顶栏计数与直控/批量/布局、批量操作条）——只留卡片/聚焦
+  // 区域与必要浮层（⋯ 菜单、FAB 退出、编辑弹窗、软键盘输入源），见 style.css 的 body.single-card
+  if (ONLY) {
+    $('wall').classList.add('single-tile');
+    document.body.classList.add('single-card');
+  }
+  for (const d of visibleDevices) {
     let inst = wallInstances.get(d.id);
     if (!inst) inst = createWallTile(d);
     updateWallTile(inst, d);
@@ -204,9 +223,10 @@ async function refreshDevices() {
   const sig = devicesSignature();
   if (sig !== lastDevSig) { lastDevSig = sig; applyAutoTileRatio(); }
   // 直控模式：新上线的在线真实设备自动补建直控 RFB，保持"所有在线设备直达控制"语义
+  // （单卡模式下只对可见设备补建，隐藏设备不建直控会话）
   if (directMode) {
     let added = 0;
-    for (const d of devices) {
+    for (const d of visibleDevices) {
       if (!d.online || d.mock || d.source !== 'register') continue;
       if (!directRfbs.has(d.id) && startDirectRfb(d)) added++;
     }
@@ -352,6 +372,13 @@ function createWallTile(d) {
     if (batchMode) { toggleSelect(d.id); return; }
     if (directMode) return; // 直控模式：点击卡片直达 RFB 控制（canvas 输入事件由 noVNC 处理），不聚焦、无悬停提示
     if (syncMode) { toggleSync(d.id); return; } // 同步选择模式：点卡片切换同步（选中态=边框高亮+同步中）
+    // 2026-09-17：AI 控制中（程序化输入活动）→ 同一套「断开 / 接管」浮层，
+    // 但动作语义按 AI 的特点：AI 不建立画面会话、没有"控制端"可踢 →
+    //   断开 = 结束 AI 控制会话（网关 control.end）；接管 = 同样结束会话后进入聚焦控制。
+    if (dev.controlState === 'ai') {
+      showAiActions(dev, tile);
+      return;
+    }
     // 2026-08-22：被控制中（5801 直连 / 隧道）→ 卡片浮层显示「断开/接管」按钮（替代 confirm）
     if (dev.controlled) {
       showCtrlActions(dev, tile);
@@ -1704,6 +1731,72 @@ function hideCtrlActions() {
 }
 
 /**
+ * AI 控制中的卡片浮层（2026-09-17）：**沿用 showCtrlActions 的同一套浮层格式**，
+ * 仅文案与动作语义按 AI 的特点调整——AI 不建立画面会话、没有"控制端"可踢，所以：
+ *   断开 = 结束 AI 控制会话（网关 control.end，不下发设备）
+ *   接管 = 同样结束会话，然后进入聚焦控制（人接手）
+ * @param {object} dev 设备对象
+ * @param {HTMLElement} tile 卡片元素
+ */
+function showAiActions(dev, tile) {
+  hideCtrlActions();
+  const ov = document.createElement('div');
+  ov.className = 'ctrl-actions';
+  ov.innerHTML = `
+    <div class="ctrl-actions-title">设备「${escapeHtml(dev.name)}」正在被 AI 控制</div>
+    <div class="ctrl-actions-btns">
+      <button class="ctrl-actions-btn disc">断开</button>
+      <button class="ctrl-actions-btn take">接管</button>
+    </div>`;
+  tile.appendChild(ov);
+  ov.querySelector('.disc').addEventListener('click', (e) => {
+    e.stopPropagation();
+    endAiControl(dev).then(() => {
+      hideCtrlActions();
+      const inst = wallInstances.get(dev.id);
+      if (inst) updateWallTile(inst, dev);
+    });
+  });
+  ov.querySelector('.take').addEventListener('click', (e) => {
+    e.stopPropagation();
+    endAiControl(dev).then(() => { hideCtrlActions(); enterFocus(dev); });
+  });
+  // 点击浮层外关闭（延迟注册，避免本次卡片点击冒泡误关）
+  setTimeout(() => {
+    document.addEventListener('click', function onDoc(e) {
+      document.removeEventListener('click', onDoc);
+      if (!ov.contains(e.target)) hideCtrlActions();
+    });
+  }, 0);
+}
+
+/**
+ * 结束 AI 控制会话
+ * 网关 POST /api/devices/:id/invoke {cap:'control.end'} → 清网关侧 aiSession（不下发设备）
+ * @param {object} dev 设备对象
+ * @returns {Promise<boolean>} 是否成功
+ */
+async function endAiControl(dev) {
+  try {
+    const headers = TOKEN ? { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+    const res = await fetch(`/api/devices/${encodeURIComponent(dev.id)}/invoke`, {
+      method: 'POST', headers, body: JSON.stringify({ cap: 'control.end' }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok !== false) {
+      dev.controlState = 'idle';
+      toast(`已结束「${dev.name}」的 AI 控制会话`, 'info');
+      return true;
+    }
+    toast('结束 AI 控制失败' + (data.error ? `：${data.error}` : ''), 'error');
+    return false;
+  } catch (e) {
+    toast('结束 AI 控制失败', 'error');
+    return false;
+  }
+}
+
+/**
  * 断开设备被控状态（5801 直连等外部控制端）
  * 网关 POST /api/devices/:id/disconnect → 设备端 clients.disconnect id=REMOTE（断开所有非 loopback 客户端）
  * @param {object} dev 设备对象
@@ -2340,6 +2433,11 @@ function updateWallTile(inst, d) {
   } else if (mask) {
     mask.remove();
   }
+  // AI 控制中（2026-09-17）：程序化输入活动（插件工具/MCP/脚本经网关注入输入类能力）。
+  // 显示格式与既有悬停提示完全一致——只切换 ::after 文案（见 style.css 的 .tile.ai-on::after），
+  // 点击卡片则由下面的点击处理器弹出「断开/接管」浮层。注意本状态**照常显示缩略图**
+  // （人正是要看 AI 在做什么），因此不并入上面的 isControlled 分支。
+  tile.classList.toggle('ai-on', d.controlState === 'ai' && d.online === true);
   if (d.online) {
     if (inst.paused) return; // 聚焦中，保持隐藏
     tile.classList.remove('tile-offline');
@@ -2554,9 +2652,22 @@ function createRfb(container, device, opts = {}, statusEl = null) {
   })();
   const pcHot = Math.round((PC_CURSOR_SIZE - 1) / 2);
   if (opts.viewOnly || isMobile()) {
-    // 墙缩略图 / 触屏端：不显示任何光标。服务器光标（移除 ServerCursor 后
-    // libvncserver 默认 X 形）与前端圆一律屏蔽（clear → cursor:none + 覆盖层清空）。
-    rfb._refreshCursor = () => { if (rfb._cursor) rfb._cursor.clear(); };
+    // 墙缩略图 / 触屏端：不显示任何光标（刻意设计：触屏手指即指针）。服务器光标（移除
+    // ServerCursor 后 libvncserver 默认 X 形）与前端圆一律屏蔽（clear → cursor:none + 覆盖层清空）。
+    if (keepSystemCursor()) {
+      // 嵌入窄容器：保持系统鼠标——本会话让 noVNC 光标子系统完全不动 cursor。
+      // 必须连 change/clear 一起覆盖：它们由 rfb.js 内部直接调用（不经 _refreshCursor），
+      // 只覆盖 _refreshCursor 时，服务器 cursor 更新仍会把光标改回 none 或画成自绘圆点。
+      rfb._refreshCursor = () => {};
+      if (rfb._cursor) {
+        rfb._cursor.change = () => {};
+        rfb._cursor.clear = () => {};
+      }
+      if (rfb._canvas) rfb._canvas.style.cursor = '';
+      if (container) container.style.cursor = '';
+    } else {
+      rfb._refreshCursor = () => { if (rfb._cursor) rfb._cursor.clear(); };
+    }
   } else {
     // PC 聚焦/直控：覆盖层常驻光标（自绘 fixed canvas，pcRgba）。
     // 系统光标已被 rfb._cursor 初始 clear() 置为 none，圆由本层常驻绘制。

@@ -38,7 +38,12 @@ class SnapshotPoller {
         const ack = await sendDeviceCmd(this.deviceId, { cmd: 'invoke', cap: 'screen.snapshot', params: {} }, 15000);
         if (ack && ack.ok !== false && typeof ack.seq === 'number' && typeof ack.jpeg === 'string') {
           this.failStreak = 0;
-          if (this.seq !== ack.seq) {
+          // 2026-09-17 修：原先按 seq 去重 → 而 seq 由采集管线逐帧 pHash 驱动，
+          // 无消费者时采集停止、seq 冻结 → 快照永远"无变化"、前端画面定格（实测确认）。
+          // 改为比较 **JPEG 内容**：取帧本就是实时渲染（CARenderServerRenderDisplay），
+          // 内容变了就是变了——设备端零额外开销，且逐字节比较比 pHash 近似更准。
+          // （seq 仍记录，供诊断；它服务 screen.wait/waitStable，那时有等待者、采集在跑，自洽。）
+          if (this.jpeg !== ack.jpeg) {
             this.seq = ack.seq;
             this.jpeg = ack.jpeg;
             notifyDevicesChanged('thumb', this.deviceId);
@@ -347,6 +352,51 @@ function isDeviceOnline(deviceId) {
   return registeredDevices.has(deviceId) || tunnels.has(deviceId);
 }
 
+// ---------- 控制状态（三态互斥，2026-09-17）----------------------------------
+// 三种"控制中"互斥：直连（5801）/ 网关（隧道会话）/ AI（程序化输入）。
+//   · 直连 / 网关：设备端经 FT_STATE 上报 controlled + controlledSource（已有）
+//   · AI：AI 的输入注入**不建立画面会话**，但**必经 sendDeviceCmd**（插件工具/MCP/脚本/
+//     curl 全部收敛到这一处）→ 在这里按"能力类别"判定即可，设备端零改动、也不会漏源。
+// 输入类才能算控制（touch./type./key.）；读取类（screen./vision./app.）不算，
+// 因此 SnapshotPoller 每 2s 的 screen.snapshot 轮询不会把自己点成"AI 控制中"。
+const AI_IDLE_MS = 180000;                   // AI 会话空闲兜底：显式 control.end 之外的最后防线
+const INPUT_CAP_RE = /^(touch|type|key)\./;
+
+// AI 控制会话按**设备 id** 存储，不挂在隧道记录上：隧道只是传输通道，设备重连（tunnels 记录
+// 重建）不该让"AI 正在控制"凭空消失——实测曾因此丢会话（aiSteps 归零、状态跳回 idle）。
+const aiSessions = new Map();                // deviceId -> { since, lastAt, steps }
+
+/** 记录一次程序化输入活动（发起即记：AI 在做事就算控制活动，失败尝试同样算）。 */
+function noteInputActivity(deviceId, cmdObj) {
+  if (cmdObj.cmd !== 'invoke' || !INPUT_CAP_RE.test(cmdObj.cap || '')) return;
+  const now = Date.now();
+  const prev = aiSessions.get(deviceId);
+  aiSessions.set(deviceId, { since: prev ? prev.since : now, lastAt: now, steps: (prev ? prev.steps : 0) + 1 });
+  notifyDevicesChanged('state', deviceId);
+}
+
+/** 结束 AI 控制会话（显式 control.end，或由空闲兜底在读取状态时判定）。 */
+function endAiSession(deviceId) {
+  if (aiSessions.delete(deviceId)) {
+    notifyDevicesChanged('state', deviceId);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 当前控制状态（互斥单值）：'direct' 5801 直连 / 'gateway' 网关隧道会话 / 'ai' 程序化输入 / 'idle'
+ * 优先级：会话（有人正开着画面）= 人优先；AI 会话仅在其间无人接管时成立。
+ */
+function controlStateOf(trec, deviceId, now = Date.now()) {
+  if (trec && trec.controlled) {
+    return trec.controlledSource === '5801' ? 'direct' : 'gateway';
+  }
+  const session = aiSessions.get(deviceId);
+  if (session && now - session.lastAt < AI_IDLE_MS) return 'ai';
+  return 'idle';
+}
+
 // 命令通道：等待手机 ack 的挂起表（id -> { resolve, timer, cmd, deviceId }，宪法 7.4）
 const pendingCmds = new Map();
 
@@ -359,6 +409,7 @@ const pendingCmds = new Map();
  */
 function sendDeviceCmd(deviceId, cmdObj, timeoutMs = 5000) {
   console.log(`[cmd] -> ${deviceId} cmd=${cmdObj.cmd}${cmdObj.cap ? ' cap=' + cmdObj.cap : ''}${cmdObj.key ? ' key=' + cmdObj.key : ''}${cmdObj.target ? ' target=' + cmdObj.target : ''}`);
+  noteInputActivity(deviceId, cmdObj);
   return new Promise((resolve) => {
     const cid = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     const payload = { type: 'cmd', id: cid, ts: Date.now(), ...cmdObj };
@@ -703,8 +754,12 @@ async function handleApi(req, res, url) {
       const list = sortDevices().map((d) => {
         const trec = tunnels.get(d.id);
         // 2026-08-22：附带被控来源（5801/tunnel），前端据此决定「断开接管」交互
+        // 2026-09-17：附带互斥的三态控制状态 controlState（direct/gateway/ai/idle）——
+        // 网关控制台与插件面板都读它，保证两端展示同一事实
         return { ...d, controlled: !!(trec && trec.controlled),
-                 controlledSource: (trec && trec.controlled) ? (trec.controlledSource || 'tunnel') : null };
+                 controlledSource: (trec && trec.controlled) ? (trec.controlledSource || 'tunnel') : null,
+                 controlState: controlStateOf(trec, d.id),
+                 aiSteps: (aiSessions.get(d.id) || {}).steps || 0 };
       });
       sendJson(res, 200, { devices: list });
       return true;
@@ -903,6 +958,13 @@ async function handleApi(req, res, url) {
         const body = await readBody(req).catch(() => ({}));
         const cap = String(body.cap || '');
         if (!cap) { sendJson(res, 400, { error: 'cap required' }); return true; }
+        // 2026-09-17：AI 控制会话的显式收尾（不发设备——设备并不知道 AI 会话的存在，
+        // 会话由网关按程序化输入活动聚合）。插件工具 / MCP / 脚本都可直接调用。
+        if (cap === 'control.end') {
+          const ended = endAiSession(id);
+          sendJson(res, 200, { ok: true, cap, deviceId: id, ack: { ok: true, ended } });
+          return true;
+        }
         // 2026-09-15 快照服务：screen.wait/waitStable 为协议零超时长挂起原语（AI 等变化/等稳定，
         // 可挂起至分钟级），超时上限放宽至 120s；其余能力维持 15s 上限
         const maxTimeout = cap === 'screen.wait' || cap === 'screen.waitStable' ? 120000 : 15000;

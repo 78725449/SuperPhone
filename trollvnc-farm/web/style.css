@@ -190,6 +190,73 @@ main {
   -ms-overflow-style: none;         /* 旧版 Edge/IE */
 }
 #wall::-webkit-scrollbar { display: none; } /* Chrome / Safari / 新版 Edge */
+
+/* 单卡模式（?only=<deviceId>，2026-09-17）：只渲染一张卡片并填满容器，供窄容器嵌入
+   （DSH 侧边栏插件面板等）。卡片内部一切不变——画面用 .thumb 的 contain 居中缩放、
+   底部状态条、⋯ 菜单、悬停「点击进入控制」、点击进聚焦均由既有规则提供。
+   仅覆盖：容器为单列满行 + 卡片改为填满（原为 width:var(--card-w) + padding-bottom 撑比例），
+   并在单卡场景隐藏批量勾选框（无批量语义）。 */
+#wall.single-tile { grid-template-columns: 1fr; grid-template-rows: 100%; }
+#wall.single-tile .tile { width: 100%; height: 100%; padding-bottom: 0; }
+#wall.single-tile .tile-checkbox { display: none !important; }
+/* 尺寸一致性（2026-09-17）：单卡嵌入的画布必须与"进入屏幕流"后的聚焦画布**同尺寸**。
+   窄容器下聚焦画布是 `.focus-stage { position: fixed; inset: 0 }`（锚定视口、占满可用区域），
+   而单卡原先依赖 `#wall` 的流式高度（移动端 `#wall { height: auto }` → 100% 解析不稳，
+   实测两态画布大小不一致）。此处让单卡容器采用**与聚焦画布完全相同的写法**，
+   两态尺寸必然一致——取两者中较大的那个（视口全尺寸）。 */
+@media (max-width: 900px) {
+  #wall.single-tile { position: fixed; inset: 0; z-index: 1; width: 100%; height: 100%; }
+}
+/* 单卡模式隐藏卡片底栏（状态点 / 设备名 / 状态文字 / ⋯ 菜单）：嵌入方把设备名与状态放在
+   自己的选择器里呈现，卡片只留画面本身（悬停「点击进入控制」与点击进聚焦保持不变）。 */
+#wall.single-tile .tile-bar { display: none; }
+/* 单卡模式同时隐藏控制台 chrome：顶栏（设备计数 + 直控/批量/布局切换）与批量操作条。
+   保留的是卡片/聚焦区域本身与必要浮层——⋯ 卡片菜单（#tileMenu）、编辑弹窗（#editModal）、
+   移动端 FAB 与操作菜单（#fab/#opsMenu，聚焦时的退出入口）、软键盘输入源（#kbdInput），
+   以及聚焦视图（#focusPanel/#focusOps：点击卡片后进入控制的那一套）。 */
+body.single-card header,
+body.single-card #batchBar { display: none !important; }
+/* AI 控制中（2026-09-17）：程序化输入活动（插件工具/MCP/脚本经网关注入输入类能力）。
+   显示格式与「点击进入控制」悬停提示**完全一致**——只替换 ::after 的文案：
+   hover 时居中显示「AI 控制中」；点击卡片 → 浮层「断开 / 接管」（.ctrl-actions，与
+   被控制中同一套）。AI 状态**照常显示缩略图**（人正是要看 AI 在做什么），
+   因此不并入 tile-controlled 分支（那会停缩略图并隐藏悬停提示）。 */
+.tile.ai-on::after { content: 'AI 控制中'; }
+/* AI 控制中 = **渐变流动边框**（2026-09-17 调研后定稿）
+   配色取 AI 领域视觉约定：青蓝 → 靛蓝 → 亮紫（#22d3ee → #6366f1 → #a855f7）——业界 AI 产品
+   普遍用这套蓝紫渐变，让用户一眼识别"这是 AI 在动作"（参考 Google AI Mode 的发光边框做法与
+   各 AI 产品的蓝紫配色约定）；辨识度比单色蓝高一档。
+   实现：::before 伪元素做 conic-gradient 边框（mask-composite 挖空内部 → 只留 3px 边），
+   @property 驱动 --ai-angle 旋转形成流动感，再叠加 2s 明暗呼吸；另加内圈柔光与外发光。
+   光**落在画面区域的边框上**（inset:0 + padding 3px），内圈柔光为半透明叠加、不遮挡画面内容。
+   做在网关侧 → 网关控制台与嵌入面板（?only= 单卡）同时获得。浏览器不支持 @property 时
+   退化为静态渐变边框（颜色仍在，只是不旋转）。 */
+@property --ai-angle { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
+@keyframes ai-border-spin { to { --ai-angle: 360deg; } }
+@keyframes ai-border-breathe { 0%, 100% { opacity: .72; } 50% { opacity: 1; } }
+/* 外发光 + **内圈光**（2026-09-17 按行业做法补）：主流 AI 产品的发光框不只一条细边，
+   还包含"向内铺开的柔光"（Kevin Powell 复刻 Google AI Mode 时用独立 inner glow 元素实现；
+   这里用等效的 inset 多层阴影，少一个节点）。参数参照行业默认：边框 3px（Google AI Mode
+   的 --border-width 默认值）、内圈柔光约 14px、外侧光晕约 18px。 */
+.tile.ai-on {
+  box-shadow:
+    0 0 18px rgba(99, 102, 241, .45),        /* 外侧光晕（墙上辨识度） */
+    inset 0 0 14px rgba(99, 102, 241, .40),  /* 内圈柔光：向画面内铺 14px（靛蓝） */
+    inset 0 0 4px rgba(34, 211, 238, .50);   /* 内圈紧贴边框的一层（青蓝，与渐变边呼应） */
+}
+.tile.ai-on::before {
+  content: '';
+  position: absolute; inset: 0; z-index: 6;
+  border-radius: inherit;
+  padding: 3px;                          /* 边框宽度 3px：Google AI Mode 默认值（原 2px 偏细） */
+  background: conic-gradient(from var(--ai-angle), #22d3ee, #6366f1, #a855f7, #22d3ee);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: ai-border-spin 3s linear infinite, ai-border-breathe 2s ease-in-out infinite;
+  pointer-events: none;
+}
 #workspace.focus-open #wall {
   flex: 1 1 auto; min-width: 0;
   margin-left: 12px;
