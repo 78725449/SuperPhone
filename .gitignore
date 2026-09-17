@@ -18,6 +18,11 @@ trollvnc-farm/frp/
 data/backups/
 data/gateway.log
 
+# 技能卡 / 做法表 / trace（AI 操作层的【运行时数据】，由执行过程自动产生，
+# 会随每次执行变化 → 不入库。资产格式规范住在 skills/superphone-device/SKILL.md + 架构总纲 §7.1）
+data/skill-cards/
+data/traces/
+
 # 上游对照副本 / 打包产物 / 截图
 TrollVNC-upstream/
 *.zip
@@ -36,6 +41,8 @@ _research/
 _tipa_extract/
 _zip_extract/
 _tmp-insp/
+# 部署临时目录（tipa 解包/设备端推送的中间产物，含 node_modules，体积大且一次性）
+_deploy-tmp/
 packages-bootstrap.zip
 packages-rootless.zip
 packages-default.zip
