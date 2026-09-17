@@ -632,6 +632,31 @@ static NSDictionary *TRSearchGatewaySync(void) {
             });
             return @{@"ok":@YES, @"length":@(text.length)};
         }];
+    // type.delete：按【删除键】N 次（count 可选，默认 1；上限 200 防误吞）。
+    // 2026-09-17 新增。设计语义：与 type.paste **正交** —— paste 负责「写入」，delete 负责「删除」。
+    // 起因：AI 操作层清空输入框时曾用「三击全选 + 粘贴替换」凑（用写入语义干删除的活，脆弱），
+    // 正解就是本能力：删除走删除键。
+    // 实现依据：设备端 HID 早已支持 @"DELETE" —— STHIDEventGenerator.mm 的 hidUsageCodeForCharacter
+    // 里 `@"DELETE"` / `@"BACKSPACE"` → kHIDUsage_KeyboardDeleteOrBackspace，无需新增底层。
+    // 异步执行（多次按键耗时）避免阻塞命令通道线程；ack 提前返回。
+    // 键间留间隔：太密会被 iOS 合并/丢弃（同 type.paste 的时序教训）。
+    [self _registerControl:@"type.delete" title:@"删除键" icon:@"⌫" route:TRCapRouteTouch
+        params:@[@{@"name":@"count",@"type":@"number",@"required":@NO}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            NSNumber *n = p[@"count"];
+            NSUInteger count = ([n isKindOfClass:[NSNumber class]] && n.unsignedIntegerValue > 0)
+                             ? MIN(n.unsignedIntegerValue, (NSUInteger)200) : 1;
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
+                [hid releaseEveryKeys];          // 清残留修饰键（同 type.paste；残留会把单键变成组合键）
+                for (NSUInteger i = 0; i < count; i++) {
+                    [hid keyDown:@"DELETE"];
+                    usleep(20000);               // 按下保持 20ms（按键识别窗口）
+                    [hid keyUp:@"DELETE"];
+                    usleep(30000);               // 键间间隔，避免连续按键被合并
+                }
+            });
+            return @{@"ok":@YES, @"count":@(count)};
+        }];
 }
 
 /** 注册原生调用能力（剪贴板/截屏等） */

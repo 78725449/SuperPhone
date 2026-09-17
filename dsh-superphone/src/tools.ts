@@ -245,6 +245,123 @@ export function createSuperphoneTools(config: Config, log: ActivityLog): ToolDef
     }),
 
     defineTool({
+      name: 'superphone_taps',
+      description:
+        'Tap the SAME point N times in quick succession (device-side timed sequence). Use for iOS multi-tap gestures: ' +
+        'triple tap = select all in a text field, double tap = select a word. Prefer this over N separate superphone_tap calls — the device generates correct inter-tap timing.',
+      parameters: {
+        deviceId: { type: 'string', required: true, description: 'Device id.' },
+        x: { type: 'number', required: true, description: 'Normalized X (0-1).' },
+        y: { type: 'number', required: true, description: 'Normalized Y (0-1).' },
+        tapCount: { type: 'number', required: true, description: 'How many taps (>=1), e.g. 3 for triple tap.' },
+        touchCount: { type: 'number', description: 'Fingers per tap (default 1).' },
+        delay: { type: 'number', description: 'Delay between taps in seconds (device default 0).' },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value: any) =>
+          value.blocked
+            ? [{ type: 'text', text: `blocked: ${value.error}` }]
+            : [{ type: 'text', text: value.ok ? `tapped ${value.tapCount}x at (${value.x}, ${value.y})` : `taps failed: ${value.error}` }],
+      },
+      execute: withActivity(
+        log,
+        'superphone_taps',
+        (a: { x: number; y: number; tapCount: number }) => `${a.tapCount}连点(${a.x.toFixed(3)}, ${a.y.toFixed(3)})`,
+        async (args: { deviceId: string; x: number; y: number; tapCount: number; touchCount?: number; delay?: number }) => {
+          const blocked = await humanControlled(config, args.deviceId)
+          if (blocked) return { deviceId: args.deviceId, ok: false, blocked: true, error: blocked }
+          const params: Record<string, unknown> = { x: args.x, y: args.y, tapCount: args.tapCount }
+          if (typeof args.touchCount === 'number' && args.touchCount > 0) params.touchCount = args.touchCount
+          if (typeof args.delay === 'number' && args.delay > 0) params.delay = args.delay
+          const ack = await post(config, `/api/devices/${encodeURIComponent(args.deviceId)}/invoke`, { cap: 'touch.taps', params })
+          return { deviceId: args.deviceId, x: args.x, y: args.y, tapCount: args.tapCount, ok: ack?.ok !== false, ack: ack ?? null, error: ack?.error ?? null }
+        },
+      ),
+    }),
+
+    defineTool({
+      name: 'superphone_long_press',
+      description:
+        'Long-press a point on the device. Use to open iOS context menus (e.g. long-press a text field to get the Select All / Paste menu).',
+      parameters: {
+        deviceId: { type: 'string', required: true, description: 'Device id.' },
+        x: { type: 'number', required: true, description: 'Normalized X (0-1).' },
+        y: { type: 'number', required: true, description: 'Normalized Y (0-1).' },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value: any) =>
+          value.blocked
+            ? [{ type: 'text', text: `blocked: ${value.error}` }]
+            : [{ type: 'text', text: value.ok ? `long-pressed (${value.x}, ${value.y})` : `longPress failed: ${value.error}` }],
+      },
+      execute: withActivity(
+        log,
+        'superphone_long_press',
+        (a: { x: number; y: number }) => `长按(${a.x.toFixed(3)}, ${a.y.toFixed(3)})`,
+        async (args: { deviceId: string; x: number; y: number }) => {
+          const blocked = await humanControlled(config, args.deviceId)
+          if (blocked) return { deviceId: args.deviceId, ok: false, blocked: true, error: blocked }
+          const ack = await post(config, `/api/devices/${encodeURIComponent(args.deviceId)}/invoke`, {
+            cap: 'touch.longPress',
+            params: { x: args.x, y: args.y },
+          })
+          return { deviceId: args.deviceId, x: args.x, y: args.y, ok: ack?.ok !== false, ack: ack ?? null, error: ack?.error ?? null }
+        },
+      ),
+    }),
+
+    defineTool({
+      name: 'superphone_screen_hash',
+      description:
+        'Perceptual hash (pHash, hex string) of the current screen. Much cheaper than OCR for "did the screen change?" checks — ' +
+        'sample it twice and compare the hex strings. NOTE: it is a coarse instrument (it can MISS real changes), so for step verification prefer superphone_ocr comparison.',
+      parameters: {
+        deviceId: { type: 'string', required: true, description: 'Device id.' },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value: any) => [{ type: 'text', text: value.ok ? `hash ${value.hash}` : `hash failed: ${value.error}` }],
+      },
+      execute: withActivity(log, 'superphone_screen_hash', () => '屏幕哈希', async (args: { deviceId: string }) => {
+        const ack = await post(config, `/api/devices/${encodeURIComponent(args.deviceId)}/invoke`, { cap: 'screen.hash', params: {} })
+        return { deviceId: args.deviceId, hash: ack?.ack?.hash ?? null, ok: ack?.ok !== false, ack: ack ?? null, error: ack?.error ?? null }
+      }),
+    }),
+
+    defineTool({
+      name: 'superphone_delete',
+      description:
+        'Press the delete/backspace key N times (default 1). This is the ORTHOGONAL partner of superphone_type — ' +
+        'type WRITES (Cmd+V paste), delete REMOVES (HID delete key). Use it to clear or shorten a text field instead of tapping the on-screen key N times.',
+      parameters: {
+        deviceId: { type: 'string', required: true, description: 'Device id.' },
+        count: { type: 'number', description: 'How many times to press delete (default 1, max 200).' },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value: any) =>
+          value.blocked
+            ? [{ type: 'text', text: `blocked: ${value.error}` }]
+            : [{ type: 'text', text: value.ok ? `pressed delete ${value.count}x` : `delete failed: ${value.error}` }],
+      },
+      execute: withActivity(
+        log,
+        'superphone_delete',
+        (a: { count?: number }) => `删除键 x${a.count ?? 1}`,
+        async (args: { deviceId: string; count?: number }) => {
+          const blocked = await humanControlled(config, args.deviceId)
+          if (blocked) return { deviceId: args.deviceId, ok: false, blocked: true, error: blocked }
+          const params: Record<string, unknown> = {}
+          if (typeof args.count === 'number' && args.count > 0) params.count = args.count
+          const ack = await post(config, `/api/devices/${encodeURIComponent(args.deviceId)}/invoke`, { cap: 'type.delete', params })
+          return { deviceId: args.deviceId, count: ack?.ack?.count ?? args.count ?? 1, ok: ack?.ok !== false, ack: ack ?? null, error: ack?.error ?? null }
+        },
+      ),
+    }),
+
+    defineTool({
       name: 'superphone_ocr',
       description:
         'On-device OCR (Apple Vision) with normalized boxes. Pass text to only get matching lines with their tap coordinates.',
