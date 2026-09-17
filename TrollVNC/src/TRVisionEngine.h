@@ -33,6 +33,14 @@ static const NSInteger TRVisionMaxTemplateB64Bytes = 256 * 1024;
 /** 精匹配搜索边距（全分辨率像素；粗定位 ±48px 窗内精匹配） */
 static const NSInteger TRVisionRefineMarginPx = 48;
 
+/** 1/N 金字塔倍数（2026-09-18 由固定 8 改为 4）。
+ *  原因：8 对 750×1334 屏幕降采样后仅 94×167（主干设计按 1170×2532 估的是 146×317），
+ *  特征过少导致粗匹配选错峰，实测 find_image 坐标偏差达 238px（偏差÷8≈30px 即缩略图上的错峰量）。
+ *  改为 4 后金字塔为 187×334，且「粗定位误差 → 原尺度」的放大倍数由 ×8 降到 ×4，
+ *  使 TRVisionRefineMarginPx(=48) 的容错从「容忍 1/N 尺度 6px」提升到 12px —— 双重改善。
+ *  ★ 纪律：find_image 内所有「原尺度 ↔ 金字塔尺度」的换算都必须乘/除本常量，勿再硬编码 8。 */
+static const NSInteger TRVisionPyramidScale = 4;
+
 /**
  * TRVisionEngine - Vision OCR 核心（单例，串行）
  * 线程安全：内部串行队列串行化 OCR 与帧访问。

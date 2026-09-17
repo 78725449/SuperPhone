@@ -4214,6 +4214,19 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
     } else if ([op isEqualToString:@"netdisguise"]) {
         return tvExtHandleNetdisguise(params);
     }
+    // ===== screen.* 屏幕哈希 / 差分 / 等稳（2026-09-18 补齐 5802 分派）=====
+    // 背景：这三个 op 早已注册在「注册表」与「0x50 分派」（tvExtHandleMessage），
+    // 但**漏了 5802 这一处**；而 manager 注册表里它们的 executor 正是经 _rfbCommand 走 5802，
+    // 于是调用一律返回「未知操作」——典型违反 AGENTS.md「新增能力三处补齐」铁律的实例
+    // （对照：vision.* 三件套当年补齐了，所以它们可用）。
+    // 与 vision.* 同模式：handler 为纯函数、不使用 cl，故 cl 传 NULL 复用。
+    else if ([op isEqualToString:@"screen.hash"]) {
+        return tvExtHandleScreenHash(NULL, params);
+    } else if ([op isEqualToString:@"screen.diff"]) {
+        return tvExtHandleScreenDiff(NULL, params);
+    } else if ([op isEqualToString:@"screen.waitStable"]) {
+        return tvExtHandleScreenWaitStable(NULL, params);
+    }
     // ===== vision.* 屏幕感知 OCR（2026-08-28，AI 原语：传文字→回坐标；TRVisionEngine 同进程取帧）=====
     else if ([op isEqualToString:@"vision.ocr"]) {
         return tvExtHandleVisionOcr(NULL, params);

@@ -114,20 +114,24 @@ static uint8_t *trvRescaleGray(const uint8_t *src, int sw, int sh, int dw, int d
     return dst;
 }
 
-/** 8×8 盒均值降采样（floor 对齐；malloc double，调用方 free） */
-static double *trvDownsample8(const uint8_t *gray, int w, int h, int *outW, int *outH) {
-    int dw = w / 8, dh = h / 8;
+/** N×N 盒均值降采样（floor 对齐；malloc double，调用方 free）
+ *  2026-09-18：由固定 8×8 参数化为任意 factor（N 取 TRVisionPyramidScale）。
+ *  原因见 TRVisionEngine.h 中 TRVisionPyramidScale 的注释（8 对 750×1334 屏幕过粗致粗匹配错峰）。 */
+static double *trvDownsampleN(const uint8_t *gray, int w, int h, int factor, int *outW, int *outH) {
+    if (factor < 1) return NULL;
+    int dw = w / factor, dh = h / factor;
     if (dw < 1 || dh < 1) return NULL;
     double *out = (double *)malloc(sizeof(double) * (size_t)dw * dh);
     if (!out) return NULL;
+    double inv = 1.0 / (double)(factor * factor);
     for (int y = 0; y < dh; y++) {
         for (int x = 0; x < dw; x++) {
             int sum = 0;
-            for (int j = 0; j < 8; j++) {
-                const uint8_t *row = gray + (size_t)(y * 8 + j) * w + x * 8;
-                for (int i = 0; i < 8; i++) sum += row[i];
+            for (int j = 0; j < factor; j++) {
+                const uint8_t *row = gray + (size_t)(y * factor + j) * w + x * factor;
+                for (int i = 0; i < factor; i++) sum += row[i];
             }
-            out[(size_t)y * dw + x] = (double)sum / 64.0;
+            out[(size_t)y * dw + x] = (double)sum * inv;
         }
     }
     *outW = dw; *outH = dh;
@@ -397,9 +401,9 @@ static double trvNCCScore(double corr, const double *satSum, const double *satSq
         return nil;
     }
 
-    // ===== 1/8 金字塔（模板同步降采样）=====
-    ds = trvDownsample8(sgray, W, H, &dw, &dh);
-    dt = trvDownsample8(tgray, tw, th, &tw8, &th8);
+    // ===== 1/N 金字塔（模板同步降采样；N = TRVisionPyramidScale，2026-09-18 由固定 8 改为 4）=====
+    ds = trvDownsampleN(sgray, W, H, (int)TRVisionPyramidScale, &dw, &dh);
+    dt = trvDownsampleN(tgray, tw, th, (int)TRVisionPyramidScale, &tw8, &th8);
     if (!ds || !dt || tw8 < 4 || th8 < 4) {
         free(tgray); free(sgray); free(ds); free(dt);
         if (error) *error = [NSError errorWithDomain:@"TRVision" code:13
@@ -420,7 +424,7 @@ static double trvNCCScore(double corr, const double *satSum, const double *satSq
     for (size_t i = 0; i < (size_t)tw8 * th8; i++) { tSum8 += dt[i]; tSq8 += dt[i] * dt[i]; }
     for (size_t i = 0; i < (size_t)tw * th; i++) { tSumF += tflipFull[i]; tSqF += tflipFull[i] * tflipFull[i]; }
 
-    // ===== 粗匹配（1/8 尺度）：SAT + 相关图 + NCCC 找峰 =====
+    // ===== 粗匹配（1/N 尺度，N = TRVisionPyramidScale）：SAT + 相关图 + NCCC 找峰 =====
     satS = trvBuildSAT(ds, dw, dh, 0);
     satSq = trvBuildSAT(ds, dw, dh, 1);
     if (!satS || !satSq) goto cleanup;
@@ -435,10 +439,12 @@ static double trvNCCScore(double corr, const double *satSum, const double *satSq
             NSNumber *rx = region[@"x"], *ry = region[@"y"], *rw = region[@"w"], *rh = region[@"h"];
             if ([rx isKindOfClass:[NSNumber class]] && [ry isKindOfClass:[NSNumber class]] &&
                 [rw isKindOfClass:[NSNumber class]] && [rh isKindOfClass:[NSNumber class]]) {
-                uMin = MAX(uMin, (int)floor(rx.doubleValue * W / 8.0));
-                vMin = MAX(vMin, (int)floor(ry.doubleValue * H / 8.0));
-                uMax = MIN(uMax, (int)ceil((rx.doubleValue + rw.doubleValue) * W / 8.0) - tw8);
-                vMax = MIN(vMax, (int)ceil((ry.doubleValue + rh.doubleValue) * H / 8.0) - th8);
+                // 归一化 region → 金字塔尺度索引（2026-09-18：除数由硬编码 8.0 改为 TRVisionPyramidScale）
+                const double pyr = (double)TRVisionPyramidScale;
+                uMin = MAX(uMin, (int)floor(rx.doubleValue * W / pyr));
+                vMin = MAX(vMin, (int)floor(ry.doubleValue * H / pyr));
+                uMax = MIN(uMax, (int)ceil((rx.doubleValue + rw.doubleValue) * W / pyr) - tw8);
+                vMax = MIN(vMax, (int)ceil((ry.doubleValue + rh.doubleValue) * H / pyr) - th8);
             }
         }
         if (uMin > uMax || vMin > vMax) {
@@ -455,12 +461,15 @@ static double trvNCCScore(double corr, const double *satSum, const double *satSq
                 if (s > best) { best = s; bu = u; bv = v; }
             }
 
-        // ===== 精匹配（原尺寸，粗定位 ±48px ROI）=====
+        // ===== 精匹配（原尺寸，粗定位 ±TRVisionRefineMarginPx ROI）=====
         int margin = TRVisionRefineMarginPx;
         int ww = MIN(W, tw + 2 * margin);
         int wh = MIN(H, th + 2 * margin);
-        int cx0 = (int)((bu + tw8 / 2.0) * 8.0) - tw / 2;
-        int cy0 = (int)((bv + th8 / 2.0) * 8.0) - th / 2;
+        // 金字塔尺度中心 → 原尺度中心（2026-09-18：放大倍数由硬编码 8.0 改为 TRVisionPyramidScale）。
+        // 这是本次修坐标偏差的关键点：该乘法把「粗定位在金字塔上的误差」放大回原尺度，
+        // 倍数越小则同样 margin 能容忍的金字塔误差越大（8→4 使容错由 6px 翻到 12px）。
+        int cx0 = (int)((bu + tw8 / 2.0) * (double)TRVisionPyramidScale) - tw / 2;
+        int cy0 = (int)((bv + th8 / 2.0) * (double)TRVisionPyramidScale) - th / 2;
         int wx = MAX(0, MIN(W - ww, cx0 - margin));
         int wy = MAX(0, MIN(H - wh, cy0 - margin));
         win = (double *)malloc(sizeof(double) * (size_t)ww * wh);
