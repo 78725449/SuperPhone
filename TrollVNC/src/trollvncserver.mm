@@ -2100,13 +2100,9 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
         return;
     }
 
-    // Busy-drop: if encoders are busy and limit reached, skip this frame (disabled when -Q 0)
-    if (gMaxInflightUpdates > 0 && gInflight.load(std::memory_order_relaxed) >= gMaxInflightUpdates) {
-        // When busy dropping, skip all hashing/dirty work.
-        TVLogVerbose(@"drop frame due to inflight=%d >= limit=%d", gInflight.load(std::memory_order_relaxed),
-                     gMaxInflightUpdates);
-        return;
-    }
+    // 2026-09-17：原 Busy-drop 检查已下移到「画面变化检测之后」（见本函数下方）。
+    // 原因（真机实测）：编码积压只该拦住"推流帧处理"，不能拦住 pHash 事件源——
+    // 它一旦在此 return，后面的 gChangeSeq 就永不推进，screen.wait/wait_change 永久超时。
 
 #if DEBUG
     CFAbsoluteTime __tv_tLock0 = CFAbsoluteTimeGetCurrent();
@@ -2152,6 +2148,18 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
             }
             pthread_mutex_unlock(&gScreenEventMutex);
         }
+    }
+
+    // Busy-drop（2026-09-17 下移至此）：编码积压时跳过本帧的"推流帧处理"（dirty 计算 / 瓦片 hash /
+    // 发送），但**必须**位于画面变化检测之后——pHash 事件源（gChangeSeq）是 screen.wait/wait_change
+    // 的判断依据，与推流背压无关；放在它前面会让 AI 侧"等变化"彻底失效（真机实测 seq 冻结、
+    // wait 永久超时，且 AI 控制期间通常无 RFB 客户端，泄漏的 inflight 会让它长期生效）。
+    // 注意：此处像素缓冲已 lock，return 前必须解锁（原实现在 lock 之前，无此约束）。
+    if (gMaxInflightUpdates > 0 && gInflight.load(std::memory_order_relaxed) >= gMaxInflightUpdates) {
+        TVLogVerbose(@"drop frame due to inflight=%d >= limit=%d", gInflight.load(std::memory_order_relaxed),
+                     gMaxInflightUpdates);
+        CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+        return;
     }
 
     // Determine rotation and resize framebuffer if orientation implies new dimensions.
@@ -5962,6 +5970,16 @@ static void clientGoneHook(rfbClientPtr cl) {
 
     NSString *host = (cl && cl->host) ? [NSString stringWithUTF8String:cl->host] : @"";
     TVLog(@"Client %@ disconnected, active clients=%d", host, gClientCount);
+
+    // 2026-09-17 兜底：客户端归零 → 清零在途编码计数。displayHook/displayFinishedHook 由
+    // libvncserver 在编码前后成对调用，但客户端异常断开时 finished 可能不配对 → gInflight 永久
+    // 卡在 ≥ gMaxInflightUpdates → handleFramebuffer 的 busy-drop 长期生效（真机实测：AI 控制期间
+    // 无 RFB 客户端却持续丢帧，导致画面变化事件源冻结、screen.wait 永久超时）。
+    // 无客户端时不存在在途编码，计数必然应为 0，因此这里是语义正确的兜底，而非掩盖问题。
+    if (gClientCount == 0) {
+        int leaked = gInflight.exchange(0, std::memory_order_relaxed);
+        if (leaked > 0) TVLog(@"[inflight] 客户端归零，重置泄漏计数 %d -> 0", leaked);
+    }
 
     // 5801 直连控制结束（非 loopback 归零）：通知 TRTunnelClient 上报被控状态
     if (![host isEqualToString:@"127.0.0.1"] && ![host isEqualToString:@"::1"] &&

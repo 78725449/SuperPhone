@@ -54,7 +54,7 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
 ## 已知坑
 
 - **实际远程仓库是 `78725449/SuperPhone`（私有，2026-08-15 单仓库化迁移后启用）**；`78725449/TrollVNC` 是迁移前的旧 fork（已废弃）。
-- **github.com 直连常被网络阻断** → 推送走 `scripts/push-via-api.mjs`（Git Data API，api.github.com 正常）：`GHTOK=<token> node push-via-api.mjs <本地commit> <远程base> [本地base]`（默认 REPO=78725449/SuperPhone、BRANCH=main，CWD 可用环境变量覆盖；支持大文件与 base tree 去重；远程 main 与 base 不符会拒绝）。
+- **github.com 直连常被网络阻断** → 推送走 `scripts/push-via-api.mjs`（Git Data API，api.github.com 正常）：`GHTOK=<token> node push-via-api.mjs <本地commit> <远程base> [本地base]`（默认 REPO=78725449/SuperPhone、BRANCH=main，CWD 可用环境变量覆盖；支持大文件与 base tree 去重；远程 main 与 base 不符会拒绝）。**（2026-09-17 实测补坑）Windows 上必须显式覆盖 `CWD`**：脚本默认 `CWD` 是**另一个项目的旧路径**（`C:\Users\Administrator\Documents\ChatGPT\New project`），不覆盖时 `execSync({cwd})` 抛 **ENOENT 且错误里出现的路径是 `C:\Windows\system32\cmd.exe`** ——极易误判成"沙盒拦截 node 子进程"或"环境缺 cmd.exe"（本次就误判了一轮；实测 `execSync/execFileSync/spawnSync` 三种方式在 DSH 下均正常，`cmd.exe` 也确实存在），**真因是 cwd 不存在**。正确调用：`$env:CWD = (Get-Location).Path; node scripts/push-via-api.mjs <local> <remoteBase> <localBase>`。
 - **GitHub API 间歇性 503（2026-08-18 实测）**：Git Data API（blobs/trees/commits）、workflow dispatch、artifact 下载、甚至 `PATCH /repos` 转私有都可能瞬时 503——用循环重试（间隔 20–45s，幂等可重复）；**转公开后必须立刻确认转回私有成功**（PATCH 可能 503，需重试直到 `private=True`），期间仓库处于公开状态有风险。`push-via-api.mjs` 无内部重试，外层 PowerShell for 循环包住即可。
 - **push-via-api 中文路径编码损坏（2026-08-19 实测）**：经 Git Data API 推送含中文路径文件（如 `说明文档.md`）后，远程树可能出现 `????.md` 幽灵文件（原文件名的编码损坏副本，内容为旧版本）。**推送后必须核对远程树 sha 与本地树 sha 一致**（`git rev-parse HEAD^{tree}` vs 远程 commit tree，Git 树 sha 是内容哈希，一致即等价）；发现多出的 `????` 文件时，用一次性脚本构建含 `{path: "????.md", sha: null}` 删除条目的树（base_tree 增量）重建 commit 清理，勿残留。
 - 取 CI 产物：`node scripts/wait-ipa.mjs <runId>`（默认 REPO 同上）。
