@@ -462,7 +462,7 @@ description: SuperPhone 设备操作手册（AI 操作层）。当需要通过 D
 | **★ OCR 输出量** | ✅ **已修**（渲染上限 12 → 80 行 ＋ 显式标注剩余行数）| 原为**屏幕下半部盲区**，现已消除 | ✅ 已修 |
 | ~~**`home`（回主屏）**~~ | ✅ **已补齐**（`superphone_home`）| ⚠️ **实测它不是"回 App 首页"的手段**（App 只挂起）→ 回上级页面请用**边缘右滑** | ✅ 已补，★ 降为普通能力 |
 | **`touch.taps` / `touch.longPress`** | ✅ **已补齐**（工具面 `superphone_taps` / `superphone_long_press`）| —— | ✅ 完成 |
-| **`screen.hash`** | ✅ **已补齐**（工具面 `superphone_screen_hash`）| ⚠️ 粗仪器会漏报，步骤校验仍以 OCR 为准 | ✅ 完成 |
+| **`screen.hash`** | ❌ **工具面已加，但设备端未实现** —— 实测返回 **`未知操作: screen.hash`**（registry 里注册了它，但 executor 经 `_rfbCommand` 转发的 **server 0x50 分派里没有**）| **`superphone_screen_hash` 当前调用必失败 → 别用它** | ⏸ **设备端待补**（把 server 已有的逐帧 pHash 暴露出来即可）|
 | **`vision.find_image`** | ✅ 设备端已实现，**工具面未暴露** | 需要一个 **base64 模板参数**，而**当前 agent 无法生成模板**（截图消费不了，也没有"截取区域当模板"的能力）→ **加了也是用不了的工具** | ⏸ **暂不做**（等模板来源设计）|
 
 > **★★ 结构结论**：上面各项**没有一项需要动设备端或走 CI** ——
