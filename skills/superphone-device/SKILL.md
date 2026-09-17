@@ -500,7 +500,7 @@ description: SuperPhone 设备操作手册（AI 操作层）。当需要通过 D
 | ~~**键盘 / 文本编辑原语**（`type.delete`）~~ | ✅ **已补齐**（设备端 `type.delete{count}` ＋ 工具面 `superphone_delete`）| —— | ✅ 完成（真机实测：`count=3` 精确删 3 字符）|
 | **★ OCR 输出量** | ✅ **已修**（渲染上限 12 → 80 行 ＋ 显式标注剩余行数）| 原为**屏幕下半部盲区**，现已消除 | ✅ 已修 |
 | ~~**`home`（回主屏）**~~ | ✅ **已补齐**（`superphone_home`）| ⚠️ **实测它不是"回 App 首页"的手段**（App 只挂起）→ 回上级页面请用**边缘右滑** | ✅ 已补，★ 降为普通能力 |
-| **`touch.taps` / `touch.longPress`** | ⚠️ **`touch.taps` 有致命 bug（见下），`long_press` 正常** | **在设备端修复版部署前，`superphone_taps` 一调用就会把 `trollvncmanager` 打死 → 整台设备离线** ✗✗✗ | ⏸ **等修复版部署**（已改好：`delay > 0.0` → `delay >= 0.0`）|
+| **`touch.taps` / `touch.longPress`** | ✅ **已修复并验证**（`superphone_taps` / `superphone_long_press`）| —— | ✅ 完成（曾因断言写反而崩设备，已修；压力验证：连续 3 次调用设备不崩）|
 | **`screen.hash`** | ❌ **工具面已加，但设备端未实现** —— 实测返回 **`未知操作: screen.hash`**（registry 里注册了它，但 executor 经 `_rfbCommand` 转发的 **server 0x50 分派里没有**）| **`superphone_screen_hash` 当前调用必失败 → 别用它** | ⏸ **设备端待补**（把 server 已有的逐帧 pHash 暴露出来即可）|
 | **`vision.find_image`** | ✅ 设备端已实现，**工具面未暴露** | 需要一个 **base64 模板参数**，而**当前 agent 无法生成模板**（截图消费不了，也没有"截取区域当模板"的能力）→ **加了也是用不了的工具** | ⏸ **暂不做**（等模板来源设计）|
 
