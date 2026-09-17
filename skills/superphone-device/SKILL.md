@@ -25,8 +25,8 @@ description: SuperPhone 设备操作手册（AI 操作层）。当需要通过 D
 | 你的工具 | 底层能力 | 说明 |
 |---|---|---|
 | `superphone_devices` | 网关 API | 列设备、看在线状态 |
-| `superphone_screenshot` | `screen.snapshot` | 实时帧，**返回 `seq`**（变化基线）|
-| `superphone_ocr` | `vision.ocr` / `vision.find_text` | 全量 OCR（**带 `cx/cy` 坐标**）或按文字只查该行 |
+| `superphone_screenshot` | `screen.snapshot` | ⚠️ **只有 board 档 320×569**（`quality` 参数实测无效）→ **拿不到原尺寸图**；返回值里的 `seq` 可当粗略变化基线 |
+| `superphone_ocr` | `vision.ocr` / `vision.find_text` | 全量 OCR（**带 `cx/cy` 坐标**，数据在 **`texts` 字段**）或按文字只查该行 |
 | `superphone_tap` | `touch.tap{x,y}` | **唯一的点击方式**，坐标 0–1 归一化 |
 | **`superphone_swipe`** | **`touch.swipe{x1,y1,x2,y2,duration?}`** | **滑动** —— 滚列表 / 刷视频（**上滑 = 下一个视频**）/ 下拉刷新 / 关闭浮层。四坐标必填，`duration` 默认 0.5s（拖得更慢更稳就调大）|
 | `superphone_type` | **`type.paste`** | 输入文字走剪贴板粘贴 —— 支持中文/emoji。**不要去点键盘** |
@@ -34,7 +34,24 @@ description: SuperPhone 设备操作手册（AI 操作层）。当需要通过 D
 | `superphone_app_list` | `app.list` | 枚举已安装 App（**返回 `bundleId` + `name`**）|
 | **`superphone_wait_change`** | `screen.wait(since)` | **★ 事件驱动：变化一发生就返回（实测 199ms）—— 默认就用它，零硬编码** |
 | `superphone_wait_stable` | `screen.waitStable` | **仅用于"防 OCR 读到转场中间态"，窗口要小（200~300ms）** —— ⚠️ **它不是"操作后的标配"，大窗口几乎总是白等**（见「等待策略」）|
+| **`superphone_screen_hash`** | `screen.hash` | **★ 2026-09-18 已修好**（此前返回「未知操作」）：返回 16 位 hex pHash，**109ms** —— 连采两次比对 = 廉价的"画面变了吗"判定 ✓ |
 | `superphone_take_control` / `superphone_end_control` | 网关 AI 会话 | 接管 / 释放（**开始前接管、收尾释放**）|
+
+#### ⚠️ 感知能力的实测边界（2026-09-18 真机实测，**先读再动手**）
+
+| 能力 | ★ 实测结论 | 该用它做什么 |
+|---|---|---|
+| **`superphone_ocr`** | 返回 `{count, texts:[{text,x,y,w,h,cx,cy,confidence}]}` —— **数据在 `texts` 字段**（不是 rows）；耗时 **2.0~2.9s** | **定位整行文字** ✓ |
+| **`superphone_ocr(text=…)`** | ★ **子串匹配、空格无关**（查 `"关注"` 能命中整行 `"三直播 团购 南京 关注 商城 推荐"`）；**但它返回的是【整行中心】，不是该词在行内的位置** | **点整行 / 按钮 / tab** ✓；**行内定位不行** ✗ |
+| **`superphone_screen_hash`** | ★ **已修好**，109ms | **机械判定"画面变了吗"** —— 连采两次比 hex ✓ |
+| **`superphone_wait_change`** | 会漏报（表现为超时返回）| 只作节奏控制 ✓ 判定靠校验 ✓ |
+| `vision.find_image`（**未接工具面**）| ⚠️ **y 精确、x 系统性偏**（测 5 次全偏 53~462px）· score 偏低 · 248~273ms | **当前不可靠，别依赖** ✗ |
+| `screenshot`（Native，**未接工具面**）| ★ **原尺寸 750×1334**，196KB，81~374ms | **锚点图的正确来源**，但**工具面还没有它** ✗ |
+
+> **★★ 由此得出的定位纪律**：
+> **一律优先用【文字锚】（`ocr` / `find_text` + `tap`）—— 它可靠** ✓
+> **需要行内词 / 纯图标定位时才考虑图像锚，而它当前不可靠** ✗
+> （主干 §11.5 写的是"**双保险：先 OCR 后图匹配**"—— **先走文字锚即可走通主线** ✓）
 
 #### ⚙️ 设备端能力：**还没接到工具面上的**（2026-09-18 实测更新；▲ 本表曾整体过期，见末尾教训）
 
