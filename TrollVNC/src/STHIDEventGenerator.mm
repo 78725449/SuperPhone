@@ -916,7 +916,15 @@ static void _sendHIDEvent(IOHIDEventRef eventRef, dispatch_queue_t queue) {
     delayBetweenTaps:(NSTimeInterval)delay {
     NSParameterAssert(tapCount > 0);
     NSParameterAssert(touchCount > 0);
-    NSParameterAssert(delay > 0.0);
+    // 2026-09-18 修复（真机崩溃根因）：原断言为 delay > 0.0，但 delay == 0 是**合法语义**
+    // ——本函数内 useCustomDelay = (delay > multiTapInterval)，delay=0 即"使用内置间隔"，
+    // 走 nanosleep(doubleDelay) 分支，完全安全。
+    // 而所有调用者都传 0：内部便捷包装 doubleTap/twoFingerTap/threeFingerTap（L1125/1135/1141/1147）
+    // 与注册表 touch.taps executor（未传 delay 时兜底 0.0）→ 于是【任何一次调用都会
+    // NSParameterAssert 失败 → NSException → abort()】，把 trollvncmanager 打死。
+    // 该崩溃此前从未暴露，因为工具面一直没暴露 touch.taps；2026-09-17 暴露后首次调用即引爆
+    // （设备三个端口全不通、gateway online=false，崩溃报告特征是 _userInfoForFileAndLine + SIGABRT）。
+    NSParameterAssert(delay >= 0.0);
 
     struct timespec doubleDelay = {0, (long)(multiTapInterval * nanosecondsPerSecond)};
     struct timespec pressDelay = {0, (long)(fingerLiftDelay * nanosecondsPerSecond)};
@@ -1106,7 +1114,9 @@ static void _sendHIDEvent(IOHIDEventRef eventRef, dispatch_queue_t queue) {
             location:(CGPoint)location
      numberOfTouches:(NSUInteger)touchCount
     delayBetweenTaps:(NSTimeInterval)delay {
-    NSParameterAssert(delay > 0.0);
+    // 2026-09-18 同 _sendTaps：delay == 0 是合法语义（用内置间隔），原 > 0.0 断言会让
+    // 所有调用者崩溃（详见 _sendTaps 内注释）。
+    NSParameterAssert(delay >= 0.0);
     if (_humanizeEnabled) {
         [self _humanizedTaps:tapCount location:location numberOfTouches:touchCount customDelay:delay];
         [self sendMarkerHIDEvent];
