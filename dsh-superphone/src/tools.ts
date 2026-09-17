@@ -186,6 +186,65 @@ export function createSuperphoneTools(config: Config, log: ActivityLog): ToolDef
     }),
 
     defineTool({
+      name: 'superphone_swipe',
+      description:
+        'Swipe on the device from (x1,y1) to (x2,y2), all normalized 0-1 (top-left origin). ' +
+        'Use for scrolling lists, switching videos (swipe up = next video), pull-to-refresh, or dismissing sheets. ' +
+        'All four coordinates are required; duration defaults to 0.5s (use a longer duration for a slower, more deliberate drag).',
+      parameters: {
+        deviceId: { type: 'string', required: true, description: 'Device id.' },
+        x1: { type: 'number', required: true, description: 'Start X (0-1).' },
+        y1: { type: 'number', required: true, description: 'Start Y (0-1).' },
+        x2: { type: 'number', required: true, description: 'End X (0-1).' },
+        y2: { type: 'number', required: true, description: 'End Y (0-1).' },
+        duration: { type: 'number', description: 'Swipe duration in seconds (default 0.5).' },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value: any) =>
+          value.blocked
+            ? [{ type: 'text', text: `blocked: ${value.error}` }]
+            : [
+                {
+                  type: 'text',
+                  text: value.ok
+                    ? `swiped (${value.x1}, ${value.y1}) → (${value.x2}, ${value.y2})`
+                    : `swipe failed: ${value.error}`,
+                },
+              ],
+      },
+      execute: withActivity(
+        log,
+        'superphone_swipe',
+        (a: { x1: number; y1: number; x2: number; y2: number }) =>
+          `swipe(${a.x1.toFixed(3)}, ${a.y1.toFixed(3)}) → (${a.x2.toFixed(3)}, ${a.y2.toFixed(3)})`,
+        async (args: { deviceId: string; x1: number; y1: number; x2: number; y2: number; duration?: number }) => {
+          const blocked = await humanControlled(config, args.deviceId)
+          if (blocked) {
+            return { deviceId: args.deviceId, ok: false, blocked: true, error: blocked, x1: args.x1, y1: args.y1, x2: args.x2, y2: args.y2 }
+          }
+          // 设备端 touch.swipe 要求 x1/y1/x2/y2 必填；duration 可选（设备端默认 0.5s）—— 只在本端给了正数时才透传
+          const params: Record<string, unknown> = { x1: args.x1, y1: args.y1, x2: args.x2, y2: args.y2 }
+          if (typeof args.duration === 'number' && args.duration > 0) params.duration = args.duration
+          const ack = await post(config, `/api/devices/${encodeURIComponent(args.deviceId)}/invoke`, {
+            cap: 'touch.swipe',
+            params,
+          })
+          return {
+            deviceId: args.deviceId,
+            x1: args.x1,
+            y1: args.y1,
+            x2: args.x2,
+            y2: args.y2,
+            ok: ack?.ok !== false,
+            ack: ack ?? null,
+            error: ack?.error ?? null,
+          }
+        },
+      ),
+    }),
+
+    defineTool({
       name: 'superphone_ocr',
       description:
         'On-device OCR (Apple Vision) with normalized boxes. Pass text to only get matching lines with their tap coordinates.',

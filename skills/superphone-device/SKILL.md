@@ -20,7 +20,7 @@ description: SuperPhone 设备操作手册（AI 操作层）。当需要通过 D
 **设备端本身具备 52 项能力**（读 `TRCapabilityRegistry.mm` 得出）。但**只有一小部分通过你手上的工具暴露出来**。
 **没暴露的 = 你现在做不到 → 不要绕路尝试，直接记下来报告。**
 
-#### ✅ 你现在能用的（11 个工具 ↔ 设备能力）
+#### ✅ 你现在能用的（12 个工具 ↔ 设备能力）
 
 | 你的工具 | 底层能力 | 说明 |
 |---|---|---|
@@ -28,7 +28,8 @@ description: SuperPhone 设备操作手册（AI 操作层）。当需要通过 D
 | `superphone_screenshot` | `screen.snapshot` | 实时帧，**返回 `seq`**（变化基线）|
 | `superphone_ocr` | `vision.ocr` / `vision.find_text` | 全量 OCR（**带 `cx/cy` 坐标**）或按文字只查该行 |
 | `superphone_tap` | `touch.tap{x,y}` | **唯一的点击方式**，坐标 0–1 归一化 |
-| `superphone_type` | **`type.paste`** | **输入文字走剪贴板粘贴 —— 支持中文/emoji。不要去点键盘** |
+| **`superphone_swipe`** | **`touch.swipe{x1,y1,x2,y2,duration?}`** | **滑动** —— 滚列表 / 刷视频（**上滑 = 下一个视频**）/ 下拉刷新 / 关闭浮层。四坐标必填，`duration` 默认 0.5s（拖得更慢更稳就调大）|
+| `superphone_type` | **`type.paste`** | 输入文字走剪贴板粘贴 —— 支持中文/emoji。**不要去点键盘** |
 | `superphone_app_open` | `app.open` | **打开 App 用它，不要去主屏点图标** |
 | `superphone_app_list` | `app.list` | 枚举已安装 App（**返回 `bundleId` + `name`**）|
 | `superphone_wait_change` | `screen.wait(since)` | 事件驱动等变化（**动态页面会假阳性，见下**）|
@@ -310,7 +311,7 @@ description: SuperPhone 设备操作手册（AI 操作层）。当需要通过 D
 | `input_text` | 输入文本 | `input_text(target="搜索框", value="{{keyword}}", clear_first=true)` | ⚠️ **`clear_first` 当前【不可实现】**（工具面无清空原语）→ 进输入前**先断言框内为空**；不为空 ＝ 能力缺口（见「每步铁律」）|
 | `expect` | 断言校验 | `expect(assert="出现『综合』『视频』")` | ✅ |
 | `wait_for` | 等条件出现 | `wait_for(text="综合")` | ⚠️ 仅静态页面（动态页面改用签名比对）|
-| `scroll` | 滚动 | `scroll(dir="down")` | ❌ **工具面未暴露 `touch.swipe` → 现在做不到** |
+| `scroll` | 滚动 / 刷下一个 | `scroll(dir="down")`（**上滑 = 下一个视频**）| ✅（`superphone_swipe`）|
 | `back` | 返回 | `back()` | ⚠️ 只能"点左上角的返回箭头"，非系统级返回 |
 | `home` | 回主屏 | `home()` | ❌ **工具面未暴露 `home`**（可用 `app_open` 切 App 代替）|
 
@@ -402,13 +403,16 @@ description: SuperPhone 设备操作手册（AI 操作层）。当需要通过 D
 
 ### ★ 工具面待补清单（**不是"设备端缺口"** —— 设备端都已实现，只需接到工具面上）
 
+> **进度**：`touch.swipe` ✅ **已补齐**（2026-09-17，真机验证通过：上滑切到下一个视频）。
+
 | 待补 | 设备端现状 | 影响 | 优先级 |
 |---|---|---|---|
-| **`touch.swipe`（滑动）** | ✅ **已实现**（`touch.swipe`/`curveSwipe`）| **刷视频 / 滚动列表 / 翻页全做不了** —— 这是**最基础的交互**（刷抖音就是上下滑）| ★★★ |
+| ~~**`touch.swipe`（滑动）**~~ | ✅ **已补齐** | —— | ~~★★★~~ 完成 |
 | **清空输入框** | ✅ **软键盘可点**（**零新增能力即可解**）；HID 删除键实现也存在 | 换关键词必失败；**蜂群里每台都会遇到** | ★★★ |
 | **`home` / `back`** | ✅ `home` **已实现** | 回不到基线页 → 只能 SSH 杀 App（需 shell 权限）| ★★ |
 | **`vision.find_image`** | ✅ **已实现**（<1s、零模型）| 无文字图标（含关闭 `×`）只能靠坐标，**跨版本必失** | ★★ |
 | **`screen.hash`** | ✅ **已实现** | 只能靠 `wait_change`（动态页面有假阳性）| ★ |
+| **`touch.longPress`** | ✅ **已实现**（参数只有 `x,y`，加工具 5 行）| 长按菜单 / 拖拽做不了 | ★ |
 
 > **★★ 结构结论（本轮最重要的发现）**：上面 5 项**没有一项需要动设备端或走 CI** ——
 > 设备端 `TRCapabilityRegistry` **已注册 52 项能力**，**缺的是把它们接到 AI 工具面上**
