@@ -14,6 +14,10 @@ trollvnc-farm/node_modules/
 trollvnc-farm/data/
 trollvnc-farm/frp/
 
+# 本地工作数据：改动前备份与网关运行日志（频繁变化且体积增长，不入库）
+data/backups/
+data/gateway.log
+
 # 上游对照副本 / 打包产物 / 截图
 TrollVNC-upstream/
 *.zip
