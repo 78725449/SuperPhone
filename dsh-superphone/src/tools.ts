@@ -254,18 +254,22 @@ export function createSuperphoneTools(config: Config, log: ActivityLog): ToolDef
       },
       output: {
         schema: { type: 'object', additionalProperties: true },
-        render: (_args, value: any) => [
-          {
-            type: 'text',
-            // ⚠️ 必须带坐标：模型要靠 cx/cy 把"锚点"解析成点击坐标。
-            // 2026-09-17 真机验收发现：原实现只输出 l.text，把 cx/cy 丢在结构化返回值里 →
-            // 模型在工具面上拿不到坐标 → 「锚点→坐标→点击」链路断裂。
-            text: `${value.count ?? 0} line(s): ${(value.lines ?? [])
-              .slice(0, 12)
-              .map((l: any) => `${l.text}@(${Number(l.cx ?? 0).toFixed(3)},${Number(l.cy ?? 0).toFixed(3)})`)
-              .join(' | ')}`,
-          },
-        ],
+        render: (_args, value: any) => {
+          // ⚠️ 两条渲染纪律（都来自 2026-09-17 真机验收）：
+          // ① 必须带坐标：模型要靠 cx/cy 把"锚点"解析成点击坐标。
+          //    原实现只输出 l.text，坐标丢在结构化返回值里 → 「锚点→坐标→点击」链路断裂。
+          // ② 不能只吐前 12 行：实测抖音结果页 55 行，只吐 12 行 → 模型看不到屏幕下半部，
+          //    会误判"键盘没弹出"/"元素不存在"。上限放到 80 行（覆盖整屏），
+          //    仍超出时明确标注还剩多少行，避免"静默截断"这种最坏情况。
+          const all = (value.lines ?? []) as any[]
+          const CAP = 80
+          const shown = all.slice(0, CAP)
+          const body = shown
+            .map((l: any) => `${l.text}@(${Number(l.cx ?? 0).toFixed(3)},${Number(l.cy ?? 0).toFixed(3)})`)
+            .join(' | ')
+          const more = all.length > CAP ? `  …(+${all.length - CAP} more, narrow with text=)` : ''
+          return [{ type: 'text', text: `${value.count ?? 0} line(s): ${body}${more}` }]
+        },
       },
       execute: withActivity(
         log,
@@ -294,6 +298,29 @@ export function createSuperphoneTools(config: Config, log: ActivityLog): ToolDef
       },
       execute: withActivity(log, 'superphone_take_control', (a: { deviceId: string }) => `接管 ${short(a.deviceId)}`, async (args: { deviceId: string }) => {
         const ack = await post(config, `/api/devices/${encodeURIComponent(args.deviceId)}/disconnect`, {})
+        return { deviceId: args.deviceId, ok: ack?.ok !== false, ack: ack ?? null, error: ack?.error ?? null }
+      }),
+    }),
+
+    defineTool({
+      name: 'superphone_home',
+      description:
+        'Press the Home button on the device (back to the iOS home screen / SpringBoard). Use it to leave a deep page, then superphone_app_open to relaunch the app. ' +
+        'NOTE: the app is only suspended — its in-app navigation stack may still be preserved, so verify the result with superphone_ocr.',
+      parameters: {
+        deviceId: { type: 'string', required: true, description: 'Device id.' },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value: any) =>
+          value.blocked
+            ? [{ type: 'text', text: `blocked: ${value.error}` }]
+            : [{ type: 'text', text: value.ok ? 'pressed Home' : `home failed: ${value.error}` }],
+      },
+      execute: withActivity(log, 'superphone_home', () => '回主屏', async (args: { deviceId: string }) => {
+        const blocked = await humanControlled(config, args.deviceId)
+        if (blocked) return { deviceId: args.deviceId, ok: false, blocked: true, error: blocked }
+        const ack = await post(config, `/api/devices/${encodeURIComponent(args.deviceId)}/invoke`, { cap: 'home', params: {} })
         return { deviceId: args.deviceId, ok: ack?.ok !== false, ack: ack ?? null, error: ack?.error ?? null }
       }),
     }),
