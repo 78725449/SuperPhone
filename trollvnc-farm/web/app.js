@@ -253,7 +253,9 @@ function connectEventsWS() {
     refreshDevices().catch(() => {});
   };
   eventsWS.onmessage = (ev) => {
-    // 缩略图事件：设备 5901 经隧道发 RFB Raw 流 → 网关 ThumbRfbDecoder 解码 → 广播 {type:'thumb', deviceId}。
+    // 缩略图事件：网关 SnapshotPoller 每 2s invoke `screen.snapshot`（设备端按需实时取帧 → board 档 JPEG），
+    // **比较 JPEG 内容**变化才广播 {type:'thumb', deviceId}（2026-09-17 起；原先按 seq 判重，
+    // 而 seq 由采集管线的逐帧 pHash 驱动、看板态零采集时必然冻结 → 会导致画面定格）。
     // 卡片存在则直接补拉该设备缩略图（避免全量刷新）；未知事件类型保持原逻辑（refreshDevices 重拉全量）
     let msg = null;
     try { msg = JSON.parse(ev.data); } catch { /* 非 JSON 事件按全量刷新处理 */ }
@@ -397,9 +399,11 @@ function createWallTile(d) {
 
 /**
  * 启动卡片墙画面获取（读网关缩略图缓存）
- * 功能：设备 5901 经隧道发 RFB Raw 流 → 网关 ThumbRfbDecoder 解码产 JPEG 缓存；前端事件驱动 GET /api/devices/:id/thumb 拉取渲染。
- *       无轮询定时器（2026-08-21 起 screen.hash/screenshot 轮询整体移除）：静止零流量，
- *       画面更新由网关 thumb 事件广播 + 设备列表刷新兜底驱动。卡片墙不建 RFB 持久连接。
+ * 功能：网关 SnapshotPoller 每 2s invoke `screen.snapshot`（设备端按需实时取帧 → vImage 降采样 board 档
+ *       → turbojpeg 编码）产 JPEG 缓存；前端事件驱动 GET /api/devices/:id/thumb 拉取渲染。
+ *       （旧架构「5901 经隧道发 RFB Raw 流 + 网关 ThumbRfbDecoder 解码」已于 2026-09-15 整体退役。）
+ *       无轮询定时器：静止零流量，画面更新由网关 thumb 事件广播 + 设备列表刷新兜底驱动。
+ *       卡片墙**不建 RFB 持久连接**（本函数名中的 Rfb 是历史遗留，实际只做缩略图获取）。
  * @param {object} inst 卡片墙实例 { device, tile, statusEl, rfb, paused }
  * @returns {void}
  */

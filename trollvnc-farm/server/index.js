@@ -13,7 +13,7 @@ import { WebSocketServer } from 'ws';
 import Bonjour from 'bonjour-service';
 
 // 快照轮询器（2026-09-15 替代 ThumbRfbDecoder）：经 invoke 通道低频拉取设备 screen.snapshot
-// （board 档 JPEG + 全局变化 seq），seq 变化 → 更新缓存 + 广播 thumb 事件（前端事件驱动零改动）。
+// （board 档 JPEG  + 设备端变化 seq），**比较 JPEG 内容**变化才更新缓存 + 广播 thumb 事件（前端事件驱动零改动）。
 // 会话（session 通道）激活期间暂停轮询（省设备端按需渲染与隧道流量）；设备固件不支持
 // screen.snapshot（旧版本）时连续失败退避降级（30s 重试窗口），不刷屏不崩。
 class SnapshotPoller {
@@ -24,7 +24,12 @@ class SnapshotPoller {
     this.paused = false;
     this.running = false;
     this.failStreak = 0;
-    this.intervalMs = 2000;   // 正常轮询间隔
+    // 自适应轮询（2026-09-17）：实测端到端「操作→新图」= 2254ms，其中设备端取帧仅 56ms，
+    // 98% 都花在等下一次轮询。改为「静止慢档 2s / 刚发生变化进快档 500ms」：
+    // 操作期间跟手（延迟 ~300ms），静止时开销与原先完全一致（不增加设备端取帧次数）。
+    this.intervalMs = 2000;      // 慢档（静止）
+    this.fastIntervalMs = 500;   // 快档（变化后）
+    this.fastRemaining = 0;      // 快档剩余次数；变化时重置
   }
   start() { this.paused = false; this._loop(); }
   pause() { this.paused = true; }
@@ -46,14 +51,18 @@ class SnapshotPoller {
           if (this.jpeg !== ack.jpeg) {
             this.seq = ack.seq;
             this.jpeg = ack.jpeg;
+            this.fastRemaining = 4;   // ponytail: 变化后快档 4 次（约 2s 内跟手）；看视频这类持续变化场景可调大
             notifyDevicesChanged('thumb', this.deviceId);
+          } else if (this.fastRemaining > 0) {
+            this.fastRemaining--;     // 快档内连续无变化 → 递减，归零回落慢档
           }
         } else {
-          // 旧固件/能力缺失/设备忙：连续失败退避降级，避免 2s 空旋刷屏
+          // 旧固件/能力缺失/设备忙：连续失败退避降级，避免空旋刷屏
           this.failStreak++;
         }
         if (this.paused) break;
-        const backoff = this.failStreak >= 3 ? 30000 : this.intervalMs;
+        const backoff = this.failStreak >= 3 ? 30000
+                      : (this.fastRemaining > 0 ? this.fastIntervalMs : this.intervalMs);
         await new Promise((r) => setTimeout(r, backoff));
       }
     } catch { /* 隧道中断等：静默，下次 resume/start 恢复 */ } finally {
@@ -296,7 +305,7 @@ const FT_CMDACK  = 0x05;  // 命令 ack JSON（设备→网关）
 const FT_STATE   = 0x07;  // 被控状态上报（设备→网关，JSON {controlled:bool}）
 // 2026-08-23 通道复用协议（proto:2）：单隧道多路 5901 连接，网关缩略图与 noVNC 控制流并存
 // （取代 proto:1 的 rfb.start/stop 轮换——多客户端本是 LibVNCServer 原生能力）
-const FT_CHAN_OPEN  = 0x08;  // 通道建立（网关→设备）：payload [chanId:2BE][kind:1B]（kind 0=thumb 1=session）
+const FT_CHAN_OPEN  = 0x08;  // 通道建立（网关→设备）：payload [chanId:2BE][kind:1B]（kind 只用 1=session；缩略图已于 2026-09-15 改走 invoke screen.snapshot，不再用通道）
 const FT_CHAN_ACK   = 0x09;  // 通道建立确认（设备→网关）：payload [chanId:2BE][ok:1B]
 const FT_CHAN_DATA  = 0x0A;  // 通道 RFB 数据（双向）：payload [chanId:2BE][rfb字节]
 const FT_CHAN_CLOSE = 0x0B;  // 通道关闭（双向）：payload [chanId:2BE][reason:1B]（0=正常 1=对端EOF 2=错误）

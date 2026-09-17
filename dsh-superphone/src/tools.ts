@@ -339,10 +339,10 @@ export function createSuperphoneTools(config: Config, log: ActivityLog): ToolDef
     defineTool({
       name: 'superphone_wait_change',
       description:
-        'Wait until the device screen CHANGES (event-driven, no polling). Pass since = the seq returned by a previous superphone_screenshot/superphone_wait_change call to catch changes after that point; omit it to baseline at call time. A timeout is a normal outcome (changed:false), not an error — use it to decide whether an injection took effect.',
+        'Wait until the device screen CHANGES (event-driven, no polling). SCOPE: it only captures changes that happen WHILE this call is pending — the device detects changes via a pHash event source that runs only while someone is waiting, so a change that already finished before you call this is not reported (you would get a timeout). For "verify that my tap took effect" use superphone_wait_stable + superphone_screenshot instead. Pass since = the seq from a previous call to catch changes after that point; omit it to baseline at call time. A timeout is a normal outcome (changed:false), not an error.',
       parameters: {
         deviceId: { type: 'string', required: true, description: 'Device id.' },
-        since: { type: 'number', description: 'Baseline seq from a previous call; omit to baseline now.' },
+        since: { type: 'number', description: 'Baseline seq from a previous call; omit to baseline now. Note: changes that already finished before this call are not reported (scope note above).' },
         timeoutMs: { type: 'number', description: 'Application-level deadline in ms (default 15000, capped 120000).' },
       },
       output: {
