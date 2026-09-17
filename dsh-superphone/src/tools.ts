@@ -198,9 +198,12 @@ export function createSuperphoneTools(config: Config, log: ActivityLog): ToolDef
         render: (_args, value: any) => [
           {
             type: 'text',
+            // ⚠️ 必须带坐标：模型要靠 cx/cy 把"锚点"解析成点击坐标。
+            // 2026-09-17 真机验收发现：原实现只输出 l.text，把 cx/cy 丢在结构化返回值里 →
+            // 模型在工具面上拿不到坐标 → 「锚点→坐标→点击」链路断裂。
             text: `${value.count ?? 0} line(s): ${(value.lines ?? [])
-              .slice(0, 8)
-              .map((l: any) => l.text)
+              .slice(0, 12)
+              .map((l: any) => `${l.text}@(${Number(l.cx ?? 0).toFixed(3)},${Number(l.cy ?? 0).toFixed(3)})`)
               .join(' | ')}`,
           },
         ],
