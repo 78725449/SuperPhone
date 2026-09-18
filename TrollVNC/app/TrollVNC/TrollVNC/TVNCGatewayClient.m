@@ -26,6 +26,8 @@ static NSString *const kGatewayHostKey = @"GatewayHost";
 static NSString *const kGatewayTokenKey = @"GatewayToken";
 
 @interface TVNCGatewayClient () <NSURLSessionDelegate>
+- (void)fetchDevicesAllowProtocolFallback:(BOOL)allowFallback
+                               completion:(void (^)(NSArray<NSDictionary *> *_Nullable, NSError *_Nullable))completion;
 @end
 
 @implementation TVNCGatewayClient
@@ -52,6 +54,52 @@ static NSString *const kGatewayTokenKey = @"GatewayToken";
     return kGatewayDefaultConsolePort;
 }
 
+/**
+ * 当前使用的网关协议（"https" / "http"）。
+ *
+ * 背景（2026-09-18 真机定位）：网关【设计上默认启用 TLS】（trollvnc-farm 的
+ * FARM_TLS !== '0' → https + 自签证书，本类 didReceiveChallenge 信任它），
+ * 但允许用 FARM_TLS=0 以纯 HTTP 运行（调试/内网无 TLS 场景）。
+ * 本类原先固定拼 "https://"，一旦网关以 HTTP 启动，App 的 https 请求必然握手失败，
+ * 表现为 Hero 卡「网关不可达，请检查网关配置」——而 manager 走 TCP 18081 注册不受影响，
+ * 于是出现「网关侧 online=true、设备 App 却报不可达」的两边状态不一致。
+ * 现改为记协议并自适应：默认 https（保持原设计），握手失败自动降级 http 并记住。
+ */
+static NSString *const kGatewaySchemeKey = @"GatewayScheme";
+
+- (NSString *)gatewayScheme {
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
+    NSString *s = [d stringForKey:kGatewaySchemeKey];
+    return [s isEqualToString:@"http"] ? @"http" : @"https"; // 缺省 https（原设计）
+}
+
+- (void)setGatewayScheme:(NSString *)scheme {
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
+    [d setObject:scheme forKey:kGatewaySchemeKey];
+    [d synchronize];
+}
+
+/**
+ * 判定"协议不匹配"类错误（对端不是当前协议的服务），用于决定是否切换协议重试。
+ *
+ * 只覆盖【协议错配】的形态，不覆盖纯网络故障——否则网关真的不可达时也会去试另一协议，
+ * 白等一个 timeout，还掩盖了真实故障。实测：对纯 HTTP 服务发 https 请求，
+ * iOS 常报 -1200（SecureConnectionFailed），个别版本报 -1004/-1005/-1017。
+ */
+static BOOL tvIsProtocolMismatchError(NSError *err) {
+    if (!err || ![err.domain isEqualToString:NSURLErrorDomain]) return NO;
+    switch (err.code) {
+        case NSURLErrorSecureConnectionFailed:   // -1200：TLS 握手失败（明文服务收到 ClientHello）
+        case NSURLErrorServerCertificateUntrusted: // -1202
+        case NSURLErrorCannotConnectToHost:      // -1004
+        case NSURLErrorNetworkConnectionLost:    // -1005
+        case NSURLErrorCannotParseResponse:      // -1017
+            return YES;
+        default:
+            return NO;
+    }
+}
+
 /// 读取当前网关 Token（可为空字符串）。
 - (nullable NSString *)gatewayToken {
     NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kTRAppPrefsSuiteName];
@@ -60,13 +108,14 @@ static NSString *const kGatewayTokenKey = @"GatewayToken";
 
 #pragma mark - 请求构造
 
-/// 构造网关基础 URL：https://host:port/api/...（host 未配置返回 nil）。
+/// 构造网关基础 URL：<scheme>://host:port/api/...（host 未配置返回 nil）。
+/// scheme 取自 gatewayScheme（默认 https，握手失败自动降级 http 并记住，见该属性注释）。
 /// 网关默认启用 https（自签证书，见 trollvnc-farm §2.3m）；证书信任由 tlsTrustingSession 的 challenge 处理。
 - (nullable NSURL *)apiURLWithPath:(NSString *)path {
     NSString *host = [self gatewayHost];
     if (!host.length) return nil;
     NSInteger port = [self gatewayPort];
-    NSString *urlStr = [NSString stringWithFormat:@"https://%@:%ld%@", host, (long)port, path];
+    NSString *urlStr = [NSString stringWithFormat:@"%@://%@:%ld%@", [self gatewayScheme], host, (long)port, path];
     return [NSURL URLWithString:urlStr];
 }
 
@@ -137,6 +186,21 @@ static NSString *const kGatewayTokenKey = @"GatewayToken";
 #pragma mark - Public API
 
 - (void)fetchDevicesWithCompletion:(void (^)(NSArray<NSDictionary *> *_Nullable, NSError *_Nullable))completion {
+    [self fetchDevicesAllowProtocolFallback:YES completion:completion];
+}
+
+/**
+ * 拉取设备目录（内部实现，带一次协议降级重试）。
+ *
+ * @param allowFallback 是否允许在协议不匹配时切换协议并重试一次（递归时传 NO 防死循环）
+ * @param completion    结果回调（主线程）
+ *
+ * 协议自适应（2026-09-18）：网关可能以 https（默认）或 http（FARM_TLS=0）启动，
+ * 两者 App 都应当能用。首次请求用记住的协议；若报"协议不匹配"，切换后【重试一次】并记住新协议，
+ * 后续请求直接走对的那个。递归深度最多 2（https↔http），不会反复。
+ */
+- (void)fetchDevicesAllowProtocolFallback:(BOOL)allowFallback
+                               completion:(void (^)(NSArray<NSDictionary *> *_Nullable, NSError *_Nullable))completion {
     NSURL *url = [self apiURLWithPath:@"/api/devices"];
     if (!url) {
         [self dispatchOnMain:^{
@@ -144,6 +208,7 @@ static NSString *const kGatewayTokenKey = @"GatewayToken";
         }];
         return;
     }
+    NSString *usedScheme = [self gatewayScheme];
     NSURLRequest *req = [self requestWithURL:url method:@"GET" body:nil];
     NSURLSessionDataTask *task = [[self tlsTrustingSession] dataTaskWithRequest:req
                                                                  completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
@@ -152,6 +217,14 @@ static NSString *const kGatewayTokenKey = @"GatewayToken";
             NSDictionary *json = [self parseJSONDictionary:data];
             id list = json[@"devices"];
             if ([list isKindOfClass:[NSArray class]]) devices = list;
+        }
+        // 协议不匹配 → 切换协议重试一次（并记住正确的协议，后续请求直接命中）
+        if (!devices && allowFallback && tvIsProtocolMismatchError(err)) {
+            NSString *other = [usedScheme isEqualToString:@"https"] ? @"http" : @"https";
+            [self setGatewayScheme:other];
+            NSLog(@"[TVNCGateway] %@ 请求失败(code=%ld)，切换协议为 %@ 重试", usedScheme, (long)err.code, other);
+            [self fetchDevicesAllowProtocolFallback:NO completion:completion];
+            return;
         }
         [self dispatchOnMain:^{
             if (completion) completion(devices, err);

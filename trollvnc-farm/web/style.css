@@ -559,7 +559,21 @@ body.single-card #batchBar { display: none !important; }
   border: none; border-radius: 6px; padding: 5px 14px; font-size: 13px; cursor: pointer;
 }
 
-.empty { color: var(--muted); text-align: center; padding: 60px 0; }
+/* 空态提示（2026-09-18 改）：整屏【上下左右居中】，替代原先「文档流 + padding:60px 0」的靠下观感。
+   用 position:fixed + flex 居中，不受 header / 侧栏 / 宫格-列表布局模式影响。
+   .hidden 定义为 display:none !important，仍能正常隐藏（见本文件 .hidden 规则）。 */
+.empty {
+  color: var(--muted);
+  text-align: center;
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;      /* 窄屏左右留白：长文案不贴边 */
+  font-size: 15px;
+  pointer-events: none; /* 不遮挡底层元素 */
+}
 .modal { position: fixed; inset: 0; z-index: 80; background: rgba(5,8,14,.85); display: flex; }
 .modal.hidden { display: none; }
 .modal-card {
