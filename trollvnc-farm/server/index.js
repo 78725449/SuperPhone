@@ -1368,9 +1368,35 @@ const requestHandler = async (req, res) => {
 const tlsOptions = loadTlsOptions();
 
 // http→https 自动跳转：http 明文请求 301 到同 host:port 的 https（保留路径与查询串）
+//
+// 2026-09-18 嵌入模式例外：插件面板（DSH 侧边栏 iframe，宿主页面为 http://127.0.0.1:3080）
+// 需要把网关控制台嵌进 http 页面。此时若 301 到 https，浏览器会因【自签证书】拒绝加载 ——
+// 而 iframe 里的证书错误【不会】给出"继续访问"入口（只有主框架才给），
+// 表现为「网页似乎有问题，或者可能已永久移动到新的 Web 地址」。
+// 故：带嵌入参数的请求不跳转，直接用 http 服务（宿主 http 嵌 http 是合法方向）。
+// 参数即窄容器嵌入契约（见 AGENTS.md「窄容器嵌入」条）：only / syscursor / pv。
+//
+// ★ 但 iframe 内的【相对资源请求】（/style.css、/app.js、/caps.js …）自身不带这些参数，
+//   若不额外识别就会被 301 到 https 而加载失败（实测：/style.css?v=52 → 301）。
+//   故用三级判据判定"这是嵌入场景"：
+//     ① 请求自身带嵌入参数                    —— iframe 的顶层导航
+//     ② Sec-Fetch-Dest: iframe                —— 浏览器对 iframe 导航的显式标注（跨源 iframe 会带）
+//     ③ Referer 指向带嵌入参数的嵌入页          —— iframe 内的子资源
+const EMBED_QUERY_KEYS = ['only', 'syscursor', 'pv'];
+function isEmbedRequest(req, u) {
+  if (EMBED_QUERY_KEYS.some((k) => u.searchParams.has(k))) return true;
+  if ((req.headers['sec-fetch-dest'] || '').toLowerCase() === 'iframe') return true;
+  const ref = req.headers.referer || '';
+  if (ref && EMBED_QUERY_KEYS.some((k) => ref.includes(`${k}=`))) return true;
+  return false;
+}
 const httpRedirectHandler = (req, res) => {
   const host = req.headers.host || 'localhost';
   const u = new URL(req.url, `http://${host}`);
+  if (isEmbedRequest(req, u)) {
+    requestHandler(req, res); // 嵌入场景：明文放行，不 301
+    return;
+  }
   const target = `https://${host}${u.pathname}${u.search}`;
   res.writeHead(301, { Location: target });
   res.end();
@@ -1380,6 +1406,18 @@ const httpRedirectHandler = (req, res) => {
 // 两者均不自行 listen，由 bootstrap 按首字节协议分发（pause→unshift→emit→nextTick resume）。
 const server = tlsOptions ? https.createServer(tlsOptions, requestHandler) : http.createServer(requestHandler);
 const httpRedirect = tlsOptions ? http.createServer(httpRedirectHandler) : null;
+
+// 2026-09-18：明文 WebSocket 也要能建立。
+// 嵌入页（http 的 iframe）要出画面必须开 WS（noVNC / 缩略图事件通道），
+// 而 httpRedirect 这个 http server 原本只挂了 request handler、没有 upgrade 监听器 ——
+// 明文 WS 到达时会被直接丢弃（表现为 iframe 页面能出来但画面永久空白）。
+// 这里把明文 upgrade 转发给真正的 server 处理：upgrade 建立在已解析的 HTTP 请求之上，
+// 与连接所用的传输层（TLS 与否）无关，故转发是安全的。
+if (httpRedirect) {
+  httpRedirect.on('upgrade', (req, socket, head) => {
+    server.emit('upgrade', req, socket, head);
+  });
+}
 
 // 2026-08-23 诊断：WS upgrade 到达时间戳——定位「浏览器 WS 已发起但网关迟迟 connection」的阻塞窗口
 // （缩略图编码/大帧解码阻塞事件循环时，upgrade 到 connection 之间会拉长）

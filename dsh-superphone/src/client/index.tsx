@@ -121,11 +121,28 @@ export function SuperphoneTab({ visible = true }: { ctx?: Context; visible?: boo
   }, [log])
 
   const gateway = config?.gateway?.replace(/\/+$/, '') ?? ''
+  /**
+   * iframe 用的网关地址（2026-09-18）。
+   *
+   * 网关默认启用 TLS（自签证书）。若宿主页面是 http（DSH GUI 默认 http://127.0.0.1:3080），
+   * 而 iframe 用 https，浏览器会因自签证书拒绝加载 —— 且 iframe 里的证书错误
+   * 【不会】给出"继续访问"入口（只有主框架才给），页面表现为「网页似乎有问题」。
+   * 故按宿主协议选择：
+   *   · 宿主 http → iframe 也用 http（网关对带嵌入参数的明文请求放行，不 301；见 server/index.js
+   *                 httpRedirectHandler 的 EMBED_QUERY_KEYS）
+   *   · 宿主 https → 必须用 https（否则被混合内容策略拦），此时需浏览器信任网关自签证书
+   */
+  const frameGateway = (() => {
+    if (!gateway) return ''
+    const hostIsSecure = typeof window !== 'undefined' && window.location.protocol === 'https:'
+    if (hostIsSecure) return gateway
+    return gateway.replace(/^https:/, 'http:')
+  })()
   // 单卡模式 + 保持系统鼠标；聚焦切换由网关卡片自己的点击/浮层完成，面板不接管
   // pv = 面板侧的内嵌版本位：网关前端的样式/脚本更新后递增它，强制 iframe 重新加载
   //（否则 iframe 不会自动重载，面板会一直用缓存的旧样式——曾因此出现"网关有呼吸光、
   //  面板没有"的现象）。改网关 web/ 后请同步 +1。
-  const frameUrl = gateway && deviceId ? `${gateway}/?syscursor=1&pv=2&only=${encodeURIComponent(deviceId)}` : null
+  const frameUrl = frameGateway && deviceId ? `${frameGateway}/?syscursor=1&pv=2&only=${encodeURIComponent(deviceId)}` : null
 
   const status = (() => {
     if (!selected) return { text: '未选择设备', color: '#888' }
