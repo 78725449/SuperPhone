@@ -69,20 +69,30 @@ def ws_probe(path, tls=False):
 
 
 # ── 完整链路清单 ──────────────────────────────────────────────
+# ★ 维护纪律：本清单必须覆盖 iframe 最终会请求的【每一个 URL】。
+#   历史教训（2026-09-18）：修了 caps.js/press.js/gesture.js 三个被浏览器永久缓存 301 的文件，
+#   却漏了 app.js 第 3 行的 /novnc/core/rfb.js?v=4 —— 用户重启后错误只是"换了文件名"继续报。
+#   故 app.js 的全部 import 都在此列出；改 app.js 的 import 或版本号后，同步改这里。
 CHAIN = [
-    ("① iframe 顶层导航",      f"/?syscursor=1&pv=2&only={DEV}", "iframe", "GET"),
-    ("② 样式表",                "/style.css?v=52",                "style",  "GET"),
-    ("③ 主脚本",                "/app.js?v=228",                  "script", "GET"),
-    ("④ 能力脚本",              "/caps.js?v=15",                  "script", "GET"),
-    ("⑤ 按键脚本",              "/press.js",                      "script", "GET"),
-    ("⑥ 手势脚本",              "/gesture.js",                    "script", "GET"),
-    ("⑦ 设备列表 API",          "/api/devices",                   "empty",  "GET"),
-    ("⑧ 缩略图 API",            f"/api/devices/{DEV}/thumb",      "empty",  "GET"),
-    ("⑨ 能力配置 API",          f"/api/devices/{DEV}/configs",    "empty",  "GET"),
-    ("⑩ 能力调用 API",          f"/api/devices/{DEV}/invoke",     "empty",  "POST"),
-    ("⑪ 批量调用 API",          "/api/devices/batch/invoke",      "empty",  "POST"),
-    ("⑫ ping API",              f"/api/devices/{DEV}/ping",       "empty",  "POST"),
-    ("⑬ 断开 API",              f"/api/devices/{DEV}/disconnect", "empty",  "POST"),
+    ("① iframe 顶层导航",      f"/?syscursor=1&pv=3&only={DEV}", "iframe", "GET"),
+    ("② 样式表",                "/style.css?v=53",                "style",  "GET"),
+    ("③ 主脚本",                "/app.js?v=229",                  "script", "GET"),
+    ("④ noVNC 核心(server patch)", "/novnc/core/rfb.js?v=5",       "script", "GET"),
+    ("⑤ 能力脚本",              "/caps.js?v=16",                  "script", "GET"),
+    ("⑥ 按键脚本",              "/press.js?v=1",                  "script", "GET"),
+    ("⑦ 手势脚本",              "/gesture.js?v=1",                "script", "GET"),
+    ("⑧ 设备列表 API",          "/api/devices",                   "empty",  "GET"),
+    ("⑨ 缩略图 API",            f"/api/devices/{DEV}/thumb",      "empty",  "GET"),
+    ("⑩ 能力配置 API",          f"/api/devices/{DEV}/configs",    "empty",  "GET"),
+    ("⑪ 能力调用 API",          f"/api/devices/{DEV}/invoke",     "empty",  "POST"),
+    ("⑫ 批量调用 API",          "/api/devices/batch/invoke",      "empty",  "POST"),
+    ("⑬ ping API",              f"/api/devices/{DEV}/ping",       "empty",  "POST"),
+    ("⑭ 断开 API",              f"/api/devices/{DEV}/disconnect", "empty",  "POST"),
+    # 旧 URL（浏览器缓存过 301 的那些）—— 服务端也必须已修好，否则将来换回旧地址仍会炸
+    ("⑮ 旧URL caps.js?v=15",    "/caps.js?v=15",                  "script", "GET"),
+    ("⑯ 旧URL press.js",        "/press.js",                      "script", "GET"),
+    ("⑰ 旧URL gesture.js",      "/gesture.js",                    "script", "GET"),
+    ("⑱ 旧URL rfb.js?v=4",      "/novnc/core/rfb.js?v=4",         "script", "GET"),
 ]
 CONTROL = [
     ("★ 对照：用户手输 http://IP:8080（顶层导航）", "/", "document", "GET"),

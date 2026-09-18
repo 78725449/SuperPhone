@@ -378,7 +378,9 @@ export function createSuperphoneTools(config: Config, log: ActivityLog): ToolDef
       description:
         'Execute a batch of steps ON THE PHONE in one call (script mode) — the whole batch runs device-side and returns an atomic result with a per-step trace; ' +
         'one step failing aborts the script. PREFER THIS over issuing many separate single-action calls for a known sequence: it avoids per-step network round-trips. ' +
-        'Ops: find_and_click{target:{text}} · input_text{text} · scroll{dir:"down"|"up"} · back · home · open{bundleId} · wait_for{expect,timeoutMs} · expect{assert}. ' +
+        'Ops: tap{x,y} · find_and_click{target:{text}} · input_text{text} · scroll{dir:"down"|"up"} · back · home · open{bundleId} · wait_for{expect,timeoutMs} · expect{assert}. ' +
+        '★ tap{x,y} takes NORMALIZED 0-1 coordinates (origin top-left) and is the ONLY way to hit ICON-ONLY controls that OCR cannot see — ' +
+        'a magnifier icon, a heart, a share arrow. find_and_click matches TEXT only, so it can never find those; when a step targets an icon, use tap with the cached coordinate. ' +
         'expect forms: {hashDiff:true[,hashDiffThreshold]} | {text:"xx"} | {textGone:"xx"}.',
       parameters: {
         deviceId: { type: 'string', required: true, description: 'Device id.' },

@@ -789,7 +789,29 @@ static BOOL trScriptWaitExpect(NSDictionary *expect, NSString *baseHash,
                 rec[@"index"] = @(i);
                 rec[@"op"] = op ?: @"(缺 op)";
 
-                if ([op isEqualToString:@"find_and_click"]) {
+                if ([op isEqualToString:@"tap"]) {
+                    // 直接按归一化坐标点击（2026-09-19 新增）—— ★ 定案 D2「定位策略链」的第①档：缓存坐标
+                    // 动机（真机实测）：抖音首页的搜索入口是【放大镜图标】，OCR 抓不到 →
+                    //   find_and_click{text:"搜索"} 必然失败（实测 20 行 OCR 里没有任何"搜索"）；
+                    //   而实测"点 (0.928,0.066)"能正确进入搜索页。
+                    //   原 op 清单里没有"直接点坐标"这一档，等于连最基本的退路都没有。
+                    // 与 find_and_click 的唯一区别：坐标由调用方给出，不由设备端找文字得出。
+                    NSNumber *tx = [step[@"x"] isKindOfClass:[NSNumber class]] ? step[@"x"] : nil;
+                    NSNumber *ty = [step[@"y"] isKindOfClass:[NSNumber class]] ? step[@"y"] : nil;
+                    double dx = tx ? tx.doubleValue : -1.0, dy = ty ? ty.doubleValue : -1.0;
+                    if (!tx || !ty || dx < 0.0 || dx > 1.0 || dy < 0.0 || dy > 1.0) {
+                        detail = @"tap 需要 x/y（0-1 归一化，两者都必填）";
+                    } else {
+                        NSError *te = nil;
+                        NSDictionary *ack = [self_ invoke:@"touch.tap" params:@{@"x":tx, @"y":ty} error:&te];
+                        stepOk = ack && [ack[@"ok"] boolValue];
+                        rec[@"x"] = tx; rec[@"y"] = ty;
+                        detail = stepOk ? [NSString stringWithFormat:@"点击 (%.4f,%.4f)", dx, dy]
+                                        : [NSString stringWithFormat:@"tap 失败: %@", te.localizedDescription ?: @"?"];
+                        if (stepOk) usleep((useconds_t)(settle * 1000000));
+                    }
+
+                } else if ([op isEqualToString:@"find_and_click"]) {
                     NSDictionary *tgt = [step[@"target"] isKindOfClass:[NSDictionary class]] ? step[@"target"] : @{};
                     NSString *text = tgt[@"text"];
                     NSDictionary *row = trScriptFindRow(text);
