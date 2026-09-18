@@ -83,7 +83,26 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
   安全语义不变：用户直接访问 `http://IP:8080` 仍是 `document` → 照旧升级到 https。
   **另需两条配套**（缺一不可，实测都会单独导致失败）：① `httpRedirect` 这个 http server **必须挂 `upgrade` 监听**并把明文 WS 转发给真正的 server（否则 iframe 页面出得来但画面永久空白）；② 客户端侧协议要**随宿主**选择（插件 `frameGateway`：宿主 http → iframe 用 http；宿主 https → 必须 https）。
   **★ 走过的两个弯路（勿重犯）**：① 用「请求带嵌入参数（`only`/`syscursor`/`pv`）」判嵌入场景 —— 只覆盖顶层导航，**iframe 内的 `/style.css`、`/api/*` 都不带参数**；② 用「`Referer` 指向嵌入页」补 —— **浏览器加载 `<script>` 时不带可用 Referer**，判据失守（本地用 python 带 Referer 测是 200，所以**自己测"通过"了），这正是"本地测过关、真机仍失败"的典型。
-  **★ 方法论教训（本次返工 3 轮的真因）**：**修这类"多段链路"的问题，必须【一次性列出并验证整条链路的每一个请求】，而不是"改一处 → 测一处 → 报通过"**。逐段报通过 = 每次都在下一段撞墙，用户被迫反复反馈。已落成脚本 `scripts/verify-iframe-chain.py`（覆盖 iframe 顶层导航 / 5 个脚本 / 样式 / 7 个 API / 2 个 WS + 顶层导航必须 301 的对照组，共 18 项）——**改网关重定向/协议相关逻辑后必须跑它，全绿才算完成**。
+  **★ 方法论教训（本次返工 3 轮的真因）**：**修这类"多段链路"的问题，必须【一次性列出并验证整条链路的每一个请求】，而不是"改一处 → 测一处 → 报通过"**。逐段报通过 = 每次都在下一段撞墙，用户被迫反复反馈。已落成脚本 `scripts/verify-iframe-chain.py`（覆盖 iframe 顶层导航 / 6 个脚本 / 样式 / 7 个 API / 2 个 WS + 顶层导航必须 301 的对照组，共 21 项）——**改网关重定向/协议相关逻辑后必须跑它，全绿才算完成**。
+
+- **★★★★★ 浏览器【永久缓存 301】—— 服务端改好了、浏览器仍用旧跳转（2026-09-18 实测，本次 4 轮返工的最终真因）**：
+  **症状**：网关侧修复已生效（`verify-iframe-chain.py` 21 项全绿、curl 全部 200），但用户的浏览器**仍报同样的错**，且错误信息里 URL 一直在"换"（先 `caps.js?v=15`，后 `press.js`、`gesture.js`，再 `rfb.js?v=4`）。
+  **根因**：`HTTP 301` 是"永久重定向"，**浏览器默认无限期缓存**。在网关还对所有明文请求 301 的那段时间里，iframe 的若干资源各被 301 过一次，浏览器从此记住 —— **之后它压根不向网关发请求**，直接跳到 https（自签证书）→ CORS 拒绝。
+  **★★ 这类故障最坑的地方：网关侧【既看不到请求、也看不到 301】**。本次加了 `FARM_DEBUG_REDIRECT=1` 的诊断日志后才发现：日志里**完全没有**那些 URL 的请求记录。单看服务端会误判成"网关已修好、问题在别处"——前两轮修复就是这样被误导的。
+  **三层问题（逐层解决，缺一层都不行）**：
+  1. **301 范围过大** → 改为**只对顶层导航生效**（见上一条）。
+  2. **301 被永久缓存** → ① 给前端资源**递增版本号**（换新 URL）；② 301 响应加 `Cache-Control: no-store, no-cache, must-revalidate, max-age=0`（杜绝复发）。
+  3. **★ 打地鼠没有尽头** → `app.js` → `/novnc/core/rfb.js`（服务端内存 patch）→ **它自己又 import 了 29 个相对模块**（`util/*.js`、`display.js`、`decoders/*.js`、`input/*.js`…），**这些相对 import 全都不带版本号**，逐个加不现实。
+  **终极解法：换 iframe 的 host —— `127.0.0.1` → `localhost`** ✓
+  浏览器缓存按**完整 URL** 索引，换 host = 整个 URL 空间对浏览器全新，**一次性绕开全部历史缓存的 301**。
+  可行性：网关监听 `0.0.0.0`（`localhost` 可达）；证书 SAN 含 `DNS:localhost`（https 场景同样可用）。实现见插件 client 的 `frameGateway`。
+  **★ 诊断手段（务必保留）**：`FARM_DEBUG_REDIRECT=1` 启动网关 → 每个明文请求记录 `method / path / Sec-Fetch-Dest / Origin / Referer / 去向`；
+  再用 `scripts/analyze-gateway-redirect-log.py` 区分**【浏览器真实请求】**（带 Referer/Origin）与**【脚本请求】**（两者都不带），并直接给出"有没有非顶层导航被 301"的结论。
+  **这是定位"服务端看不见"类问题的唯一可靠手段 —— 不必再让用户按 F12。**
+  **★ 纪律**：
+  - **凡改前端资源（`web/*.js|css`、noVNC patch），必须递增引用处的 `?v=N`**，并同步 iframe 的 `pv`；
+  - **凡改协议/重定向/路由，先跑 `verify-iframe-chain.py`**，再用诊断日志确认【浏览器真的在发请求】——**服务端 200 ≠ 浏览器拿到了**；
+  - **判断"修好了没有"要看浏览器行为，不能只看 curl**：本次 curl 全绿而浏览器全程失败，差异就在"浏览器有没有真的发这个请求"。
 - **★ 暴露一个「从未被调用过」的既有能力 = 给它做首次验收（2026-09-18 实测，血泪）**：给 AI 工具面新增一个透传工具时，**不能假设"设备端已实现 = 可用"** —— 那个能力的 executor 可能**从未被真实调用过**，里面藏着从未触发的 bug。**真实事故**：`superphone_taps` 透传设备端 `touch.taps`，首次调用即把 `trollvncmanager` 打死（`NSParameterAssert(delay > 0.0)` 断言写反，而所有调用者都传 0 → NSException → abort），设备 5901/5802/5801 三个端口全不通、网关 `online=false`；崩溃报告历史显示该 bug 在 8-24 也引爆过 3 次。**纪律**：① 新增透传工具后，**先在真机跑一次最小调用**再交付；② 崩溃报告在设备 `/var/mobile/Library/Logs/CrashReporter/<proc>-<时间>.ips`，**`_userInfoForFileAndLine` 符号 = `NSParameterAssert`/`NSAssert` 失败**，配 `EXC_CRASH + SIGABRT + abort() called` 即可定性；③ **判"能不能用"的黄金判据**：调用后**进程是否还活着 + 有没有新崩溃报告**（不能只看 ack ok=true —— 它是"已投递"）。**相关**：`screen.hash` 是同一族的另一面 —— 注册表里注册了，但 `trollvncserver` 的 0x50 分派没实现，调用返回「未知操作」。
 - **实际远程仓库是 `78725449/SuperPhone`（私有，2026-08-15 单仓库化迁移后启用）**；`78725449/TrollVNC` 是迁移前的旧 fork（已废弃）。
 - **github.com 直连常被网络阻断** → 推送走 `scripts/push-via-api.mjs`（Git Data API，api.github.com 正常）：`GHTOK=<token> node push-via-api.mjs <本地commit> <远程base> [本地base]`（默认 REPO=78725449/SuperPhone、BRANCH=main，CWD 可用环境变量覆盖；支持大文件与 base tree 去重；远程 main 与 base 不符会拒绝）。**（2026-09-17 实测补坑）Windows 上必须显式覆盖 `CWD`**：脚本默认 `CWD` 是**另一个项目的旧路径**（`C:\Users\Administrator\Documents\ChatGPT\New project`），不覆盖时 `execSync({cwd})` 抛 **ENOENT 且错误里出现的路径是 `C:\Windows\system32\cmd.exe`** ——极易误判成"沙盒拦截 node 子进程"或"环境缺 cmd.exe"（本次就误判了一轮；实测 `execSync/execFileSync/spawnSync` 三种方式在 DSH 下均正常，`cmd.exe` 也确实存在），**真因是 cwd 不存在**。正确调用：`$env:CWD = (Get-Location).Path; node scripts/push-via-api.mjs <local> <remoteBase> <localBase>`。
