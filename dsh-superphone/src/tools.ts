@@ -362,6 +362,68 @@ export function createSuperphoneTools(config: Config, log: ActivityLog): ToolDef
     }),
 
     defineTool({
+      name: 'superphone_script_exec',
+      description:
+        'Execute a batch of steps ON THE PHONE in one call (script mode) — the whole batch runs device-side and returns an atomic result with a per-step trace; ' +
+        'one step failing aborts the script. PREFER THIS over issuing many separate single-action calls for a known sequence: it avoids per-step network round-trips. ' +
+        'Ops: find_and_click{target:{text}} · input_text{text} · scroll{dir:"down"|"up"} · back · home · open{bundleId} · wait_for{expect,timeoutMs} · expect{assert}. ' +
+        'expect forms: {hashDiff:true[,hashDiffThreshold]} | {text:"xx"} | {textGone:"xx"}.',
+      parameters: {
+        deviceId: { type: 'string', required: true, description: 'Device id.' },
+        steps: {
+          type: 'string',
+          required: true,
+          description:
+            'JSON array (as a string) of steps. Example: ' +
+            '[{"op":"find_and_click","target":{"text":"搜索"}},{"op":"wait_for","expect":{"hashDiff":true},"timeoutMs":4000},{"op":"expect","assert":{"text":"推荐"}}]',
+        },
+        stepSettleMs: { type: 'number', description: 'Settle time between steps in ms (default 300). Raise it for rate-limit-sensitive apps.' },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value: any) => {
+          if (value.blocked) return [{ type: 'text', text: `blocked: ${value.error}` }]
+          if (value.error && !value.ack) return [{ type: 'text', text: `script failed: ${value.error}` }]
+          const ack = value.ack ?? {}
+          const lines = (ack.steps ?? []).map((s: any) => `  ${s.index}. ${s.op} ${s.ok ? 'OK' : 'FAIL'} ${s.detail ?? ''}`)
+          const head = `${ack.executed ?? 0}/${ack.stepCount ?? 0} steps · ${ack.ok ? 'ALL OK' : `FAILED at step ${ack.failedAt}`}`
+          return [{ type: 'text', text: [head, ...lines].join('\n') }]
+        },
+      },
+      execute: withActivity(
+        log,
+        'superphone_script_exec',
+        (a: { steps: string }) => {
+          let n = '?'
+          try { n = String((JSON.parse(a.steps) as unknown[]).length) } catch { /* 交给 execute 报错 */ }
+          return `脚本 ${n} 步`
+        },
+        async (args: { deviceId: string; steps: string; stepSettleMs?: number }) => {
+          const blocked = await humanControlled(config, args.deviceId)
+          if (blocked) return { deviceId: args.deviceId, ok: false, blocked: true, error: blocked }
+          let parsed: unknown
+          try {
+            parsed = JSON.parse(args.steps)
+          } catch (e) {
+            return { deviceId: args.deviceId, ok: false, error: `steps 不是合法 JSON：${(e as Error).message}` }
+          }
+          if (!Array.isArray(parsed) || parsed.length === 0) {
+            return { deviceId: args.deviceId, ok: false, error: 'steps 必须是【非空数组】' }
+          }
+          const params: Record<string, unknown> = { steps: parsed }
+          if (typeof args.stepSettleMs === 'number' && args.stepSettleMs > 0) params.stepSettleMs = args.stepSettleMs
+          // 脚本在手机端连续执行（逐步 OCR/哈希），整包耗时可能达分钟级 → 给足超时
+          const ack = await post(config, `/api/devices/${encodeURIComponent(args.deviceId)}/invoke`, {
+            cap: 'script.exec',
+            params,
+            timeout: 180000,
+          })
+          return { deviceId: args.deviceId, ok: ack?.ok !== false, ack: ack?.ack ?? null, error: ack?.error ?? null }
+        },
+      ),
+    }),
+
+    defineTool({
       name: 'superphone_ocr',
       description:
         'On-device OCR (Apple Vision) with normalized boxes. Pass text to only get matching lines with their tap coordinates.',

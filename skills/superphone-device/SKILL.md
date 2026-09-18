@@ -35,6 +35,7 @@ description: SuperPhone 设备操作手册（AI 操作层）。当需要通过 D
 | **`superphone_wait_change`** | `screen.wait(since)` | **★ 事件驱动：变化一发生就返回（实测 199ms）—— 默认就用它，零硬编码** |
 | `superphone_wait_stable` | `screen.waitStable` | **仅用于"防 OCR 读到转场中间态"，窗口要小（200~300ms）** —— ⚠️ **它不是"操作后的标配"，大窗口几乎总是白等**（见「等待策略」）|
 | **`superphone_screen_hash`** | `screen.hash` | **★ 2026-09-18 已修好**（此前返回「未知操作」）：返回 16 位 hex pHash，**109ms** —— 连采两次比对 = 廉价的"画面变了吗"判定 ✓ |
+| **`superphone_script_exec`** | **`script.exec`** | **★★ 把一串步骤下发到手机【连续执行】**（主干 §11.3）—— **已知序列一律优先用它，别逐步单发调用**。op：`find_and_click{target:{text}}` / `input_text{text}` / `scroll{dir}` / `back` / `home` / `open{bundleId}` / `wait_for{expect,timeoutMs}` / `expect{assert}`；expect：`{hashDiff}` / `{text}` / `{textGone}`。**实测 3 步仅 2.4s**（进程内零网络往返）；**一步失败整体中止**，并回传每步 trace ✓ |
 | `superphone_take_control` / `superphone_end_control` | 网关 AI 会话 | 接管 / 释放（**开始前接管、收尾释放**）|
 
 #### ⚠️ 感知能力的实测边界（2026-09-18 真机实测，**先读再动手**）

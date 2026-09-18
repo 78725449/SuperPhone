@@ -976,7 +976,13 @@ async function handleApi(req, res, url) {
         }
         // 2026-09-15 快照服务：screen.wait/waitStable 为协议零超时长挂起原语（AI 等变化/等稳定，
         // 可挂起至分钟级），超时上限放宽至 120s；其余能力维持 15s 上限
-        const maxTimeout = cap === 'screen.wait' || cap === 'screen.waitStable' ? 120000 : 15000;
+        // 2026-09-18 追加 script.exec（主干《设备操作Agent时序设计》§11.3 手机端脚本执行器）：
+        // 它在手机端连续执行多步，而单步的 OCR/哈希就要 2~3s（vision.ocr 实测 2.0~2.9s），
+        // 几步叠加必然超过 15s；若沿用默认上限，脚本会在中途被网关判超时（实测 504）。
+        // 故与 screen.wait 同列长超时白名单，上限 180s（对应工具面传入的 timeout）。
+        const LONG_OP_MAX_MS = 180000;
+        const isLongOp = cap === 'screen.wait' || cap === 'screen.waitStable' || cap === 'script.exec';
+        const maxTimeout = isLongOp ? LONG_OP_MAX_MS : 15000;
         const timeoutMs = Math.min(Math.max(Number(body.timeout) || 5000, 500), maxTimeout);
         const ack = await sendDeviceCmd(id, { cmd: 'invoke', cap, params: body.params || {} }, timeoutMs);
         if (!ack) { sendJson(res, 504, { error: 'ack timeout', cap }); return true; }
