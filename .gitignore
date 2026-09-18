@@ -27,6 +27,18 @@ data/traces/
 TrollVNC-upstream/
 *.zip
 *.png
+# 截图与其他图像产物（2026-09-19 补：原只写 *.png，导致 *.jpg 测试截图被
+# `git add -A` 误提交并污染远程树 —— 详见 docs/known-issues/04-发布与推送.md 首条）
+*.jpg
+*.jpeg
+*.webp
+
+# Python 字节码（临时脚本跑出来就会生成，不该入库）
+__pycache__/
+*.pyc
+
+# 一次性执行产物目录（脚本跑任务落盘的截图/时间线；测试用，不入库）
+ma35_task/
 
 # TrollVNC 旧 git 对象库（已归档，不入库）
 TrollVNC/.git.bak/

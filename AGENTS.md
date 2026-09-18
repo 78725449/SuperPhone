@@ -218,5 +218,6 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
 - **build-ipa.mjs 两个 Windows bug**（`^` 要写 `~1`；204 无 body）。
 - **build-ipa diff 基准陷阱**：默认 `HEAD~1` 只带出最后一个 commit 的变更 → **批量推送要手动指定 localBase 并核对 MOD 列表**；部署前验证产物二进制含新代码。
 - **网关 `test/` 里还有手工 `verify-*.mjs`**（不属 `npm test`）。
+- **★★★★★ `git add -A` 会误伤 —— 一律显式 `git add <file>...`**（2026-09-19 实测：一次 `add -A` 把 68 个未跟踪文件推上远程，其中 48 个是测试产物、20 个是【之前会话】遗留的文档与临时脚本；**且污染会传染** —— 本地 reset 重提交后 `push-via-api` 以污染树为 base，新树仍带污染、且 sha 与污染树完全相同）。修复脚本 `scripts/repair-remote-tree.py`。**★ 判据是【树 sha 相等】而非 commit sha**（push-via-api 会重建 commit）。详见 `docs/known-issues/04-发布与推送.md` 首条。
 - **CI 秒失败** → 先查 check-run annotations（billing 拦截的权威错误在那里）。
 - **私有仓库 Actions 被 billing 拦截时的应急编译**（临时转 public → dispatch → **立即转回 private**）。
