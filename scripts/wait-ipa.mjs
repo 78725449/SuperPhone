@@ -6,7 +6,11 @@ import path from 'node:path';
 
 const REPO = process.env.REPO || '78725449/SuperPhone';
 const RUN_ID = process.argv[2];
-const OUT_DIR = process.argv[3] || 'C:\\Users\\Administrator\\Documents\\ChatGPT\\New project';
+// ★ 默认输出目录 = 当前工作目录（2026-09-19 修）。原先硬编码
+// 'C:\Users\Administrator\Documents\ChatGPT\New project'（另一个项目的旧路径）→ 在别处调用
+// 一律 ENOENT，且错误里出现的是那个旧路径，极易误判（与 push-via-api.mjs 的 CWD 坑同类，
+// 见 docs/known-issues/04-发布与推送.md）。
+const OUT_DIR = process.argv[3] || process.cwd();
 if (!RUN_ID) { console.error('usage: node wait-ipa.mjs <runId> [outDir]'); process.exit(1); }
 
 // 提取 GCM 缓存的 GitHub token

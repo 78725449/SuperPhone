@@ -23,6 +23,12 @@ data/gateway.log
 data/skill-cards/
 data/traces/
 
+# OmniParser 裁剪出的图标候选原料（2026-09-19 加）：859 张未筛选小图、纯派生数据
+# → 不入库。★ 真正的 L0 图标库应是【筛选后】的资产，放 skills/superphone-device/icons/
+data/omniparser-crops/
+# Mobile-Agent 执行日志（含每步 [MODEL OUTPUT] 与坐标；体积随执行增长）
+data/ma-trace/
+
 # 上游对照副本 / 打包产物 / 截图
 TrollVNC-upstream/
 *.zip
