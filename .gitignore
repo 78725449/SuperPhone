@@ -28,6 +28,11 @@ data/traces/
 data/omniparser-crops/
 # Mobile-Agent 执行日志（含每步 [MODEL OUTPUT] 与坐标；体积随执行增长）
 data/ma-trace/
+# OmniParser 的解析产物：元素表 / 图标命名 / 图标聚类
+# → 都是【未人工确认】的中间产物，不入库；确认后的资产再进 skills/superphone-device/
+data/omniparser-elements/
+data/omniparser-captions.json
+data/omniparser-icon-clusters.json
 
 # 上游对照副本 / 打包产物 / 截图
 TrollVNC-upstream/
