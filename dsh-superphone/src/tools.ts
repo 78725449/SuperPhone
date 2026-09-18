@@ -16,6 +16,18 @@ import { post, request } from './gateway.js'
  * 而面板自身的缩略图/设备轮询（同源代理，不经工具）绝不入日志。
  */
 
+/**
+ * 本地 GUI 视觉模型服务端口（GUI-Owl-1.5-4B via llama.cpp）。
+ *
+ * 为什么需要它：设备端 `vision.ocr` 只能给"文字 + 坐标"，**给不了"哪里能点"**；
+ * 而 `find_image`（模板匹配）当前 y 准 x 偏且需要预先有锚点图。
+ * 探索一个不熟悉的页面时，需要的是一双"看得懂屏幕"的眼睛 —— 这就是本服务。
+ *
+ * 启动：`scripts/start-gui-owl.ps1`（含模型路径、--mmproj、-ngl 99 等参数说明）
+ * 端口默认 8092（与 8080 网关 / 18081 注册 / 18181 隧道 / 8081 embedding 均不冲突）。
+ */
+const GUI_OWL_PORT = Number(process.env.SUPERPHONE_GUI_OWL_PORT ?? 8092)
+
 export interface DeviceSummary {
   id: string
   name: string
@@ -419,6 +431,146 @@ export function createSuperphoneTools(config: Config, log: ActivityLog): ToolDef
             timeout: 180000,
           })
           return { deviceId: args.deviceId, ok: ack?.ok !== false, ack: ack?.ack ?? null, error: ack?.error ?? null }
+        },
+      ),
+    }),
+
+    defineTool({
+      name: 'superphone_ui_see',
+      description:
+        'Look at the device screen with a LOCAL vision model (GUI-Owl-1.5-4B, run by llama.cpp on 127.0.0.1) and get a structured answer: ' +
+        'which page this is, which elements are clickable, and WHERE they are (normalized 0-1 coords ready for superphone_tap). ' +
+        'This is the "eyes" for an unfamiliar screen — use it when you do not know where a target is, or to judge whether a step really changed the page. ' +
+        'It complements superphone_ocr (which only gives text + coords and cannot tell what is clickable). ' +
+        'Requires the local GUI-Owl service (start it with scripts/start-gui-owl.ps1).',
+      parameters: {
+        deviceId: { type: 'string', required: true, description: 'Device id.' },
+        question: {
+          type: 'string',
+          description: 'Optional specific question about the screen. Omit for the default structured element dump.',
+        },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value: any) => {
+          if (value.blocked) return [{ type: 'text', text: `blocked: ${value.error}` }]
+          if (!value.ok) return [{ type: 'text', text: `ui_see failed: ${value.error}` }]
+          const els = (value.elements ?? []) as any[]
+          const head = `${value.page || '(未识别页面)'} · ${els.length} 个元素 · ${value.elapsedMs}ms`
+          const lines = els
+            .slice(0, 20)
+            .map(
+              (e: any) =>
+                `  ${String(e.label ?? '').slice(0, 24)}  ${e.kind === 'clickable' ? '可点' : '静态'}  (${Number(e.cx).toFixed(3)}, ${Number(e.cy).toFixed(3)})`,
+            )
+          const tail =
+            els.length === 0 && value.raw ? [`  模型原始输出: ${String(value.raw).slice(0, 400)}`] : []
+          return [{ type: 'text', text: [head, ...lines, ...tail].join('\n') }]
+        },
+      },
+      execute: withActivity(
+        log,
+        'superphone_ui_see',
+        () => '本地视觉模型看屏幕',
+        async (args: { deviceId: string; question?: string }) => {
+          const blocked = await humanControlled(config, args.deviceId)
+          if (blocked) return { deviceId: args.deviceId, ok: false, blocked: true, error: blocked }
+
+          // ① 必须取【原尺寸】截图：screen.snapshot 只有 320px board 档，模型看不清小图标与文字
+          const shot = await post(config, `/api/devices/${encodeURIComponent(args.deviceId)}/invoke`, {
+            cap: 'screenshot',
+            params: {},
+            timeout: 30000,
+          })
+          const b64 = shot?.ack?.image
+          if (!b64) {
+            return {
+              deviceId: args.deviceId,
+              ok: false,
+              error: `截图失败：${shot?.error ?? shot?.ack?.error ?? '无 image 字段'}`,
+            }
+          }
+
+          const prompt =
+            args.question ??
+            '你是手机屏幕分析助手。看这张截图，只输出一个 JSON（不要解释、不要 markdown 代码块）：\n' +
+              '{"page":"页面名称","elements":[{"label":"元素上可见的文字，或对图标的简短中文描述","kind":"clickable","cx":0.5,"cy":0.3}]}\n' +
+              '要求：\n' +
+              '- cx/cy 是【归一化 0 到 1】，左上角为原点，取该元素的【中心】\n' +
+              '- 只列【可以点击或输入】的元素，按从上到下排序，最多 20 个\n' +
+              '- label 优先用截图里真实出现的文字；纯图标用一句中文说明它是什么'
+
+          const body = {
+            model: 'gui-owl',
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: prompt },
+                  { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } },
+                ],
+              },
+            ],
+            max_tokens: 1024,
+            temperature: 0.1,
+            stream: false,
+          }
+
+          const t0 = Date.now()
+          let raw = ''
+          try {
+            const res = await fetch(`http://127.0.0.1:${GUI_OWL_PORT}/v1/chat/completions`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
+            })
+            if (!res.ok) {
+              const t = await res.text()
+              return { deviceId: args.deviceId, ok: false, error: `GUI-Owl 服务返回 ${res.status}: ${t.slice(0, 200)}` }
+            }
+            const j = (await res.json()) as any
+            raw = j?.choices?.[0]?.message?.content ?? ''
+          } catch (e) {
+            return {
+              deviceId: args.deviceId,
+              ok: false,
+              error:
+                `连不上本地 GUI-Owl（127.0.0.1:${GUI_OWL_PORT}）：${(e as Error).message}。` +
+                `请先运行 scripts/start-gui-owl.ps1 启动视觉服务。`,
+            }
+          }
+          const elapsedMs = Date.now() - t0
+
+          // 解析模型输出里的 JSON（模型可能包了 ```json 或前后夹了说明文字）
+          let page = ''
+          let elements: any[] = []
+          const m = raw.match(/\{[\s\S]*\}/)
+          if (m) {
+            try {
+              const o = JSON.parse(m[0])
+              page = typeof o.page === 'string' ? o.page : ''
+              if (Array.isArray(o.elements)) {
+                elements = o.elements
+                  .filter((e: any) => e && typeof e.cx === 'number' && typeof e.cy === 'number')
+                  .map((e: any) => ({
+                    label: String(e.label ?? ''),
+                    kind: e.kind === 'text' ? 'text' : 'clickable',
+                    cx: Math.min(1, Math.max(0, Number(e.cx))),
+                    cy: Math.min(1, Math.max(0, Number(e.cy))),
+                  }))
+              }
+            } catch {
+              /* 解析失败时保留 raw，让模型自己看原始输出判断 */
+            }
+          }
+          return {
+            deviceId: args.deviceId,
+            ok: true,
+            page,
+            elements,
+            raw: elements.length ? null : raw,
+            elapsedMs,
+          }
         },
       ),
     }),
