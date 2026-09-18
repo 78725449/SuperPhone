@@ -142,7 +142,9 @@ export function SuperphoneTab({ visible = true }: { ctx?: Context; visible?: boo
   // pv = 面板侧的内嵌版本位：网关前端的样式/脚本更新后递增它，强制 iframe 重新加载
   //（否则 iframe 不会自动重载，面板会一直用缓存的旧样式——曾因此出现"网关有呼吸光、
   //  面板没有"的现象）。改网关 web/ 后请同步 +1。
-  const frameUrl = frameGateway && deviceId ? `${frameGateway}/?syscursor=1&pv=2&only=${encodeURIComponent(deviceId)}` : null
+  // ★ pv=3（2026-09-18）：网关前端 app.js 由 ?v=228 升到 229（caps.js 15→16、
+  //   press.js/gesture.js 补版本号），此处同步递增，强制 iframe 用新的前端入口地址。
+  const frameUrl = frameGateway && deviceId ? `${frameGateway}/?syscursor=1&pv=3&only=${encodeURIComponent(deviceId)}` : null
 
   const status = (() => {
     if (!selected) return { text: '未选择设备', color: '#888' }

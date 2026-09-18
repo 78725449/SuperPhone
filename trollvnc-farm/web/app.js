@@ -1,9 +1,16 @@
 // SuperPhone 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
 // rfb.js?v=2：noVNC 核心为 server 内存 patch，URL 带版本号强制浏览器重新拉取 patch 后的内容避免旧缓存
 import RFB from '/novnc/core/rfb.js?v=4';
-import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=15';
-import { attachPress } from './press.js';
-import { attachFarmGesture, attachRightHome, resolveGesture } from './gesture.js';
+// 2026-09-18：这三条 import 的 URL 必须带版本号 —— 浏览器会【永久缓存 301 重定向】。
+// 历史上网关对全部明文请求 301 到 https（现已改为只对顶层导航 301，见 server/index.js），
+// 当时 caps.js/press.js/gesture.js 被 301 过一次就被浏览器记住：之后它不再向网关发请求，
+// 直接跳到 https → 自签证书 → CORS 拒绝（控制台报 "redirected from 'http://...'
+// ... blocked by CORS policy"），表现为面板画面区页面出得来但功能全废。
+// 给 URL 加版本号 = 换一个浏览器没缓存过的地址，同时后续改动也能可靠穿透缓存。
+// ★ 改这三个文件后必须同步递增这里的版本号。
+import { invokeCap, setConfigs, batchInvoke, batchSetConfigs, KEY_DEFS, BATCH_CAPS, CONFIG_BY_KEY, CONFIG_DEFS } from './caps.js?v=16';
+import { attachPress } from './press.js?v=1';
+import { attachFarmGesture, attachRightHome, resolveGesture } from './gesture.js?v=1';
 
 const $ = (id) => document.getElementById(id);
 const isMobile = () => window.matchMedia('(max-width: 900px)').matches;

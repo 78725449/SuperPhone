@@ -1396,12 +1396,32 @@ const httpRedirectHandler = (req, res) => {
   const u = new URL(req.url, `http://${host}`);
   const dest = (req.headers['sec-fetch-dest'] || '').toLowerCase();
   const isTopLevelNavigation = dest ? dest === 'document' : (req.headers.accept || '').includes('text/html');
+  // ★ 临时诊断（2026-09-18，定位嵌入 iframe 问题）：记录每个明文请求的目的标注与去向。
+  // 用途：不依赖用户按 F12，直接从网关侧看清浏览器到底在请求什么、有没有被 301。
+  // 定位完成后应移除（或改为仅当 FARM_DEBUG_REDIRECT=1 时输出）。
+  if (process.env.FARM_DEBUG_REDIRECT === '1') {
+    console.log(`[redir] ${req.method} ${u.pathname}${u.search}` +
+      ` dest=${dest || '(none)'} accept=${(req.headers.accept || '').slice(0, 40)}` +
+      ` origin=${req.headers.origin || '-'} ref=${(req.headers.referer || '-').slice(0, 60)}` +
+      ` → ${isTopLevelNavigation ? '301→https' : '明文服务'}`);
+  }
   if (!isTopLevelNavigation) {
     requestHandler(req, res); // 非顶层导航：明文服务，不 301（嵌入 iframe 及其全部子请求）
     return;
   }
   const target = `https://${host}${u.pathname}${u.search}`;
-  res.writeHead(301, { Location: target });
+  // ★ 301 必须显式禁止缓存（2026-09-18 真机血泪）：
+  // HTTP 301 是"永久重定向"，浏览器默认【无限期缓存】。此前本函数对全部明文请求 301，
+  // 于是 caps.js/press.js/gesture.js 被 301 一次后就被浏览器记住 —— 此后它【不再向网关
+  // 发请求】，直接跳到 https，而 https 是自签证书 → CORS 拒绝（控制台：
+  // "redirected from 'http://...' ... blocked by CORS policy"）。
+  // 更隐蔽的是：**网关日志里根本看不到这些请求，也看不到 301**，从服务端完全无法察觉，
+  // 极难定位。故这里强制 no-store，杜绝"改了服务端而旧重定向仍在浏览器里生效"。
+  res.writeHead(301, {
+    Location: target,
+    'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+    Pragma: 'no-cache',
+  });
   res.end();
 };
 
