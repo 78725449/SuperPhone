@@ -1,35 +1,104 @@
 # AGENTS.md（工作区指令 · SuperPhone）
 
 > 机器级全局规则见 `~/.zcode/AGENTS.md`（先加载）；本文件只补充本仓库特有事实。
-> **★ 溢出存档**：本文件曾达 67KB **超出工作区指令预算（65536 bytes）→ 加载时末尾被截断**（「已知坑」尾部对 AI 不可见）。2026-09-18 已把其中【已完结的历史演进】搬到 **`docs/历史决策与排查存档.md`**，现 48KB（余量 17KB）。**「已知坑」里出现"见 `docs/历史决策与排查存档.md`"时去那里查**；新增条目请保持精简，**本文件超 62KB 就应再搬一批**。
-> **项目知识库**：`说明文档.md` 是唯一真相文档（架构/时序/实现）。改动架构、时序或行为后必须同步更新它（增删改查对应章节）；列表类信息（按键/能力/配置项）只存在于代码真相源，不复制进文档。
-> **★ AI 操作层设计文档（2026-09-18 入库，此前在仓库外长期无人知晓）**：
-> - `设备操作Agent时序设计-2026-08-28.md` = **主干**（十条哲学 / 角色分层 / 时序 A→E / 资产结构 / 关键机制 12 条 / 结构契约 / 引擎适配现状 §十一）
-> - `架构总纲-AI操作层-2026-09-17.md` = **主干下的感知与执行层细化**（四级验证 / 页面表 / 等待策略 / 工具面现状 / 真机坑清单）
-> - **★ 冲突时以主干为准**；细化层只补充，不推翻主干结论。**动 AI 操作层前先读主干。**
-> **★ 角色纪律（主干 §三，2026-09-18 补记 —— 这是当前最大的认知缺口）**：**DSH 子代理 = 导演**（只派活/监督/沉淀，**不亲自逐步操作设备**）· **UI 视觉代理 = 演员**（专项模型驱动：观察→决策→动作）· **引擎 = 确定性运行时**（回放/命中/护栏，**无模型**）。→ **"让 DSH 模型逐步决定点哪里"是【角色错位】** ✗
-> **★★★★★ 架构定案（2026-09-19，`架构定案-手机为自主主体-2026-09-19.md` —— 最新定案，与主干冲突时以它为准）**：
+> **★ 本文件是【顶层索引】**：只放「必须常读的规矩」与「各文档的一行概览」；**详情一律在独立文档里**，看到概览后**跟着路径去读**。
+> **★ 体积纪律**：本文件曾达 67KB **超出工作区指令预算（65536 bytes）→ 加载时末尾被截断**。2026-09-18 搬走【历史演进】→ `docs/历史决策与排查存档.md`；**2026-09-19 拆走【已知坑】→ `docs/known-issues/`（4 份）**，现约 26KB（余量 ~39KB）。**再超 40KB 就把「仓库是什么」以外的章节也拆出去。**
+
+---
+
+## ★★★ 文档地图（看到概览 → 跟路径读详情）
+
+### 一、项目真相文档（改代码前必读）
+
+| 路径 | 概览 | 何时读 |
+|---|---|---|
+| `说明文档.md` | **唯一真相文档**（架构/时序/实现）| **改架构/时序/行为后必须同步它**；动任何端前先读 |
+| `CodeWiki.md` | 模块地图（**不含行号与数量**——定位用 grep，数量以 `caps-test` 断言为准）| 找模块位置；结构变化后同步 |
+| `TrollVNC/README.md` | 设备端快速开始 | 上手设备端 |
+
+### 二、AI 操作层设计（动这一层前必读）
+
+| 路径 | 概览 | 地位 |
+|---|---|---|
+| `设备操作Agent时序设计-2026-08-28.md` | **主干**：十条哲学 / 角色分层 / 时序 A→E / 资产结构 / 关键机制 12 条 / 结构契约 / 引擎适配现状 §十一 | **冲突时以它为准** |
+| `架构总纲-AI操作层-2026-09-17.md` | **主干下的感知与执行层细化**：四级验证 / 页面表 / 等待策略 / 工具面现状 / 真机坑清单 | 细化层只补充，不推翻主干 |
+| **`架构定案-手机为自主主体-2026-09-19.md`** | **★★★★★ 最新定案**：手机=自主主体 · AI=可插拔服务 · 电脑=可选角色；四层架构；拆层而非推翻 | **与主干冲突时以它为准** |
+| **`实施设计-执行预测与蜂群资产-2026-09-19.md`** | **★★★★★ 定案的实施细则**：资产四层 / 执行预测回路 / 回传包 / 步骤级置信度 / 蜂群合并 / MCP 协议层 / 落地 10 步 | **动这些模块前必读**（详见下"③ 定案与实施要点"）|
+| `实验-GUI-Owl能否识别新动作-2026-09-19.md` | 模型能力边界实测：**GUI-Owl-4B 不认 enum 之外的新动作**（提示词写了也没用）| 讨论"加动作/换模型"前必读 |
+| `参考项目调研-共同优点-2026-09-18.md` | 12 个手机控制项目的 **13 条共同优点 + 8 条差距** | 定方向时参考 |
+| `参考项目深读汇总-面向通用MCP服务器-2026-09-18.md` | 3 个项目源码级深读 | 同上 |
+| `网关全平台基座方案-2026-09-18.md` | 网关做「全平台设备基座」的三处修正 + 最低成本路径 | 讨论外部框架接入时读 |
+| `给MobileAgent加iOS平台-方案-2026-09-18.md` · `MobileAgent集成-命名与无缝方案-2026-09-18.md` · `MobileAgent加iOS-架构设计-2026-09-18.md` · `里程碑-MobileAgent驱动iOS跑通-2026-09-18.md` | 给 Mobile-Agent 加 iOS 平台的命名/架构/跑通记录 | 讨论该集成时读 |
+| `能力缺口盘点-2026-09-18.md` · `交互能力清单与扩展方案-2026-09-18.md` | 我们的能力 vs 各框架要求的交集/缺口/闲置 | 讨论"缺什么能力"时读 |
+| `宏观评估-最佳实现路线-2026-09-18.md` | 两条腿走：IosTools（试水）+ MCP 服务器（正题）| 定优先级时读 |
+| `AI操作层-真机实测台账-2026-09-18.md` | 真机实测记录 | 查历史实测 |
+
+### 三、已知坑（★ 2026-09-19 拆分为 4 份，**每条坑的摘要见下，详情跟路径**）
+
+| 路径 | 概览 | 收录 |
+|---|---|---|
+| **`docs/known-issues/01-网关与协议.md`** | 网关重定向/TLS 契约、noVNC 补丁、前端缓存、嵌入模式、控制状态、变化检测 | 11 条 |
+| **`docs/known-issues/02-设备端与构建.md`** | 设备端部署/SSH 装包、daemon 链恢复、CI/构建、Xcode/pbxproj、产物校验、编辑纪律 | 13 条 |
+| **`docs/known-issues/03-数据与定位.md`** | sim.* 收敛、App 原生定位、坐标语义双层、AutoLayout、数据填充纪律 | 6 条 |
+| **`docs/known-issues/04-发布与推送.md`** | 远程仓库与推送、GitHub API 异常、push-via-api/build-ipa 的坑、CI 触发 | 13 条 |
+| `docs/历史决策与排查存档.md` | **【已完结的历史演进】归档**（与上面 4 份【活的纪律】不同类，勿混淆）| 存档 |
+
+**★ 推送失败的第一处置**：先试代理 `-x http://127.0.0.1:7890`（`api.github.com` 会出现 ECONNRESET，与 503 同类）。
+
+### 四、DSH 插件技能
+
+| 路径 | 概览 |
+|---|---|
+| `skills/superphone-device/SKILL.md` | 设备操作手册（0→5 六阶段；含「工具面待补清单」）|
+
+---
+
+## ★★★ 角色纪律（主干 §三 —— 当前最大的认知缺口）
+
+**DSH 子代理 = 导演**（只派活/监督/沉淀，**不亲自逐步操作设备**）· **UI 视觉代理 = 演员**（专项模型驱动：观察→决策→动作）· **引擎 = 确定性运行时**（回放/命中/护栏，**无模型**）。
+→ **"让 DSH 模型逐步决定点哪里"是【角色错位】** ✗
+
+---
+
+## ① 架构定案要点（`架构定案-手机为自主主体-2026-09-19.md`）
+
 > **手机 = 自主主体（MCP 服务端 + agent 循环 + 技能库）· AI = 可插拔服务（本地/局域网/云端，地址可配）· 电脑 = 两个可选角色之一（命令入口 + AI 服务提供方）· 唯一的"真实客户端"= 下达命令的那个。**
-> **★ 这不是推翻主干，是【拆层】**：原来"agent 循环 + 模型"绑死在电脑上、手机只是哑执行器；现在循环下移到手机、模型变成可插拔服务。**主干哲学（导演/演员/引擎、公理一少走视觉、零模型回放、资产结构、三视角）一条没变。**
-> **★ 四层**：① 命令下达者（MCP 客户端）→ ② **手机（MCP 服务端，收结构化命令，查技能库命中即回放）** → ③ AI 服务（**只在「规划/判断/恢复」三个时刻被请求**）· ④ 设备原语（64 能力 + `script.exec`）。
-> **★ 快的三个来源**：省模型推理（每步 5–20s→0）· 省网络往返（`script.exec` 一次跑完）· 省"该怎么做"的判断（查表 vs 现想）→ **100–160 秒 → 2–5 秒**。
-> **★ 关键推论**：模型只做规划/判断/恢复，输入是**结构化信息**（技能库、OCR 文字、页面签名）而非像素 → **本地小模型够用**，升 8B/35B 不是当前瓶颈。
-> **★ 蜂群经验同步（用户 2026-09-19 提出）**：各机学到的技能卡 + **踩到的坑**（负样本，**比成功经验更值钱**）+ 环境指纹 → 上报中心 → 合并/去重/版本化/灰度 → 下发全群。**★ 三个必备护栏：环境指纹过滤 · 验证计数 · 灰度发布（防失败放大）**；风险：失败放大 / 行为同质化 / 技能库并发写。
-> **★ 已有 vs 缺**：**已有** `script.exec`（意图层执行器，含 `find_and_click`/`wait_for`/`expect`/trace）· 64 能力 · 群控隧道 · 控制权状态机；**缺** ① 设备端 MCP 层 ② 设备端技能库 ③ 设备端 AI 请求客户端 ④ 中心同步端点 ⑤ 网关纯转发路由。
-> **★★★★★ 实施设计（2026-09-19，`实施设计-执行预测与蜂群资产-2026-09-19.md` —— 定案文档的实施细则，动这些模块前必读）**：
-> **★ 资产四层（上层【引用】下层，不内嵌）**：**L0 图标素材库**（跨 App/页面/任务，来源=人工截取+匹配命中自动回存）· **L1 页面表**（元素×页面，来源=**每次执行顺手全页采集，零成本**）· **L2 技能卡**（任务级流程）· **L3 任务卡**（复合）。**"抖音图标长什么样"→L0；"首页点搜索框点哪里"→L1；"搜南京美食的流程"→L2 —— 技能卡【不覆盖】它们而是【引用】**（内嵌坐标会导致改一处要改十张卡）。
-> **★ 执行预测（控制论的预测-校正回路）**：技能卡=先验 → 执行=预测 → **`screen.hash`/`expect` 是误差检测器** → 偏差=预测误差 → **带完整证据回传 AI 纠错**。**AI 的角色精确化为【纠错者】而非逐步决策者**。回路：命令→查表（链路+每步置信度）→零模型执行→成功沉淀/失败打**回传包**→AI 纠错→**熔断≤3**→无论成败都沉淀→中心合并。
-> **★ 回传包必须【三件】**：`predicted`（预测了什么）+ `actual`（trace/偏差点/变量现场）+ **`evidence`（★ 失败点全屏 OCR 文字，让 AI 能"看"）** + `context`。**★ critical 标记决定何时回传**（critical 失败立即中止回传；非 critical 记录后继续）。**建议加【预演批准】**（高风险操作下单/发消息/关注必做）。
-> **★★★★ 步骤级置信度（量化基础）**：**卡片级的 95.9% 没有指导意义**（掩盖了"步骤②3次失败/步骤④6次超时"）。**统计单元 = {意图 · 步骤序号 · App+版本 · 策略档}**；**★ 必须带层级回退**（最细→省策略→省版本→省步骤→全局，每级带样本数 n，防维度爆炸）。**阈值→实时决策**：>95% 直接执行不验证 / 70-95% 执行+验证 / <70% 跳过第一档 / <30% 不执行。**副产品=版本回归预警**（27.0.0 后某步 98%→12%，自动重排该版本策略链并下发全群）。
-> **★ 合并关键洞察**：**因为固化的是【意图级动作】而非像素坐标，版本影响面被压到【只剩定位策略里的一档（缓存坐标）】**——页面签名/动作序列/判定规则通常不变，**坑则【追加不替换】**。★ 同步方式是**中心当 MCP 客户端去拉**（`skills/list`/`skills/get`/`skill_upsert`），手机不主动 push。★ 实例：三台不同版本的数据合并后中心发现"文字定位全版本都成功"→提为第一档、坐标降级为"版本限定缓存"——**这是单台设备不可能得出的结论**。
-> **★ 设备端要补的（按优先级）**：**① `vision.layout`（坐标聚类）**—— 已勘察可实施，**6 处新增**（`TRVisionEngine` 加算法 · `trollvncserver` L3702 声明/L3830 0x50/L4238 5802/L5643 实现 · `TRCapabilityRegistry` L1329 注册），**全是新增无一行改**；价值：`find_text` 回答不了"右上角的搜索""第3行的按钮""这行最右边的""我在哪个页面（签名）"；**实测依据：`vision.ocr` 只返回 8 字段（text,x,y,w,h,cx,cy,confidence，归一化），且置信度能有效区分正确(1.0)与误识(0.3)→ minConfidence 默认 0.5（★ 与 dsh-ios"别提高 min_confidence"的建议相反，以我们实测为准）**。**② `script.exec` trace 补 `strategy`**（用了哪档策略=**中心重排的唯一数据来源，最高优先级**）+ baseHash/afterHash/vars/ms/pageSignature。③ 图标模板库 L0。
-> **★ `ui.dump`（a11y）实测结论：可行性未证实，降级为可选** —— 真机探测（`scripts/probe-device-a11y.py`）：框架全在（AXRuntime/AccessibilityUI/AccessibilityUIService/AccessibilityUIUtilities/AccessibilityFocusEngine/UIAccessibility/AXContainerServices + 大量 .axbundle）、有 2 个 App 链接 Accessibility（但那是读自己）；**但 AXRuntime 磁盘上是空壳（二进制在 dyld 共享缓存）、没有对外的 a11y XPC 服务、设备上没有 substrate/hooker，而"注入 dylib"被项目红线否掉** → 要定论只能写最小 `ui.dump` 上真机跑一次。**★ 而我们不需要它：图标类控件的正解是【图标模板库】（确定性匹配），比 a11y/OmniParser 更可靠。**
-> **★ OmniParser（视觉→结构化元素）判断：基本用不到** —— ① 我们已有结构化 OCR（差 role，而 role 恰是靠猜最不可靠的）② 它解决"没有 a11y 怎么办"，而我们的答案是**根本不需要"理解"**（定位靠找文字/找模板/缓存）③ ★ dsh-ios 一手纪律否掉其可靠性（"Icon-only controls carry no OCR text by definition"、"NEVER tap an unidentified control"）。**但两块思想值得吸收**：Set-of-Mark 编号（AI 说"点 5 号"而非输出坐标）· "UI→结构化元素表"形态。
-> **★ MCP 协议层**：三原语三控制面（Tools 模型控制有副作用 / Resources 应用控制只读 / Prompts 用户控制）。**★ 决定性机制点：Resources 模型【不能主动读】→ 要让模型发现技能，必须【额外给一个 Tool】（`list_skills`）**（这正是 SEP-2640 里 `list_repo_skills` 存在的原因）。**工具面两层**：① 原子能力 ~64 ② 意图命令 3–5（`open_app`/`search_in_app`/`do_skill`/`list_skills`）+ 技能管理 3（`skills/list`·`skills/get`·`skill_upsert`）；**★ 技能【不变成一堆 tool】（会爆炸）**。**★ 设备端已有基础：`tvHttpApiDispatch` 的 `{op, params}` 与 MCP 的 `{name, arguments}`【同构】（转换=换字段名）；注册表已带 `{name,type,required}` → `tools/list` 可【从注册表自动生成，零维护】。**
-> **★ 落地顺序（10 步）**：1 `vision.layout` → 2 trace 补 `strategy` → 3 图标模板库 → 4 页面表 L1 采集 → 5 技能库 L2 → 6 步骤级置信度 → 7 回传包+熔断 → 8 MCP 层（可与 1 并行）→ 9 中心同步+三护栏 → 10 ⚠️ `ui.dump` 可选验证。
-> **★ 硬前提现状（2026-09-18 修正）**：当前模型 `deepseek-v4.1-flash` **不支持图像输入**（`read_image` 报错）→ 演员没有眼睛。**但正解不是"配眼睛"**：架构总纲 §5 已论证 **"GUI 工作模型"是伪需求**（看图→出坐标应由设备端零模型原语做），**正解是「少走视觉（公理一）+ 建图标模板库」**。★ 空档：`vision.find_text` ✅ 可用，`vision.find_image` ❌ 缺模板库 → 详见 §5 边界补注 + §17.8.2。
-> **★ 参考项目库（2026-09-18）**：12 个手机控制类项目已汇集到 `_research/`（gitignore 不入库）并对齐上游最新。**深研结论（动 AI 操作层前先读）**：`参考项目调研-共同优点-2026-09-18.md`（13 条共同优点 + 8 条差距）· `参考项目深读汇总-面向通用MCP服务器-2026-09-18.md`（3 项目源码级深读）· **逐条结论已接进架构总纲 §17.8（N1-N8）**。★ 一句话：**不是模型差，是没给它该有的手**（57 能力只暴露 5 个 / 动作退化成裸坐标 / 无步骤校验）。
-> **★ 网关做「全平台设备基座」方案（2026-09-18，`网关全平台基座方案-2026-09-18.md`）**：用户设想"以 WDA 同基类让 noVNC 作其分支"，调研后**三处修正**——① **Mobile-Agent 没有那个基类**（v3.5 手机框架仅 1137 行薄脚本、`AdbTools` 无基类、三端不共享抽象、iOS 代码 0 命中）；② 真正的"同基类"是 **`mobilerun-core` 的 `VisualRemoteDriver`**（`driver/visual_remote.py`，**HTTP 契约驱动设备**，与我们网关同构）；③ **不"继承 WDA"**（WDA 需设备装 XCTest runner + Mac 编译 + iproxy）。**★ 最低成本路径：网关加 3 个端点（`/devices`、`/screenshot`、`/actions`）即可被 mobilerun 零改动驱动**；**★ 通用钥匙：把 `vision.ocr` 结果伪装成 a11y 树字段形状 → 它们的 `tap_text`/`find_element` 无需理解 OCR 即可跑通**（三家 iOS 定位 100% 依赖 a11y、OCR 零命中，这是我们的独有能力）。**× 不要做 `AsyncEnv`**（被约 250 处 task_evals 判定器当数据访问口）。
+
+- **★ 这不是推翻主干，是【拆层】**：原来"agent 循环 + 模型"绑死在电脑上、手机只是哑执行器；现在循环下移到手机、模型变成可插拔服务。**主干哲学（导演/演员/引擎、公理一少走视觉、零模型回放、资产结构、三视角）一条没变。**
+- **★ 四层**：① 命令下达者（MCP 客户端）→ ② **手机（MCP 服务端，收结构化命令，查技能库命中即回放）** → ③ AI 服务（**只在「规划/判断/恢复」三个时刻被请求**）· ④ 设备原语（64 能力 + `script.exec`）。
+- **★ 快的三个来源**：省模型推理（每步 5–20s→0）· 省网络往返（`script.exec` 一次跑完）· 省"该怎么做"的判断（查表 vs 现想）→ **100–160 秒 → 2–5 秒**。
+- **★ 蜂群经验同步**：各机学到的技能卡 + **踩到的坑**（负样本，**比成功经验更值钱**）+ 环境指纹 → 上报中心 → 合并/去重/版本化/灰度 → 下发全群。**★ 三个必备护栏：环境指纹过滤 · 验证计数 · 灰度发布（防失败放大）**；风险：失败放大 / 行为同质化 / 技能库并发写。
+
+## ② ★★★★ 「AI 参与」≠「AI 规划」（实施设计 §1.5）
+
+**用户 2026-09-19 纠正**："第一次也是经过 AI 给手机下达的任务" —— **纠正成立**，一切"零 AI"的说法都应精确化为"**手机侧零 AI 调用**"。
+
+- **三层分工**：① **客户端 AI（永远在，不可省）** 人话 → 结构化**意图命令**；② **手机预置卡/内置流程（手机侧零 AI）** 意图命令 → **步骤序列**；③ **手机请求 AI 服务（按需）** ② 展不开时才请 AI 规划/判断/恢复。
+- **★ 命令粒度契约**：客户端只能下**意图级**命令（`open_app{name}` / `search_in_app{app,q}` / `do_skill{intent}`）；**不得**下原子级（`touch.tap{x,y}`）或步骤序列（`[app.list, match, open, …]`）—— 展开是**手机内部**的事。
+- **★ 由此推出 MCP 工具面的硬约束**：暴露**原子能力 + 意图命令**；**不暴露 `script.exec`**（暴露了客户端就会绕过手机自己拼 steps，技能库/页面表/置信度全被绕过）。
+
+## ③ 实施设计要点（`实施设计-执行预测与蜂群资产-2026-09-19.md`）
+
+- **★ 资产四层（上层【引用】下层，不内嵌）**：**L0 图标素材库**（跨 App/页面/任务）· **L1 页面表**（元素×页面，来源=**每次执行顺手全页采集，零成本**）· **L2 技能卡**（任务级流程；分**预置卡**（出厂自带、不需 AI）与**学到的卡**）· **L3 任务卡**（复合）。**"抖音图标长什么样"→L0；"首页点搜索框点哪里"→L1；"搜南京美食的流程"→L2 —— 技能卡【不覆盖】它们而是【引用】**（内嵌坐标会导致改一处要改十张卡）。
+- **★ 执行预测（控制论的预测-校正回路）**：技能卡=先验 → 执行=预测 → **`screen.hash`/`expect` 是误差检测器** → 偏差=预测误差 → **带完整证据回传 AI 纠错**。**AI 的角色精确化为【纠错者】而非逐步决策者**。回路：命令→**三级查找**（学到的卡 → 预置卡 → 内置流程 → 才请求 AI）→手机侧零模型执行→成功沉淀/失败先走本地 fallbacks→还不行走**回传包**→AI 纠错→**熔断≤3**→无论成败都沉淀→中心合并。
+- **★ 回传包必须【三件】**：`predicted`（预测了什么）+ `actual`（trace/偏差点/变量现场）+ **`evidence`（★ 失败点全屏 OCR 文字，让 AI 能"看"）** + `context`。**★ critical 标记决定何时回传**（critical 失败立即中止回传；非 critical 记录后继续）。**建议加【预演批准】**（高风险操作下单/发消息/关注必做）。
+- **★★★★ 步骤级置信度**：**卡片级的 95.9% 没有指导意义**（掩盖了"步骤②3次失败/步骤④6次超时"）。**统计单元 = {意图 · 步骤序号 · App+版本 · 策略档}**；**★ 必须带层级回退**（最细→省策略→省版本→省步骤→全局，每级带样本数 n，防维度爆炸）。**阈值→实时决策**：>95% 直接执行不验证 / 70-95% 执行+验证 / <70% 跳过第一档 / <30% 不执行。**副产品=版本回归预警**。
+- **★ 合并关键洞察**：**因为固化的是【意图级动作】而非像素坐标，版本影响面被压到【只剩定位策略里的一档（缓存坐标）】**——页面签名/动作序列/判定规则通常不变，**坑则【追加不替换】**。★ 同步方式是**中心当 MCP 客户端去拉**（`skills/list`/`skills/get`/`skill_upsert`），手机不主动 push。
+- **★ 调用视觉模型产出什么可复用的**：模型输出**本身**是一次性的；被执行并**验证成功**后才沉淀成资产（**失败那次产出【坑】**）。**最值钱的转化=把"需要模型判断的事"变成"查表的事"**：判断"这是搜索结果页" → 沉淀**页面签名**（特征文字集合）→ 之后 `vision.ocr` 命中即零模型判定。
+- **★ 设备端要补的（按优先级）**：**① `vision.layout`（坐标聚类）**—— 已勘察可实施，**6 处新增**（`TRVisionEngine` 加算法 · `trollvncserver` L3702 声明/L3830 0x50/L4238 5802/L5643 实现 · `TRCapabilityRegistry` L1329 注册），**全是新增无一行改**；**实测依据：`vision.ocr` 只返回 8 字段（text,x,y,w,h,cx,cy,confidence，归一化），且置信度能有效区分正确(1.0)与误识(0.3)→ minConfidence 默认 0.5（★ 与 dsh-ios"别提高 min_confidence"的建议相反，以我们实测为准）**。**② `script.exec` trace 补 `strategy`**（用了哪档策略=**中心重排的唯一数据来源，最高优先级**）+ baseHash/afterHash/vars/ms/pageSignature。③ 图标模板库 L0。
+- **★ `ui.dump`（a11y）实测结论：可行性未证实，降级为可选** —— 真机探测（`scripts/probe-device-a11y.py`）：框架全在、有 2 个 App 链接 Accessibility（但那是读自己）；**但 AXRuntime 磁盘上是空壳（二进制在 dyld 共享缓存）、没有对外的 a11y XPC 服务、设备上没有 substrate/hooker，而"注入 dylib"被项目红线否掉**。**★ 而我们不需要它：图标类控件的正解是【图标模板库】。**
+- **★ OmniParser（视觉→结构化元素）判断：基本用不到** —— ① 我们已有结构化 OCR（差 role，而 role 恰是靠猜最不可靠的）② 它解决"没有 a11y 怎么办"，而我们的答案是**根本不需要"理解"**（定位靠找文字/找模板/缓存）③ ★ dsh-ios 一手纪律否掉其可靠性。**但两块思想值得吸收**：Set-of-Mark 编号 · "UI→结构化元素表"形态。
+- **★ MCP 协议层**：三原语三控制面（Tools 模型控制有副作用 / Resources 应用控制只读 / Prompts 用户控制）。**★ 决定性机制点：Resources 模型【不能主动读】→ 要让模型发现技能，必须【额外给一个 Tool】（`list_skills`）**。**工具面两层**：① 原子能力 ~64 ② 意图命令 3–5 + 技能管理 3；**★ 技能【不变成一堆 tool】（会爆炸）**。**★ 设备端已有基础：`tvHttpApiDispatch` 的 `{op, params}` 与 MCP 的 `{name, arguments}`【同构】（转换=换字段名）；注册表已带 `{name,type,required}` → `tools/list` 可【从注册表自动生成，零维护】。**
+- **★ 落地顺序（10 步）**：1 `vision.layout` → 2 trace 补 `strategy` → 3 图标模板库 → 4 页面表 L1 采集 → 5 技能库 L2 → 6 步骤级置信度 → 7 回传包+熔断 → 8 MCP 层（可与 1 并行）→ 9 中心同步+三护栏 → 10 ⚠️ `ui.dump` 可选验证。
+
+## ④ 硬前提与外部约束
+
+- **★ 硬前提现状（2026-09-18）**：当前模型 `deepseek-v4.1-flash` **不支持图像输入**（`read_image` 报错）→ 演员没有眼睛。**但正解不是"配眼睛"**：架构总纲 §5 已论证 **"GUI 工作模型"是伪需求**，**正解是「少走视觉（公理一）+ 建图标模板库」**。★ 空档：`vision.find_text` ✅ 可用，`vision.find_image` ❌ 缺模板库 → 详见 §5 边界补注 + §17.8.2。
+- **★ 模型能力边界（2026-09-19 实测）**：**GUI-Owl-4B 不认 enum 之外的新动作** —— 即使提示词里写了、分发链加了分支，它也不用（宁可反复瞎点）。**根因：专用 GUI 模型的动作空间是训练时固化的**。→ 要扩动作只有两条路：**换通用 VLM** 或 **用 function calling/MCP（API 层真约束）**。→ **这也是"MCP 是必然"的实证依据**。
+- **★ 参考项目库**：12 个手机控制类项目在 `_research/`（gitignore 不入库）。★ 一句话：**不是模型差，是没给它该有的手**。
+- **★ 网关做「全平台设备基座」**：**真正的"同基类"是 `mobilerun-core` 的 `VisualRemoteDriver`**（HTTP 契约驱动设备，与我们网关同构）；**★ 最低成本路径：网关加 3 个端点（`/devices`、`/screenshot`、`/actions`）即可被 mobilerun 零改动驱动**；**★ 通用钥匙：把 `vision.ocr` 结果伪装成 a11y 树字段形状**。**× 不要做 `AsyncEnv`**（被约 250 处 task_evals 判定器当数据访问口）。
+
+---
 
 ## 仓库是什么
 
@@ -37,7 +106,7 @@
 
 - `TrollVNC/` — 设备端（Theos 工程）：VNC 服务 + 命令注册表 + App 外壳。`src/` 为核心源码（trollvncserver、TRCapabilityRegistry、TRGatewayClient、TRTunnelClient、STHIDEventGenerator 等）；`app/TrollVNC/` 为 UIKit 外壳；`layout/` 含 5801 直连页文件
 - `trollvnc-farm/` — 网关（Node.js ESM）：`server/index.js` 单入口（注册/隧道/控制台），`web/` 为无构建静态前端，`test/` 为测试套件
-- `scripts/` — 推送/取包辅助脚本（见"已知坑"）
+- `scripts/` — 推送/取包辅助脚本（见 `docs/known-issues/04-发布与推送.md`）
 - `dsh-superphone/` — **DSH（DeepSeek Harness）侧的设备控制面板插件**（本项目的扩展形式之一）：侧边栏 Tab（设备选择器 + **网关单卡 iframe 嵌入** + 执行日志）+ AI 工具面（**17 个工具**：devices / screenshot / tap / **swipe** / **taps** / **long_press** / **delete** / ocr / take_control / home / app_list / app_open / type / end_control / wait_change / wait_stable / screen_hash）。**AI 操作层定位（开发前必读）**：本插件只是《架构总纲-AI操作层-2026-09-17.md》中**唯一已落地的一层**（设备接口面）。**★ 工具面状态（2026-09-18）**：**已补齐** `touch.swipe`（滑动）/ `touch.taps`（连点）/ `touch.longPress`（长按）/ `home`（回主屏）/ `type.delete`（删除键，与 `type.paste` 正交）；**仍待补**：`vision.find_image`（缺模板来源，加了也用不了）· `screen.hash`（注册表注册了但 `trollvncserver` 的 0x50 分派未实现，调用返回「未知操作」）· `touch.pinch` / `doubleTap` · `clipboard.get` —— 详见 `skills/superphone-device/SKILL.md` 的「工具面待补清单」。**复用纪律**：画面区一切交互（悬停提示、点击浮层、聚焦、FAB 退出、系统光标）都由网关前端提供，插件只用 `?only=`/`?syscursor=` 参数嵌入，**不在宿主侧自绘**。构建：host 走 `tsdown`、client 走 `esbuild` 打成 DSH 的 `window.__ModuleLoader__` 模块格式（`node node_modules/tsdown/dist/run.mjs` + `node scripts/build-client.mjs`）。部署 = 插件目录 junction 到 `${DSH_HOME}/profiles/<profile>/node_modules/` + 在 profile 的 `dsh.profile.bundles` 登记 + 重启 profile。`lib/`、`node_modules/`、`data/` 不入库（见其 `.gitignore`）。
 
 ## 常用命令
@@ -49,7 +118,7 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
 ```
 
 - **设备端无 lint/typecheck**；**Windows 不能本地构建**，出 .tipa 只能走 CI。
-- **CI**（`.github/workflows/build.yml`）：push `main` 触发 macOS 编译 4 种 scheme——default/rootless/roothide 出 `.deb`，bootstrap 出 `.tipa`（TrollStore 安装产物）；可选 `workflow_dispatch` 输入（is_managed 打 Managed.plist 预置、desktop_name、port、view_only、scale、frame_rate_spec、modifier_map）。**push 带 paths 过滤（2026-08-18）**：仅 `TrollVNC/**` 或 workflow 自身变更才触发编译，纯网关/脚本/文档改动不触发（避免私有仓库 billing 拦截秒失败）；`workflow_dispatch` 手动触发不受 paths 限制。
+- **CI**（`.github/workflows/build.yml`）：push `main` 触发 macOS 编译 4 种 scheme——default/rootless/roothide 出 `.deb`，bootstrap 出 `.tipa`（TrollStore 安装产物）；可选 `workflow_dispatch` 输入（is_managed 打 Managed.plist 预置、desktop_name、port、view_only、scale、frame_rate_spec、modifier_map）。**push 带 paths 过滤（2026-08-18）**：仅 `TrollVNC/**` 或 workflow 自身变更才触发编译，纯网关/脚本/文档改动不触发；`workflow_dispatch` 手动触发不受 paths 限制。
 - 版本号在 `TrollVNC/Makefile` 的 `PACKAGE_VERSION`（现 0.0.1）。
 
 ## 架构红线（改任何端前先读 `说明文档.md`）
@@ -89,80 +158,64 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
 - 提交用 Conventional Commits + 中文描述（`feat(web):` / `fix:` / `refactor:` / `docs:`），中文沟通。
 - 前端改动（`trollvnc-farm/web/`）记得同步 `?v=N` 缓存破坏引用；改 `caps.js` 时注意它和 `TrollVNC/layout/usr/share/trollvnc/webclients/caps.js`（5801 直连页）是**分叉的两个文件**，互不引用。
 
-## 已知坑
+---
 
-- **★★★★ 网关 TLS 与「嵌入客户端」的协议契约（2026-09-18 三轮才修对，必须记住）**：
-  网关默认启用 TLS（`FARM_TLS !== '0'` → https + 自签证书），同时用**同一端口按首字节协议分发**（TLS ClientHello → https server；明文 → `httpRedirect`）。原先 `httpRedirect` 对**【所有】明文请求**都 301 到 https（原意只是"browser can omit https://"，方便用户手输 IP）。
-  **后果**：任何跑在 http 宿主里的嵌入客户端（DSH 侧边栏插件的 iframe，宿主 `http://127.0.0.1:3080`）**两种协议都进不去** ——
-  · 用 **https** → 浏览器不信任自签证书；★ **iframe 里的证书错误不提供"继续访问"入口**（只有主框架才给）→ 页面直接报「网页似乎有问题，或者可能已永久移动到新的 Web 地址」；
-  · 用 **http** → 每个请求被 301 到 https → 浏览器把该重定向按**跨源**处理 → 网关不带 CORS 头 → 脚本/接口全被拒（实测 `caps.js?v=15` / `press.js` / `gesture.js` 报 `No 'Access-Control-Allow-Origin' header`）。
-  **正确解法（定论）**：**301 只对【顶层导航】生效**，其余一律明文服务。
-  ```js
-  const dest = (req.headers['sec-fetch-dest'] || '').toLowerCase();
-  const isTopLevelNav = dest ? dest === 'document' : (req.headers.accept || '').includes('text/html');
-  if (!isTopLevelNav) { requestHandler(req, res); return; }   // iframe/脚本/样式/fetch 都不 301
-  ```
-  安全语义不变：用户直接访问 `http://IP:8080` 仍是 `document` → 照旧升级到 https。
-  **另需两条配套**（缺一不可，实测都会单独导致失败）：① `httpRedirect` 这个 http server **必须挂 `upgrade` 监听**并把明文 WS 转发给真正的 server（否则 iframe 页面出得来但画面永久空白）；② 客户端侧协议要**随宿主**选择（插件 `frameGateway`：宿主 http → iframe 用 http；宿主 https → 必须 https）。
-  **★ 走过的两个弯路（勿重犯）**：① 用「请求带嵌入参数（`only`/`syscursor`/`pv`）」判嵌入场景 —— 只覆盖顶层导航，**iframe 内的 `/style.css`、`/api/*` 都不带参数**；② 用「`Referer` 指向嵌入页」补 —— **浏览器加载 `<script>` 时不带可用 Referer**，判据失守（本地用 python 带 Referer 测是 200，所以**自己测"通过"了），这正是"本地测过关、真机仍失败"的典型。
-  **★ 方法论教训（本次返工 3 轮的真因）**：**修这类"多段链路"的问题，必须【一次性列出并验证整条链路的每一个请求】，而不是"改一处 → 测一处 → 报通过"**。逐段报通过 = 每次都在下一段撞墙，用户被迫反复反馈。已落成脚本 `scripts/verify-iframe-chain.py`（覆盖 iframe 顶层导航 / 6 个脚本 / 样式 / 7 个 API / 2 个 WS + 顶层导航必须 301 的对照组，共 21 项）——**改网关重定向/协议相关逻辑后必须跑它，全绿才算完成**。
+## 已知坑（★ 2026-09-19 已拆分）
 
-- **★★★★★ 浏览器【永久缓存 301】—— 服务端改好了、浏览器仍用旧跳转（2026-09-18 实测，本次 4 轮返工的最终真因）**：
-  **症状**：网关侧修复已生效（`verify-iframe-chain.py` 21 项全绿、curl 全部 200），但用户的浏览器**仍报同样的错**，且错误信息里 URL 一直在"换"（先 `caps.js?v=15`，后 `press.js`、`gesture.js`，再 `rfb.js?v=4`）。
-  **根因**：`HTTP 301` 是"永久重定向"，**浏览器默认无限期缓存**。在网关还对所有明文请求 301 的那段时间里，iframe 的若干资源各被 301 过一次，浏览器从此记住 —— **之后它压根不向网关发请求**，直接跳到 https（自签证书）→ CORS 拒绝。
-  **★★ 这类故障最坑的地方：网关侧【既看不到请求、也看不到 301】**。本次加了 `FARM_DEBUG_REDIRECT=1` 的诊断日志后才发现：日志里**完全没有**那些 URL 的请求记录。单看服务端会误判成"网关已修好、问题在别处"——前两轮修复就是这样被误导的。
-  **三层问题（逐层解决，缺一层都不行）**：
-  1. **301 范围过大** → 改为**只对顶层导航生效**（见上一条）。
-  2. **301 被永久缓存** → ① 给前端资源**递增版本号**（换新 URL）；② 301 响应加 `Cache-Control: no-store, no-cache, must-revalidate, max-age=0`（杜绝复发）。
-  3. **★ 打地鼠没有尽头** → `app.js` → `/novnc/core/rfb.js`（服务端内存 patch）→ **它自己又 import 了 29 个相对模块**（`util/*.js`、`display.js`、`decoders/*.js`、`input/*.js`…），**这些相对 import 全都不带版本号**，逐个加不现实。
-  **终极解法：换 iframe 的 host —— `127.0.0.1` → `localhost`** ✓
-  浏览器缓存按**完整 URL** 索引，换 host = 整个 URL 空间对浏览器全新，**一次性绕开全部历史缓存的 301**。
-  可行性：网关监听 `0.0.0.0`（`localhost` 可达）；证书 SAN 含 `DNS:localhost`（https 场景同样可用）。实现见插件 client 的 `frameGateway`。
-  **★ 诊断手段（务必保留）**：`FARM_DEBUG_REDIRECT=1` 启动网关 → 每个明文请求记录 `method / path / Sec-Fetch-Dest / Origin / Referer / 去向`；
-  再用 `scripts/analyze-gateway-redirect-log.py` 区分**【浏览器真实请求】**（带 Referer/Origin）与**【脚本请求】**（两者都不带），并直接给出"有没有非顶层导航被 301"的结论。
-  **这是定位"服务端看不见"类问题的唯一可靠手段 —— 不必再让用户按 F12。**
-  **★ 纪律**：
-  - **凡改前端资源（`web/*.js|css`、noVNC patch），必须递增引用处的 `?v=N`**，并同步 iframe 的 `pv`；
-  - **凡改协议/重定向/路由，先跑 `verify-iframe-chain.py`**，再用诊断日志确认【浏览器真的在发请求】——**服务端 200 ≠ 浏览器拿到了**；
-  - **判断"修好了没有"要看浏览器行为，不能只看 curl**：本次 curl 全绿而浏览器全程失败，差异就在"浏览器有没有真的发这个请求"。
-- **★ 暴露一个「从未被调用过」的既有能力 = 给它做首次验收（2026-09-18 实测，血泪）**：给 AI 工具面新增一个透传工具时，**不能假设"设备端已实现 = 可用"** —— 那个能力的 executor 可能**从未被真实调用过**，里面藏着从未触发的 bug。**真实事故**：`superphone_taps` 透传设备端 `touch.taps`，首次调用即把 `trollvncmanager` 打死（`NSParameterAssert(delay > 0.0)` 断言写反，而所有调用者都传 0 → NSException → abort），设备 5901/5802/5801 三个端口全不通、网关 `online=false`；崩溃报告历史显示该 bug 在 8-24 也引爆过 3 次。**纪律**：① 新增透传工具后，**先在真机跑一次最小调用**再交付；② 崩溃报告在设备 `/var/mobile/Library/Logs/CrashReporter/<proc>-<时间>.ips`，**`_userInfoForFileAndLine` 符号 = `NSParameterAssert`/`NSAssert` 失败**，配 `EXC_CRASH + SIGABRT + abort() called` 即可定性；③ **判"能不能用"的黄金判据**：调用后**进程是否还活着 + 有没有新崩溃报告**（不能只看 ack ok=true —— 它是"已投递"）。**相关**：`screen.hash` 是同一族的另一面 —— 注册表里注册了，但 `trollvncserver` 的 0x50 分派没实现，调用返回「未知操作」。
-- **实际远程仓库是 `78725449/SuperPhone`（私有，2026-08-15 单仓库化迁移后启用）**；`78725449/TrollVNC` 是迁移前的旧 fork（已废弃）。
-- **github.com 直连常被网络阻断** → 推送走 `scripts/push-via-api.mjs`（Git Data API，api.github.com 正常）：`GHTOK=<token> node push-via-api.mjs <本地commit> <远程base> [本地base]`（默认 REPO=78725449/SuperPhone、BRANCH=main，CWD 可用环境变量覆盖；支持大文件与 base tree 去重；远程 main 与 base 不符会拒绝）。**（2026-09-17 实测补坑）Windows 上必须显式覆盖 `CWD`**：脚本默认 `CWD` 是**另一个项目的旧路径**（`C:\Users\Administrator\Documents\ChatGPT\New project`），不覆盖时 `execSync({cwd})` 抛 **ENOENT 且错误里出现的路径是 `C:\Windows\system32\cmd.exe`** ——极易误判成"沙盒拦截 node 子进程"或"环境缺 cmd.exe"（本次就误判了一轮；实测 `execSync/execFileSync/spawnSync` 三种方式在 DSH 下均正常，`cmd.exe` 也确实存在），**真因是 cwd 不存在**。正确调用：`$env:CWD = (Get-Location).Path; node scripts/push-via-api.mjs <local> <remoteBase> <localBase>`。
-- **GitHub API 间歇性 503（2026-08-18 实测）**：Git Data API（blobs/trees/commits）、workflow dispatch、artifact 下载、甚至 `PATCH /repos` 转私有都可能瞬时 503——用循环重试（间隔 20–45s，幂等可重复）；**转公开后必须立刻确认转回私有成功**（PATCH 可能 503，需重试直到 `private=True`），期间仓库处于公开状态有风险。`push-via-api.mjs` 无内部重试，外层 PowerShell for 循环包住即可。
-- **push-via-api 中文路径编码损坏（2026-08-19 实测）**：经 Git Data API 推送含中文路径文件（如 `说明文档.md`）后，远程树可能出现 `????.md` 幽灵文件（原文件名的编码损坏副本，内容为旧版本）。**推送后必须核对远程树 sha 与本地树 sha 一致**（`git rev-parse HEAD^{tree}` vs 远程 commit tree，Git 树 sha 是内容哈希，一致即等价）；发现多出的 `????` 文件时，用一次性脚本构建含 `{path: "????.md", sha: null}` 删除条目的树（base_tree 增量）重建 commit 清理，勿残留。
-- 取 CI 产物：`node scripts/wait-ipa.mjs <runId>`（默认 REPO 同上）。
-- **Git Data API 推送不触发 Actions（2026-08-23 实测）**：`push-via-api.mjs` 经 Git Data API 更新 ref，GitHub **不会**为它触发 push 事件驱动的 workflow（Actions 只在真实 git push 时触发）。推送后必须手动 `workflow_dispatch`（`POST /repos/{repo}/actions/workflows/build.yml/dispatches` `{"ref":"main"}`，不受 paths 过滤限制）才能编译。
-- **push-via-api 重建 commit 导致远程 sha ≠ 本地 sha（2026-08-23 实测）**：Git Data API 创建 commit 时 parent 指向远程 base（而非本地 commit 的父），远程 commit sha 与本地不同（内容等价）。**匹配 CI run 必须用推送后的远程 HEAD sha**（重新 `GET /git/ref/heads/main`），不能用本地 sha——否则永远匹配不到 run 卡到超时。
-- **一键出 .tipa：`GHTOK=<token> node scripts/build-ipa.mjs [commit] [outDir]`**（2026-08-23 新增）：推送（push-via-api）→ workflow_dispatch 触发 → 轮询 run → 下载 packages-bootstrap.zip → 解压 .tipa 到仓库根。注意：本地 git 无远程 base 对象（remote 名是 `superphone` 非 `origin`，无 `origin/main` 引用），脚本 diff 基准显式取 `HEAD^` 传入 push-via-api 第三参，勿用远程 base 做本地 diff。
-- **build-ipa.mjs 两个 Windows bug（2026-08-23 实测修复）**：① `git rev-parse ${LOCAL}^` 在 cmd/PowerShell 下 `^` 是转义字符会被吞掉 → localBase 解析成 LOCAL 自身 → diff 为空、0 blob 推送 → **远程树不含该 commit 的任何内容**（CI 编译的还是旧代码）——必须用 `~1`；② `workflow_dispatch` POST 返回 **204 No Content**，`api()` 的 `res.json()` 抛 SyntaxError → CI 未触发——204 时返回 null。**推送后务必核对远程树包含预期文件**（如 `git ls-tree` 或 push-via-api 输出的 MOD 列表），尤其首次修复后（远程树可能缺内容仍在跑 CI）。
-- **Windows 快照会丢可执行位**：改 `devkit/*.sh` 或 DEBIAN 脚本后必须恢复 100755，否则 CI before-package 报 Permission denied。
-- **build-ipa diff 基准陷阱（2026-09-13 实测，血泪）**：`build-ipa.mjs` 默认以 `HEAD~1` 作 push-via-api 的 localBase——**只带出最后一个 commit 的变更**。本地积压多个未推送 commit（如一次重构 5 个 commit）时，**前面的 commit 全部不上远程**（远程树 = 旧代码 + 最后一个 commit 的文件），CI 编译旧代码、部署后真机行为与源码不符，极难排查（本次症状：改了 wait 逻辑但设备行为不变，直到比对二进制代码段才定性）。**纪律**：① 批量推送手动跑 `node scripts/push-via-api.mjs <local> <remoteBase> <localBase>`，localBase 取「本次要推送内容的前一个已推送 commit」，并核对输出的 MOD 列表覆盖全部改动文件；② 推送后核对**远程树 sha == 本地树 sha**（`git rev-parse 'HEAD^{tree}'`）；③ CI 触发后核对 **run.head_sha == 推送后的远程 ref sha**（推/dispatch 并发会吃到旧 head——本次 run 34580383465 白跑一轮）；④ **部署前验证产物二进制含新代码**（`grep -a` 搜新字符串；必要时比对设备二进制与本地构建产物**代码段 md5**——TrollStore 重签名只改尾部，代码段应完全一致）。
-- **设备端部署与手动拉起服务链（2026-09-13 实测可用路径）**：SSH 环境（RemoteHelper，root/alpine）无 `uiopen`/`open`/真 `launchctl`，TrollStore 安装 tipa 会杀掉 App 且**不会自动重启**（`trollstorehelper launch` 只拉起挂起壳，ServiceCoordinator 不跑）。命令行安装：`<TrollStore.app>/trollstorehelper install <tipa>`；验证时**绕过 App 直接拉起 daemon**：`nohup <APP>/trollvncmanager < /dev/null > /var/tmp/manager.log 2>&1 &`——**必须绝对路径**（manager 单例锁拒绝 `./trollvncmanager`）、**stdin 必须 `< /dev/null`**（否则 RemoteHelper exec 通道挂起至超时），manager 随即 watchdog 拉起 server/5802，等效 App ServiceCoordinator 的 spawn。tipa 传输用 base64 分块 echo（设备端解码器 `<TrollStoreRemoteHelper.app>/fakeroot/bin/base64`），传后 `wc -c` 核对字节数。
-- **【运维】设备重启后 / 装包后链路恢复 + 「App 角色」认知（2026-09-13 实测定案）**：**症状**——设备重启或安装新 tipa 后，网关里设备离线、缩略图与大屏控制都不可用。**根因**——tipa 不含 LaunchDaemon（`layout/Library/LaunchDaemons/*.plist` 只有越狱 .deb 才有），daemon 链**唯一拉起者 = App 的 ServiceCoordinator**（3s 探活 127.0.0.1:46751，失败即 spawn manager）；装包时 TrollStore 替换二进制 → manager 的 vnode-delete watchdog 自退 → 整条链（manager→server）被拆；设备重启则进程全无。**恢复动作（二选一）**：① **点开一次手机上的 TrollVNC App**（推荐：随后 ServiceCoordinator + manager watchdog 双保险保活；设备重启后也只需此一步）；② SSH 手动拉起（见上一条命令）。**链路自检**：`ps aux | grep -E 'trollvncmanager|trollvncserver -daemon'` 两进程齐全；`lsof -i :5901` 有 LISTEN；网关 `/api/devices` 该设备 online=true。**认知澄清（勿误判）**：**App 不参与任何画面数据链路，它只是「启动器 + 保活器」**——缩略图链路（网关 SnapshotPoller → 隧道 invoke `screen.snapshot` → manager 注册表 → HTTP 回环 5802 → server 按需取帧+JPEG）与大屏链路（浏览器 WS → 网关 → 隧道会话通道 → manager TRTunnelClient → connect 5901 → server RFB）**都只依赖 manager + server 两个进程**。因此「App 没在前台，但缩略图/大屏正常」是**完全正常**的现象（只要 daemon 链在跑）；反之「链没起来时两者都不可用」也不是 App 的锅。另：设备端日志出现 `webSocketsHandshake: unknown connection error` + `Client <网关IP> gone` = 有客户端用 **WebSocket 直连 5901**（5801 直连页路径）握手失败，与网关大屏（走隧道会话通道的裸 RFB 字节）**不是同一条路径**，排查时勿混淆；大屏会话被顶掉的日志特征是前端 WS `4001 preempted by another controller`（另一控制端持有 ctrl 会话）。
-- 网关测试目录 `test/` 里还有一批手工 `verify-*.mjs` 前端验收脚本（不属于 `npm test`），改前端后可选跑。
-- **手动起网关验证必须全端口隔离**：`FARM_PORT`/`FARM_REG_PORT`/`FARM_TUNNEL_PORT`/`FARM_DATA_DIR`/`FARM_MDNS=0` 全部覆盖（照 test/ 套件写法），否则默认 18081/18181 会劫持局域网真实设备的注册/隧道连接（2026-08-16 实测踩坑）。
-- **运行中的网关不会热加载新路由（2026-08-23 实测）**：Node 启动时即加载 server/index.js 全量路由，此后改代码必须**重启网关进程**才生效；否则新增路由（如 `/api/devices/:id/album`）被 Koa 以 **405 Method Not Allowed** 拒绝、前端报「上传失败」。排查特征：新接口返回 405 / 落到 GET 兜底 `{device}`，而旧功能正常——先查网关进程启动时间（`Get-Process` StartTime）是否早于代码改动时间；`Get-NetTCPConnection -LocalPort 8080` 找 OwningProcess 定位旧进程，`Stop-Process` 后 `npm start` 重启，设备注册/隧道会自动重连。
-- 跨端参数契约（如手势 scale）：一端生成、另一端校验的量必须语义一致并两端钳制/兜底，避免"链路通但语义断"（magnitude 位移量 ≠ 间距比例，曾致 pinch scale 超界被设备端拒绝）。
-- **剪贴板是显式双向搬运（2026-08-17 起，无自动同步）**：复制=拉（clipboard.get / 0x50 clipboard.get）、粘贴=推（type.paste）；设备端不再监听系统剪贴板、不再自动推送，控制端复制不再自动写设备——改剪贴板功能时勿回归自动同步（平台无写入者身份，自动同步只能启发式且有误判边界，已决策弃用）。
-- **CI 秒失败（job 数秒内 failure/cancelled、日志 BlobNotFound）**：先查 check-run annotations（`GET /repos/{repo}/check-runs/{job_id}/annotations`）——billing 拦截（付款失败/支出限额）的权威错误信息在这里，不要误判为 runner 故障或 YAML 语法（2026-08-17 踩坑）。
-- **私有仓库 Actions 被 billing 拦截时的应急编译**：临时转 public（`PATCH /repos/{repo}` `{"private":false}`，公开仓库 macOS runner 免费）→ dispatch 编译 → 下载产物 → **立即转回 private**；配合 `_tmp-sync-tree.mjs` 模式的树同步脚本可推送任意树状态（Git Data API base_tree + 删除条目 sha:null）。转公开前扫描仓库确认无硬编码密钥（ghp_/AKIA/PRIVATE KEY/CHANGE_ME 占位符除外）。
-- **脚本化删除大段代码后必须做函数深度扫描**：python 按锚点删段可能误删函数闭合（语法配平但作用域错乱、`node --check` 查不出）——用 tokenizer 级深度扫描验证所有顶层函数深度为 0（或预期值）。2026-08-17 两次踩坑：app.js createRbf 闭合误删（copyFromFocusedDevice 不可见→聚焦黑屏）、5801 mgmt 负长度帧死循环。
-- **noVNC 握手死锁（2026-08-23 实测，偶发「连接中→10s 超时」的根因）**：`novnc/core/rfb.js` 的 `_negotiateProtocolVersion()` 结尾**必须显式 `return true`**——缺了它时 `_handleMessage` 在 connecting 态的 while 循环里 `!_initMsg()` 即 break，同一 WS message 里版本行之后的握手字节（LibVNCServer 3.8 安全列表 `01 01`）永不处理，noVNC 卡 Security 态、不发 SecurityType，设备 5901 也在等客户端选安全类型 → 双方死锁。粘包 14B 一包必现、分片 12B+2B 两包正常 → 表现为偶发 ~20% 失败且趋连发。**升级 noVNC 或改动其握手代码后必须核对**；排查特征：前端 connTimer 超时诊断 `init=Security wsReady=open rQunread=2 rQhex=0101`、网关侧失败通道 `tx=12 rx=14`。
-- **noVNC disconnect 事件原版不带 code（2026-08-23 实测，接管/断开文案与自动退出全部失效的根因）**：`_socketClose(e)` 能拿到 WS close code，但 dispatch 的 disconnect 事件 detail **只有 `{clean}`**——前端 `e.detail.code` 恒为 undefined → 4001/4003/4005/4006 分支永远走默认文案「连接已断开」、4001 自动 exitFocus 不触发。已在 `_socketClose` 存 `_lastCloseCode/_lastCloseReason` 并在 disconnected dispatch 透传（网关与 5801 两处 noVNC 均已 patch）。**升级 noVNC 必须核对 disconnect detail 是否含 code**。
-- **窄容器嵌入网关：用 `?only=<deviceId>` + `?syscursor=1` 复用网关实现，禁止在宿主侧复刻（2026-09-17 实测）**：把控制台嵌进窄容器（DSH 侧边栏插件面板 iframe ≈300-400px 等）时有两个坑与两个参数——① **`isMobile()`（`max-width: 900px`）把窄 iframe 判成触屏端** → 光标走"屏蔽"分支（`clear()` → 系统光标 `none` + 自绘圆点清空），鼠标移入画面毫无反应；**正解是 `?syscursor=1`（保持系统鼠标）**：让 noVNC 光标子系统在本会话完全不动 cursor（覆盖 `_refreshCursor` + `_cursor.change` + `_cursor.clear`，后两者由 rfb.js 内部直接调用；并清掉挂载时已设的 `cursor:none`）→ 窄容器里保持系统默认箭头。**❌ 不可改用"强制走 PC 分支"**：那会启用自绘圆点，而**触屏端"无任何光标"是刻意设计**（noVNC 在触屏上本会画 fallback 圆点，是网关 clear 屏蔽掉的），真触屏设备带该参数即破坏红线。② **嵌入方若只过滤卡片，顶栏计数与直控/批量/布局、批量条仍会出现** → 加 `?only=<deviceId>` 走单卡模式：只渲染该设备一张卡并填满容器 + `body.single-card` 隐藏 `header`/`#batchBar`，`#wall.single-tile .tile-bar` 隐藏卡片底栏（状态点/设备名/状态/⋯ 菜单——由嵌入方的选择器承载设备名与状态，卡片只留画面）；（保留 `#tileMenu`/`#editModal`/`#fab`+`#opsMenu`/`#kbdInput` 与聚焦视图）。`only` 的过滤**只在渲染循环 + directMode 补建**，数据源/计数/聚焦校验/10+ 处 `wallInstances` 遍历都不动，**缺省行为完全不变**（窄屏 `#wall` 的 2 列基础规则不受影响——`.single-tile` 无参数时不匹配）。**纪律**：窄容器嵌入一律加这两个参数复用网关的光标/卡片/缩略图/聚焦/退出，**禁止在宿主侧另写一套**，且**任何新参数都不得让触屏端出现光标**。
-- **控制状态三态互斥 + 快照推图必须按内容比较（2026-09-17 实测）**：① `controlState ∈ {direct,gateway,ai,idle}` 是**互斥单值**，由网关在 `/api/devices` 合成：`direct`/`gateway` 来自设备 FT_STATE（5801 / 隧道会话），**`ai` 来自 `sendDeviceCmd` 对输入类能力（`^(touch|type|key)\.`）的观测**——AI 的输入必经此处（插件工具/MCP/脚本/curl 全覆盖），**设备端零改动且不漏源**；读取类（`screen.`/`vision.`/`app.`）不触发，故 SnapshotPoller 的 `screen.snapshot` 轮询不会自激。会话优先于 AI（与 `guardHumanControl` 同一事实）。AI 会话结束 = 显式 `control.end`（网关拦截，不下发设备）或空闲 **180s** 兜底。② **SnapshotPoller 不得按 `seq` 去重**：`seq` 由采集管线逐帧 pHash 驱动，**无消费者时采集停止 → seq 冻结 → 前端画面永久定格**（实测三帧 jpeg md5 各不同而 seq 恒 1984）；必须**比较 JPEG 内容**（`this.jpeg !== ack.jpeg`）。`seq` 只服务 `screen.wait`/`waitStable`（有等待者→采集在跑→自洽）。
-- **变化检测（事件源）不得放在推流背压之后（2026-09-17 真机确诊并修复）**：`handleFramebuffer` 的 busy-drop（`gInflight >= gMaxInflightUpdates` → `return`）**必须位于逐帧 pHash 变化检测之后** —— 它是 `screen.wait`/`wait_change` 的事件源，与推流背压无关。原实现放在其前面，一旦 `gInflight` 泄漏（客户端异常断开致 `displayFinishedHook` 不配对；设备日志特征是先有 `FramebufferUpdate : N` 统计、之后再无 RFB 会话）就会**永久丢帧**：`gChangeSeq` 冻结 → AI 的 wait 永久超时（实测 `no change within 15000ms` / 网关 504），而**看板缩略图完全不受影响**（它走按需取帧 + 比较 JPEG 内容）。**确诊特征**：出现「`waitStable` 能正常返回、`wait` 永远超时」这对组合即可锁定（waitStable 读的 `gLastChangeTime` 是 wait 挂起时设的，不依赖 pHash）。**修复**：① busy-drop 下移到变化检测之后（下移后 `return` 前必须补 `CVPixelBufferUnlockBaseAddress`，因该处已 lock）；② 客户端归零时 `gInflight.exchange(0)` 兜底 + 日志。**排查纪律**：先确认「屏幕是否真的在变」（连续三次 `screen.snapshot` 比对 jpeg md5）——画面真静止时 wait 超时是**正确行为**，别误判为 bug。
-- **设备端 SSH 与装包路径（2026-09-17 实测）**：设备 SSH 是 **TrollStore RemoteHelper 的 Go sshd**，端口 **1223**（同 App 的 Web 界面在 **1222**，`GCDWebServer`，页面含 `restart_server` / `restart_sshd` 按钮，接口 `POST /restart_sshd`、`GET /log`）。**端口 ECONNREFUSED = sshd 没跑** → 先 `POST http://10.0.0.242:1222/restart_sshd` 拉起。**该 sshd 的限制**：不支持 **sftp subsystem**（`open_sftp` → `Channel closed`）；`cat > file` 传大文件会让 channel 挂住（Go sshd 等后台子进程）；**可靠路径 = base64 分块**：本地 base64 → 分块 `echo -n '<chunk>' >> /var/tmp/x.b64`（30000 字符/块，实测 3.9MB → 174 块 3 秒）→ 设备端 `<RemoteHelper.app>/fakeroot/bin/base64 -d` 解码 → `wc -c` 核对字节数。**设备无 curl/wget/python/nc**，不能"让设备自己下载"。**拉起 daemon 要 fire-and-forget**（发 `nohup ... < /dev/null > log 2>&1 &` 后**不要读 stdout**，否则 channel 挂住）。**Windows 侧无 ssh 客户端** → 用 **paramiko**（已装 5.0.0；`connect(..., banner_timeout=30, auth_timeout=30, allow_agent=False, look_for_keys=False)`；该 sshd 对短超时敏感，报 "Error reading SSH protocol banner" 通常只是超时太短）。
-- **MapKit 分类方法在 bootstrap/roothide SDK 未间接导入（2026-08-24 实测）**：`NSValue valueWithMKCoordinate/MKCoordinateValue` 是 MapKit 的 NSValue 分类（`MKGeometry.h`）。**使用方文件必须显式 `#import <MapKit/MKGeometry.h>`**——`RegionSimulator.mm` 有导入所以编过，但 `SimItineraryPlanner.mm` 没导入：rootless/default/roothide 三种 scheme 被其他头间接导入**掩盖错误编译通过**，唯独 bootstrap（roothide theos + iPhoneOS16.5.sdk）报 `no known instance method for selector 'MKCoordinateValue'`（`id` → `CLLocationCoordinate2D` 不可转换）→ **只修 grep 到的编译错误不够，凡是 `[NSValue MKCoordinateValue]`/`valueWithMKCoordinate:` 的消费文件都必须显式导入 MKGeometry.h**；排查特征：仅 bootstrap job 的 `Build package (bootstrap)` 失败、`Diagnose bootstrap app compile (raw xcodebuild)` 却 success（App 不含 manager 代码），其余 3 scheme 全过。
-- **并行窗口的 git 恢复会覆盖未提交工作区（2026-08-24 实测）**：多窗口共享本地仓库时，任一窗口执行 `git checkout/restore/stash`（或提交后清理）会把**其他窗口未提交的修改覆盖回 HEAD 版本**（本次 RegionSimulator.h/.mm 修改被回滚，仅保留已写盘的 SimItineraryPlanner.mm 部分）。**防线：设备端/核心文件改动尽量在一次性会话内完成并立即 `git add`+`commit`；跨窗口协作时改完即提交，避免长时间保留未提交修改**；被覆盖后用 git reflog/fsck 找回提交过的内容，未提交的工作区内容无法找回。
-- **sim.* 外部能力已收敛（2026-08-26 起）**：`data.fill` / `data.clear` / `sim.itinerary` / `sim.location.*` 的**外部入口（注册表 + 0x50 + 5802）已全部移除**，唯一入口 = **App 内部直调**（伪装页三 Tab + 定位 UI）。外部再调返回「未知操作」属**预期**，勿当 bug。排查数据/定位不生效 → 先查 App 伪装页/定位 UI 直调链路。daemon 侧的注入机制演进史（双域配置 / 注入必重启 / 时间戳分辨新旧 / prefs-changed 热重载风暴 / 区域漫游随机模式 等）已移入 `docs/历史决策与排查存档.md`。
-- **App 原生定位（2026-08-24）**：地图当前位置走 `showsUserLocation`（自定义 MKUserLocation 水滴）+ `MKUserTrackingModeFollow`（原生跟随，拖动自动退出）；真实定位用 `CLLocationManager`（`requestWhenInUseAuthorization`，Info.plist 需 `NSLocationWhenInUseUsageDescription`）。**必须显式 `#import <CoreLocation/CoreLocation.h>`**（MapKit 头不保证带 CLLocationManager 声明，bootstrap SDK 场景同 MKGeometry 教训）。当前位置数据源统一 locationd（模拟开启=注入位置/关闭=真实位置），无 plist 回退——改位置读取时勿加回"轮询 daemon 写回 plist"旧路径。
-- **定位坐标禁止硬编码（2026-08-24）**：全项目（App/网关 web/5801）已移除预设城市坐标与硬编码初始坐标（App 初始 `self.cur`=0,0 + 无效坐标守卫）；**网关 web 与 5801 定位面板已去除（2026-08-26 直控 App UI），定位操作完全交 App 定位 UI（设备端原生地图）**。**新增定位 UI/逻辑禁止出现预设坐标或硬编码经纬度**（如 `39.9042,116.4074`），初始视野/聚焦一律以 locationd（真实）为准；测试脚本坐标除外。
-- **中国区坐标语义双层（2026-09-04 治理定案，纠正 8-30 误断言）**：Apple 地图瓦片与 MapKit API 层（annotation/overlay/convertPoint/MKDirections/MKLocalSearch）= **GCJ 语义（瓦片系）**；locationd 广播 = **WGS-84 语义**（MapKit 显示 MKUserLocation 时自动偏移）。App 编排世界（锚点/路线/self.cur/锁基线）统一存**瓦片系数值**；两个边界转换：①`injectPoint:` 出口 GCJ→WGS（CoordTransform，对外 App 拿真实位置）；②`handleLocationUpdate` 入口 WGS→GCJ（广播值转回瓦片系参与计算）。8-30 曾误断言"MapKit API 层统一 WGS-84"删 CoordTransform，致水滴双重偏移东南 ~500m + 对外坐标系统性偏移；排查"当前位置偏移"先核对此双层语义。**当前位置显示 = 单 MKUserLocation**（`showsUserLocation` 恒 YES）——自驱水滴双模式已删除（切换死角曾致播放显示冻结死锁：daemon 开定位后自驱水滴被移除而蓝点未启用，叠加 self.cur=0,0 无效基线时 25m 锁永锁；25m 锁现带 0,0 守卫）。
-- **AutoLayout 约束视图的 layer 内容布局前 bounds 为 0（2026-08-25 实测）**：`translatesAutoresizingMaskIntoConstraints=NO` 的视图在约束布局前 `bounds` 为 (0,0)——直接 `layer.frame = view.bounds` 的 CAGradientLayer/CAShapeLayer 会变成 0×0 不显示（本次 FAB 渐变金底近乎透明根因）。**必须**：创建时用固定尺寸兜底（约束已知固定 56×56 就写死）+ `viewDidLayoutSubviews` 里同步 `layer.frame = view.bounds`。排查特征：子 layer 内容看不到、只露出 `backgroundColor`（或 clearColor 时近乎透明）。
-- **5801 直连页可用能力 ≠ 注册表能力（2026-08-25，data.clear 踩坑）**：`TRCapabilityRegistry` 注册（manager 进程）只保证网关 invoke 通道可用；5801 直连页 mgmtRequest 走设备 **5802 HTTP → trollvncserver 进程**，若只在注册表注册而 5802/0x50 分派（`tvHttpApiDispatch`/`tvExtHandleMessage`）没补分支，直连页会收「未知操作」。**新增数据/管理类能力三处补齐**：注册表 + 0x50 分派 + 5802 分派（handler 用 `tvExtHandle*` 纯函数，cl 传 NULL 复用）。
-- **caps.js 改动必须递增 `?v=N`（2026-08-25 补坑）**：阶段 2 改 `trollvnc-farm/web/caps.js`（+data.clear，BATCH_CAPS 21→22）漏递增 `app.js` 里 `caps.js?v=13` → 浏览器缓存旧 caps 不出现新能力。**凡改 caps.js/前端静态资源，同 commit 递增引用处 `?v=N`**（网关 app.js 的 caps.js/rfb.js 引用号、index.html 的 app.js/style.css 引用号）。
-- **App target（pbxproj）改动只在 bootstrap job 暴露**：default/rootless/roothide 三 scheme 用 theos gmake **直接编译源码、不读 xcodeproj**，仅 bootstrap 走 `xcodebuild -scheme TrollVNC` → **App target 改动可能三 scheme 全过而 bootstrap 失败**。排查特征：`Build package (bootstrap)` failure 而 `Diagnose bootstrap app compile` success。5 个具体坑（pbxproj ID 唯一 / `+` 要引号 / HEADER_SEARCH_PATHS 被覆盖 / `.mm` 的 C 函数要 `extern C` / ObjC 字典 key 要 `@`）见 `docs/历史决策与排查存档.md`。
-- **并行 SearchReplace 会互相覆盖（2026-08-25 实测）**：同一条消息里对同一文件发多个 SearchReplace，竞态导致只有最后一个生效（本次 pbxproj 3 处引号只提交 1 处）。**对同一文件的多次编辑必须串行**（一条消息一个编辑，或合并成一次编辑）。
-- **CI 产物 .tipa 体积骤降 = 解压截断（2026-08-25 实测）**：下载 packages-bootstrap.zip 后 `Expand-Archive` 解压时磁盘空间不足 → 解压被静默截断 → 复制出的 .tipa 缺核心文件（App 主二进制/BRPickerView.bundle/trollvncmanager）只剩 1.5MB（真实 3.9MB）。**解压前确认磁盘空间；.tipa 体积异常变小必须 `tar -tf` 校验条目数与关键文件**（tar 报 "Error exit delayed" = 截断），勿直接安装。
-- **数据填充/伪装页两条活纪律（保留）**：① **CNContactStore 写删不 kill `contactsd`**（否则打断 XPC → 「通信错误」）；**sqlite 直写（calls/sms）才 kill 对应 daemon**；**勿回归"直写 AddressBook.sqlitedb"**（缺 FTS/触发器，系统列表不显示）。② **伪装页能力收敛 A 档（2026-08-26 定案）**：数据填充/定位**写操作唯一入口 = App 内部直调**；**新功能开发前先按 说明文档 §2.0「能力实现分类指南」判定 A/B 类**——App 里点的 → A 类（内部直调）；控制端/脚本调的 → B 类（三处补齐）。其余定案细节（清空联系人 / 短信软删与触发器 / 城市名归一 / ZHANDLE / 号段过滤 / 服务短信发件号 / 每日轨迹 / 结果 UI 契约 等 ①-⑯）见 `docs/历史决策与排查存档.md`。
+> **详情在 `docs/known-issues/` 的 4 份文档里；本节只留【每条坑的一句话摘要】，看到相关的就跟路径去读全文。**
+> **★ 这些是【活的纪律】**，与 `docs/历史决策与排查存档.md`（已完结的历史归档）不同类。
+
+### 1. 网关与协议 → `docs/known-issues/01-网关与协议.md`
+
+- **★★★★ 网关 TLS 与「嵌入客户端」的协议契约**：**301 只对【顶层导航】生效**，其余一律明文服务；`httpRedirect` 必须挂 `upgrade` 监听；客户端协议随宿主选。**改重定向/协议后必跑 `scripts/verify-iframe-chain.py`（21 项全绿才算完成）**。
+- **★★★★★ 浏览器【永久缓存 301】**：服务端改好了浏览器仍用旧跳转；**这类故障网关侧既看不到请求也看不到 301** → 用 `FARM_DEBUG_REDIRECT=1` + `scripts/analyze-gateway-redirect-log.py`。**终极解法：iframe host 换 `127.0.0.1` → `localhost`**。**服务端 200 ≠ 浏览器拿到了。**
+- **手动起网关验证必须全端口隔离**（`FARM_PORT`/`FARM_REG_PORT`/`FARM_TUNNEL_PORT`/`FARM_DATA_DIR`/`FARM_MDNS=0`）。
+- **运行中的网关不会热加载新路由** → 改代码必须重启网关进程（否则新路由 405）。
+- **跨端参数契约**：一端生成、另一端校验的量必须两端钳制/兜底（防"链路通但语义断"）。
+- **剪贴板是显式双向搬运**（复制=拉 / 粘贴=推），**勿回归自动同步**。
+- **noVNC 握手死锁**：`_negotiateProtocolVersion()` 结尾**必须显式 `return true`**。
+- **noVNC disconnect 事件原版不带 code** → 已 patch；**升级 noVNC 必须核对**。
+- **窄容器嵌入**：用 `?only=<deviceId>` + `?syscursor=1` 复用网关实现，**禁止宿主侧复刻**；**任何新参数都不得让触屏端出现光标**。
+- **控制状态三态互斥 + 快照推图按内容比较**：`controlState` 互斥单值；SnapshotPoller **不得按 `seq` 去重**（要比 JPEG 内容）。
+- **变化检测不得放在推流背压之后**：确诊特征是「`waitStable` 正常返回、`wait` 永远超时」。
+
+### 2. 设备端与构建 → `docs/known-issues/02-设备端与构建.md`
+
+- **★ 暴露「从未被调用过」的能力 = 给它做首次验收**：新增透传工具后**先在真机跑一次最小调用**再交付；判"能不能用"的金标准 = **进程还活着 + 没有新崩溃报告**。
+- **Windows 快照会丢可执行位**：改 `devkit/*.sh`/DEBIAN 后恢复 100755。
+- **设备端部署与手动拉起服务链**：`nohup <绝对路径>/trollvncmanager < /dev/null > log 2>&1 &`。
+- **【运维】重启/装包后链路恢复 + 「App 角色」认知**：**App 只是「启动器 + 保活器」，不参与画面链路**；恢复只需点开一次 App。
+- **脚本化删除大段代码后必须做函数深度扫描**（`node --check` 查不出作用域错乱）。
+- **设备端 SSH 与装包路径**：Go sshd 端口 1223、不支持 sftp、**可靠路径 = base64 分块**；Windows 侧用 paramiko。
+- **MapKit 分类方法**：消费文件必须**显式 `#import <MapKit/MKGeometry.h>`**（仅 bootstrap job 暴露）。
+- **并行窗口的 git 恢复会覆盖未提交工作区** → 改完即提交。
+- **5801 直连页可用能力 ≠ 注册表能力** → 新增数据/管理类能力**三处补齐**（注册表 + 0x50 + 5802）。
+- **caps.js 改动必须递增 `?v=N`**。
+- **App target（pbxproj）改动只在 bootstrap job 暴露**。
+- **并行 SearchReplace 会互相覆盖** → **对同一文件的多次编辑必须串行**。
+- **CI 产物 .tipa 体积骤降 = 解压截断** → 校验条目数与关键文件。
+
+### 3. 数据与定位 → `docs/known-issues/03-数据与定位.md`
+
+- **sim.* 外部能力已收敛**：写操作唯一入口 = **App 内部直调**；外部再调返回「未知操作」属预期。
+- **App 原生定位**：`showsUserLocation` + `MKUserTrackingModeFollow`；**必须显式 `#import <CoreLocation/CoreLocation.h>`**；数据源统一 locationd，**无 plist 回退**。
+- **定位坐标禁止硬编码**（含预设城市与硬编码经纬度）。
+- **中国区坐标语义双层**：Apple 地图瓦片/MapKit API 层 = **GCJ（瓦片系）**；locationd 广播 = **WGS-84**；两个边界转换（`injectPoint:` 出口 GCJ→WGS；`handleLocationUpdate` 入口 WGS→GCJ）。
+- **AutoLayout 约束视图的 layer 布局前 bounds 为 0** → 固定尺寸兜底 + `viewDidLayoutSubviews` 同步。
+- **数据填充/伪装页两条活纪律**：① CNContactStore 写删**不 kill `contactsd`**，sqlite 直写才 kill 对应 daemon，**勿回归直写 AddressBook.sqlitedb**；② 写操作唯一入口 = App 内部直调，**新功能先判 A/B 类**。
+
+### 4. 发布与推送 → `docs/known-issues/04-发布与推送.md`
+
+- **远程仓库**是 `78725449/SuperPhone`（`78725449/TrollVNC` 已废弃）。
+- **推送走 `scripts/push-via-api.mjs`**；**Windows 必须显式覆盖 `CWD`**（否则 ENOENT 且报错路径是 `cmd.exe`，极易误判）。
+- **GitHub API 间歇性 503 / ECONNRESET** → 循环重试 + **改用代理 `-x http://127.0.0.1:7890`**；转公开后必须确认转回私有。
+- **push-via-api 中文路径编码损坏** → 推送后**必须核对远程树 sha == 本地树 sha**。
+- **取 CI 产物**：`node scripts/wait-ipa.mjs <runId>`。
+- **Git Data API 推送不触发 Actions** → 必须手动 `workflow_dispatch`。
+- **push-via-api 重建 commit 导致远程 sha ≠ 本地 sha** → 匹配 CI run 要用远程 HEAD sha。
+- **一键出 .tipa**：`GHTOK=<token> node scripts/build-ipa.mjs [commit] [outDir]`。
+- **build-ipa.mjs 两个 Windows bug**（`^` 要写 `~1`；204 无 body）。
+- **build-ipa diff 基准陷阱**：默认 `HEAD~1` 只带出最后一个 commit 的变更 → **批量推送要手动指定 localBase 并核对 MOD 列表**；部署前验证产物二进制含新代码。
+- **网关 `test/` 里还有手工 `verify-*.mjs`**（不属 `npm test`）。
+- **CI 秒失败** → 先查 check-run annotations（billing 拦截的权威错误在那里）。
+- **私有仓库 Actions 被 billing 拦截时的应急编译**（临时转 public → dispatch → **立即转回 private**）。
