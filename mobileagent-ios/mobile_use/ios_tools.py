@@ -192,6 +192,94 @@ class IosTools:
             return
         self._invoke("type.paste", {"text": text}, timeout=30)
 
+    # -- ★ 补齐 Mobile-Agent【声明了却没实现】的 3 个动作（2026-09-18） --------
+    #
+    # 背景（源码核对）：它的 SYSTEM_PROMPT 声明了 11 个动作 + system_button 的 4 个子动作，
+    # 但 run_gui_owl_1_5_for_mobile.py 的 if/elif 分发链【只有 10 个动作 + 2 个子动作】，
+    # 漏了三个（落到 `else: [WARN] Unsupported action type` 被静默丢弃）：
+    #     · key                        —— 完全无分支
+    #     · system_button{Menu}        —— 无分支
+    #     · system_button{Enter}       —— 无分支
+    # 下面三个方法把这三个补上，使「它原语里声明的动作」都能落到我们设备。
+    #
+    # ★ 注意：这三个动作【本来就在它的 enum 里】，所以补它们不需要改它的动作空间、
+    #   也不需要改提示词 —— 属于「修它声明了却没实现的洞」，PR 时理直气壮。
+
+    # key 动作的名字 → 我们的能力（schema 说明支持 adb keyevent 语法，
+    # examples: "volume_up" / "volume_down" / "power" / "camera" / "clear"）
+    _KEY_TO_CAP = {
+        "volume_up": ("volup", None),
+        "volume-down": ("voldn", None),
+        "volume_down": ("voldn", None),
+        "volumeup": ("volup", None),
+        "volumedown": ("voldn", None),
+        "mute": ("mute", None),
+        "power": ("power", None),
+        "camera": (None, "device_unsupported"),     # iOS 无「打开相机」系统键
+        "clear": ("type.delete", {"count": 200}),   # 清空输入框（退格到空）
+        "backspace": ("type.delete", {"count": 1}),
+        "delete": ("type.delete", {"count": 1}),
+        "back": ("__method__:back", None),
+        "home": ("__method__:home", None),
+        "menu": ("home.double", None),              # iOS 的「菜单」= 双击 Home 看后台
+        "enter": ("__method__:enter", None),
+    }
+
+    def press_key(self, name):
+        """`key` 动作：按 adb keyevent 风格的名字发一个按键/系统动作。
+
+        映射（详见 _KEY_TO_CAP）：
+            volume_up / volume_down / mute / power   → 同名 HID 能力
+            clear / backspace / delete               → type.delete（清空 / 退格）
+            back / home / enter / menu               → 方法或 home.double
+            camera                                   → 如实不支持（iOS 无系统相机键）
+
+        Returns:
+            bool —— 是否成功执行（False 表示该键在 iOS 上不支持）。
+        """
+        key = (name or "").strip()
+        cap, params = self._KEY_TO_CAP.get(key, (None, None))
+        if cap is None:
+            if params == "device_unsupported":
+                print("[IosTools] key('%s') 在 iOS 上无对应系统键，已跳过"
+                      "（可改用 open_app 打开「相机」）" % key)
+            else:
+                print("[IosTools] key('%s') 未在 _KEY_TO_CAP 中登记，已跳过" % key)
+            return False
+        if cap.startswith("__method__:"):
+            getattr(self, cap.split(":", 1)[1])()
+            return True
+        self._invoke(cap, params or {}, timeout=30)
+        return True
+
+    def menu(self):
+        """`system_button{Menu}` 动作：打开"应用后台菜单"。
+
+        ★ iOS 上「应用后台菜单」就是【双击 Home】（App Switcher）——
+        我们的 `home.double` 能力（`STHIDEventGenerator.menuDoublePress`）语义**完全对应**，
+        比 Android 的 `keyevent MENU` 更贴。
+        （官方 schema 原话："Menu means opening the application background menu"）
+        """
+        self._invoke("home.double", {}, timeout=30)
+
+    def enter(self):
+        """`system_button{Enter}` 动作：按回车（搜索 / 发送 / 确认）。
+
+        ★ 设备端 HID 子系统支持具名键 `@"RETURN"` / `@"ENTER"`
+        （`STHIDEventGenerator.mm:1425-1426` → `kHIDUsage_KeyboardReturnOrEnter`），
+        但【注册表暂未把它暴露成能力】（`keyboard` 是无参的，只 toggle 屏幕键盘）。
+
+        → 过渡实现：用「粘贴一个换行符」触发输入框的确认行为；
+           若某些 App 不认，则报错提示需要设备端补 `keyboard.key` 能力。
+           设备端补齐后，把本方法的实现换成一次 `_invoke("keyboard.key", {"name": "RETURN"})` 即可。
+        """
+        try:
+            self._invoke("type.paste", {"text": "\n"}, timeout=30)
+            return True
+        except Exception as exc:
+            print("[IosTools] enter() 失败（需设备端补 keyboard.key 能力发送 RETURN）: %s" % exc)
+            return False
+
     # -- package management -----------------------------------------------
 
     def _app_list_raw(self):
