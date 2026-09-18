@@ -124,26 +124,40 @@ export function SuperphoneTab({ visible = true }: { ctx?: Context; visible?: boo
   /**
    * iframe 用的网关地址（2026-09-18）。
    *
-   * 网关默认启用 TLS（自签证书）。若宿主页面是 http（DSH GUI 默认 http://127.0.0.1:3080），
-   * 而 iframe 用 https，浏览器会因自签证书拒绝加载 —— 且 iframe 里的证书错误
-   * 【不会】给出"继续访问"入口（只有主框架才给），页面表现为「网页似乎有问题」。
-   * 故按宿主协议选择：
-   *   · 宿主 http → iframe 也用 http（网关对带嵌入参数的明文请求放行，不 301；见 server/index.js
-   *                 httpRedirectHandler 的 EMBED_QUERY_KEYS）
-   *   · 宿主 https → 必须用 https（否则被混合内容策略拦），此时需浏览器信任网关自签证书
+   * 两件事：
+   *
+   * ① 协议随宿主：网关默认启用 TLS（自签证书）。若宿主页面是 http（DSH GUI），而 iframe 用
+   *    https，浏览器会因自签证书拒绝加载 —— 且 iframe 里的证书错误【不会】给出"继续访问"
+   *    入口（只有主框架才给），页面表现为「网页似乎有问题，或者可能已永久移动到新的 Web 地址」。
+   *    · 宿主 http → iframe 用 http（网关对非顶层导航一律明文服务，不 301；见 server/index.js）
+   *    · 宿主 https → 必须用 https（否则被混合内容策略拦），此时需浏览器信任网关自签证书
+   *
+   * ② ★ 127.0.0.1 → localhost（2026-09-18，三层问题的最后一层）：
+   *    网关历史上对【所有】明文请求 301 到 https（现已改为只对顶层导航 301）。浏览器把那些
+   *    301 【永久缓存】了（HTTP 301 默认无限期缓存），此后不再询问网关、直接跳 https →
+   *    自签证书 → CORS 拒绝，控制台报 "Access to script at 'https://…' (redirected from
+   *    'http://…') … blocked by CORS policy"。
+   *    最难办的是：iframe 加载的是 noVNC 的【整张模块图】—— rfb.js 自己就 import 了 29 个
+   *    相对模块（util/*.js、display.js、decoders/*.js、input/*.js…），且这些相对 import
+   *    【都不带版本号】；逐个加版本号是指数级打地鼠。
+   *    浏览器缓存按【完整 URL】索引，故把 host 从 127.0.0.1 换成 localhost，
+   *    整个 URL 空间对浏览器都是全新的 —— 一次性绕开全部历史缓存的 301。
+   *    可行性：网关监听 0.0.0.0（localhost 可达）；证书 SAN 含 DNS:localhost（https 场景同样可用）。
+   *    而网关侧已加 Cache-Control: no-store 到 301 响应，此类问题不会再有第二回。
    */
   const frameGateway = (() => {
     if (!gateway) return ''
     const hostIsSecure = typeof window !== 'undefined' && window.location.protocol === 'https:'
-    if (hostIsSecure) return gateway
-    return gateway.replace(/^https:/, 'http:')
+    const g = gateway.replace('//127.0.0.1:', '//localhost:').replace('//[::1]:', '//localhost:')
+    if (hostIsSecure) return g
+    return g.replace(/^https:/, 'http:')
   })()
   // 单卡模式 + 保持系统鼠标；聚焦切换由网关卡片自己的点击/浮层完成，面板不接管
   // pv = 面板侧的内嵌版本位：网关前端的样式/脚本更新后递增它，强制 iframe 重新加载
   //（否则 iframe 不会自动重载，面板会一直用缓存的旧样式——曾因此出现"网关有呼吸光、
   //  面板没有"的现象）。改网关 web/ 后请同步 +1。
   // ★ pv=3（2026-09-18）：网关前端 app.js 由 ?v=228 升到 229（caps.js 15→16、
-  //   press.js/gesture.js 补版本号），此处同步递增，强制 iframe 用新的前端入口地址。
+  //   press.js/gesture.js 补版本号、novnc rfb.js 4→5），此处同步递增。
   const frameUrl = frameGateway && deviceId ? `${frameGateway}/?syscursor=1&pv=3&only=${encodeURIComponent(deviceId)}` : null
 
   const status = (() => {

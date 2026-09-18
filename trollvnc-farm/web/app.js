@@ -1,6 +1,11 @@
 // SuperPhone 群控台前端：设备墙(实时画面) -> 聚焦视图(左画面+右操作列) -> 移动端悬浮操作簇
-// rfb.js?v=2：noVNC 核心为 server 内存 patch，URL 带版本号强制浏览器重新拉取 patch 后的内容避免旧缓存
-import RFB from '/novnc/core/rfb.js?v=4';
+// rfb.js：noVNC 核心为 server 内存 patch，URL 带版本号强制浏览器重新拉取 patch 后的内容避免旧缓存。
+// ★ 2026-09-18 由 v=4 升至 v=5：同 caps.js/press.js/gesture.js，该 URL 之前被浏览器
+//   【永久缓存过 301 重定向】（网关曾对全部明文请求 301，现已改为只对顶层导航 301）。
+//   浏览器记住后不再向网关发请求、直接跳 https（自签证书）→ CORS 拒绝，
+//   控制台报 "Access to script at 'https://…/novnc/core/rfb.js?v=4' (redirected from 'http://…')"。
+//   换版本号 = 换一个浏览器没缓存过的地址。★ 改 patch 或本文件 import 后必须同步递增。
+import RFB from '/novnc/core/rfb.js?v=5';
 // 2026-09-18：这三条 import 的 URL 必须带版本号 —— 浏览器会【永久缓存 301 重定向】。
 // 历史上网关对全部明文请求 301 到 https（现已改为只对顶层导航 301，见 server/index.js），
 // 当时 caps.js/press.js/gesture.js 被 301 过一次就被浏览器记住：之后它不再向网关发请求，
