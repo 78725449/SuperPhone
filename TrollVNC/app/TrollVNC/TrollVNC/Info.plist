@@ -40,9 +40,18 @@
 			</array>
 		</dict>
 	</dict>
+	<!-- 2026-09-18 补 fetch：TVNCServiceCoordinator 用 BGAppRefreshTask（identifier
+	     com.82flex.trollvnc.refresh）做「App 挂起期间的保活兜底」，而 BGAppRefreshTask
+	     要求 UIBackgroundModes 含 fetch —— 此前只有 network-authentication（那是网络认证用的，
+	     与后台刷新无关），导致 registerForTaskWithIdentifier 注册的刷新任务【从未被系统调度】。
+	     后果：App 一旦挂起，3s NSTimer 探活即停（见 TVNCServiceCoordinator.m L158），
+	     manager 若在此时被回收（实测：挂在 SSH 的 coalition 下被连带终止，bug_type 309）
+	     就再无人拉起，整条 manager→server 链断死，必须人工点开 App。
+	     network-authentication 保持原样（另有用途），此处为追加而非替换。 -->
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>network-authentication</string>
+		<string>fetch</string>
 	</array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
