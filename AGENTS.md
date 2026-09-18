@@ -69,6 +69,21 @@ cd TrollVNC && bash devkit/build-all.sh   # 设备端本地构建（仅 macOS + 
 
 ## 已知坑
 
+- **★★★★ 网关 TLS 与「嵌入客户端」的协议契约（2026-09-18 三轮才修对，必须记住）**：
+  网关默认启用 TLS（`FARM_TLS !== '0'` → https + 自签证书），同时用**同一端口按首字节协议分发**（TLS ClientHello → https server；明文 → `httpRedirect`）。原先 `httpRedirect` 对**【所有】明文请求**都 301 到 https（原意只是"browser can omit https://"，方便用户手输 IP）。
+  **后果**：任何跑在 http 宿主里的嵌入客户端（DSH 侧边栏插件的 iframe，宿主 `http://127.0.0.1:3080`）**两种协议都进不去** ——
+  · 用 **https** → 浏览器不信任自签证书；★ **iframe 里的证书错误不提供"继续访问"入口**（只有主框架才给）→ 页面直接报「网页似乎有问题，或者可能已永久移动到新的 Web 地址」；
+  · 用 **http** → 每个请求被 301 到 https → 浏览器把该重定向按**跨源**处理 → 网关不带 CORS 头 → 脚本/接口全被拒（实测 `caps.js?v=15` / `press.js` / `gesture.js` 报 `No 'Access-Control-Allow-Origin' header`）。
+  **正确解法（定论）**：**301 只对【顶层导航】生效**，其余一律明文服务。
+  ```js
+  const dest = (req.headers['sec-fetch-dest'] || '').toLowerCase();
+  const isTopLevelNav = dest ? dest === 'document' : (req.headers.accept || '').includes('text/html');
+  if (!isTopLevelNav) { requestHandler(req, res); return; }   // iframe/脚本/样式/fetch 都不 301
+  ```
+  安全语义不变：用户直接访问 `http://IP:8080` 仍是 `document` → 照旧升级到 https。
+  **另需两条配套**（缺一不可，实测都会单独导致失败）：① `httpRedirect` 这个 http server **必须挂 `upgrade` 监听**并把明文 WS 转发给真正的 server（否则 iframe 页面出得来但画面永久空白）；② 客户端侧协议要**随宿主**选择（插件 `frameGateway`：宿主 http → iframe 用 http；宿主 https → 必须 https）。
+  **★ 走过的两个弯路（勿重犯）**：① 用「请求带嵌入参数（`only`/`syscursor`/`pv`）」判嵌入场景 —— 只覆盖顶层导航，**iframe 内的 `/style.css`、`/api/*` 都不带参数**；② 用「`Referer` 指向嵌入页」补 —— **浏览器加载 `<script>` 时不带可用 Referer**，判据失守（本地用 python 带 Referer 测是 200，所以**自己测"通过"了），这正是"本地测过关、真机仍失败"的典型。
+  **★ 方法论教训（本次返工 3 轮的真因）**：**修这类"多段链路"的问题，必须【一次性列出并验证整条链路的每一个请求】，而不是"改一处 → 测一处 → 报通过"**。逐段报通过 = 每次都在下一段撞墙，用户被迫反复反馈。已落成脚本 `scripts/verify-iframe-chain.py`（覆盖 iframe 顶层导航 / 5 个脚本 / 样式 / 7 个 API / 2 个 WS + 顶层导航必须 301 的对照组，共 18 项）——**改网关重定向/协议相关逻辑后必须跑它，全绿才算完成**。
 - **★ 暴露一个「从未被调用过」的既有能力 = 给它做首次验收（2026-09-18 实测，血泪）**：给 AI 工具面新增一个透传工具时，**不能假设"设备端已实现 = 可用"** —— 那个能力的 executor 可能**从未被真实调用过**，里面藏着从未触发的 bug。**真实事故**：`superphone_taps` 透传设备端 `touch.taps`，首次调用即把 `trollvncmanager` 打死（`NSParameterAssert(delay > 0.0)` 断言写反，而所有调用者都传 0 → NSException → abort），设备 5901/5802/5801 三个端口全不通、网关 `online=false`；崩溃报告历史显示该 bug 在 8-24 也引爆过 3 次。**纪律**：① 新增透传工具后，**先在真机跑一次最小调用**再交付；② 崩溃报告在设备 `/var/mobile/Library/Logs/CrashReporter/<proc>-<时间>.ips`，**`_userInfoForFileAndLine` 符号 = `NSParameterAssert`/`NSAssert` 失败**，配 `EXC_CRASH + SIGABRT + abort() called` 即可定性；③ **判"能不能用"的黄金判据**：调用后**进程是否还活着 + 有没有新崩溃报告**（不能只看 ack ok=true —— 它是"已投递"）。**相关**：`screen.hash` 是同一族的另一面 —— 注册表里注册了，但 `trollvncserver` 的 0x50 分派没实现，调用返回「未知操作」。
 - **实际远程仓库是 `78725449/SuperPhone`（私有，2026-08-15 单仓库化迁移后启用）**；`78725449/TrollVNC` 是迁移前的旧 fork（已废弃）。
 - **github.com 直连常被网络阻断** → 推送走 `scripts/push-via-api.mjs`（Git Data API，api.github.com 正常）：`GHTOK=<token> node push-via-api.mjs <本地commit> <远程base> [本地base]`（默认 REPO=78725449/SuperPhone、BRANCH=main，CWD 可用环境变量覆盖；支持大文件与 base tree 去重；远程 main 与 base 不符会拒绝）。**（2026-09-17 实测补坑）Windows 上必须显式覆盖 `CWD`**：脚本默认 `CWD` 是**另一个项目的旧路径**（`C:\Users\Administrator\Documents\ChatGPT\New project`），不覆盖时 `execSync({cwd})` 抛 **ENOENT 且错误里出现的路径是 `C:\Windows\system32\cmd.exe`** ——极易误判成"沙盒拦截 node 子进程"或"环境缺 cmd.exe"（本次就误判了一轮；实测 `execSync/execFileSync/spawnSync` 三种方式在 DSH 下均正常，`cmd.exe` 也确实存在），**真因是 cwd 不存在**。正确调用：`$env:CWD = (Get-Location).Path; node scripts/push-via-api.mjs <local> <remoteBase> <localBase>`。

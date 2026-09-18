@@ -1367,34 +1367,37 @@ const requestHandler = async (req, res) => {
 
 const tlsOptions = loadTlsOptions();
 
-// http→https 自动跳转：http 明文请求 301 到同 host:port 的 https（保留路径与查询串）
+// http→https 跳转：★ 只对【顶层导航】生效（定论，前两版均已被真机推翻）
 //
-// 2026-09-18 嵌入模式例外：插件面板（DSH 侧边栏 iframe，宿主页面为 http://127.0.0.1:3080）
-// 需要把网关控制台嵌进 http 页面。此时若 301 到 https，浏览器会因【自签证书】拒绝加载 ——
-// 而 iframe 里的证书错误【不会】给出"继续访问"入口（只有主框架才给），
-// 表现为「网页似乎有问题，或者可能已永久移动到新的 Web 地址」。
-// 故：带嵌入参数的请求不跳转，直接用 http 服务（宿主 http 嵌 http 是合法方向）。
-// 参数即窄容器嵌入契约（见 AGENTS.md「窄容器嵌入」条）：only / syscursor / pv。
+// 为什么（2026-09-18 真机定位，两次修正后的结论）：
+//   网关默认启用 TLS（FARM_TLS !== '0'）+ 自签证书。原先实现是对【所有】明文请求 301 到 https。
+//   这对"用户手输 http://IP:8080"是好的（自动升级成 https），但对【嵌入式 iframe】是死循环：
+//     · iframe 用 https → 浏览器不信任自签证书；而 iframe 里的证书错误【不提供"继续访问"入口】
+//                         （只有主框架才给）→ 页面直接报「网页似乎有问题，或者可能已永久移动
+//                          到新的 Web 地址」
+//     · iframe 用 http  → 每个请求都被 301 到 https → 浏览器把该重定向按【跨源】处理
+//                         → 网关不带 CORS 头 → 脚本/接口全被拒。实测控制台报错：
+//                           "Access to script at 'https://127.0.0.1:8080/caps.js?v=15'
+//                            (redirected from 'http://127.0.0.1:8080/caps.js?v=15')
+//                            from origin 'http://127.0.0.1:8080' has been blocked by CORS policy"
+//   即：只要「开着 TLS」且「对所有明文请求 301」，iframe 用哪个协议都进不去。
 //
-// ★ 但 iframe 内的【相对资源请求】（/style.css、/app.js、/caps.js …）自身不带这些参数，
-//   若不额外识别就会被 301 到 https 而加载失败（实测：/style.css?v=52 → 301）。
-//   故用三级判据判定"这是嵌入场景"：
-//     ① 请求自身带嵌入参数                    —— iframe 的顶层导航
-//     ② Sec-Fetch-Dest: iframe                —— 浏览器对 iframe 导航的显式标注（跨源 iframe 会带）
-//     ③ Referer 指向带嵌入参数的嵌入页          —— iframe 内的子资源
-const EMBED_QUERY_KEYS = ['only', 'syscursor', 'pv'];
-function isEmbedRequest(req, u) {
-  if (EMBED_QUERY_KEYS.some((k) => u.searchParams.has(k))) return true;
-  if ((req.headers['sec-fetch-dest'] || '').toLowerCase() === 'iframe') return true;
-  const ref = req.headers.referer || '';
-  if (ref && EMBED_QUERY_KEYS.some((k) => ref.includes(`${k}=`))) return true;
-  return false;
-}
+//   而 301 的原始目的仅仅是 "browser can omit https://" —— 那是【顶层导航】的场景。
+//   故改为：只对顶层导航 301；其余一切（静态资源 / /api/* / /ws/*）一律明文服务。
+//
+// 安全语义：用户直接访问 http://IP:8080 仍会被升级到 https（顶层导航 = document）；
+//   只有【显式走 http 的嵌入客户端】才用明文，而它与网关同处内网，不引入新的暴露面。
+//
+// 判据说明：Sec-Fetch-Dest 是浏览器必带的请求目的标注 ——
+//   顶层导航 = document（该 301）；iframe 嵌入 = iframe；脚本/样式 = script/style；
+//   fetch/XHR = empty 或 cors。老浏览器无该头时用 Accept: text/html 近似判断。
 const httpRedirectHandler = (req, res) => {
   const host = req.headers.host || 'localhost';
   const u = new URL(req.url, `http://${host}`);
-  if (isEmbedRequest(req, u)) {
-    requestHandler(req, res); // 嵌入场景：明文放行，不 301
+  const dest = (req.headers['sec-fetch-dest'] || '').toLowerCase();
+  const isTopLevelNavigation = dest ? dest === 'document' : (req.headers.accept || '').includes('text/html');
+  if (!isTopLevelNavigation) {
+    requestHandler(req, res); // 非顶层导航：明文服务，不 301（嵌入 iframe 及其全部子请求）
     return;
   }
   const target = `https://${host}${u.pathname}${u.search}`;
