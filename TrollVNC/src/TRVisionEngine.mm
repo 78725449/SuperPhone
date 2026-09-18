@@ -483,6 +483,13 @@ static double trvNCCScore(double corr, const double *satSum, const double *satSq
         int wOutW = ww - tw + 1, wOutH = wh - th + 1;
         corrW = trvCorrelate2D(win, ww, tflipFull, tw, th, wOutW, wOutH);
         if (!corrW) goto cleanup;
+        // ===== 精匹配找峰 + ★区分度自检（2026-09-18 新增）=====
+        // 背景：真机实测发现，用"大片文字块"当模板时坐标会系统性偏（偏差达 449px），
+        // 而用"整宽横条"时 y 精确到 0px —— 说明算法本身无误，问题是【模板在屏幕上不独特】：
+        // 文字密集页面上处处相似，NCCC 到处高分，bestF 可能是"错的那个峰"。
+        // 原实现只返回 bestF，调用方无从得知这是不是静默错配。此处补第二个峰做区分度自检：
+        // 次峰与主峰过于接近 → ambiguous:YES，明确告知调用方"本次结果不可信，别拿它当锚点"。
+        // ★ 纪律：锚点图应选【小、独特、有对比度】的目标（图标/按钮边界），而不是大片内容。
         double bestF = -2.0; int fu = 0, fv = 0;
         for (int v = 0; v < wOutH; v++)
             for (int u = 0; u < wOutW; u++) {
@@ -490,12 +497,28 @@ static double trvNCCScore(double corr, const double *satSum, const double *satSq
                                        u, v, tw, th, tSumF, tSqF);
                 if (s > bestF) { bestF = s; fu = u; fv = v; }
             }
+        // 次峰：必须排除主峰邻域，否则相邻像素（分数天然接近）会一律触发 ambiguous。
+        // 邻域半径取模板尺寸的 1/4（至少 4px）——比它更近的峰算不上"另一个位置"。
+        double secondF = -2.0;
+        {
+            int nr = MAX(4, tw / 4), nrY = MAX(4, th / 4);
+            for (int v = 0; v < wOutH; v++)
+                for (int u = 0; u < wOutW; u++) {
+                    if (abs(u - fu) <= nr && abs(v - fv) <= nrY) continue;
+                    double s = trvNCCScore(corrW[(size_t)v * wOutW + u], satWS, satWSq, ww + 1,
+                                           u, v, tw, th, tSumF, tSqF);
+                    if (s > secondF) secondF = s;
+                }
+        }
+        BOOL ambiguous = (secondF > -1.0) && ((bestF - secondF) < 0.05);
 
         double fx = (double)(wx + fu), fy = (double)(wy + fv);
         BOOL found = bestF >= threshold;
         outDict = @{@"ok": @YES,
                     @"found": @(found),
                     @"score": @(round(bestF * 1000.0) / 1000.0),
+                    @"secondScore": @(secondF > -1.0 ? round(secondF * 1000.0) / 1000.0 : -1.0),
+                    @"ambiguous": @(ambiguous),   // ★ YES = 屏幕上存在与主峰几乎等分的另一处 → 结果不可信
                     @"x": @((fx + tw / 2.0) / W), @"y": @((fy + th / 2.0) / H),
                     @"w": @((double)tw / W), @"h": @((double)th / H),
                     @"width": @(W), @"height": @(H),   // 轻量帧校验：与 OCR 等感知 op 的 width/height 对齐，编排层跨 op 校验帧一致性

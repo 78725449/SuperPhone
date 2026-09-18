@@ -27,6 +27,11 @@
 #import <dlfcn.h>
 #import "TRAppDomain.h" // kTRAppPrefsSuiteName（跨端 prefs 域契约，2026-08-28）
 #import "TRIdentityReset.h" // identity.reset 底层模块（Native executor 直调，2026-08-28）
+// script.exec 手机端脚本执行器依赖（2026-09-18）：主干《设备操作Agent时序设计》§11.2/§11.3 要求
+// 「下发 steps[] → 手机连续执行 → 原子回传」，且收益之一是【进程内零网络往返】；
+// 故这两个类已一并编入 trollvncmanager（见 Makefile），此处直调即可，不经 5802 HTTP 回环。
+#import "TRVisionEngine.h"
+#import "TRScreenHasher.h"
 
 // trollvncserver 配置热重载入口（hot 级别 key 更新 C 全局变量 + 副作用，setConfig 使用）
 extern int tvReloadConfigForKey(const char *key);
@@ -226,6 +231,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
     [self _registerScreenHashCapabilities];
     [self _registerVisionCapabilities];
     [self _registerIdentityCapabilities];
+    [self _registerScriptCapabilities];   // script.exec 脚本执行器（2026-09-18，主干 §11.3）
     [self _registerConfigSchemas];
 }
 
@@ -656,6 +662,227 @@ static NSDictionary *TRSearchGatewaySync(void) {
                 }
             });
             return @{@"ok":@YES, @"count":@(count)};
+        }];
+}
+
+#pragma mark - script.exec 手机端脚本执行器（2026-09-18）
+// 依据主干《设备操作Agent时序设计-2026-08-28.md》§11.2/§11.3：
+//   探索走【指令模式】（逐步 observe→decide→execute）；回放走【脚本模式】
+//   —— 下发 steps[] → 手机连续执行 → 原子回传。
+// §11.2 列出的脚本模式四项收益，本实现逐条落实：
+//   ① 断链不丢任务：整包执行完才回传（结果含每步 trace），中途断链可重放整包
+//   ② 【进程内零网络往返】：全部直调 TRVisionEngine/TRScreenHasher/注册表，不经 5802
+//   ③ 原子回传：{stepCount, executed, ok, steps[{op,ok,detail,...}]}，一步失败整体中止
+//   ④ 风控护栏：stepSettleMs 控制步间节奏，调用方可按需调大（多账号场景宁可慢不可错）
+// §11.3 契约草案对应的 op 映射（全部为已注册能力或底层模块）：
+//   find_and_click{target:{type:"ocr"|"text", text}} → 文字锚定位 + touch.tap
+//   input_text{text}                                 → type.paste
+//   scroll{dir:"down"|"up"}                          → touch.swipe
+//   back                                             → touch.swipe（边缘右滑，y 靠顶部）
+//   home                                             → home
+//   open{bundleId}                                   → app.open
+//   wait_for{expect, timeoutMs}                      → 轮询 expect
+//   expect{assert}                                   → 判定并记录（不中止）
+// expect 支持 {hashDiff:true[, hashDiffThreshold]} | {text:"xx"} | {textGone:"xx"}
+
+/** 取当前帧 pHash 十六进制串（直调 TRScreenHasher —— 该类已编入 manager，零网络往返） */
+static NSString *trScriptHashHex(void) {
+    return [[TRScreenHasher sharedHasher] computeHashHexForCurrentFrame] ?: @"";
+}
+
+/** 屏幕文字子串匹配（空格/大小写无关）。命中返回该行 {text,cx,cy,...}，未命中返回 nil。
+ *  与 server 侧 tvExtHandleVisionFindText 同语义（实测为子串匹配、空格无关），
+ *  但直调 TRVisionEngine，不经 5802 HTTP 回环。 */
+static NSDictionary *trScriptFindRow(NSString *needle) {
+    if (![needle isKindOfClass:[NSString class]] || needle.length == 0) return nil;
+    NSError *err = nil;
+    NSArray<NSDictionary *> *rows =
+        [[TRVisionEngine sharedEngine] recognizeScreenTextWithRegion:nil frameSize:NULL durationMs:NULL error:&err];
+    if (!rows) return nil;
+    NSString *norm = [[needle stringByReplacingOccurrencesOfString:@" " withString:@""] lowercaseString];
+    for (NSDictionary *r in rows) {
+        NSString *t = [r[@"text"] ?: @"" stringByReplacingOccurrencesOfString:@" " withString:@""];
+        if ([t.lowercaseString containsString:norm]) return r;
+    }
+    return nil;
+}
+
+/** 判定一条 expect 是否成立；detail 回传可读原因（进 trace，供失败诊断）。
+ *  hashDiff 与本步【动作前】的 pHash 比较，用汉明距离判定"画面确实变了"。 */
+static BOOL trScriptEvalExpect(NSDictionary *expect, NSString *baseHash, NSString **detail) {
+    if (![expect isKindOfClass:[NSDictionary class]] || expect.count == 0) {
+        if (detail) *detail = @"无 expect（视为通过）";
+        return YES;
+    }
+    if (expect[@"hashDiff"]) {
+        NSInteger th = expect[@"hashDiffThreshold"] ? [expect[@"hashDiffThreshold"] integerValue] : 5;
+        NSString *cur = nil;
+        NSDictionary *d = [[TRScreenHasher sharedHasher] diffWithBaselineHash:(baseHash ?: @"")
+                                                                    threshold:th
+                                                                  currentHash:&cur];
+        BOOL changed = [d[@"changed"] boolValue];
+        if (detail) *detail = [NSString stringWithFormat:@"hashDiff distance=%@ threshold=%ld changed=%@",
+                               d[@"distance"] ?: @"?", (long)th, changed ? @"YES" : @"NO"];
+        return changed;
+    }
+    if (expect[@"text"]) {
+        NSDictionary *row = trScriptFindRow(expect[@"text"]);
+        if (detail) *detail = row ? [NSString stringWithFormat:@"命中 '%@'", expect[@"text"]]
+                                  : [NSString stringWithFormat:@"未出现 '%@'", expect[@"text"]];
+        return row != nil;
+    }
+    if (expect[@"textGone"]) {
+        NSDictionary *row = trScriptFindRow(expect[@"textGone"]);
+        if (detail) *detail = row ? [NSString stringWithFormat:@"仍存在 '%@'", expect[@"textGone"]]
+                                  : [NSString stringWithFormat:@"已消失 '%@'", expect[@"textGone"]];
+        return row == nil;
+    }
+    if (detail) *detail = @"未知 expect 键";
+    return YES;
+}
+
+/** 轮询等待 expect 成立（wait_for 用）。成立返回 YES；超时返回最后一次判定。 */
+static BOOL trScriptWaitExpect(NSDictionary *expect, NSString *baseHash,
+                               NSTimeInterval timeoutMs, NSString **detail) {
+    NSTimeInterval deadline = CFAbsoluteTimeGetCurrent() + timeoutMs / 1000.0;
+    while (CFAbsoluteTimeGetCurrent() < deadline) {
+        if (trScriptEvalExpect(expect, baseHash, detail)) return YES;
+        usleep(250000);   // 250ms 轮询（与 screen.waitStable 默认间隔同量级）
+    }
+    return trScriptEvalExpect(expect, baseHash, detail);
+}
+
+/** 注册 script.exec 手机端脚本执行器（2026-09-18，主干 §11.3 契约） */
+- (void)_registerScriptCapabilities {
+    __weak typeof(self) weakSelf = self;
+    [self _registerControl:@"script.exec" title:@"脚本执行" icon:@"▶️" route:TRCapRouteLocalCmd
+        params:@[@{@"name":@"steps",@"type":@"array",@"required":@YES},
+                 @{@"name":@"stepSettleMs",@"type":@"number",@"required":@NO}]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            __strong typeof(weakSelf) self_ = weakSelf;
+            NSArray *steps = p[@"steps"];
+            if (![steps isKindOfClass:[NSArray class]] || steps.count == 0) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:2
+                                    userInfo:@{NSLocalizedDescriptionKey:@"steps 缺失或为空数组"}];
+                return nil;
+            }
+            // 步间落定时间：touch/type 均为异步注入，需要给系统一点时间，否则下一步的感知会读到旧帧
+            NSTimeInterval settle = p[@"stepSettleMs"] ? [p[@"stepSettleMs"] doubleValue] / 1000.0 : 0.30;
+            if (settle < 0.05) settle = 0.05;
+
+            NSMutableArray *trace = [NSMutableArray arrayWithCapacity:steps.count];
+            BOOL allOk = YES;
+            NSString *failOp = nil;
+
+            for (NSUInteger i = 0; i < steps.count; i++) {
+                NSDictionary *step = steps[i];
+                if (![step isKindOfClass:[NSDictionary class]]) {
+                    allOk = NO; failOp = @"(step 非对象)";
+                    [trace addObject:@{@"index":@(i), @"ok":@NO, @"detail":@"step 必须是对象"}];
+                    break;
+                }
+                NSString *op = step[@"op"];
+                NSString *baseHash = trScriptHashHex();     // 本步动作前的基线（供 hashDiff 用）
+                __block BOOL stepOk = NO;
+                __block NSString *detail = @"";
+                NSMutableDictionary *rec = [NSMutableDictionary dictionary];
+                rec[@"index"] = @(i);
+                rec[@"op"] = op ?: @"(缺 op)";
+
+                if ([op isEqualToString:@"find_and_click"]) {
+                    NSDictionary *tgt = [step[@"target"] isKindOfClass:[NSDictionary class]] ? step[@"target"] : @{};
+                    NSString *text = tgt[@"text"];
+                    NSDictionary *row = trScriptFindRow(text);
+                    if (!row) {
+                        detail = [NSString stringWithFormat:@"未在屏幕上找到文字 '%@'", text ?: @""];
+                    } else {
+                        NSError *te = nil;
+                        NSDictionary *ack = [self_ invoke:@"touch.tap"
+                                                   params:@{@"x":row[@"cx"] ?: @0, @"y":row[@"cy"] ?: @0}
+                                                    error:&te];
+                        stepOk = ack && [ack[@"ok"] boolValue];
+                        rec[@"x"] = row[@"cx"] ?: @0; rec[@"y"] = row[@"cy"] ?: @0;
+                        detail = stepOk ? [NSString stringWithFormat:@"点中 '%@' @(%@,%@)", text ?: @"", row[@"cx"], row[@"cy"]]
+                                        : [NSString stringWithFormat:@"tap 失败: %@", te.localizedDescription ?: @"?"];
+                        if (stepOk) usleep((useconds_t)(settle * 1000000));
+                    }
+
+                } else if ([op isEqualToString:@"input_text"]) {
+                    NSError *te = nil;
+                    NSDictionary *ack = [self_ invoke:@"type.paste"
+                                               params:@{@"text":step[@"text"] ?: @""} error:&te];
+                    stepOk = ack && [ack[@"ok"] boolValue];
+                    detail = stepOk ? [NSString stringWithFormat:@"已粘贴 %lu 字", (unsigned long)[(step[@"text"] ?: @"") length]]
+                                    : [NSString stringWithFormat:@"粘贴失败: %@", te.localizedDescription ?: @"?"];
+                    if (stepOk) usleep((useconds_t)(settle * 1000000));
+
+                } else if ([op isEqualToString:@"scroll"] || [op isEqualToString:@"back"]) {
+                    // scroll dir=down 表示"内容向下滚"= 手指上滑；back = 边缘右滑（y 必须靠顶部，2026-09-18 实测）
+                    double x1 = 0.5, y1 = 0.70, x2 = 0.5, y2 = 0.30;
+                    if ([op isEqualToString:@"back"]) { x1 = 0.02; y1 = 0.12; x2 = 0.45; y2 = 0.12; }
+                    else if ([step[@"dir"] isEqualToString:@"up"]) { y1 = 0.30; y2 = 0.70; }
+                    NSError *te = nil;
+                    NSDictionary *ack = [self_ invoke:@"touch.swipe"
+                                               params:@{@"x1":@(x1), @"y1":@(y1), @"x2":@(x2), @"y2":@(y2), @"duration":@0.5}
+                                                error:&te];
+                    stepOk = ack && [ack[@"ok"] boolValue];
+                    rec[@"gesture"] = [NSString stringWithFormat:@"(%.2f,%.2f)->(%.2f,%.2f)", x1, y1, x2, y2];
+                    detail = stepOk ? @"已下发滑动" : [NSString stringWithFormat:@"滑动失败: %@", te.localizedDescription ?: @"?"];
+                    if (stepOk) usleep((useconds_t)(settle * 1000000));
+
+                } else if ([op isEqualToString:@"home"]) {
+                    NSError *te = nil;
+                    NSDictionary *ack = [self_ invoke:@"home" params:@{} error:&te];
+                    stepOk = ack && [ack[@"ok"] boolValue];
+                    detail = stepOk ? @"已按 Home" : [NSString stringWithFormat:@"home 失败: %@", te.localizedDescription ?: @"?"];
+                    if (stepOk) usleep((useconds_t)(settle * 1000000));
+
+                } else if ([op isEqualToString:@"open"]) {
+                    NSError *te = nil;
+                    NSDictionary *ack = [self_ invoke:@"app.open"
+                                               params:@{@"bundleId":step[@"bundleId"] ?: @""} error:&te];
+                    stepOk = ack && [ack[@"ok"] boolValue];
+                    detail = stepOk ? [NSString stringWithFormat:@"已打开 %@", step[@"bundleId"] ?: @""]
+                                    : [NSString stringWithFormat:@"app.open 失败: %@", te.localizedDescription ?: @"?"];
+                    if (stepOk) usleep((useconds_t)(settle * 1000000));
+
+                } else if ([op isEqualToString:@"wait_for"]) {
+                    NSDictionary *exp = [step[@"expect"] isKindOfClass:[NSDictionary class]] ? step[@"expect"] : @{};
+                    NSTimeInterval tmo = step[@"timeoutMs"] ? [step[@"timeoutMs"] doubleValue] : 5000.0;
+                    NSString *d2 = nil;
+                    stepOk = trScriptWaitExpect(exp, baseHash, tmo, &d2);
+                    detail = [NSString stringWithFormat:@"等待 %@ms: %@", @((long)tmo), d2 ?: @""];
+
+                } else if ([op isEqualToString:@"expect"]) {
+                    // 断言步：不满足即整体中止（它是"这一步成没成"的唯一判据）
+                    NSDictionary *exp = [step[@"assert"] isKindOfClass:[NSDictionary class]] ? step[@"assert"]
+                                                                                           : (step[@"expect"] ?: @{});
+                    NSString *d2 = nil;
+                    stepOk = trScriptEvalExpect(exp, baseHash, &d2);
+                    detail = d2 ?: @"";
+
+                } else {
+                    detail = [NSString stringWithFormat:@"未知 op: %@", op ?: @"(nil)"];
+                }
+
+                rec[@"ok"] = @(stepOk);
+                rec[@"detail"] = detail ?: @"";
+                [trace addObject:rec];
+                if (!stepOk) { allOk = NO; failOp = op; break; }   // 一步失败整体中止（§11.2 收益③）
+            }
+
+            if (e && !allOk) {
+                *e = [NSError errorWithDomain:@"TRCap" code:20
+                          userInfo:@{NSLocalizedDescriptionKey:
+                                     [NSString stringWithFormat:@"脚本在第 %lu 步（%@）失败，已整体中止",
+                                      (unsigned long)trace.count - 1, failOp ?: @"?"]}];
+            }
+            // 原子回传：整包结果 + 每步 trace（§11.2 收益③）
+            return @{@"ok": @(allOk),
+                     @"stepCount": @(steps.count),
+                     @"executed": @(trace.count),
+                     @"failedAt": allOk ? [NSNull null] : @(trace.count - 1),
+                     @"steps": trace};
         }];
 }
 

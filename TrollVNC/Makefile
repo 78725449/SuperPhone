@@ -140,6 +140,12 @@ trollvncmanager_FILES += src/BulletinManager.mm
 trollvncmanager_FILES += src/ClipboardManager.mm
 trollvncmanager_FILES += src/STHIDEventGenerator.mm
 trollvncmanager_FILES += src/ScreenCapturer.mm
+# script.exec 手机端脚本执行器依赖（2026-09-18）：主干《设备操作Agent时序设计》§11.2/§11.3 要求
+# 「下发 steps[] → 手机连续执行 → 原子回传」，且收益之一是【进程内零网络往返】。
+# 若 manager 不内嵌这两个类，script.exec 每步调 vision.find_text/screen.hash 都要经 5802 HTTP 回环，
+# 该收益即失效。二者只依赖 ScreenCapturer（manager 已有），与 trollvncserver 为独立二进制、无符号冲突。
+trollvncmanager_FILES += src/TRVisionEngine.mm
+trollvncmanager_FILES += src/TRScreenHasher.mm
 # 守护进程桥接函数的 Manager 降级实现（tvGetInflightStats/tvGetBonjourTXT/tvReloadConfigForKey）
 trollvncmanager_FILES += src/TRDaemonBridgeManager.mm
 # 自签证书生成（原 TRCapabilityRegistry 内实现抽出共享，trollvncmanager 与 trollvncserver 各自编译）
