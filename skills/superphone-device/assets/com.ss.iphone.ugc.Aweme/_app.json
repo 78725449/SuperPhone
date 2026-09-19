@@ -1,0 +1,24 @@
+{
+  "bundleId": "com.ss.iphone.ugc.Aweme",
+  "name": "抖音",
+  "aliases": ["抖音"],
+  "versions": [
+    {"version": "39.9.0", "build": "", "ios": "15.8.8", "screen": "750x1334",
+     "collected": "2026-09-21", "status": "active",
+     "note": "版本号经 SSH 直读 Info.plist 获得（设备端 app.list 的版本字段 2026-09-21 才补上，待 CI 装机后两条路都可用）"}
+  ],
+  "latest": "39.9.0",
+  "siblingApps": {
+    "com.ss.iphone.ugc.AwemeHTS": "抖音火山版 22.3.6（独立 App，资产另建）",
+    "com.ss.iphone.ugc.AwemeLite": "抖音极速版 39.9.0（独立 App，资产另建）"
+  },
+  "schema": "asset-tree v1 (2026-09-21)",
+  "tree": {
+    "<bundleId>/_app.json": "本文件 —— App 层：版本清单（可枚举，供蜂群按设备版本选目录）",
+    "<bundleId>/<version>/_version.json": "版本层：iOS/分辨率/结构指纹/状态",
+    "<bundleId>/<version>/<页面>.json": "页面层：结构签名 + 内容锚 + slots(引用L0) + actions(带targetPage) + edges + pits",
+    "_shared/elements/": "L0 元素库（跨 App/页面共享，一处改处处改）",
+    "_shared/revisions/": "页面修订快照（内容寻址；版本间结构未变时页面只写 revisionRef，不复制）",
+    "_overlays/": "浮层（权限弹窗等）—— 可出现在任意页上，【无父页】，故独立一支"
+  }
+}

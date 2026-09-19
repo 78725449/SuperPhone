@@ -1,0 +1,17 @@
+{
+  "app": "com.ss.iphone.ugc.Aweme",
+  "version": "39.9.0",
+  "ios": "15.8.8",
+  "screen": "750x1334",
+  "device": "553A6EA8-29F1-43DB-94B4-D4E01D4204DC",
+  "collected": "2026-09-21",
+  "status": "active",
+  "pages": ["首页", "搜索输入页"],
+  "structureFingerprint": {
+    "note": "本版本下【已采集页面】的结构签名集合 —— 供蜂群做跨版本比对：新设备报到时若 structureFingerprint 一致，可直接借用本目录资产（无需重采）",
+    "首页": {"bot": ">=3", "mid": "<=24", "anchors": ["首页", "直播 团购 南京 关注 商城 推荐"]},
+    "搜索输入页": {"bot": "0", "mid": ">=14", "anchors": ["搜索", "语音搜索", "猜你想搜"]}
+  },
+  "knownOverlays": ["系统-麦克风权限弹窗"],
+  "note": "版本号经 SSH 直读 /var/containers/Bundle/Application/<uuid>/Aweme.app/Info.plist 获得；设备端 app.list 的 version/build 字段已于 2026-09-21 补齐（待 CI 装机验证）"
+}

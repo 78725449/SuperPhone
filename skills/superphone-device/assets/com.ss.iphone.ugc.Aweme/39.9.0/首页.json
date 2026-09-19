@@ -1,0 +1,174 @@
+{
+  "page": "抖音-首页(视频流)",
+  "app": "com.ss.iphone.ugc.Aweme",
+  "appVersion": "39.9.0",
+  "revision": "rev-首页-39.9.0-a1b2c3",
+  "samplingProtocol": "跨内容（帧间上滑换视频 ×8）—— 保证 stable 只含页面骨架，不混入视频标题/字幕",
+  "structureSignature": {
+    "preset": "screenBand",
+    "assert": {
+      "bot": ">=3",
+      "mid": "<=24"
+    },
+    "note": "顶栏频道词行 + 底部 tab 带 bot=4；帮助页/弹窗页/子页的 bot 会显著偏离"
+  },
+  "contentAnchors": [
+    "首页",
+    "我",
+    "直播 团购 南京 关注 商城 推荐"
+  ],
+  "slots": [
+    {
+      "elementRef": "icon.search.magnifier",
+      "cx": 0.927,
+      "cy": 0.0549,
+      "role": "entry",
+      "seen": "8/8",
+      "note": "右上搜索入口（纯图标，OCR 抓不到 → D2 第①档缓存坐标）"
+    },
+    {
+      "elementRef": "tab.home",
+      "cx": 0.1023,
+      "cy": 0.966,
+      "role": "tab",
+      "seen": "8/8"
+    },
+    {
+      "elementRef": "tab.jingxuan",
+      "cx": 0.302,
+      "cy": 0.9659,
+      "role": "tab",
+      "seen": "8/8"
+    },
+    {
+      "elementRef": "tab.message",
+      "cx": 0.7013,
+      "cy": 0.9659,
+      "role": "tab",
+      "seen": "8/8"
+    },
+    {
+      "elementRef": "tab.me",
+      "cx": 0.9002,
+      "cy": 0.966,
+      "role": "tab",
+      "seen": "8/8"
+    },
+    {
+      "elementRef": "icon.plus",
+      "cx": 0.5,
+      "cy": 0.9659,
+      "role": "action",
+      "seen": "8/8",
+      "note": "底部中间 + 按钮"
+    },
+    {
+      "elementRef": "icon.share",
+      "cx": 0.9204,
+      "cy": 0.8002,
+      "role": "action",
+      "seen": "8/8"
+    },
+    {
+      "elementRef": "icon.rightRail",
+      "cx": 0.9311,
+      "cy": 0.7691,
+      "role": "action",
+      "seen": "8/8"
+    }
+  ],
+  "slotsNote": "★ slots 只存【页内位置 + role】并引用 L0 元素 id —— 图标本体在 _shared/elements/ 里只存一份（跨 App/页面共享，改一处处处改）。L0 尚未质检入库（859 裁片待筛），故 elementRef 现为【预登记的语义 id】，坐标均为已实测值，可直接用 ✓",
+  "actions": [
+    {
+      "id": "searchEntry",
+      "intent": "search_in_app 的入口步骤（首页→搜索输入页）",
+      "steps": [
+        {
+          "op": "tap",
+          "x": 0.928,
+          "y": 0.066,
+          "require": {
+            "screenBand": {
+              "bot": ">=3"
+            }
+          }
+        },
+        {
+          "op": "wait_for",
+          "expect": {
+            "hashDiff": true
+          },
+          "timeoutMs": 5000
+        }
+      ],
+      "targetPage": "搜索输入页",
+      "evidence": {
+        "requirePassed": true,
+        "post": "hashDiff d=35 → 落搜索输入页",
+        "trial": "data/engine-trial/meta.json"
+      },
+      "usesL0Elements": [
+        "icon.search.magnifier"
+      ],
+      "runCount": 2,
+      "lastVerifiedAt": "2026-09-19 22:38"
+    },
+    {
+      "id": "backArrow",
+      "intent": "从搜索结果页/列表页逐级退回（回到本页）",
+      "steps": [
+        {
+          "op": "tap",
+          "x": 0.055,
+          "y": 0.066
+        },
+        {
+          "op": "wait_for",
+          "expect": {
+            "hashDiff": true
+          },
+          "timeoutMs": 4000
+        }
+      ],
+      "targetPage": "首页",
+      "evidence": {
+        "post": "结果大图→列表→首页feed",
+        "note": "页面内已知控件回退，比 home+重开更稳 ✓ 已避开『立即参与』活动横条"
+      },
+      "runCount": 2
+    }
+  ],
+  "edges": [
+    {
+      "kind": "push",
+      "to": "搜索结果页",
+      "via": "searchEntry",
+      "reverse": "backArrow",
+      "note": "导航栈子页，有反向；退回本页的路径已实测（backArrow）"
+    },
+    {
+      "kind": "tab",
+      "to": "精选页",
+      "via": "tab.jingxuan",
+      "note": "平级切换（非父子）；判『在哪个 tab』用内容锚，不用层级"
+    },
+    {
+      "kind": "overlay",
+      "to": "系统-麦克风权限弹窗",
+      "trigger": "首次录音/拍摄",
+      "note": "★ 浮层：可出现在任意页上，无父页 → 处置走 _overlays/ 的四级链，不属于本页子树"
+    }
+  ],
+  "pits": [
+    "缓存态陷阱：任务开始时设备可能不在首页。bot>=3 在搜索结果页同样为真 → require 会【假通过】。判页需同时看图+OCR 内容锚（搜框词/频道词行）",
+    "OCR 抖动：底部 tab『首页』常被读作『首页产』或『首页一朋发』——判页优先结构（bot带计数）+ 内容锚(频道词行) + 看图，文字不作唯一性判定",
+    "home+重开不保证回首页（App 恢复上次页面）——导航后必须重取基线再做任何 tap"
+  ],
+  "source": {
+    "engineTrial": "data/engine-trial/meta.json",
+    "dynamicRun": "data/page-assets-dynamic/抖音-首页-跨视频.json",
+    "rawShots": [
+      "data/pages-dynamic/抖音-首页-跨视频/"
+    ]
+  }
+}

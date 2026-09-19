@@ -4286,7 +4286,19 @@ static NSDictionary *tvHttpApiDispatch(NSDictionary *req) {
             NSString *bid = [app performSelector:@selector(bundleIdentifier)];
             if (![bid isKindOfClass:[NSString class]] || bid.length == 0) continue;
             NSString *name = [app performSelector:@selector(localizedName)];
-            [out addObject:@{@"bundleId": bid, @"name": (name ?: @"")}];
+            // ★ 版本号（2026-09-21 新增）：与 TReplCapabilityRegistry 的 app.list 保持【两端语义一致】
+            //   —— 资产库按 App 版本分目录存页面资产，查表键必须含版本；蜂群设备版本可能不同。
+            NSString *shortVer = nil, *buildVer = nil;
+            if ([app respondsToSelector:@selector(shortVersionString)]) {
+                shortVer = [app performSelector:@selector(shortVersionString)];
+            }
+            if ([app respondsToSelector:@selector(bundleVersion)]) {
+                buildVer = [app performSelector:@selector(bundleVersion)];
+            }
+            [out addObject:@{@"bundleId": bid,
+                             @"name": (name ?: @""),
+                             @"version": ([shortVer isKindOfClass:[NSString class]] ? shortVer : @""),
+                             @"build": ([buildVer isKindOfClass:[NSString class]] ? buildVer : @"")}];
         }
         return tvExtOk(@{@"apps": out, @"count": @(out.count)});
     } else if ([op isEqualToString:@"app.open"]) {

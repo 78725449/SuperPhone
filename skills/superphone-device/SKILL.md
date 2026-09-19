@@ -103,25 +103,62 @@ description: SuperPhone 设备操作手册（AI 操作层）。当需要通过 D
 | **页面表** | **页面签名 → 该页可做什么 ＋ 每件的做法** | **按 `env_id`** | ⚠️ 会变（版本改版就变这里）|
 | **阻断页**（登录页 / 弹窗 / 引导页）| 页面表里 `role: "blocker"` 的条目 | 按 `env_id` | ⚠️ 会变 |
 
-#### ★ ★ 资产库（V2 · 2026-09-21 阶段整改定版）
+#### ★★★ 资产树（V1 · 2026-09-21 定版 —— **格式规范见 `assets/README.md`，改资产前必读**）
 
-> **存放位置**：`skills/superphone-device/assets/<app>/<页面>.json`
-> **格式（must obey 采样协议铁律）**：
-> ```json
-> {
->   "page": "抖音-首页(视频流)",
->   "samplingProtocol": "跨内容（帧间上滑换视频 ×8）",
->   "structureSignature": { "preset": "screenBand", "assert": {"bot": ">=3","mid": "<=24"} },
->   "contentAnchors": ["首页","我","直播 团购 南京 关注 商城 推荐"],
->   "stableElements": [{type, content, cx, cy, seen}] ,   // 跨内容采样 ≥80% 稳定的元素（仅骨架）
->   "verifiedActions": [{intent, steps[], evidence, usesL0Elements[], runCount}],
->   "pits": [ ... ],                                       // ✗ 负样本（每次执行追加）
->   "source": {...}
-> }
-> ```
-> **首条落地**：
-> - `assets/com.ss.iphone.ugc.Aweme/首页.json` —— 内容锚 = `首页/精选/消息/我`（4 个 tab 全 8/8 稳定）+ 频道词行；**verifiedActions 2 条（首页→搜索输入页 search_in_app 入口；搜索结果页逐级退出）** —— 均来自引擎首跑（任务"打开抖音，进入搜索页"，全链路通 ✅）
-> - `assets/com.ss.iphone.ugc.Aweme/搜索输入页(有键盘).json` —— 二期 3 轮 verify 5/5 avg 0.99 静态页签名 + 结构签名 + 引擎首跑猜测入参插槽
+> **存储形态 = 树（四轴）· 语义形态 = 图（带类型的边）**
+> **★ 唯一读写入口 = `scripts/asset-store.py`** —— 产生资产的地方【全部】走它，
+> 格式只在一处定义 ✗（此前 engine 写 data/engine-trial、build-page-assets 写 data/page-assets，各写各的格式 ✗）
+
+```
+assets/
+├─ _shared/elements/        L0 元素库（跨 App/页面共享；页面只引用 id，不内嵌图标本体）
+├─ _shared/revisions/       页面修订快照（内容寻址；版本间结构未变时只写 revisionRef）
+├─ _overlays/               浮层（权限弹窗等）—— ★ 可出现在任意页上，【无父页】，独立一支
+├─ <bundleId>/
+│   ├─ _app.json            {name, versions[], latest}   ← 可枚举，供蜂群按设备版本选目录
+│   └─ <version>/           目录名 = App 版本号（实测：抖音 39.9.0）
+│       ├─ _version.json    {ios, screen, status, pages[], structureFingerprint{}}
+│       └─ <页面>.json       页面节点（见下）
+└─ _index.json              反向索引（页面 >20 再建，现在不建）
+```
+
+**页面节点格式**（`<version>/<页面>.json`）：
+```json
+{
+  "page": "抖音-首页(视频流)", "app": "com.ss.iphone.ugc.Aweme", "appVersion": "39.9.0",
+  "revision": "rev-首页-39.9.0-a1b2c3",
+  "samplingProtocol": "跨内容（帧间上滑换视频 ×8）",        // ★ 必填（决定 stable 的含义）
+  "structureSignature": {"preset":"screenBand","assert":{"bot":">=3","mid":"<=24"}},  // 判页面类型
+  "contentAnchors": ["首页","我","直播 团购 南京 关注 商城 推荐"],                     // 判唯一页
+  "slots": [{"elementRef":"icon.search.magnifier","cx":0.927,"cy":0.055,"role":"entry","seen":"8/8"}],
+  "actions": [{"id":"searchEntry","intent":"…","steps":[…],
+               "targetPage":"搜索输入页",                  // ★ 跨页嵌套：执行完我到哪
+               "evidence":{…},"usesL0Elements":[…],"runCount":2}],
+  "edges": [{"kind":"push","to":"搜索结果页","via":"searchEntry","reverse":"backArrow"},
+            {"kind":"tab","to":"精选页","via":"tab.jingxuan"},
+            {"kind":"overlay","to":"系统-麦克风权限弹窗","trigger":"首次录音"}],
+  "pits": [ … ]                                            // ✗ 只追加不替换
+}
+```
+
+**读写入口（`scripts/asset-store.py`）**：
+| 命令 | 用途 |
+|---|---|
+| `list [bundleId]` | 枚举已知 App / 版本 / 页面 |
+| `which <bid> <ver> <page>` | **精确命中**（四级阶梯第①级）|
+| `find <bid> --bot 4 --mid 12 --anchors 首页,我` | **结构带 + 内容锚查表**（判页；结构先筛→锚锁定→不确定则必须看图）|
+| `bump <bid> <ver> <page> <actionId>` | ★ 验证成功后 `runCount` +1（飞轮核心计数）|
+| `add-pit <bid> <ver> <page> --text "…"` | 追加负样本（幂等）|
+| `upsert-action … --json '{…}'` | 新做法入册；同 id 合并（runCount 累加）|
+| `new-page … --json '{…}'` | 新页面（含版本目录创建）|
+
+**★ 已落地（真数据）**：
+- `com.ss.iphone.ugc.Aweme/39.9.0/首页.json` —— 8 个 slots（4 tab + 搜索入口 + + / 分享 / 右列）· actions 2 条（`searchEntry` runCount=2 · `backArrow` runCount=2）· edges 3 条（push/tab/overlay）· pits 3 条
+- `com.ss.iphone.ugc.Aweme/39.9.0/搜索输入页.json` —— 结构签名 + 5 内容锚 · `inputQuery`（`{{query}}` 插槽，**verified: partial** ← 诚实标注：只验到"落输入页"，填词提交未跑过 ✗）
+
+**★ 版本从哪来**：`app.list` 于 2026-09-21 补 `version`/`build` 字段（注册表 + 5802 两处对齐）——
+此前只有 `{bundleId,name}`，**物理上拿不到版本**，版本目录无从建立 ✗；
+设备端改好前可经 SSH 直读 Info.plist（实测：抖音 39.9.0 · 火山版 22.3.6 · 微信 8.0.75）
 
 **为什么必须分开**：
 - **意图跨版本稳定**（"搜索"这件事不会变）→ 所以任务表全群共用 ✓

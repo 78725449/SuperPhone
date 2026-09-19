@@ -1068,7 +1068,22 @@ static BOOL trScriptWaitExpect(NSDictionary *expect, NSString *baseHash,
             NSString *bid = [app performSelector:@selector(bundleIdentifier)];
             if (![bid isKindOfClass:[NSString class]] || bid.length == 0) continue;
             NSString *name = [app performSelector:@selector(localizedName)];
-            [out addObject:@{@"bundleId": bid, @"name": (name ?: @"")}];
+            // ★ 版本号（2026-09-21 新增，纯加法）：资产库要按【App 版本】分目录存页面资产。
+            //   动机：蜂群 22 台设备可能装不同版本 → 查表键必须含版本；而此前 app.list 只返回
+            //   bundleId/name，物理上拿不到版本 → "版本目录"无从建立（实测确认 ✗）。
+            //   LSApplicationProxy: shortVersionString=用户可见版本号(CFBundleShortVersionString)，
+            //   bundleVersion=构建号(CFBundleVersion)。两者都取，缺失时给空串（不崩）。
+            NSString *shortVer = nil, *buildVer = nil;
+            if ([app respondsToSelector:@selector(shortVersionString)]) {
+                shortVer = [app performSelector:@selector(shortVersionString)];
+            }
+            if ([app respondsToSelector:@selector(bundleVersion)]) {
+                buildVer = [app performSelector:@selector(bundleVersion)];
+            }
+            [out addObject:@{@"bundleId": bid,
+                             @"name": (name ?: @""),
+                             @"version": ([shortVer isKindOfClass:[NSString class]] ? shortVer : @""),
+                             @"build": ([buildVer isKindOfClass:[NSString class]] ? buildVer : @"")}];
         }
         return @{@"ok":@YES, @"apps": out, @"count": @(out.count)};
     }];
