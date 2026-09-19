@@ -9,6 +9,8 @@
     "collected": ["2026-09-19 二期3轮(verify 5/5 avg 0.99) + 2026-09-21 引擎首跑复核"]
   },
   "samplingProtocol": "静态页（键盘结构）— 上滑会收键盘、属结构变化 → --churn none",
+  "stableElements": [],
+  "stableNote": "静态键盘页；英文键盘 ABC/DEF/123 批量键全稳定，中文/搜索输入偶尔 y 轴抖动 - 用 v2 结构签名 screenBand 判页即可",
   "structureSignature": {
     "preset": "screenBand+signature",
     "assert": {"bot": "0", "mid": ">=14"},
