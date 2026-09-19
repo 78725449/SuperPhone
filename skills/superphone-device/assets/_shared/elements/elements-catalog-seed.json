@@ -1,0 +1,68 @@
+{
+  "catalogVersion": "v1-2026-09-21",
+  "samplingMethod": "顺序均分（间隔 ~21）· 引擎视觉抽查 6 张",
+  "total": 859,
+  "note": "★ 引擎用视觉抽查了 6 张代表，分两类：UI 控件（✓有抓到门面）与【误裁的 app icon / 设置行】✗ —— L0 质检必须逐张【看图】，不能裸摘要 ✗",
+  "entries": [
+    {
+      "crop": "data/omniparser-crops/s00_0_43x53_c0.75.png",
+      "sizeKB": 3.4,
+      "tag": "icon.back.chevron",
+      "style": "ios-blue",
+      "description": "iOS 蓝色返回左箭头（chevron）",
+      "verified": "engine-vision ✓ (2026-09-21)",
+      "usableForL0": true
+    },
+    {
+      "crop": "data/omniparser-crops/s01_12_129x128_c0.68.png",
+      "sizeKB": 13.4,
+      "tag": "appIcon.notes",
+      "style": "ios-yellow-notes",
+      "description": "备忘录 App 图标（notes icon）— 不是 UI control ✗",
+      "verified": "engine-vision ✓ (2026-09-21)",
+      "usableForL0": false
+    },
+    {
+      "crop": "data/omniparser-crops/s02_42_50x58_c0.43.png",
+      "sizeKB": 1.86,
+      "tag": "icon.back.chevron",
+      "style": "site-dark",
+      "description": "同 back chevron 语义，但深灰色样式 ✓ — 抖音内页风格 ✗",
+      "verified": "engine-vision ✓ (2026-09-21)",
+      "usableForL0": true
+    },
+    {
+      "crop": "data/omniparser-crops/s03_49_27x35_c0.66.png",
+      "sizeKB": 1.15,
+      "tag": "icon.send.paperplane",
+      "style": "black-graty",
+      "description": "纸飞机 icon（发送/分享，telegram 风格，抖音列表右侧 action 列）",
+      "verified": "engine-vision ✓ (2026-09-21)",
+      "usableForL0": true
+    },
+    {
+      "crop": "data/omniparser-crops/s04_111_65x55_c0.83.png",
+      "sizeKB": 3.49,
+      "tag": "appIcon.settings",
+      "style": "ios-white-bg-options",
+      "description": "设置 App 图标（含彩色圆点 的 Options 列表 icon）- ✗ NOT UI control",
+      "verified": "engine-vision ✓ (2026-09-21)",
+      "usableForL0": false
+    },
+    {
+      "crop": "data/omniparser-crops/s01_22_76x74_c0.54.png",
+      "sizeKB": 5.26,
+      "tag": "appIcon.key-emoji",
+      "style": "grey-bg-white-key",
+      "description": "密码/锁类图标（grey background with white key）- ⚠️ 不确定是 UI 或 App icon ✗",
+      "verified": "engine-vision ✓ (2026-09-21)",
+      "usableForL0": false
+    }
+  ],
+  "summary": {
+    "usableForL0": 2,
+    "appIcons": 2,
+    "duplicates": 1,
+    "uncertain": 1
+  }
+}
