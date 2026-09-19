@@ -684,6 +684,14 @@ static NSDictionary *TRSearchGatewaySync(void) {
 //   wait_for{expect, timeoutMs}                      → 轮询 expect
 //   expect{assert}                                   → 判定并记录（不中止）
 // expect 支持 {hashDiff:true[, hashDiffThreshold]} | {text:"xx"} | {textGone:"xx"}
+//            | ★ {screenBand:{"bot":">=3"}}（2026-09-19 新增，见下）
+//
+// ★★★ 2026-09-19 新增（真机实测驱动，见《实施设计》§9.2/§9.2.1）：
+//   step 级 `require`（前置条件）· expect 键 `screenBand`（结构断言）· 整包 `wantBand`
+//   ★ 三者的共同目的：让"我在哪一页"成为【可声明、可验证】的东西 ✗
+//     实测判例：以为在抖音首页（其实在帮助页）→ 后续判据全部"正确地"失败 ✗
+//     而我把它误归因成"hashDiff 时序敏感"✗ —— 真因是【位置假设没被验证】✓
+//   ★ 与 D2「定位策略链」的验证环节是同一件事，不新增机制 ✓
 
 /** 取当前帧 pHash 十六进制串（直调 TRScreenHasher —— 该类已编入 manager，零网络往返） */
 static NSString *trScriptHashHex(void) {
@@ -705,6 +713,40 @@ static NSDictionary *trScriptFindRow(NSString *needle) {
         if ([t.lowercaseString containsString:norm]) return r;
     }
     return nil;
+}
+
+/** ★ 屏幕【结构特征】（2026-09-19 新增）—— 与文字内容无关，故对 OCR 抖动免疫。
+ *
+ *  动机（真机实测踩出的坑）：判"操作是否生效"时，若用文字词做判据，会被三类假信号骗：
+ *    ① 通用词（"设置"很多页面都有）② 单字（"我"几乎任何文本都含）
+ *    ③ OCR 抖动（"消息"被识别成"肉息"、或干脆认不出）
+ *  而结构特征（块数 + y 位置）与内容无关 —— 这正是二期 page.py §底部导航 的同一思路。
+ *
+ *  实测依据（2026-09-19，抖音）：
+ *    · 首页底部 tab 带：y>0.93 有 4 块（首页/精选/消息/我）→ 稳定
+ *    · 帮助页（无 tab）：y>0.93 只有 0~2 块
+ *    · 权限弹窗遮挡时：底部带被顶掉 → 块数下降（可据此识别"被弹窗挡住"）
+ *
+ *  ★★★ 性能约束（必须遵守）：本函数会调 OCR，而 vision.ocr 实测 2~4.6 秒 ✗ ——
+ *    故它【绝不能每步无条件调用】（10 步脚本会多花 40~90 秒 ✗）。
+ *    只有两种情形才调：
+ *      ① step 声明了 require（前置条件）→ 调 1 次
+ *      ② 整包参数带 wantBand:true → 每步前后各调 1 次（trace 用，调用方自愿承担成本）
+ */
+static NSDictionary *trScriptScreenBand(void) {
+    NSError *err = nil;
+    NSArray<NSDictionary *> *rows =
+        [[TRVisionEngine sharedEngine] recognizeScreenTextWithRegion:nil frameSize:NULL durationMs:NULL error:&err];
+    if (!rows) return nil;
+    NSInteger top = 0, mid = 0, bot = 0;
+    for (NSDictionary *r in rows) {
+        double cy = [r[@"cy"] doubleValue];
+        if (cy < 0.035) continue;                  // 状态栏不算（二期已确认是噪声）
+        if (cy <= 0.12) top++;
+        else if (cy > 0.93) bot++;
+        else mid++;
+    }
+    return @{@"top": @(top), @"mid": @(mid), @"bot": @(bot), @"total": @(top + mid + bot)};
 }
 
 /** 判定一条 expect 是否成立；detail 回传可读原因（进 trace，供失败诊断）。
@@ -737,6 +779,35 @@ static BOOL trScriptEvalExpect(NSDictionary *expect, NSString *baseHash, NSStrin
                                   : [NSString stringWithFormat:@"已消失 '%@'", expect[@"textGone"]];
         return row == nil;
     }
+    // ★ screenBand（2026-09-19 新增）：按【屏幕结构】断言"我在哪一页 / 有没有被弹窗挡住"。
+    //   形态：{"screenBand":{"bot":">=3"}} —— 值是 ">=N" / "<=N" / "=N" 形式的字符串。
+    //   ★ 为什么用字符串而非 {"min":3}：与现有 expect 的扁平风格一致，且能表达区间方向。
+    if (expect[@"screenBand"]) {
+        NSDictionary *want = expect[@"screenBand"];
+        NSDictionary *got = trScriptScreenBand();
+        if (!got) {
+            if (detail) *detail = @"screenBand: OCR 不可用";
+            return NO;
+        }
+        BOOL ok = YES;
+        NSMutableArray *parts = [NSMutableArray array];
+        for (NSString *k in want) {
+            NSInteger have = [got[k] integerValue];
+            NSString *cond = [want[k] description];
+            NSInteger need = 0;
+            BOOL ge = [cond hasPrefix:@">="], le = [cond hasPrefix:@"<="];
+            NSString *numStr = ge ? [cond substringFromIndex:2]
+                                  : (le ? [cond substringFromIndex:2] : cond);
+            need = [numStr integerValue];
+            BOOL thisOk = ge ? (have >= need) : (le ? (have <= need) : (have == need));
+            if (!thisOk) ok = NO;
+            [parts addObject:[NSString stringWithFormat:@"%@=%@(需%@)%@",
+                              k, got[k], cond, thisOk ? @"" : @"✗"]];
+        }
+        if (detail) *detail = [NSString stringWithFormat:@"screenBand %@ → %@",
+                               [parts componentsJoinedByString:@" "], ok ? @"满足" : @"不满足"];
+        return ok;
+    }
     if (detail) *detail = @"未知 expect 键";
     return YES;
 }
@@ -757,7 +828,8 @@ static BOOL trScriptWaitExpect(NSDictionary *expect, NSString *baseHash,
     __weak typeof(self) weakSelf = self;
     [self _registerControl:@"script.exec" title:@"脚本执行" icon:@"▶️" route:TRCapRouteLocalCmd
         params:@[@{@"name":@"steps",@"type":@"array",@"required":@YES},
-                 @{@"name":@"stepSettleMs",@"type":@"number",@"required":@NO}]
+                 @{@"name":@"stepSettleMs",@"type":@"number",@"required":@NO},
+                 @{@"name":@"wantBand",@"type":@"boolean",@"required":@NO}]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             __strong typeof(weakSelf) self_ = weakSelf;
             NSArray *steps = p[@"steps"];
@@ -769,6 +841,8 @@ static BOOL trScriptWaitExpect(NSDictionary *expect, NSString *baseHash,
             // 步间落定时间：touch/type 均为异步注入，需要给系统一点时间，否则下一步的感知会读到旧帧
             NSTimeInterval settle = p[@"stepSettleMs"] ? [p[@"stepSettleMs"] doubleValue] / 1000.0 : 0.30;
             if (settle < 0.05) settle = 0.05;
+            // ★ 是否在 trace 里记录每步前后的屏幕结构（opt-in：OCR 单次 2~4.6s，默认关）
+            BOOL wantBand = [p[@"wantBand"] boolValue];
 
             NSMutableArray *trace = [NSMutableArray arrayWithCapacity:steps.count];
             BOOL allOk = YES;
@@ -788,6 +862,32 @@ static BOOL trScriptWaitExpect(NSDictionary *expect, NSString *baseHash,
                 NSMutableDictionary *rec = [NSMutableDictionary dictionary];
                 rec[@"index"] = @(i);
                 rec[@"op"] = op ?: @"(缺 op)";
+
+                // ★★ 步骤【前置条件】（2026-09-19 新增，opt-in）：
+                //    形态 {"op":"tap", ..., "require":{"screenBand":{"bot":">=3"}}}
+                //    ★ 为什么需要它：真机实测反复出现"我假设设备在某页，其实不在"——
+                //      此时后续所有判据都会"正确地"失败，人会误以为判据坏了 ✗
+                //      实测判例：以为在抖音首页（其实在帮助页）→ tap 底部 tab 无效 →
+                //      我还把它误归因成"hashDiff 时序敏感" ✗（见实施设计 §9.2）
+                //    ★ 与 D2「定位策略链」的验证环节是同一件事，不是新机制 ✓
+                //    ★ 不满足时【不执行】本步 → 走降级链，而不是执行了再报错 ✓
+                if (step[@"require"]) {
+                    NSString *d0 = nil;
+                    if (!trScriptEvalExpect(step[@"require"], baseHash, &d0)) {
+                        rec[@"ok"] = @NO;
+                        rec[@"detail"] = [NSString stringWithFormat:@"前置条件不满足，未执行: %@", d0 ?: @""];
+                        rec[@"requireFailed"] = @YES;
+                        [trace addObject:rec];
+                        allOk = NO; failOp = op; break;
+                    }
+                    rec[@"require"] = d0 ?: @"";
+                }
+                // ★ 记录本步【执行前】的屏幕结构 —— ★ 仅当整包声明 wantBand:true 时才调
+                //   （OCR 单次 2~4.6s，绝不能每步无条件调；见 trScriptScreenBand 的性能约束）
+                if (wantBand) {
+                    NSDictionary *bandBefore = trScriptScreenBand();
+                    if (bandBefore) rec[@"bandBefore"] = bandBefore;
+                }
 
                 if ([op isEqualToString:@"tap"]) {
                     // 直接按归一化坐标点击（2026-09-19 新增）—— ★ 定案 D2「定位策略链」的第①档：缓存坐标
@@ -889,6 +989,12 @@ static BOOL trScriptWaitExpect(NSDictionary *expect, NSString *baseHash,
 
                 rec[@"ok"] = @(stepOk);
                 rec[@"detail"] = detail ?: @"";
+                // ★ 记录本步【执行后】的屏幕结构 —— 与 bandBefore 对比即可判"操作生效了吗"，
+                //   且不依赖 hashDiff（后者只说"画面变了"，不说是"变对了"）
+                if (wantBand) {
+                    NSDictionary *bandAfter = trScriptScreenBand();
+                    if (bandAfter) rec[@"bandAfter"] = bandAfter;
+                }
                 [trace addObject:rec];
                 if (!stepOk) { allOk = NO; failOp = op; break; }   // 一步失败整体中止（§11.2 收益③）
             }
