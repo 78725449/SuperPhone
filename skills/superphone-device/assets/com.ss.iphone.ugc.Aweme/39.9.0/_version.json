@@ -1,6 +1,7 @@
 {
   "app": "com.ss.iphone.ugc.Aweme",
   "version": "39.9.0",
+  "build": "399017",
   "ios": "15.8.8",
   "screen": "750x1334",
   "device": "553A6EA8-29F1-43DB-94B4-D4E01D4204DC",

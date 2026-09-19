@@ -3,9 +3,10 @@
   "name": "抖音",
   "aliases": ["抖音"],
   "versions": [
-    {"version": "39.9.0", "build": "", "ios": "15.8.8", "screen": "750x1334",
+    {"version": "39.9.0", "build": "399017", "ios": "15.8.8", "screen": "750x1334",
      "collected": "2026-09-21", "status": "active",
-     "note": "版本号经 SSH 直读 Info.plist 获得（设备端 app.list 的版本字段 2026-09-21 才补上，待 CI 装机后两条路都可用）"}
+     "verifiedBy": ["SSH 直读 Info.plist", "设备端 app.list（2026-09-21 装机验收 ✓）"],
+     "note": "★ 两条独立路径结果一致（39.9.0）→ 互相印证 ✓。app.list 现返回 {bundleId,name,version,build}，蜂群可按设备实际版本选目录"}
   ],
   "latest": "39.9.0",
   "siblingApps": {
