@@ -43,7 +43,19 @@ for (const rawLine of names.trim().split('\n')) {
   if (!line) continue;
   const sp = line.indexOf('\t');
   const st = sp >= 0 ? line.slice(0, sp) : line;
-  const filePath = sp >= 0 ? line.slice(sp + 1) : '';
+  let rest = sp >= 0 ? line.slice(sp + 1) : '';
+  // ★ rename（git mv 产生 R<score>）拆成【D旧 + A新】——此前会把 "旧\t新" 当单路径，导致
+  //   git ls-tree 拿到 undefined（"Not a valid object name undefined"）并整包崩 ✗
+  if (/^R/.test(st)) {
+    const t2 = rest.indexOf('\t');
+    const oldPath = t2 >= 0 ? rest.slice(0, t2) : rest;
+    const newPath = t2 >= 0 ? rest.slice(t2 + 1) : '';
+    console.log('DEL(rename)', oldPath);
+    if (!newPath) continue;
+    rest = newPath;
+    treeEntries.push({ path: oldPath, mode: '100644', type: 'blob', sha: null });
+  }
+  const filePath = rest;
   if (!filePath) continue;
   if (st === 'D') {
     treeEntries.push({ path: filePath, mode: '100644', type: 'blob', sha: null });
@@ -58,7 +70,7 @@ for (const rawLine of names.trim().split('\n')) {
   const blob = await api('POST', `${API}/repos/${REPO}/git/blobs`, { content: b64, encoding: 'base64' });
   treeEntries.push({ path: filePath, mode, type: 'blob', sha: blob.sha });
   uploaded++;
-  console.log(`${st === 'A' ? 'ADD' : 'MOD'} ${filePath} (${mode}, ${content.length}B)`);
+  console.log(`${st === 'A' ? 'ADD' : (/^R/.test(st) ? 'ADD(rename)' : 'MOD')} ${filePath} (${mode}, ${content.length}B)`);
 }
 console.log('entries:', treeEntries.length, '| blobs uploaded:', uploaded);
 
