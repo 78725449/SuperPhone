@@ -55,9 +55,9 @@
         "post": "结果页含 ‘综合/视频/用户’ tab 特征 ✓",
         "note": "★ 真机完整 e2e（2026-09-21）：tap 残留词位→ input_text → tap 键盘搜索 → OCR 结果页含 综合/视频/用户 ✓"
       },
-      "runCount": 2,
+      "runCount": 3,
       "verified": "full",
-      "lastVerifiedAt": "2026-09-19 23:30"
+      "lastVerifiedAt": "2026-09-20 01:23"
     }
   ],
   "edges": [
