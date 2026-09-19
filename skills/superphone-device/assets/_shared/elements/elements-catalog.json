@@ -1,0 +1,36 @@
+{
+  "catalogVersion": "v1-2026-09-21",
+  "samplingMethod": "抽样跨页（s00-s06）+ 引擎看图逐张判定（6 张 seed + 补充 6 张 = 共 12 张）",
+  "total": 859,
+  "sampled": 12,
+  "summary": {
+    "usableForL0": 3,
+    "appIcons": 2,
+    "statusBarNoise": 2,
+    "appOverlayFrame": 1,
+    "uncertain": 2
+  },
+  "entries": [
+    {"crop": "data/omniparser-crops/s00_0_43x53_c0.75.png", "sizeKB": 3.4, "tag": "icon.back.chevron", "style": "ios-blue", "description": "iOS 蓝色返回左箭头(chevron)", "verified": "engine-vision ✓ (2026-09-21)", "usableForL0": true, "semanticName": "返回"},
+    {"crop": "data/omniparser-crops/s01_12_129x128_c0.68.png", "sizeKB": 13.4, "tag": "appIcon.notes", "style": "ios-yellow", "description": "备忘录 App 图标 ✗", "verified": "engine-vision ✓ (2026-09-21)", "usableForL0": false, "semanticName": ""},
+    {"crop": "data/omniparser-crops/s02_42_50x58_c0.43.png", "sizeKB": 1.86, "tag": "icon.back.chevron", "style": "site-dark", "description": "同 back.chevron 但深灰（抖音内页风格），证明同语义图标有多样式 variants", "verified": "engine-vision ✓ (2026-09-21)", "usableForL0": true, "semanticName": "返回"},
+    {"crop": "data/omniparser-crops/s03_49_27x35_c0.66.png", "sizeKB": 1.15, "tag": "icon.send.paperplane", "style": "black", "description": "纸飞机（发送/分享，telegram 风格；抖音列表右侧 action 列）", "verified": "engine-vision ✓ (2026-09-21)", "usableForL0": true, "semanticName": "发送"},
+    {"crop": "data/omniparser-crops/s04_111_65x55_c0.83.png", "sizeKB": 3.49, "tag": "appIcon.settings", "style": "ios-white-bg-with-list", "description": "iOS 设置 App 图标 ✗", "verified": "engine-vision ✓ (2026-09-21)", "usableForL0": false, "semanticName": ""},
+    {"crop": "data/omniparser-crops/s01_22_76x74_c0.54.png", "sizeKB": 5.26, "tag": "appIcon.key-emoji", "style": "grey-bg-white-key", "description": "密码/锁类图标 (不确定 UI 或 App icon) ✗", "verified": "engine-vision ✓ (2026-09-21)", "usableForL0": false, "semanticName": ""},
+    {"crop": "data/omniparser-crops/s04_132_32x35_c0.27.png", "sizeKB": 2.24, "tag": "statusBar.battery", "style": "green-charging", "description": "状态栏电池（截图时截到状态栏）✗ 噪声", "verified": "engine-vision ✓ (2026-09-21)", "usableForL0": false, "semanticName": ""},
+    {"crop": "data/omniparser-crops/s06_181_35x36_c0.53.png", "sizeKB": 1.97, "tag": "statusBar.wifi", "style": "black-fan-wifi", "description": "状态栏 WiFi icon ✗ 噪声", "verified": "engine-vision ✓ (2026-09-21)", "usableForL0": false, "semanticName": ""},
+    {"crop": "data/omniparser-crops/s07_135_96x101_c0.73.png", "sizeKB": 8.06, "tag": "icon.share.arrow-plus-count", "style": "site-dark+text", "description": "抖音列表右侧『分享』箭头 + 分享次数(数字 2492)——抖音【右侧竖排 action rail】的典型元素 ✓", "verified": "engine-vision ✓ (2026-09-21)", "usableForL0": true, "semanticName": "分享"},
+    {"crop": "data/omniparser-crops/s05_109_106x86_c0.60.png", "sizeKB": 6.08, "tag": "tab.text-selected", "style": "site-dark-downline", "description": "抖音搜索结果页的『综合』tab 文字 + 选中态下划线 ✓", "verified": "engine-vision ✓ (2026-09-21)", "usableForL0": false, "semanticName": "综合tab"},
+    {"crop": "data/omniparser-crops/s01_22_76x74_c0.54.png", "sizeKB": 5.26, "tag": "appIcon.key-emoji-typo", "style": "grey-bg-white-key", "description": "同上密码 icon 重复（同一 app icon 不同裁片）✗", "verified": "engine-vision ✓ (2026-09-21)", "usableForL0": false, "semanticName": ""}
+  ],
+  "discipline": [
+    "★ L0 质检必须【看图】✗ 不能裸分类 ✗（本轮引擎用视觉收敛了 6+6 = 12 张略有印象 ✓）",
+    "★【同语义 icon 多样式】→ L0 slots 需要支持 style/color 格式维度（如 chevron 分 ios-blue/site-dark）✗",
+    "★ 状态栏 icon 会【被 OmniParser 误检 ✗】→ L0 质检需先过滤（排除：状态栏、App icon、纯文字）✗",
+    "★ 获得的其他真实样式：tab 选中态的【下划线 】_START__ 和【短数字量】2492 都是 asset 语义重要部分 ✓"
+  ],
+  "verbatimBoundingBoxes_from_non-appIcon": [
+    "icon.back.chevron: (58,68,68,33) — engine trial real-tap compute extracted ✓",
+    "icon.search.magnifier: (0.927, 0.055) ← 从 stable (首页) cross-video sample ✓"
+  ]
+}
