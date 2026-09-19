@@ -103,6 +103,26 @@ description: SuperPhone 设备操作手册（AI 操作层）。当需要通过 D
 | **页面表** | **页面签名 → 该页可做什么 ＋ 每件的做法** | **按 `env_id`** | ⚠️ 会变（版本改版就变这里）|
 | **阻断页**（登录页 / 弹窗 / 引导页）| 页面表里 `role: "blocker"` 的条目 | 按 `env_id` | ⚠️ 会变 |
 
+#### ★ ★ 资产库（V2 · 2026-09-21 阶段整改定版）
+
+> **存放位置**：`skills/superphone-device/assets/<app>/<页面>.json`
+> **格式（must obey 采样协议铁律）**：
+> ```json
+> {
+>   "page": "抖音-首页(视频流)",
+>   "samplingProtocol": "跨内容（帧间上滑换视频 ×8）",
+>   "structureSignature": { "preset": "screenBand", "assert": {"bot": ">=3","mid": "<=24"} },
+>   "contentAnchors": ["首页","我","直播 团购 南京 关注 商城 推荐"],
+>   "stableElements": [{type, content, cx, cy, seen}] ,   // 跨内容采样 ≥80% 稳定的元素（仅骨架）
+>   "verifiedActions": [{intent, steps[], evidence, usesL0Elements[], runCount}],
+>   "pits": [ ... ],                                       // ✗ 负样本（每次执行追加）
+>   "source": {...}
+> }
+> ```
+> **首条落地**：
+> - `assets/com.ss.iphone.ugc.Aweme/首页.json` —— 内容锚 = `首页/精选/消息/我`（4 个 tab 全 8/8 稳定）+ 频道词行；**verifiedActions 2 条（首页→搜索输入页 search_in_app 入口；搜索结果页逐级退出）** —— 均来自引擎首跑（任务"打开抖音，进入搜索页"，全链路通 ✅）
+> - `assets/com.ss.iphone.ugc.Aweme/搜索输入页(有键盘).json` —— 二期 3 轮 verify 5/5 avg 0.99 静态页签名 + 结构签名 + 引擎首跑猜测入参插槽
+
 **为什么必须分开**：
 - **意图跨版本稳定**（"搜索"这件事不会变）→ 所以任务表全群共用 ✓
 - **做法随版本/页面变**（搜索入口在哪、图标长什么样）→ 所以页面表按 `env_id` 分桶 ✓

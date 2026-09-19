@@ -1,0 +1,63 @@
+{
+  "page": "抖音-首页(视频流)",
+  "app": "com.ss.iphone.ugc.Aweme",
+  "version": "v2-2026-09-21",
+  "env": {
+    "screen": "750x1334",
+    "lang": "zh-Hans",
+    "device": "553A6EA8-29F1-43DB-94B4-D4E01D4204DC",
+    "collected": ["2026-09-21 跨视频采样(8帧·帧间上滑换视频) + 2026-09-21 引擎首跑"]
+  },
+  "samplingProtocol": "跨内容（帧间上滑换视频 ×8）—— 保证 stable 只含页面骨架，不混入视频标题/字幕",
+  "structureSignature": {
+    "preset": "screenBand",
+    "assert": {"bot": ">=3", "mid": "<=24"},
+    "note": "顶栏频道词行 + 底部 tab 带 bot=4；帮助页/弹窗页/子页的 bot 会显著偏离"
+  },
+  "contentAnchors": [
+    "首页", "我",
+    "直播 团购 南京 关注 商城 推荐"
+    ],
+  "stableElements": [
+    {"type": "text", "content": "首页",     "cx": 0.1023, "cy": 0.9660, "seen": "8/8"},
+    {"type": "text", "content": "精选",     "cx": 0.3020, "cy": 0.9659, "seen": "8/8"},
+    {"type": "text", "content": "消息",     "cx": 0.7013, "cy": 0.9659, "seen": "8/8"},
+    {"type": "text", "content": "我",       "cx": 0.9002, "cy": 0.9660, "seen": "8/8"},
+    {"type": "icon", "content": null,      "cx": 0.5000, "cy": 0.9659, "seen": "8/8", "note": "底部中间 + 按钮"},
+    {"type": "icon", "content": null,      "cx": 0.9270, "cy": 0.0549, "seen": "8/8", "note": "右上搜索入口(放大镜)"},
+    {"type": "icon", "content": null,      "cx": 0.9311, "cy": 0.7691, "seen": "8/8", "note": "右侧操作列"},
+    {"type": "text", "content": "分享",     "cx": 0.9204, "cy": 0.8002, "seen": "8/8"},
+    {"type": "unknown", "content": "页面骨架：顶频道行『直播 团购 南京 关注 商城 推荐』", "cx": 0.0000, "cy": 0.0009, "seen": "8/8", "note": "内容词随用户变化，结构行本身稳定"}
+  ],
+  "verifiedActions": [
+    {
+      "intent": "search_in_app 的入口步骤（首页→搜索输入页）",
+      "steps": [
+        {"op": "tap",       "x": 0.928,  "y": 0.066, "require": {"screenBand": {"bot": ">=3"}}},
+        {"op": "wait_for",  "expect": {"hashDiff": true}, "timeoutMs": 5000}
+      ],
+      "evidence": {"requirePassed": true, "post": "hashDiff d=35 → 落搜索输入页", "trial": "data/engine-trial/meta.json"},
+      "usesL0Elements": ["右上放大镜(纯图标，OCR 抓不到 → 走 D2 第①档缓存坐标)"],
+      "runCount": 1
+    },
+    {
+      "intent": "从搜索结果页/列表页逐级退回",
+      "steps": [
+        {"op": "tap", "x": 0.055, "y": 0.066},
+        {"op": "wait_for", "expect": {"hashDiff": true}, "timeoutMs": 4000}
+      ],
+      "evidence": {"post": "结果大图→列表→首页feed", "note": "页面内已知控件回退，比 home+重开 更稳 ✗ 已避开『立即参与』活动横条"},
+      "runCount": 2
+    }
+  ],
+  "pits": [
+    "缓存态陷阱：任务开始时设备可能不在首页。bot>=3 在搜索结果页同样为真 → require 会【假通过】。判页需同时看图+OCR 内容锚（搜框词/频道词行）",
+    "OCR 抖动：底部 tab『首页』常被读作『首页产』或『首页一朋发』——判页优先结构（bot带计数）+ 内容锚(频道词行) + 看图，文字仅作绝不唯一性判定",
+    "home+重开不保证回首页（App 恢复上次页面）——导航后必须重取基线再做任何 tap"
+  ],
+  "source": {
+    "engineTrial": "data/engine-trial/meta.json",
+    "dynamicRun": "data/page-assets-dynamic/抖音-首页-跨视频.json",
+    "rawShots": ["data/pages-dynamic/抖音-首页-跨视频/"]
+  }
+}
