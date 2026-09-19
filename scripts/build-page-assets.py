@@ -29,8 +29,10 @@ from rapidocr_onnxruntime import RapidOCR   # noqa: E402
 
 ROOT = r"D:\编程项目\SuperPhone"
 WEIGHTS = os.path.join(ROOT, "_research", "OmniParser", "weights", "icon_detect", "model.pt")
-PAGES = os.path.join(ROOT, "data", "pages")
-OUT = os.path.join(ROOT, "data", "page-assets")
+# ★ 支持指定目录：静态页（连拍）与动态页（跨内容）要分别处理并对比 ——
+#   两者的 stability 语义不同，混在一起看会误判。
+PAGES = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "data", "pages")
+OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, "data", "page-assets")
 STATUS_Y = 0.035
 ALIGN_DIST = 0.06      # 元素对齐：中心距离上限（★ 实测定：8 帧同页，位置应有小抖动）
 
