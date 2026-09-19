@@ -13,6 +13,9 @@ r"""执行引擎的【机械附肢】—— 给引擎（模型）用的确定性
 
 ★ 结构带口径（与设备端 trScriptScreenBand 对齐）：y<0.035 状态栏不计 ·
   y<=0.12 顶栏 · y>0.93 底部 · 其余中部
+
+★★ 落盘扩展名必须用 .jpg（2026-09-21 引擎首跑实测）：
+   设备 screenshot 返回的是【JPEG 字节】—— 存成 .png 会让 read_image 拒读 ✗
 """
 import base64
 import json
@@ -88,7 +91,7 @@ if __name__ == "__main__":
         print(json.dumps(status(), ensure_ascii=False))
     elif cmd == "baseline":
         out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(
-            ROOT, "data", "engine-baselines", "baseline.png")
+            ROOT, "data", "engine-baselines", "baseline.jpg")
         os.makedirs(os.path.dirname(out), exist_ok=True)
         r = baseline(out)
         print(json.dumps(r, ensure_ascii=False, indent=1))
